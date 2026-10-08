@@ -53,7 +53,7 @@ Tags: formatting (3), money (2), vitest (6)
 - Title: the first heading if there is one, else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
 
-**Budget.** The projection into context keeps today's 8 KiB cap. When the rendered index is larger, the projection keeps the header, then the newest lines that fit, then one closing line: `Not shown: N pages (vitest 4, indexeddb 3, untagged 2). Read the full index with memory_read("MEMORY.md"), or find a tag's pages with memory_search.` The per-tag counts in that line count a page once under each of its tags. This replaces today's "the index is too long" sentence; the truncation flag in the projection envelope stays so clients keep decoding it.
+**Budget.** The projection into context keeps today's 8 KiB cap. When the rendered index is larger, the projection keeps the header, then the newest lines that fit, then one closing line: `Not shown: N pages (vitest 4, indexeddb 3, untagged 2).` The per-tag counts in that line count a page once under each of its tags. This replaces today's "the index is too long" sentence; the truncation flag in the projection envelope stays so clients keep decoding it.
 
 **Reading.** `memory_read` of `MEMORY.md` returns the full rendered index with no cap, paged by the ordinary `offset`/`limit`. `memory_search` never matches the virtual index (it searches files, and there is no file).
 

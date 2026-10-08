@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
@@ -20,7 +19,7 @@ func memoryPageSortDate(p memoryPage) string {
 	if p.Updated != "" {
 		return p.Updated
 	}
-	return p.ModTime.UTC().Format(time.DateOnly)
+	return memoryStampDate(p.ModTime)
 }
 
 // sortedMemoryPages orders pages newest first, ties by path.
@@ -90,47 +89,49 @@ func memoryNotShownLine(rest []memoryPage) string {
 	if untagged > 0 {
 		parts = append(parts, fmt.Sprintf("untagged %d", untagged))
 	}
-	noun := "pages"
-	if len(rest) == 1 {
-		noun = "page"
+	return fmt.Sprintf("Not shown: %s (%s).", pluralizedUnit(len(rest), "page"), strings.Join(parts, ", "))
+}
+
+// memoryIndexParts is a scope's index in pieces: its pages newest first, the
+// tag header line ("" when no page has tags), and one line per page.
+func memoryIndexParts(pages []memoryPage) (sorted []memoryPage, prefix string, lines []string) {
+	sorted = sortedMemoryPages(pages)
+	if header := memoryTagsHeader(sorted); header != "" {
+		prefix = header + "\n"
 	}
-	return fmt.Sprintf("Not shown: %d %s (%s). Read the full index with memory_read(\"MEMORY.md\"), or find a tag's pages with memory_search.", len(rest), noun, strings.Join(parts, ", "))
+	lines = make([]string, len(sorted))
+	for i, p := range sorted {
+		lines[i] = memoryIndexLine(p) + "\n"
+	}
+	return sorted, prefix, lines
 }
 
 // renderMemoryIndex is a scope's whole generated index: the tag header, then
 // one line per page, newest first. It is "" for a scope with no pages.
 func renderMemoryIndex(pages []memoryPage) string {
-	var b strings.Builder
-	sorted := sortedMemoryPages(pages)
-	if header := memoryTagsHeader(sorted); header != "" {
-		b.WriteString(header + "\n")
-	}
-	for _, p := range sorted {
-		b.WriteString(memoryIndexLine(p) + "\n")
-	}
-	return b.String()
+	_, prefix, lines := memoryIndexParts(pages)
+	return prefix + strings.Join(lines, "")
 }
 
 // projectMemoryIndex is the index as projected into context within limit
 // bytes: the whole index when it fits; otherwise the header, the newest lines
 // that fit, and a closing line counting the pages left out.
 func projectMemoryIndex(pages []memoryPage, limit int) (string, bool) {
-	if full := renderMemoryIndex(pages); len(full) <= limit {
-		return full, false
-	}
-	sorted := sortedMemoryPages(pages)
-	prefix := ""
-	if header := memoryTagsHeader(sorted); header != "" {
-		prefix = header + "\n"
-	}
-	lines := make([]string, len(sorted))
+	sorted, prefix, lines := memoryIndexParts(pages)
 	sizes := make([]int, len(sorted)+1) // sizes[k]: prefix plus the first k lines
 	sizes[0] = len(prefix)
-	for i, p := range sorted {
-		lines[i] = memoryIndexLine(p) + "\n"
-		sizes[i+1] = sizes[i] + len(lines[i])
+	for i, line := range lines {
+		sizes[i+1] = sizes[i] + len(line)
 	}
-	for k := range slices.Backward(sorted) {
+	if sizes[len(sorted)] <= limit {
+		return prefix + strings.Join(lines, ""), false
+	}
+	// Only a k whose first k lines fit can also hold the closing line.
+	k := 0
+	for k < len(sorted) && sizes[k+1] <= limit {
+		k++
+	}
+	for ; k >= 0; k-- {
 		closing := memoryNotShownLine(sorted[k:]) + "\n"
 		if sizes[k]+len(closing) <= limit {
 			return prefix + strings.Join(lines[:k], "") + closing, true

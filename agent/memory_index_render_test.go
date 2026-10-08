@@ -102,7 +102,7 @@ func TestMemoryNotShownLine(t *testing.T) {
 		{Tags: []string{"vitest", "indexeddb"}}, {Tags: []string{"vitest"}}, {Tags: []string{"indexeddb"}},
 		{Tags: []string{"vitest"}}, {}, {}, {Tags: []string{"alpha"}},
 	})
-	want := `Not shown: 7 pages (vitest 3, indexeddb 2, alpha 1, untagged 2). Read the full index with memory_read("MEMORY.md"), or find a tag's pages with memory_search.`
+	want := `Not shown: 7 pages (vitest 3, indexeddb 2, alpha 1, untagged 2).`
 	if got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
