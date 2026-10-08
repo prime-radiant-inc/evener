@@ -396,7 +396,8 @@ def new_workdir(args, trial, name, fixture):
 
 
 def workdir(trial, name):
-    """The real path of the trial's workspace called name, through its symlink under --work-root."""
+    """The real path of trial/name (a workspace, or a stage's state dir), through the symlinks
+    --work-root makes."""
     return os.path.realpath(os.path.join(trial, name))
 
 
@@ -419,8 +420,8 @@ def make_state_dir(args, trial, work):
 
 
 def stage_state_dir(trial, stage):
-    """The real path of a stage's evener state dir, through trial/sessions' symlink under --work-root."""
-    return os.path.realpath(os.path.join(trial, "sessions", stage))
+    """The real path of a stage's evener state dir."""
+    return workdir(trial, os.path.join("sessions", stage))
 
 
 def make_workspace(fixture, work, xdg):
@@ -1019,7 +1020,7 @@ def cmd_ask(args):
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
     # A grade file without "state" means the stage ran in sessions/<stage>.
-    state = g.get("state") or os.path.join(trial, "sessions", stage)
+    state = g.get("state") or stage_state_dir(trial, stage)
     # A grade file without "session_id" can only fall back to the state dir's most recent session.
     cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question,
                          session_id=g.get("session_id"), resume_last=not g.get("session_id"))
