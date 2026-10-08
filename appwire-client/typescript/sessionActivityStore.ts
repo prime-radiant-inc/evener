@@ -625,8 +625,7 @@ export class SessionActivityStore {
     this.clock.clearTimeout(read.pace.handle);
     read.pace.resume();
   }
-  /** Stops a read's scheduled and queued requests, shared by an observer
-   * release, a session replacement and dispose. `rootQueued` says whether a
+  /** Stops a read's scheduled and queued requests. `rootQueued` says whether a
    * root read stays queued; failures reset so the next reads start their
    * backoff afresh, not from the failures earlier reads left behind. */
   private stopReadDemand(read: ResourceRead, rootQueued: boolean): void {
