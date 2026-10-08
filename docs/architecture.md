@@ -247,16 +247,19 @@ the window failed, today's tiered escalation otherwise. Underneath it,
 `Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
-name, unparseable arguments, a schema violation, blocking middleware, or the
+name, unparseable arguments, an argument normalizer, a schema violation, blocking middleware, or the
 argument-size guard — never reaches the ledger. The ledger carries **two triggers,
 keyed differently**. The **failure trigger** counts consecutive failures sharing an
 error class, keyed on tool name + a hash of a **normalized** view of the arguments:
 the top-level `intent` free text and the shell tool's presentation-only `description`
 are dropped, and JSON key order, whitespace, and number spellings are canonicalized,
-so a call that changes only those is the same failing operation — while arguments
+so a call that changes only those is the same failing operation; the tool's own
+`RegisteredTool.NormalizeArgs`, when it has one, is applied too, so a value it
+removes before dispatch fingerprints as the omitted call — while arguments
 that are not a single well-formed JSON value fall back to the raw bytes. Its second
 failure appends a nudge to the result, and the third is **not executed at
-all** — the call is refused before the tool is looked up. The **repetition trigger**
+all** — the tool is resolved to compute the key, and the call is refused before
+any validation or execution. The **repetition trigger**
 counts consecutive byte-identical result bodies regardless of error status, keyed on
 tool name + a hash of the raw argument bytes, and only ever nudges, from the second
 onward; a tool observing mutable state may yet return
