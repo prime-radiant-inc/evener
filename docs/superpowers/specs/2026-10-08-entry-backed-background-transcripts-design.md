@@ -55,7 +55,9 @@ The protocol already separates recorded content from live state:
   Recorded history covers streams by round, previews by call and tool state by
   completion identity. Notices have their existing separate lifetime.
 - The shared reducer derives display turns from recorded history plus overlay.
-  Reuse these rules rather than inventing another interpretation of wire events.
+  Reuse its identity and coverage rules. Browser publication must also honor the
+  pending-retirement contract below; immediate removal on `overlay/end` cannot
+  bypass an uncommitted recorded replacement.
 
 Reuse candidates and their boundaries:
 
@@ -113,7 +115,7 @@ Extend the existing `evener-session-cache` database. The logical record types ar
 | --- | --- |
 | Item | Resolved host/session identity, history incarnation and transcript key; ordered position, version and complete recorded item payload |
 | Turn | Same history identity plus turn ID; versioned status and other turn metadata, with no embedded item list |
-| Coverage | Validated local page ranges and their server paging boundaries for that history identity |
+| Coverage | Read-established ranges, committed live-suffix extensions and their server paging boundaries for that history identity |
 | Session cache metadata | Requested-ref binding, resolved identity, history identity, saved/access times, byte totals and format version |
 | Clear metadata | Existing durable clear epoch |
 
@@ -135,11 +137,20 @@ Equal-version handling preserves richer known content and existing reducer
 semantics. Reuse the shared rules in a bounded form; do not duplicate them in
 storage and display code.
 
-Only a real read page establishes page coverage. Receiving an isolated update
-to an old tool item does not prove that the surrounding history is cached.
-No transaction may report a range complete before its rows have committed.
-Queries use the position index within known coverage, rather than enumerating
-all rows for a session on every open or append.
+A real read page establishes coverage. Accepted recorded notifications may
+extend its live suffix while the coordinator has uninterrupted subscription
+continuity under the same authority. Commit the appended rows and the extended
+range boundary, including the represented history snapshot, in one transaction.
+That durable boundary makes the suffix queryable after completed batches leave
+memory; the tab's continuity authority remains in memory, not in a certificate
+another tab or a later connection may adopt.
+
+An isolated update to an older item establishes no intervening coverage. A
+snapshot length alone proves no range complete. Disconnect, missing input or
+replacement stops suffix extension until authoritative reconciliation establishes
+a new baseline. No transaction may report a range complete before its rows have
+committed. Queries use the position index within known coverage, rather than
+enumerating all rows for a session on every open or append.
 
 The history cache may be shared across tabs. Each tab retains its own connection
 and read-generation authority in memory. Transactions compare durable clear
@@ -155,8 +166,14 @@ publish into the replacement binding.
    connection/read lifetime using existing acceptance rules. A newer invalidating
    signal starts authoritative recovery; it does not mix incompatible rows.
 2. Send recorded items from notifications, latest-window reads and older pages
-   through the same repository transaction path. Preserve the existing
-   response/notification ordering boundary and replay only post-response input.
+   through the same repository transaction path. A response cut orders input;
+   it does not prove that a latest window contains every earlier recorded change.
+   Preserve accepted, compatible pre-response upserts outside the returned window
+   in committed rows or bounded pending work. Within the window, merge by item
+   and turn version without regressing newer content. Apply the response cut to
+   overlay-delta replay so already represented deltas are not appended twice.
+   Invalidation and authoritative replacement revoke incompatible work through
+   their identity/lifetime fences, rather than blindly unioning old input.
 3. Apply streaming deltas, resets, tool execution state and ephemeral notices
    directly to the live overlay. Do no IndexedDB work per streaming delta and
    load no recorded background history to apply it.
@@ -165,11 +182,34 @@ publish into the replacement binding.
    provisional content visible while its commit is pending. Never show both
    copies, briefly remove both copies, or append a delta twice.
 
-A pending overlay-to-recorded handoff becomes completed-write work once its
-recorded replacement arrives. Its retained payload counts against that queue,
-not an indefinitely extended active-output exception. A rejected or failed
-write cannot mark the recorded replacement committed or silently remove its
-visible provisional content. Storage-failure behavior below owns the fallback.
+`overlay/end` closes the round's streaming lifetime; it is not proof that its
+recorded replacement has reached the browser or committed. Keep uncovered slots
+in browser-owned pending retirement, including when end precedes history. An end
+frame cannot remove a pending handoff. Retire covered slots atomically with
+publication of their recorded replacement, whether history or end arrived first.
+
+If end leaves slots with no known replacement, schedule a coalesced, bounded
+authoritative reconciliation after that end. Each attempt uses the existing read
+deadlines and a fixed history boundary; later traffic cannot extend it.
+Existing reads/pages and the
+authoritative overlay must establish their disposition: publish recorded content
+before removing covered slots, or apply the source's reset/interruption outcome
+for genuinely unrecorded work. Absence from a latest window alone is not proof
+that an older replacement does not exist. Obtain the needed page coverage within
+the bounded attempt; if it cannot be established, leave the history unverified
+and enter recovery instead of declaring the slots safely covered or draining
+indefinitely. An explicit stream reset still discards that superseded attempt;
+notices keep their separate lifetime.
+
+Retained handoff payload becomes completed-write work when its recorded
+replacement or round end arrives, whichever comes first. It counts against that
+queue, not an indefinitely extended active-output exception. A rejected or
+failed write cannot mark a replacement committed. Failed or incomplete
+reconciliation retires background pending-retirement bodies and keeps any held
+foreground content as a stale provisional view; paced recovery can retry without
+retaining those background bodies. Queue overflow follows the same recovery
+policy. The foreground fallback below owns continued visible use and atomic
+handoff when persistence is unavailable.
 
 Coalesce complete updates only where version and item semantics permit it.
 Streaming updates use the overlay's ordering and reset rules; they are not a
@@ -209,7 +249,7 @@ Preserve the existing injectable starting limits where they still apply:
 | Resource | Policy |
 | --- | --- |
 | Background recorded-history residency | None after completed writes, apart from bounded in-flight work |
-| Completed-write queue and retained write payload | 4 MiB aggregate, including pending handoff bodies |
+| Completed-write queue and retained write payload | 4 MiB aggregate, including pending handoff and ended-slot bodies |
 | Active unfinished output | Memory-only, allowed above the background budget by Jesse's decision |
 | Background database work | One bounded batch at a time, fair across ready sessions |
 | Background network hydrations | At most two issued client reads awaiting settlement |
@@ -221,8 +261,8 @@ model are not new storage tiers. Do not recreate them behind the repository.
 One decoded incoming response and IndexedDB's transaction copies are transient
 costs outside the queue limit. A response larger than queue capacity must be
 processed as the sole immediate bounded batch if it fits the disk limit, or
-refused into recovery; it must not enter an unbounded staging list. Account and
-report that single-batch exception separately. Foreground-held content,
+refused into the capacity fallback below; it must not enter an unbounded staging
+list. Account and report that single-batch exception separately. Foreground-held content,
 JavaScript overhead, metadata and active output also prevent a total-RAM claim.
 
 Account completed payload at item/batch boundaries without serializing an
@@ -233,8 +273,8 @@ its lifetime ends and does not accumulate one entry per historical event.
 Disk pressure first reclaims expired and unused history, preferentially retaining
 Live sessions. Evict a session's cached history and coverage together rather than
 creating silent holes. A reader's in-memory pages survive. If desired history
-cannot fit, mark its local backing unavailable and use normal authoritative
-recovery when needed. Finite storage is an explicit exception to local-only
+cannot fit, mark its local backing unavailable and use the non-persistent
+foreground path below. Finite storage is an explicit exception to local-only
 opening; retaining active output above budget does not make disk capacity
 unlimited.
 
@@ -245,20 +285,39 @@ a counter change cannot manufacture an available network slot.
 
 ## Failure, reconnect and release
 
-### Storage failure
+### Storage failure and capacity fallback
 
-Open transcripts and live output remain usable when IndexedDB stalls or fails.
-The repository keeps a foreground provisional view under its own ownership;
-this is a degraded mode, not a second normal history writer. Failed writes do
-not advance durable coverage or a currentness claim. Keep completed retry work
-within the queue bound. On overflow, retire affected incremental work, mark that
-history unverified, and schedule paced authoritative recovery. The server's
-recorded transcript remains the source for what the cache could not retain.
+Open transcripts and live output remain usable when IndexedDB stalls, fails or
+cannot hold a valid recorded item/window. The repository owns a non-persistent
+foreground view in these cases, including on first opening an uncached session.
+It publishes accepted authoritative completed content and retires covered overlay
+atomically without requiring a successful cache write. This is a degraded mode,
+not a second normal history writer. A view may be current with the server under
+the ordinary acceptance rules while its durable backing remains unavailable;
+failed or refused writes never advance durable coverage or durable currentness.
+Stale provisional content stays labelled stale until reconciled.
 
-Retry storage automatically with bounded backoff while demand exists. Restore
-normal operation only after storage succeeds and authoritative reconciliation
-completes. A successful probe alone is not recovery. A failed host or session
-cannot block healthy sessions.
+Foreground-held content uses the existing reader memory exception. Background
+coordinators do not retain those completed bodies after the bounded attempt.
+Keep completed retry work within the queue bound. On overflow, retire affected
+incremental work, mark that history unverified, and schedule paced authoritative
+recovery. The server's recorded transcript remains the source for what the cache
+could not retain.
+
+An indivisible recorded item can exceed the disk budget even when storage is
+healthy. Memoize that capacity refusal for the unchanged record/window within
+the cache lifetime. Do not reread or retry encoding/writing solely because it
+still cannot fit. Ordinary foreground reads and live updates continue. Reconsider
+caching when the recorded item/window or capacity changes could remove the
+refusal cause, the history is replaced, or a new cache lifetime begins. Freeing
+unrelated rows cannot make an item above the total disk limit fit. A streaming
+delta alone does not make the same oversized recorded item eligible.
+
+Retry transient storage faults automatically with bounded backoff while demand
+exists. Restore durable operation only after eligible storage succeeds and
+authoritative reconciliation completes. A successful probe alone is not recovery;
+foreground usability does not depend on this durable recovery succeeding. A
+failed host or session cannot block healthy sessions.
 Do not discard unfinished active output merely to satisfy a memory counter.
 
 ### Disconnect and replacement
@@ -292,12 +351,22 @@ a successful final save or publish a retired completion into a new lifetime.
 ## Cache migration, clear and deletion
 
 Bump the existing database schema and convert compatible recorded-history blobs
-into item, turn and coverage records. Migration is the sole permitted bulk read
-of a legacy session blob. Process one legacy record at a time; remove its source
-only in the transaction that commits its complete conversion. Interrupted or
-failed conversion leaves the source intact for retry. Preserve omitted-content
-markers and loaded-page boundaries. Imported rows are stale history until normal
-authoritative reconciliation, never restored live authority.
+into item and turn records, with coverage only where provenance proves a range.
+Migration is the sole permitted bulk read of a legacy session blob. Process one
+legacy record at a time; remove its source only in the transaction that commits
+its complete conversion. Interrupted or failed conversion leaves the source
+intact for retry. Preserve compatible item content and omitted-content markers.
+Imported rows are stale history, never restored live authority.
+
+The existing flattened blobs and their single opaque `olderCursor` do not
+identify which rows came from pages and which came from isolated notifications.
+Import those rows as stale item seeds with no certified ranges. This is an
+explicit exception to loaded-page-boundary preservation where legacy provenance
+is absent; it does not permit dropping compatible rows. A legacy cursor alone
+cannot authorize skipping an unverified interval. Obtain usable boundaries and
+cursors from authoritative page reads, without decoding or inventing opaque
+cursors. A fresh latest window validates only its returned range, not every
+imported older row. Preserve older seeds while demand fills missing ranges.
 
 Preserve compatible recorded portions of any prior current-state records, but
 do not migrate their streaming overlay or continuity certificates. Coalesce
@@ -337,6 +406,8 @@ Required evidence:
 1. **Unopened to current pane:** record history, stream text/reasoning and tool
    output while a Live session is unopened. Open it from local entry rows plus
    overlay with zero activation reads and correct content/running state.
+   Include enough completed appends to pass the original read window, after their
+   write payloads have been released; verify the committed suffix is queryable.
 2. **Entry-sized updates:** with substantial cached history and no background
    display model, append new items and settle an old tool. Inspect actual IDB
    requests to prove only affected rows/metadata change and no whole history is
@@ -345,6 +416,9 @@ Required evidence:
    and later input, then commit or abort. Assert no gap, duplicate, stale
    replacement or premature currentness. Include text, reasoning, previews,
    tool completion, retries/resets and a same-sequence authoritative replacement.
+   Exercise both end-before-history and history-before-end with commit held.
+   End a genuinely unrecorded/interrupted round and prove finite disposition,
+   including reconciliation failure and a replacement outside the latest window.
 4. **Memory exception:** exceed an injected background threshold with unfinished
    output. It remains usable in RAM and causes no streaming persistence or
    pressure-induced reread. On recording, completed-write accounting applies;
@@ -353,6 +427,8 @@ Required evidence:
    page, close/reopen locally and continue paging without holes. Repeat after
    refresh and reconnect; prove the earlier item remains recoverable through the
    new boundary. Include an isolated old-item update outside cached coverage.
+   During same-connection refresh, receive an old tool completion before a latest
+   response that excludes it; the compatible completion must survive the cut.
 6. **Ownership and discovery:** more than two Live pages, idle and attached-host
    sessions, mixed/reordered/failed sweeps, two panes and activity holders. Preserve
    visible rail boundaries and foreground convergence. Background work sends no
@@ -370,10 +446,17 @@ Required evidence:
    pages and omitted text, interrupt conversion, retry, and inspect row identity
    and coverage. Test TTL/disk eviction and oversized records without erasing
    held reader state or manufacturing complete ranges.
+   Include multiple loaded pages plus an isolated completion below them: preserve
+   every compatible row without certifying the intervening gap. Open a completed
+   item larger than the disk budget with healthy storage and no held reader.
+   Prove usable authoritative content, atomic overlay retirement, no unchanged
+   oversize retry/read loop, and durable recovery when the content becomes eligible.
 10. **Final release:** emit final recorded content during navigation removal,
     hold an earlier read/write, fail final reconciliation, and reacquire during
     retirement. Prove the fresh final read, finite release, persisted accepted
     boundary where successful, and honest stale recovery on failure.
+    Include a compatible old-tool completion received before the final response
+    but outside its latest window; successful retirement must persist it too.
 
 Reusing the existing browser workload is useful; its blob-specific residency
 milestones are superseded by actual entry-storage and overlay assertions. Keep
