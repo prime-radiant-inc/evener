@@ -270,7 +270,15 @@ def shell_paths(command):
 
 def classify(call):
     """Returns (kind, surfaces): kind is "write", "read" or "work"; surfaces lists every progress surface
-    the call writes or reads (a task_list update can set a status and add a note in one call)."""
+    the call writes or reads (a task_list update can set a status and add a note in one call). A write the
+    tool refused (call["failed"]: its TOOL_CALL_END carried an error) wrote nothing, so it is work; a refused
+    read still cost a call and counts as a read-back. A call with no end event is judged by its arguments."""
+    kind, surfaces = classify_arguments(call)
+    return ("work", []) if kind == "write" and call.get("failed") else (kind, surfaces)
+
+
+def classify_arguments(call):
+    """classify, from the call's arguments alone."""
     tool, a = call["tool"], args_of(call)
     path = str(a.get("file_path", ""))
     if tool == "apply_patch":
@@ -292,12 +300,14 @@ def classify(call):
     if tool == "notes_agent_set":
         return "write", ["whiteboard"]
     if tool == "task_list":
-        # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
-        # carrying notes records progress detail, which a skill's ledger already holds.
-        changes = task_list_changes(a)
-        if changes is None:
-            return "work", []  # evener refuses the call, so nothing in it is written
-        return ("write", sorted(changes, key=["tasks", "task-notes"].index)) if changes else ("read", ["tasks"])
+        # task_list takes top-level "add" and "update" arrays; a call with neither only lists. Since #4021 a
+        # call evener accepts always changes the list (classify drops a refused one). An update carrying a
+        # real note records progress detail, which a skill's ledger already holds; a placeholder-only entry
+        # evener skipped carries none.
+        updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
+        if not (a.get("add") or updates):
+            return "read", ["tasks"]
+        return "write", ["tasks"] + (["task-notes"] if any(real_note(u.get("notes")) for u in updates) else [])
     if tool in READ_LABELS:
         return "read", [READ_LABELS[tool]]
     if tool == "read_file" and (surfaces := read_surfaces([path])):
@@ -305,66 +315,10 @@ def classify(call):
     return "work", []
 
 
-# The largest task id evener accepts: 2^53, the largest integer a float64 holds exactly.
-MAX_TASK_ID = 2 ** 53
-
-
-def task_id(value):
-    """Whether value is a task id evener accepts (taskIDValue): an integer from 1 to MAX_TASK_ID."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    return value == int(value) and 1 <= value <= MAX_TASK_ID
-
-
-def task_list_changes(a):
-    """The surfaces a task_list call writes, as evener applies it (normalizeTaskListArgs, then
-    decodeTaskArgs, agent/session_tools_task.go); an empty set for a view; None when evener refuses it.
-    Placeholder depends_on (null, []) and notes ("", "null") are dropped from each update entry. An entry
-    left with only a valid id is skipped when the call has other work (another entry or a non-empty add);
-    with no other work, the call is refused. Every remaining entry must change something."""
-    raw_updates, add = a.get("update"), a.get("add")
-    if raw_updates is not None and not isinstance(raw_updates, list):
-        return None
-    has_add = "add" in a and not (isinstance(add, list) and not add)
-    if not raw_updates and not has_add:
-        return set()
-    kept = []
-    for entry in raw_updates or []:
-        if not isinstance(entry, dict):
-            return None
-        cleaned = {k: v for k, v in entry.items()
-                   if not (k == "depends_on" and v in (None, [])) and
-                   not (k == "notes" and isinstance(v, str) and v.strip().lower() in ("", "null"))}
-        if task_id(cleaned.get("id")) and len(cleaned) == 1 and len(entry) > 1:
-            continue
-        kept.append(cleaned)
-    if not (kept or has_add):
-        return None
-    changes = {"tasks"} if has_add else set()
-    for entry in kept:
-        entry_changes = task_update_changes(entry)
-        if not (task_id(entry.get("id")) and entry_changes):
-            return None
-        changes |= entry_changes
-    return changes
-
-
-def task_update_changes(update):
-    """The surfaces one task_list update entry writes, judged by value as decodeTaskArgs
-    (agent/session_tools_task.go) does. Placeholders change nothing: status ""; notes "" or "null"
-    (trimmed, any case); depends_on null or []; reasoning_effort "" or "inherit" (trimmed, any case).
-    depends_on [0] clears the dependencies, so it is a change."""
-    changes = set()
-    status, notes, effort = update.get("status"), update.get("notes"), update.get("reasoning_effort")
-    if isinstance(status, str) and status:
-        changes.add("tasks")
-    if update.get("depends_on") not in (None, []):
-        changes.add("tasks")
-    if isinstance(effort, str) and effort.strip().lower() not in ("", "inherit"):
-        changes.add("tasks")
-    if isinstance(notes, str) and notes.strip().lower() not in ("", "null"):
-        changes.add("task-notes")
-    return changes
+def real_note(notes):
+    """Whether notes is a real task note: a string other than "" or "null" (trimmed, any case), which
+    task_list treats as a placeholder (isPlaceholderNote, agent/session_tools_task.go)."""
+    return isinstance(notes, str) and notes.strip().lower() not in ("", "null")
 
 
 def reconstruction(calls):

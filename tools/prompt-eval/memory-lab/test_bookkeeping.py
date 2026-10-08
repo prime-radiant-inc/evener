@@ -20,6 +20,11 @@ def call(tool, **args):
     return {"tool": tool, "args": json.dumps(args)}
 
 
+def failed(c):
+    """c as a call whose TOOL_CALL_END carried an error."""
+    return dict(c, failed=True)
+
+
 def shell(command):
     return call("shell", command=command)
 
@@ -95,43 +100,29 @@ CASES = [
     (shell("perl -i -x script.pl progress.md"), ("write", ["ledger"])),
     (shell("perl -i -x/opt script.pl progress.md"), ("write", ["ledger"])),
     (shell("go test ./..."), ("work", [])),
-    # task_list: status, notes, or both; an update counts by the keys it sets.
+    # task_list is judged by its result: a call evener refused (its end carries an error) wrote nothing. A call
+    # that succeeded changed the task list (#4021); it also wrote a task note when an update carries a real one.
     (call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}]), ("write", ["tasks", "task-notes"])),
     (call("task_list", update=[{"id": 1, "status": "done"}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 1, "notes": "flaky test seen"}]), ("write", ["task-notes"])),
-    (call("task_list", update=[{"id": 2, "depends_on": [0]}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 2, "depends_on": [1, 3]}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 2, "reasoning_effort": "high"}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "notes": "flaky test seen"}]), ("write", ["tasks", "task-notes"])),
     (call("task_list", add=[{"type": "implement", "description": "x", "prompt": "y"}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "status": "in_progress", "notes": " NULL ", "depends_on": []}]),
+     ("write", ["tasks"])),
+    # A successful call can carry placeholder-only entries evener skipped; their notes are placeholders.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "notes": "", "depends_on": None}]),
+     ("write", ["tasks"])),
     (call("task_list"), ("read", ["tasks"])),
     (call("task_list", update=[]), ("read", ["tasks"])),
-    # Placeholders, as #4021's normalizeTaskListArgs and decodeTaskArgs read them: depends_on [] or null and
-    # notes "" or "null" (trimmed, any case) are dropped; status "" and reasoning_effort "" or "inherit" change
-    # nothing. A call evener refuses writes nothing.
-    (call("task_list", update=[{"id": 1, "status": "in_progress", "notes": "null", "depends_on": [],
-                                "reasoning_effort": "inherit"}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 1, "notes": " NULL ", "depends_on": None, "reasoning_effort": " Inherit "}]),
-     ("work", [])),
-    (call("task_list", update=[{"id": 2, "depends_on": []}]), ("work", [])),
-    (call("task_list", update=[{"id": 1, "status": "", "notes": "", "reasoning_effort": ""}]), ("work", [])),
-    (call("task_list", update=[{"id": 1}]), ("work", [])),
-    # A placeholder-only entry beside other work is skipped, and the rest of the call applies.
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "depends_on": []}]), ("write", ["tasks"])),
-    (call("task_list", update=[{"id": 1, "notes": "seen"}, {"id": 2, "notes": "null", "depends_on": None}]),
-     ("write", ["task-notes"])),
-    (call("task_list", add=[{"type": "fix", "description": "x", "prompt": "y"}], update=[{"id": 2, "depends_on": []}]),
-     ("write", ["tasks"])),
-    # Every update placeholder-only and no add: refused.
-    (call("task_list", update=[{"id": 1, "depends_on": []}, {"id": 2, "notes": "", "depends_on": None}]), ("work", [])),
-    (call("task_list", add=[], update=[{"id": 2, "depends_on": []}]), ("work", [])),
-    # Only an entry with a valid id (a positive integer up to 2^53) is skipped; any other stays, and the call fails.
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 0, "depends_on": []}]), ("work", [])),
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2 ** 53 + 1, "depends_on": []}]), ("work", [])),
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 1.5, "depends_on": []}]), ("work", [])),
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": "2", "depends_on": []}]), ("work", [])),
-    (call("task_list", update=[{"id": 1.0, "status": "done"}, {"id": 2 ** 53, "depends_on": []}]), ("write", ["tasks"])),
-    # An entry that keeps a field which changes nothing (status "", reasoning_effort "inherit") is not skipped.
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "reasoning_effort": "inherit"}]), ("work", [])),
+    (failed(call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}])), ("work", [])),
+    (failed(call("task_list", update=[{"id": 2, "depends_on": []}])), ("work", [])),
+    (failed(call("task_list", add=[{"type": "x"}])), ("work", [])),
+    # Any other write evener refused wrote nothing either.
+    (failed(call("edit_file", file_path=LEDGER)), ("work", [])),
+    (failed(patch(f"*** Update File: /w/{LEDGER}")), ("work", [])),
+    (failed(call("memory_write", scope="project", file_path="x.md")), ("work", [])),
+    (failed(call("notes_agent_set", note="x")), ("work", [])),
+    # A refused read still cost a call: it counts as a read-back.
+    (failed(call("memory_read", scope="project", file_path="MEMORY.md")), ("read", ["memory"])),
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),
@@ -377,6 +368,18 @@ class CompactionTest(unittest.TestCase):
         self.assertEqual([(c["compactions_before"], c["output_chars"]) for c in calls], [(0, 400), (1, 0), (1, 0)])
         self.assertEqual(bookkeeping.lab.context_record(f.name),
                          (40000, [["observation_mask", "checkpoint", "summarize"], ["checkpoint"]]))
+
+    def test_a_call_whose_end_carries_an_error_is_marked_failed(self):
+        path = events_file(self, [
+            event("TOOL_CALL_START", tool_name="task_list", call_id="a", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="a", error="unknown task ID 1"),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="b", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="b", output="ok"),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="c", arguments_json="{}"),
+            event("TOOL_CALL_END", tool_name="task_list", call_id="c", error=""),
+            event("TOOL_CALL_START", tool_name="task_list", call_id="d", arguments_json="{}")])
+        calls, _, _, _ = bookkeeping.lab.parse_events(path)
+        self.assertEqual([c["failed"] for c in calls], [True, False, False, False])
 
     def test_output_chars_counts_an_empty_output_as_empty(self):
         lines = [event("TOOL_CALL_START", tool_name="shell", call_id="a", arguments_json="{}"),
