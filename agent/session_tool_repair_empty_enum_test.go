@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/tool"
@@ -99,5 +100,38 @@ func TestPrepareToolCall_ArtifactEmptyFormatStillRejected(t *testing.T) {
 	res := prepareToolCall(call, reg.Get("read_transcript"), []string{"read_transcript"}, "read_transcript", "communicate", "")
 	if res.PrevalErr == "" {
 		t.Fatalf("artifact ref with format \"\" accepted; args = %s", res.Call.Arguments)
+	}
+}
+
+// A model that sends a plain optional field as null means to leave it out, so
+// read_file's optional offset, limit and vision_prompt reach the handler as
+// absent. The required file_path sent as null is still refused.
+func TestPrepareToolCall_ReadFileNullOptionalsAreAbsent(t *testing.T) {
+	t.Parallel()
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefReadFile())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	rf := reg.Get("read_file")
+	call := llm.ToolCallData{ID: "rf", Name: "read_file", Arguments: json.RawMessage(
+		`{"file_path":"a.txt","offset":null,"limit":null,"vision_prompt":null}`)}
+	res := prepareToolCall(call, rf, []string{"read_file"}, "read_file", "communicate", "")
+	if res.PrevalErr != "" {
+		t.Fatalf("null optionals rejected: %s", res.PrevalErr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.Call.Arguments, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := map[string]any{"file_path": "a.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	if len(res.Changes) != 3 {
+		t.Fatalf("changes = %+v, want one normalize_default per null optional", res.Changes)
+	}
+
+	required := llm.ToolCallData{ID: "rf-req", Name: "read_file", Arguments: json.RawMessage(`{"file_path":null}`)}
+	if res := prepareToolCall(required, rf, []string{"read_file"}, "read_file", "communicate", ""); res.PrevalErr == "" {
+		t.Fatalf("required file_path=null accepted; args = %s", res.Call.Arguments)
 	}
 }
