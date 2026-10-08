@@ -8,7 +8,15 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { playedHaptics, pressable, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
+import {
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -132,12 +140,6 @@ function sheet(setting: "model" | "vision" = "model"): ReactTestRenderer {
 	return tree;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 const texts = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => String(node.type) === "Text").map((node: ReactTestInstance) => textOf(node));
 
@@ -207,7 +209,7 @@ describe("choosing a model (spec 8.5)", () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
-		await flush();
+		await settle();
 		expect(calls).toEqual([
 			"changeModel:anthropic/claude-haiku-5",
 			"goBack",
@@ -223,7 +225,7 @@ describe("choosing a model (spec 8.5)", () => {
 		});
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
-		await flush();
+		await settle();
 		expect(calls).toEqual(["changeModel"]);
 	});
 
@@ -321,7 +323,7 @@ describe("the vision model (ruling 17)", () => {
 		const { calls } = provide(conversation());
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
-		await flush();
+		await settle();
 		expect(calls).toEqual(["changeVisionModel:anthropic/claude-sonnet-5", "goBack"]);
 	});
 
@@ -329,7 +331,7 @@ describe("the vision model (ruling 17)", () => {
 		const { calls } = provide(conversation({ visionModel: "lunaroute/glm-5.3-vision" }));
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
-		await flush();
+		await settle();
 		expect(calls).toEqual(["setVisionModel:off", "goBack"]);
 	});
 });

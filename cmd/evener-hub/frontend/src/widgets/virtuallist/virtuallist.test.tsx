@@ -551,28 +551,36 @@ describe("anchorToEnd", () => {
     expect(root.querySelector(`[data-index="${row}"]`)?.getAttribute("style")).toContain(`translateY(${wantStart}px)`);
   });
 
-  test("batched growth above the viewport keeps its logical row when DOM scroll writes clamp", () => {
-    // Native writes can clamp before React commits the new sizer height.
-    // Only this layout boundary is modeled; the virtualizer stays real.
-    const { root, current } = renderMeasuredList(true, true);
-    root.scrollTop = 1700;
-    fireEvent.scroll(root);
-    root.scrollTop = 1500;
-    fireEvent.scroll(root);
-    expect(current().range?.startIndex).toBe(3);
+  // A reader keeps the completion while anchorToEnd is off, as TranscriptBody
+  // does while a retained placement is pending.
+  test.each([
+    { name: "end-anchored list", anchorToEnd: true, reader: undefined },
+    { name: "reader with anchorToEnd off", anchorToEnd: false, reader: { onLayout: () => {} } },
+  ])(
+    "$name: batched growth above the viewport keeps its logical row when DOM scroll writes clamp",
+    ({ anchorToEnd, reader }) => {
+      // Native writes can clamp before React commits the new sizer height.
+      // Only this layout boundary is modeled; the virtualizer stays real.
+      const { root, current } = renderMeasuredList(anchorToEnd, true, reader);
+      root.scrollTop = 1700;
+      fireEvent.scroll(root);
+      root.scrollTop = 1500;
+      fireEvent.scroll(root);
+      expect(current().range?.startIndex).toBe(3);
 
-    act(() => {
-      for (const index of [0, 1, 2]) current().resizeItem(index, 1500);
-    });
+      act(() => {
+        for (const index of [0, 1, 2]) current().resizeItem(index, 1500);
+      });
 
-    expect(current().range?.startIndex).toBe(3);
-    expect(current().scrollOffset).toBe(4500);
-    expect(root.querySelector('[data-index="3"]')?.getAttribute("style")).toContain("translateY(4500px)");
-    expect(root.scrollTop).toBe(4500);
-    fireEvent.scroll(root);
-    expect(current().range?.startIndex).toBe(3);
-    expect(current().scrollOffset).toBe(4500);
-  });
+      expect(current().range?.startIndex).toBe(3);
+      expect(current().scrollOffset).toBe(4500);
+      expect(root.querySelector('[data-index="3"]')?.getAttribute("style")).toContain("translateY(4500px)");
+      expect(root.scrollTop).toBe(4500);
+      fireEvent.scroll(root);
+      expect(current().range?.startIndex).toBe(3);
+      expect(current().scrollOffset).toBe(4500);
+    },
+  );
 
   test("a newer native gesture supersedes a clamped measurement before its sizer commit", () => {
     const { root, current } = renderMeasuredList(true, true);

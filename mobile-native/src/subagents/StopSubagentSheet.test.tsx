@@ -1,4 +1,4 @@
-import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChanged, installActivityFixture } from "./sessionActivityTestUtils";
 // Ask coordinator to stop it (spec 9, ruling 10): a prefilled message to the
 // coordinator, sent with the one Send that steers. The durable runtime is the
 // real one, on the in-memory SQLite double; the tests assert on the wire.
@@ -404,17 +404,7 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
-	act(() =>
-		client.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: COORDINATOR.threadId,
-				sessionId: COORDINATOR.threadId,
-				ref: COORDINATOR.ref,
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => client.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });

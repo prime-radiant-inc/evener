@@ -190,8 +190,8 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		if !strings.HasPrefix(reminder, "<SYSTEM-REMINDER>") || !strings.HasSuffix(reminder, "</SYSTEM-REMINDER>") {
 			t.Fatalf("task reminder envelope missing: %q", reminder)
 		}
-		if taskReminderAllDone(text) == "" || taskReminderNudge() == "" {
-			t.Fatal("static task reminders must be non-empty")
+		if taskReminderAllDone(text) == "" {
+			t.Fatal("the all-done task reminder must be non-empty")
 		}
 		eventCh := make(chan events.SessionEvent)
 		if got := (&Session{events: eventCh}).Events(); got != eventCh {

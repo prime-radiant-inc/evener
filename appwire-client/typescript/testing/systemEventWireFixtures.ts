@@ -35,7 +35,6 @@ export type SystemEventWireCase =
   | "steer-transcript-pointer"
   | "steer-current-task"
   | "steer-task-list"
-  | "steer-task-nudge"
   | "steer-note-handoff";
 
 interface SystemEventWireFixture {
