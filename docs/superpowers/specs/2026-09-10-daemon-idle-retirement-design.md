@@ -239,8 +239,14 @@ Extend typed AppWire contracts using the repository's catalog and generator:
 - A Hub-scoped resident-list operation, `evener/daemon/list`, reports
   known process identities and current lifecycle diagnostics.
 - A safe retirement operation, `evener/daemon/retire`, addresses the
-  owning root and shares the automatic retirement claim. Hub serializes it with
-  existing resume/deletion/stop ownership and forwards to the daemon.
+  owning root and shares the automatic retirement claim. Hub checks the
+  rendered identity, ownership and deletion fences under the session's
+  resume/deletion/stop ownership locks, then releases them and forwards to the
+  daemon, which can hold the request while its session namer settles (#3921).
+  A resume, stop or deletion may overlap the forwarded request: the daemon's
+  own exact-identity check before and after its claim keeps a stale request
+  from retiring a replacement, and a stop or deletion ends the daemon whatever
+  the retire's answer (#4052).
 - Existing `evener/thread/forceStop` remains the explicit destructive operation.
 - Daemon diagnostics supply effective timeout, eligible-since/deadline, phase,
   and blocker categories. Hub consumes these through its existing probing path.

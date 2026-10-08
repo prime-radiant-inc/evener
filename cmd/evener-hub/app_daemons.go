@@ -216,9 +216,16 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 // The rendered identity is recomputed from the current rendezvous entry and
 // compared on every call — before any fence, and again after the sorted alias
 // locks — so a stale row conflicts before any RPC reaches a replacement.
-// Ownership, deletion, and protocol fences are revalidated under the locks.
-// The daemon's answer passes through verbatim: a fresh blocker refusal or
-// Accepted with the current lifecycle; acceptance is never reported as exit.
+// Ownership, deletion, and protocol fences are revalidated under the locks,
+// which are released before the request is forwarded: the daemon can hold a
+// retire while its session namer settles (#3921), and every read, mutation
+// and relayed frame of the session takes the same locks (#4052). A resume,
+// stop or deletion may then overlap the forwarded request; the daemon's own
+// exact-identity check before and after its claim keeps a stale request from
+// retiring a replacement, and a stop or deletion ends the daemon whatever
+// the retire's answer. The daemon's answer passes through verbatim: a fresh
+// blocker refusal or Accepted with the current lifecycle; acceptance is
+// never reported as exit.
 func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
 	ref, err := appwire.ParseRef(params.Identity.Ref)
 	if err != nil || ref.SourceID != "local" {
@@ -235,19 +242,22 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err := expectedDaemonConflict(entry, &params.Identity); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
-	// Serialize against resume/clear through every session alias. Retire never
-	// calls BeginForceStop/PersistForceStop: the daemon stays the retirement
-	// authority and this path leaves no recovery fence behind.
+	// Serialize the checks below against resume/clear through every session
+	// alias. Retire never calls BeginForceStop/PersistForceStop: the daemon
+	// stays the retirement authority and this path leaves no recovery fence
+	// behind.
 	aliases := forceStopAliases(entry)
 	// The retire request carries a context, so acquire each alias through it and
 	// release the prefix already held when a later alias blocks past
 	// cancellation instead of hanging and retaining the earlier aliases.
 	acquired := 0
-	defer func() {
+	unlock := func() {
 		for _, alias := range slices.Backward(aliases[:acquired]) {
 			cfg.ResumeLocks.For(alias).Unlock()
 		}
-	}()
+		acquired = 0
+	}
+	defer unlock()
 	for _, id := range aliases {
 		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
 			return appwire.DaemonRetireResponse{}, err
@@ -297,6 +307,7 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if !ok {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local daemon source cannot retire daemons")
 	}
+	unlock()
 	return local.RetireDaemonAtEntry(ctx, current, params)
 }
 

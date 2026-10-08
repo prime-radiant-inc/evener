@@ -836,6 +836,67 @@ func TestDaemonActionRetireReturnsFreshBlockers(t *testing.T) {
 	}
 }
 
+// A retire forwarded to the daemon can wait there, up to the session namer's
+// timeout (#3921). The hub releases the session's alias locks before it
+// forwards, so a read of that session and a relayed frame, which take the
+// same locks, proceed while the daemon's answer is pending (#4052).
+func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 4202)
+	entered, answer := make(chan struct{}), make(chan struct{})
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		close(entered)
+		<-answer // the daemon waits on its session namer
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: appwire.DaemonLifecycle{Phase: "retiring", Blockers: []appwire.DaemonBlocker{}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: "idle", Lifecycle: residentLifecycleForTest(), LifecycleFresh: true}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := client.DaemonList(t.Context(), appwire.DaemonListParams{})
+	if err != nil || len(list.Daemons) != 1 {
+		t.Fatalf("daemon list = %+v, %v", list, err)
+	}
+	retired := make(chan error, 1)
+	go func() {
+		_, err := client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: list.Daemons[0].Identity})
+		retired <- err
+	}()
+	<-entered
+	ref := "local:" + entry.ThreadID
+	unlock, ok := tryLockDeletionTarget(cfg, ref, entry.ThreadID) // a relayed frame's guard
+	if !ok {
+		close(answer)
+		t.Fatal("a relayed frame's lock was held while the retire waited on the daemon")
+	}
+	unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	read, err := withSessionActionOwnership(ctx, cfg, ref, entry.ThreadID, func() (string, error) { return "read", nil })
+	if err != nil || read != "read" {
+		close(answer)
+		t.Fatalf("a session read while the retire waited = %q, %v; want it to proceed", read, err)
+	}
+	close(answer)
+	if err := <-retired; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+}
+
 // TestDaemonArchivedRowDisablesRetire proves the documented contract that an
 // archived session's resident daemon stays visible with retirement disabled:
 // the rendered row reports CanRetire:false even with a fresh compatible
