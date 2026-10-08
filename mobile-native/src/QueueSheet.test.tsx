@@ -150,9 +150,13 @@ it("closes when the queue empties, or when its session is gone", () => {
 	mountSheet(host({ ghosts: [] }));
 	expect(navigation.goBack).toHaveBeenCalledOnce();
 	navigation.goBack.mockClear();
-	queueHosts.release(KEY, owner);
+	// The open sheet leaves when its screen lets the session go...
+	act(() => queueHosts.release(KEY, owner));
+	expect(navigation.goBack).toHaveBeenCalledOnce();
+	navigation.goBack.mockClear();
+	// ...and a sheet opened with no session leaves at once.
 	mountSheet(undefined);
-	expect(navigation.goBack).toHaveBeenCalled();
+	expect(navigation.goBack).toHaveBeenCalledOnce();
 });
 
 it("has no refresh and never asks you to reconnect: it follows the queue live", () => {
