@@ -256,13 +256,13 @@ test("fresh end-follow survives streaming append during a backward row measureme
     expect(scene.capture()?.followingBottom).toBe(true);
     scene.geometry.rowHeights[0] = 6490;
     await act(async () => scene.appendRow(4132));
-    await act(async () => scene.frames.release());
     await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
     expect(scene.port().scrollTop).toBe(9957);
     expect(scene.capture()?.followingBottom).toBe(true);
     await act(async () => scene.appendRow(4132));
-    await act(async () => scene.frames.release());
     await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
     expect(scene.port().scrollTop).toBe(14089);
     expect(scene.capture()?.followingBottom).toBe(true);
   } finally {
@@ -385,6 +385,7 @@ test("Jump to live confirms its landing while viewport measurement is pending an
     expect(scene.port().scrollTop).toBe(2800);
     // The landing's scroll event arrives in the next frame's scroll steps.
     await act(async () => scene.frames.release());
+    expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
     expect(scene.flow().pillVisible).toBe(false);
     scene.geometry.rowHeights[2] = 1400;
     await act(async () => scene.external.notify());
