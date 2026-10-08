@@ -1023,11 +1023,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
-		// TryClaim has not run. It is an observability beat outside every lock
-		// (retirementObserve is nil in production) so a test can interleave a
-		// thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim has not run. It is an observability beat outside every
+		// lock (retirementObserve is nil in production) so a test can interleave
+		// a thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim widens that window: it first waits, up to the namer's
+		// timeout, for a session namer to settle (#3921). The ownership re-check
+		// after the claim covers the wider window the same way.
 		retirementObserve("claim_attempted", getSession().ID())
-		claim, snap, err := retirement.TryClaim(true)
+		claim, snap, err := retirement.TryManualClaim(ctx)
 		if err != nil {
 			return appwire.DaemonRetireResponse{}, err
 		}
