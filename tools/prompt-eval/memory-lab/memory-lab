@@ -43,8 +43,8 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
 
 Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
 checkout, stable across stages; a symlink to the real checkout under --work-root), xdg/ (XDG_STATE_HOME, so memory is isolated;
-also a symlink under --work-root),
-and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
+also a symlink under --work-root), sessions/ (each stage's evener state dir, where delegate worktrees
+live; a symlink under --work-root too), and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
 import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
@@ -396,24 +396,32 @@ def new_workdir(args, trial, name, fixture):
 
 
 def workdir(trial, name):
-    """The real path of the trial's workspace called name, through its symlink under --work-root."""
+    """The real path of trial/name (a workspace, or a stage's state dir), through the symlinks
+    --work-root makes."""
     return os.path.realpath(os.path.join(trial, name))
 
 
 def make_state_dir(args, trial, work):
-    """Creates trial/xdg, the trial's XDG_STATE_HOME. Under --work-root it is a symlink to
-    DIR/.state/<workspace name>, since memory tool results show its path to the agent. Under
-    --context-window it holds the trial's providers.toml."""
+    """Creates trial/xdg, the trial's XDG_STATE_HOME, and trial/sessions, the stages' evener
+    state dirs. Under --work-root both are symlinks into DIR/.state/<workspace name>, since
+    memory tool results show the state path to the agent and delegate worktrees live in the
+    session state dir. Under --context-window xdg holds the trial's providers.toml."""
     xdg = os.path.join(trial, "xdg")
     if not args.work_root:
         os.makedirs(xdg)
     else:
         real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
-        os.makedirs(real)
+        os.makedirs(os.path.join(real, "sessions"))
         os.symlink(real, xdg)
+        os.symlink(os.path.join(real, "sessions"), os.path.join(trial, "sessions"))
     if args.providers_path:
         with open(os.path.join(xdg, PROVIDERS_POINTER), "w") as f:
             f.write(args.providers_path + "\n")
+
+
+def stage_state_dir(trial, stage):
+    """The real path of a stage's evener state dir."""
+    return workdir(trial, os.path.join("sessions", stage))
 
 
 def make_workspace(fixture, work, xdg):
@@ -470,7 +478,7 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
             raise RuntimeError(f"before hook {how} in {trial}: {out[-500:]}")
     name = stage["name"]
     # "resume": "<stage>" continues that stage's root session instead of starting a fresh one.
-    state = os.path.join(trial, "sessions", stage.get("resume", name))
+    state = stage_state_dir(trial, stage.get("resume", name))
     cmd = evener_command(binpath, args.model, work, state, args.effort, stage["prompt"], max_rounds=args.max_rounds,
                          session_id=session_ids.get(stage.get("resume")), resume_last=bool(stage.get("resume")),
                          disable_memory=arm == "off")
@@ -1012,7 +1020,7 @@ def cmd_ask(args):
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
     # A grade file without "state" means the stage ran in sessions/<stage>.
-    state = g.get("state") or os.path.join(trial, "sessions", stage)
+    state = g.get("state") or stage_state_dir(trial, stage)
     # A grade file without "session_id" can only fall back to the state dir's most recent session.
     cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question,
                          session_id=g.get("session_id"), resume_last=not g.get("session_id"))
