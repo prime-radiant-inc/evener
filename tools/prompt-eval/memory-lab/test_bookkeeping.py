@@ -116,11 +116,20 @@ CASES = [
     (failed(call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}])), ("work", [])),
     (failed(call("task_list", update=[{"id": 2, "depends_on": []}])), ("work", [])),
     (failed(call("task_list", add=[{"type": "x"}])), ("work", [])),
-    # Any other write evener refused wrote nothing either.
+    # A malformed add or update is a mutation attempt, not a view.
+    (failed(call("task_list", update=[1])), ("work", [])),
+    (failed(call("task_list", update={})), ("work", [])),
+    (failed(call("task_list", add={})), ("work", [])),
+    (call("task_list", update=None, add=[]), ("read", ["tasks"])),
+    # Any other all-or-nothing write the tool refused wrote nothing either.
     (failed(call("edit_file", file_path=LEDGER)), ("work", [])),
-    (failed(patch(f"*** Update File: /w/{LEDGER}")), ("work", [])),
+    (failed(call("write_file", file_path=LEDGER)), ("work", [])),
     (failed(call("memory_write", scope="project", file_path="x.md")), ("work", [])),
+    (failed(call("memory_edit", scope="project", file_path="x.md")), ("work", [])),
     (failed(call("notes_agent_set", note="x")), ("work", [])),
+    # Shell and apply_patch can write before they fail, so a failed one is still judged by its arguments.
+    (failed(shell("printf x >> progress.md; false")), ("write", ["ledger"])),
+    (failed(patch(f"*** Update File: /w/{LEDGER}", "*** Update File: /w/missing.go")), ("write", ["ledger"])),
     # A refused read still cost a call: it counts as a read-back.
     (failed(call("memory_read", scope="project", file_path="MEMORY.md")), ("read", ["memory"])),
     # Memory and the whiteboard.
