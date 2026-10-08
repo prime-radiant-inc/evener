@@ -385,7 +385,13 @@ transfer while retaining the record of what already happened.
 watchdog rejects the durable enqueue with `MutationStorageTimeoutError` — a
 composer send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
 retried once and then dispatched directly as a plain RPC instead of failing
-closed, so sends keep working in a storage wedge. The fallback re-earns the
+closed, so sends keep working in a storage wedge. The same wedge also fails the
+ref's reconciliation (its outbox read), and that failure is classified apart
+from a genuine one: the ref is recorded as storage-blocked, and the send
+fallback admits it — including the reconcile still pending on the same wedge —
+while the durable dispatcher, a queued record's Retry press and the recovery
+banner stay fenced until discovery's retry reconciles once storage answers, so
+a storage-blocked ref shows no recovery banner. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered
 or in-flight durable send for the same ref, but it carries none of the durable
 row's guarantees. Three gaps remain. (1) Per-ref ordering: the guard reads this
@@ -404,16 +410,27 @@ lands and its reply is lost the composer reports a failure and keeps the draft,
 and the person's re-send is a new intent with a new id, so the daemon can apply
 the send twice.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2449)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2538);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2689)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2995)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3088);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3243)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
-the enqueue compares against. `threads.test.ts` pins the direct dispatch, the
-retry ladder, and the refusal to jump an undelivered or concurrent durable send;
-it does not pin the cross-tab, prior-session or human-retry cases above, which
-need the storage the wedge makes unreadable. The accepted behavior keeps the
-in-memory guard and accepts the three gaps (issue #3313).
+the enqueue compares against. The [reconcile
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3789)
+splits the storage-caused failure from a genuine one, and
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1147)
+fences a storage-blocked ref everywhere except the send fallback's own re-earn.
+`threads.test.ts` pins the direct dispatch, the retry ladder, the refusal to
+jump an undelivered or concurrent durable send, the storage-blocked
+classification, the wedged-reconcile journey (a send still delivers when the
+same wedge failed the reconcile), the still-pending variant, and the refusal a
+genuine reconcile failure keeps; `Session.test.tsx` pins the absent recovery
+banner. Issue #3969 observed the stranded-send shape on a phone browser: the
+reconcile failure fenced the fallback itself, so every send failed with the
+watchdog error until a page reload. The cross-tab, prior-session and
+human-retry cases above still need the storage the wedge makes unreadable; the
+accepted behavior keeps the in-memory guard and accepts the three gaps
+(issue #3313).
 
 **Deferred.** Keep the existing behavior: sends keep working in every storage
 wedge, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
