@@ -601,11 +601,8 @@ func (o *OutputStore) GrepLimit(re *regexp.Regexp, limitBytes int, maxMatches in
 // GrepLimitLineBytes is like GrepLimit, but skips individual lines longer than
 // maxLineBytes without allocating or regex-matching the whole line.
 func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) (matches []Match, err error) {
-	if limitBytes < 0 {
-		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
-	}
-	if limitBytes == 0 {
-		return nil, nil
+	if scan, err := grepLimitScans(limitBytes); !scan {
+		return nil, err
 	}
 
 	o.mu.Lock()
