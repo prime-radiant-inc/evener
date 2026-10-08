@@ -189,6 +189,9 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 				return nil, nil, fmt.Errorf("add entry %d depends_on must be an array of task IDs", i)
 			}
 			depIDs, err := decodeIDList(arr)
+			if errors.Is(err, errZeroTaskID) {
+				return nil, nil, fmt.Errorf("add entry %d depends_on: %w, and a new task has no dependencies to clear", i, err)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("add entry %d depends_on: %w", i, err)
 			}
@@ -223,19 +226,18 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if n, ok := m["notes"].(string); ok && !isPlaceholderNote(n) {
 			u.Notes = n
 		}
-		// Some models send an empty or null depends_on on every update as a
-		// placeholder, so neither changes anything; only [0] clears.
-		if depsRaw := m["depends_on"]; depsRaw != nil {
+		if depsRaw := m["depends_on"]; !tool.IsPlaceholderDependsOn(depsRaw) {
 			arr, ok := depsRaw.([]any)
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
 			}
-			switch {
-			case len(arr) == 0:
-			case len(arr) == 1 && arr[0] == float64(clearDependsOnID):
+			if len(arr) == 1 && arr[0] == float64(clearDependsOnID) {
 				u.DependsOn = &[]int{}
-			default:
+			} else {
 				depIDs, err := decodeIDList(arr)
+				if errors.Is(err, errZeroTaskID) {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w; [0] on its own clears the dependencies", i, err)
+				}
 				if err != nil {
 					return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
 				}
@@ -323,6 +325,10 @@ func validateTaskListArgs(args map[string]any) error {
 // dependencies. Task IDs start at 1, so it never names a real task.
 const clearDependsOnID = 0
 
+// errZeroTaskID rejects 0 inside an ID list; each caller says what [0] means
+// for its operation.
+var errZeroTaskID = errors.New("0 is not a task ID")
+
 // decodeIDList converts a JSON array of numbers into []int.
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
@@ -332,7 +338,7 @@ func decodeIDList(raw []any) ([]int, error) {
 			return nil, errors.New("each element must be an integer task ID")
 		}
 		if int(v) == clearDependsOnID {
-			return nil, errors.New("0 is not a task ID; depends_on: [0] on its own clears an update's dependencies")
+			return nil, errZeroTaskID
 		}
 		ids = append(ids, int(v))
 	}

@@ -112,8 +112,10 @@ func newDispatchKey(name string, args []byte) dispatchKey {
 // whitespace are canonicalized. A call that changes only those is the same
 // failing operation, while any change to a field the tool executes on (target
 // ref, mode, offset, regex, or a presence-sensitive default such as
-// offset_bytes=0 or depends_on: []) keeps its own fingerprint and bounded
-// history: values are never judged to be "defaults" by their content alone.
+// offset_bytes=0) keeps its own fingerprint and bounded history: values are
+// never judged to be "defaults" by their content alone. The one value folded
+// into its omitted form is task_list's placeholder depends_on, because that
+// field's own contract reads it as no change.
 //
 // Arguments that are not a single well-formed JSON value fall back to
 // exactSignature, preserving the original byte-exact behavior.
@@ -159,11 +161,28 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if v == nil {
 		return []byte("{}"), true
 	}
+	if name == "task_list" {
+		dropPlaceholderDependsOn(v)
+	}
 	encoded, err := json.Marshal(canonicalizeValue(v, true, name == "shell"))
 	if err != nil {
 		return nil, false
 	}
 	return encoded, true
+}
+
+// dropPlaceholderDependsOn removes each task_list update entry's depends_on
+// when its contract reads it as no change (IsPlaceholderDependsOn), so the
+// placeholder fingerprints as the omitted call. [0] clears and is kept.
+func dropPlaceholderDependsOn(args any) {
+	root, _ := args.(map[string]any)
+	updates, _ := root["update"].([]any)
+	for _, raw := range updates {
+		entry, _ := raw.(map[string]any)
+		if deps, has := entry["depends_on"]; has && IsPlaceholderDependsOn(deps) {
+			delete(entry, "depends_on")
+		}
+	}
 }
 
 // canonicalizeValue recursively prunes fields that no tool executes on from a
@@ -177,7 +196,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 // deliberately kept, because whether a value means "omitted" is a property of
 // the field's contract, not of the value: a present read_transcript
 // offset_bytes=0 selects the retained-page operation while omitting it selects
-// the default view, and a present task_list depends_on: [] clears a task's
+// the default view, and a present task_list depends_on: [0] clears a task's
 // dependencies while omitting it leaves them alone. Pruning by value folded
 // those meaningful calls into the omitted form and could park a call the model
 // legitimately changed. The cost of not pruning is only that a caller which

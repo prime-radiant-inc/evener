@@ -78,20 +78,29 @@ func TestTaskTool_UpdateZeroDependsOnClearsDependencies(t *testing.T) {
 
 func TestTaskTool_ZeroDependsOnMixedOrOnAddRejected(t *testing.T) {
 	t.Parallel()
-	cases := map[string]map[string]any{
-		"update mixed": {"update": []any{map[string]any{"id": 2, "depends_on": []any{0, 1}}}},
-		"add":          {"add": []any{map[string]any{"type": "implement", "description": "third", "prompt": "p3", "depends_on": []any{0}}}},
+	cases := map[string]struct {
+		args map[string]any
+		want string
+	}{
+		"update mixed": {
+			args: map[string]any{"update": []any{map[string]any{"id": 2, "depends_on": []any{0, 1}}}},
+			want: "[0] on its own clears",
+		},
+		"add": {
+			args: map[string]any{"add": []any{map[string]any{"type": "implement", "description": "third", "prompt": "p3", "depends_on": []any{0}}}},
+			want: "a new task has no dependencies to clear",
+		},
 	}
-	for name, args := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			h := newDependentTaskHarness(t)
-			res := h.call(t, args)
+			res := h.call(t, tc.args)
 			if !res.IsError {
 				t.Fatalf("want rejection, got: %s", res.FullOutput)
 			}
-			if !strings.Contains(res.FullOutput, "[0]") {
-				t.Fatalf("error should explain [0]: %s", res.FullOutput)
+			if !strings.Contains(res.FullOutput, tc.want) {
+				t.Fatalf("error should say %q: %s", tc.want, res.FullOutput)
 			}
 			if len(h.store.View()) != 2 || !slices.Equal(taskByID(t, h.store, 2).DependsOn, []int{1}) {
 				t.Fatalf("rejected call changed the list: %+v", h.store.View())
