@@ -237,9 +237,12 @@ export function VirtualList({
       }
     : {};
 
-  // A measured list keeps the reader's place across row measurements while it
-  // follows the end, and for a reader (onLayout) whatever anchorToEnd says:
-  // TranscriptBody turns anchorToEnd off while a retained placement pends.
+  // A measured list keeps the reader's place across row measurements (the
+  // size-change rule below, and completing the scroll writes it clamps) while
+  // it follows the end, and for a reader (onLayout) whatever anchorToEnd says:
+  // TranscriptBody turns anchorToEnd off while a retained placement is
+  // pending, and onLayout is what feeds the rule's movement record, which
+  // outlives the core's scroll direction (reset 150ms after the last scroll).
   const keepsPlaceOnMeasure = dynamic && (anchorToEnd || onLayout !== undefined);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count,
@@ -327,9 +330,6 @@ export function VirtualList({
   // Width changes can remeasure cached rows during a backward gesture.
   // Anchor rows fully above the viewport while retaining the upstream
   // protection against adjustment within a partially visible backward row.
-  // A reader keeps this rule while anchorToEnd is off: onLayout is what feeds
-  // its movement record, which outlives the core's scroll direction (reset
-  // 150ms after the last scroll event).
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = keepsPlaceOnMeasure
     ? (item, _delta, instance) => {
         // The intended offset includes earlier adjustments in this batch,

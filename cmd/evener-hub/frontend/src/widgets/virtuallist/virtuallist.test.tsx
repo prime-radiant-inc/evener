@@ -552,7 +552,7 @@ describe("anchorToEnd", () => {
   });
 
   // A reader keeps the completion while anchorToEnd is off, as TranscriptBody
-  // does while a retained placement is pending (#3882).
+  // does while a retained placement is pending.
   test.each([
     { name: "end-anchored list", anchorToEnd: true, reader: undefined },
     { name: "reader with anchorToEnd off", anchorToEnd: false, reader: { onLayout: () => {} } },
