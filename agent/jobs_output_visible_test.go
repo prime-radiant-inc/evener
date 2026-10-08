@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -70,6 +71,9 @@ func TestReadOutputRefusesASymlinkedOutputFile(t *testing.T) {
 	}
 	if content, _, _, err := jm.readOutputHead(jobID, 1024); err == nil {
 		t.Fatalf("readOutputHead through a symlink = %q, nil; want an error", content)
+	}
+	if matches, err := jm.grepOutput(jobID, regexp.MustCompile(`output`)); err == nil {
+		t.Fatalf("grepOutput through a symlink = %+v, nil; want an error", matches)
 	}
 }
 

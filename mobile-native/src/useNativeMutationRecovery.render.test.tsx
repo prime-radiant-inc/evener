@@ -17,13 +17,14 @@
 //   behavior still executes through the real runtime.
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { useEffect, useLayoutEffect, useState } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import {
 	NativeMutationRuntime,
 	type NativeMutationStorageListener,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
+import { render } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
@@ -299,10 +300,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 		);
 	}
 
-	let renderer!: ReactTestRenderer;
-	act(() => {
-		renderer = create(tree());
-	});
+	const renderer = render(tree());
 
 	// THE RENDER-PASS FENCE: no runtime construction, no target registration,
 	// no subscribe and no read during the render pass - and the mutations
@@ -402,13 +400,11 @@ it("classifies a deliberate render-time runtime call as render-pass, proving the
 		void runtime.read(key);
 		return null;
 	}
-	act(() => {
-		create(
-			<PhaseMarker>
-				<ViolatingProbe />
-			</PhaseMarker>,
-		);
-	});
+	render(
+		<PhaseMarker>
+			<ViolatingProbe />
+		</PhaseMarker>,
+	);
 	const renderReads = recordedCalls.filter((call) => call.method === "read" && call.phase === "render");
 	expect(renderReads).toHaveLength(1);
 	expect(renderReads[0].args).toEqual([key]);
@@ -438,13 +434,11 @@ it("classifies a forbidden runtime call during a state-triggered rerender as ren
 		if (tick === 1) void runtime.read(key);
 		return null;
 	}
-	act(() => {
-		create(
-			<PhaseMarker>
-				<ArmedViolatingChild />
-			</PhaseMarker>,
-		);
-	});
+	render(
+		<PhaseMarker>
+			<ArmedViolatingChild />
+		</PhaseMarker>,
+	);
 	await flush();
 	const renderReads = recordedCalls.filter((call) => call.method === "read" && call.phase === "render");
 	expect(renderReads).toHaveLength(1);

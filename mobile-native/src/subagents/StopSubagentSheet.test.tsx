@@ -404,15 +404,17 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
-	client.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: {
-			threadId: COORDINATOR.threadId,
-			sessionId: COORDINATOR.threadId,
-			ref: COORDINATOR.ref,
-			resources: ["summary", "delegates", "jobs"],
-		},
-	} as never);
+	act(() =>
+		client.emitNotification({
+			method: "evener/thread/activity/changed",
+			params: {
+				threadId: COORDINATOR.threadId,
+				sessionId: COORDINATOR.threadId,
+				ref: COORDINATOR.ref,
+				resources: ["summary", "delegates", "jobs"],
+			},
+		} as never),
+	);
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });
