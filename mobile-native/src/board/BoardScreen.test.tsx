@@ -27,7 +27,7 @@ import type {
 import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
-import { act, create } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
@@ -204,12 +204,8 @@ function setFocused(focused: boolean) {
 		for (const listener of harness.focusListeners) listener(focused);
 	});
 }
-// Every Board a test mounts, so one that fails before its own unmount
-// can't leave a Board behind that reads the next test's connection.
-const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
 	unmountMountedTrees();
-	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	vi.useRealTimers();
 	systemGlass.reset();
 });
@@ -592,7 +588,6 @@ async function settle() {
 }
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
-	mounted.push(tree);
 	await settle();
 	return tree;
 }
@@ -741,13 +736,9 @@ async function mountWithInstances(nav: Navigation) {
 	const scrollTo = vi.fn();
 	const focus = vi.fn();
 	const blur = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(screen(nav), {
-			createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
-		});
+	const tree = render(screen(nav), {
+		createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
 	});
-	mounted.push(tree);
 	await settle();
 	return { tree, scrollTo, focus, blur };
 }
@@ -5505,7 +5496,6 @@ it("opens the complete literal reference left by a real Reader after a memory re
 				navigation={nav as never}
 			/>,
 		);
-		mounted.push(reader);
 		const deadline = performance.now() + 3000;
 		while (
 			!reader.root
