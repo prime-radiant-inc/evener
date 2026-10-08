@@ -853,11 +853,7 @@ async function sourceMutationJourney() {
 // selected by its description, distinguishes identities with identical labels.
 async function completeOverlap(ref, kind) {
   const description = `Cascade overlap ${kind} fixture`;
-  const point = await wait(`(() => {
-    const button = [...document.querySelectorAll('[data-testid="composer-slash-menu"] button')].find(node => node.textContent.includes(${q(description)}));
-    if (!button) return null;
-    const r = button.getBoundingClientRect(); return { x:r.x + r.width / 2, y:r.y + r.height / 2 };
-  })()`, `real overlapping ${kind} catalog row`);
+  const point = await wait(driver.slashRowPointExpr(description), `real overlapping ${kind} catalog row`);
   await driver.clickAt(point.x, point.y);
   await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`, `selected overlapping ${kind} atom`);
 }
