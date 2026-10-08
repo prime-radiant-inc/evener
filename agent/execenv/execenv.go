@@ -27,8 +27,7 @@ type DirEntry struct {
 	IsSymlink bool   `json:"is_symlink,omitempty"`
 	IsExec    bool   `json:"is_exec,omitempty"`
 	Size      int64  `json:"size,omitempty"`
-	// ModTime is the file's modification time. It is not part of list_dir's
-	// output; the memory index orders unstamped pages by it.
+	// ModTime is the modification time; files only, zero when unknown.
 	ModTime time.Time `json:"-"`
 }
 

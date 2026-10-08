@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -56,9 +57,7 @@ func TestParseMemoryPage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := parseMemoryPage(tc.rel, []byte(tc.raw), mod)
-			if got.Path != tc.want.Path || got.Title != tc.want.Title || got.Description != tc.want.Description ||
-				got.HasDescription != tc.want.HasDescription || got.Unreadable != tc.want.Unreadable ||
-				!slices.Equal(got.Tags, tc.want.Tags) || got.Updated != tc.want.Updated || !got.ModTime.Equal(tc.want.ModTime) {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got  %+v\nwant %+v", got, tc.want)
 			}
 		})

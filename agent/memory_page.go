@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // memoryPage is one page of a memory scope, as its generated index line needs it.
@@ -42,27 +43,14 @@ func isMemoryPagePath(rel string) bool {
 	if rel == memoryIndexFile {
 		return false
 	}
-	for segment := range strings.SplitSeq(rel, "/") {
-		if strings.HasPrefix(segment, ".") {
-			return false
-		}
-	}
-	return true
+	return !execenv.IsDotPath(rel)
 }
 
 // splitMemoryFrontmatter splits text into its frontmatter block and body
 // exactly as frontmatter.Parse does, so a page whose YAML fails to parse
 // still has a body to fall back on.
 func splitMemoryFrontmatter(text string) (block, body string, ok bool) {
-	rest, found := strings.CutPrefix(text, "---\n")
-	if !found {
-		return "", text, false
-	}
-	block, body, ok = strings.Cut(rest, "---\n")
-	if !ok {
-		return "", text, false
-	}
-	return block, body, true
+	return frontmatter.Split(text)
 }
 
 // filenameMemoryPage is the entry for a file whose content says nothing: a
@@ -127,9 +115,7 @@ func memoryFallbackDescription(heading, body string) string {
 			}
 		}
 	}
-	if runes := []rune(text); len(runes) > memoryFallbackRunes {
-		text = string(runes[:memoryFallbackRunes])
-	}
+	text = tool.TruncateRunes(text, memoryFallbackRunes)
 	if text == "" {
 		return memoryNoDescription
 	}
@@ -194,6 +180,10 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 	for _, entry := range entries {
 		rel := filepath.ToSlash(entry.Name)
 		if entry.IsDir || entry.IsSymlink || !isMemoryPagePath(rel) {
+			continue
+		}
+		if path.Ext(rel) != ".md" {
+			pages = append(pages, filenameMemoryPage(rel, entry.ModTime))
 			continue
 		}
 		raw, err := env.ReadFileRaw(filepath.Join(root, entry.Name))

@@ -7,8 +7,7 @@ import (
 	"time"
 )
 
-// Both directory walks report each file's modification time, which the
-// memory index uses to order pages that carry no updated stamp.
+// Both directory walks report each file's modification time.
 func TestListDirectoryReportsModTime(t *testing.T) {
 	t.Parallel()
 	stamp := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
