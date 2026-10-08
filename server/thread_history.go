@@ -70,7 +70,7 @@ var errIncarnationRotated = errors.New("transcript index incarnation changed")
 var errOverrunByOverflow = errors.New("the projection queue overflowed during the rebuild")
 
 // errThreadHistoryClosed refuses a read that starts after its history began
-// closing: the thread is no longer served here, as when it is unknown.
+// closing: the thread is no longer served here.
 var errThreadHistoryClosed = appwire.SessionUnavailable("thread history is closed")
 
 // threadHistoryConfig is what one thread's history projection needs.
@@ -181,12 +181,12 @@ type threadHistory struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	// draining refuses new reads once close has begun, and reads counts the
-	// reads in flight, which close waits for: a read's index writes (an open
-	// building it, a catch-up) then land before close returns, never after
-	// (#4013). draining is guarded by mu.
-	draining bool
-	reads    sync.WaitGroup
+	// reads counts the reads in flight, which close waits for: a read's
+	// index writes (an open building it, a catch-up) then land before close
+	// returns, never after (#4013). A read is admitted under mu only while
+	// stop is open, and close closes stop under mu, so no read is added
+	// once close begins waiting.
+	reads sync.WaitGroup
 }
 
 // overlayGap names an entry by its ordinal and offset.
@@ -444,24 +444,23 @@ func (h *threadHistory) close() {
 	h.closeOnce.Do(func() {
 		h.mu.Lock()
 		h.closed = true
-		h.draining = true
-		h.mu.Unlock()
 		close(h.stop)
+		h.mu.Unlock()
 	})
 	<-h.done
 	h.reads.Wait()
 }
 
 // beginRead admits a read, refusing it once close has begun. The caller
-// calls the returned func when the read is done.
-func (h *threadHistory) beginRead() (func(), error) {
+// calls h.reads.Done when the read is done.
+func (h *threadHistory) beginRead() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.draining {
-		return nil, errThreadHistoryClosed
+	if h.stopping() {
+		return errThreadHistoryClosed
 	}
 	h.reads.Add(1)
-	return h.reads.Done, nil
+	return nil
 }
 
 // run projects each wake's recorded entries until close. A closing history

@@ -90,11 +90,10 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 // naming the entry, and pushes nothing. A read that starts once the history
 // began closing is refused with errThreadHistoryClosed.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
-	done, err := h.beginRead()
-	if err != nil {
+	if err := h.beginRead(); err != nil {
 		return err
 	}
-	defer done()
+	defer h.reads.Done()
 	if err := h.recoverForRead(); err != nil {
 		return err
 	}

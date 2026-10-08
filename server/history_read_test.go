@@ -219,7 +219,7 @@ func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
 			return nil
 		})
 	}()
-	<-inRead
+	awaitClosed(t, inRead, "the read to start")
 	closed := make(chan struct{})
 	go func() {
 		hx.history.close()
@@ -232,7 +232,7 @@ func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(release)
-	<-closed
+	awaitClosed(t, closed, "close")
 	if err := <-readDone; err != nil {
 		t.Fatalf("the read in flight: %v", err)
 	}
