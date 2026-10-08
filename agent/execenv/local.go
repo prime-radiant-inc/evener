@@ -1871,7 +1871,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 			if relPrefix != "" {
 				relName = filepath.Join(relPrefix, name)
 			}
-			de := DirEntry{Name: relName, IsDir: ent.IsDir(), IsRegular: ent.Type().IsRegular()}
+			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
 			if ent.Type()&os.ModeSymlink != 0 {
 				de.IsSymlink = true
 			}
@@ -1879,6 +1879,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 				if info, err := ent.Info(); err == nil {
 					de.Size = info.Size()
 					de.ModTime = info.ModTime()
+					de.IsRegular = info.Mode().IsRegular()
 					if info.Mode()&0o111 != 0 {
 						de.IsExec = true
 					}

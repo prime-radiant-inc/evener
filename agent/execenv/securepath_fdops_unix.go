@@ -41,8 +41,33 @@ func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, er
 	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return 0, 0, time.Time{}, err
 	}
-	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each).
-	return st.Size, os.FileMode(st.Mode & 0o777), time.Unix(st.Mtim.Unix()), nil
+	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each);
+	// Mtim.Unix() returns (sec, nsec), which is time.Unix's argument pair.
+	return st.Size, statFileMode(uint32(st.Mode)), time.Unix(st.Mtim.Unix()), nil
+}
+
+// statFileMode converts a stat st_mode to an os.FileMode carrying the permission
+// bits and the file type, so FileMode.IsRegular is true only for a regular file.
+func statFileMode(raw uint32) os.FileMode {
+	mode := os.FileMode(raw & 0o777)
+	switch raw & unix.S_IFMT {
+	case unix.S_IFREG:
+	case unix.S_IFDIR:
+		mode |= os.ModeDir
+	case unix.S_IFLNK:
+		mode |= os.ModeSymlink
+	case unix.S_IFIFO:
+		mode |= os.ModeNamedPipe
+	case unix.S_IFSOCK:
+		mode |= os.ModeSocket
+	case unix.S_IFCHR:
+		mode |= os.ModeDevice | os.ModeCharDevice
+	case unix.S_IFBLK:
+		mode |= os.ModeDevice
+	default:
+		mode |= os.ModeIrregular
+	}
+	return mode
 }
 
 // close releases every cached root fd. Safe to call more than once.
@@ -600,7 +625,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 		if relPrefix != "" {
 			relName = filepath.Join(relPrefix, name)
 		}
-		de := DirEntry{Name: relName, IsDir: ent.IsDir(), IsRegular: ent.Type().IsRegular()}
+		de := DirEntry{Name: relName, IsDir: ent.IsDir()}
 		if ent.Type()&os.ModeSymlink != 0 {
 			de.IsSymlink = true
 		}
@@ -608,6 +633,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
 				de.Size = size
 				de.ModTime = modTime
+				de.IsRegular = mode.IsRegular()
 				if mode&0o111 != 0 {
 					de.IsExec = true
 				}
