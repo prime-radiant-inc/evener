@@ -105,16 +105,33 @@ CASES = [
     (call("task_list", add=[{"type": "implement", "description": "x", "prompt": "y"}]), ("write", ["tasks"])),
     (call("task_list"), ("read", ["tasks"])),
     (call("task_list", update=[]), ("read", ["tasks"])),
-    # Placeholder values change nothing (agent/session_tools_task.go decodeTaskArgs): depends_on [] or null,
-    # reasoning_effort "inherit" or "", notes "" or "null" (trimmed, any case), status "".
+    # Placeholders, as #4021's normalizeTaskListArgs and decodeTaskArgs read them: depends_on [] or null and
+    # notes "" or "null" (trimmed, any case) are dropped; status "" and reasoning_effort "" or "inherit" change
+    # nothing. A call evener refuses writes nothing.
     (call("task_list", update=[{"id": 1, "status": "in_progress", "notes": "null", "depends_on": [],
                                 "reasoning_effort": "inherit"}]), ("write", ["tasks"])),
     (call("task_list", update=[{"id": 1, "notes": " NULL ", "depends_on": None, "reasoning_effort": " Inherit "}]),
      ("work", [])),
     (call("task_list", update=[{"id": 2, "depends_on": []}]), ("work", [])),
     (call("task_list", update=[{"id": 1, "status": "", "notes": "", "reasoning_effort": ""}]), ("work", [])),
-    # evener refuses the whole call when any update entry changes nothing, so nothing in it is written.
-    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1}]), ("work", [])),
+    # A placeholder-only entry beside other work is skipped, and the rest of the call applies.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "depends_on": []}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "notes": "seen"}, {"id": 2, "notes": "null", "depends_on": None}]),
+     ("write", ["task-notes"])),
+    (call("task_list", add=[{"type": "fix", "description": "x", "prompt": "y"}], update=[{"id": 2, "depends_on": []}]),
+     ("write", ["tasks"])),
+    # Every update placeholder-only and no add: refused.
+    (call("task_list", update=[{"id": 1, "depends_on": []}, {"id": 2, "notes": "", "depends_on": None}]), ("work", [])),
+    (call("task_list", add=[], update=[{"id": 2, "depends_on": []}]), ("work", [])),
+    # Only an entry with a valid id (a positive integer up to 2^53) is skipped; any other stays, and the call fails.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 0, "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2 ** 53 + 1, "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 1.5, "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": "2", "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1.0, "status": "done"}, {"id": 2 ** 53, "depends_on": []}]), ("write", ["tasks"])),
+    # An entry that keeps a field which changes nothing (status "", reasoning_effort "inherit") is not skipped.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "reasoning_effort": "inherit"}]), ("work", [])),
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),

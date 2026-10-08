@@ -294,23 +294,59 @@ def classify(call):
     if tool == "task_list":
         # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
         # carrying notes records progress detail, which a skill's ledger already holds.
-        updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
-        if not (a.get("add") or updates):
-            return "read", ["tasks"]
-        changes = [task_update_changes(u) for u in updates]
-        if not all(changes):
-            return "work", []  # evener refuses a call with an update entry that changes nothing
-        surfaces = []
-        if a.get("add") or any("tasks" in c for c in changes):
-            surfaces.append("tasks")
-        if any("task-notes" in c for c in changes):
-            surfaces.append("task-notes")
-        return "write", surfaces
+        changes = task_list_changes(a)
+        if changes is None:
+            return "work", []  # evener refuses the call, so nothing in it is written
+        return ("write", sorted(changes, key=["tasks", "task-notes"].index)) if changes else ("read", ["tasks"])
     if tool in READ_LABELS:
         return "read", [READ_LABELS[tool]]
     if tool == "read_file" and (surfaces := read_surfaces([path])):
         return "read", surfaces
     return "work", []
+
+
+# The largest task id evener accepts: 2^53, the largest integer a float64 holds exactly.
+MAX_TASK_ID = 2 ** 53
+
+
+def task_id(value):
+    """Whether value is a task id evener accepts (taskIDValue): an integer from 1 to MAX_TASK_ID."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value == int(value) and 1 <= value <= MAX_TASK_ID
+
+
+def task_list_changes(a):
+    """The surfaces a task_list call writes, as evener applies it (normalizeTaskListArgs, then
+    decodeTaskArgs, agent/session_tools_task.go); an empty set for a view; None when evener refuses it.
+    Placeholder depends_on (null, []) and notes ("", "null") are dropped from each update entry. An entry
+    left with only a valid id is skipped when the call has other work (another entry or a non-empty add);
+    with no other work, the call is refused. Every remaining entry must change something."""
+    raw_updates, add = a.get("update"), a.get("add")
+    if raw_updates is not None and not isinstance(raw_updates, list):
+        return None
+    has_add = "add" in a and not (isinstance(add, list) and not add)
+    if not raw_updates and not has_add:
+        return set()
+    kept = []
+    for entry in raw_updates or []:
+        if not isinstance(entry, dict):
+            return None
+        cleaned = {k: v for k, v in entry.items()
+                   if not (k == "depends_on" and v in (None, [])) and
+                   not (k == "notes" and isinstance(v, str) and v.strip().lower() in ("", "null"))}
+        if task_id(cleaned.get("id")) and len(cleaned) == 1 and len(entry) > 1:
+            continue
+        kept.append(cleaned)
+    if not (kept or has_add):
+        return None
+    changes = {"tasks"} if has_add else set()
+    for entry in kept:
+        entry_changes = task_update_changes(entry)
+        if not (task_id(entry.get("id")) and entry_changes):
+            return None
+        changes |= entry_changes
+    return changes
 
 
 def task_update_changes(update):
