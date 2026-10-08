@@ -1,10 +1,10 @@
-import { activityChanged, installActivityFixture } from "./sessionActivityTestUtils";
+import { installActivityFixture } from "./sessionActivityTestUtils";
 // Ask coordinator to stop it (spec 9, ruling 10): a prefilled message to the
 // coordinator, sent with the one Send that steers. The durable runtime is the
 // real one, on the in-memory SQLite double; the tests assert on the wire.
 import type { ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
@@ -398,7 +398,7 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
-	act(() => client.emitNotification(activityChanged(COORDINATOR)));
+	act(() => client.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });

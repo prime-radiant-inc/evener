@@ -1,8 +1,10 @@
 import type { SessionActivityStore } from "./sessionActivityStore";
 import { FakeClient } from "./testing/fakeClient";
+import { activityChangedNotification } from "./testing/notifications";
 import type {
   JobActivityJob,
   SessionActivityContext,
+  SessionActivityResource,
   SessionActivityScope,
   SessionActivitySummary,
   SessionDelegate,
@@ -120,14 +122,11 @@ export function activityClient(state: "ready" | "connecting" = "ready"): FakeCli
 }
 export function activityChanged(
   client: FakeClient,
-  resources: ("summary" | "delegates" | "jobs" | "watches")[],
+  resources: SessionActivityResource[],
   sessionId = "session",
   ref = activityRef,
 ): void {
-  client.emitNotification({
-    method: "evener/thread/activity/changed",
-    params: { threadId: "session", ref, sessionId, resources },
-  });
+  client.emitNotification(activityChangedNotification({ ref, threadId: "session", sessionId }, resources));
 }
 export async function activityState(store: SessionActivityStore, ready: () => boolean): Promise<void> {
   if (ready()) return;
