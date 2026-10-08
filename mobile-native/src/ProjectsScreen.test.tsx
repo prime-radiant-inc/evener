@@ -345,12 +345,16 @@ it("reads the archived list again once a dropped connection recovers", async () 
 	await act(async () => {});
 	expect(reads()).toBe(1);
 
-	hub.emitStateChange("reconnecting");
 	harness.connection = screenConnection(hub, "reconnecting");
-	await act(async () => tree.update(screen()));
-	hub.emitReady();
+	await act(async () => {
+		hub.emitStateChange("reconnecting");
+		tree.update(screen());
+	});
 	harness.connection = screenConnection(hub, "ready");
-	await act(async () => tree.update(screen()));
+	await act(async () => {
+		hub.emitReady();
+		tree.update(screen());
+	});
 	await act(async () => {});
 	expect(reads()).toBe(2);
 	expect(renderedText(tree)).toContain("Alpha");
