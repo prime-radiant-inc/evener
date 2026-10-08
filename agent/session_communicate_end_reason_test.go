@@ -28,8 +28,9 @@ func communicateEndReasonProperty(t *testing.T, defs []llm.ToolDefinition) map[s
 	return nil
 }
 
-// A root session's communicate offers end_reason; a delegate's keeps the
-// tool unchanged, since a delegate's resting state never asks for a person.
+// A root session someone can answer offers end_reason on communicate; a
+// delegate and a root nobody can answer keep the tool unchanged, as ask_user
+// is hidden from them.
 func TestCommunicateEndReasonIsOfferedOnlyToRootSessions(t *testing.T) {
 	t.Parallel()
 	root := newAskTestSession(t, SessionConfig{})
@@ -47,6 +48,10 @@ func TestCommunicateEndReasonIsOfferedOnlyToRootSessions(t *testing.T) {
 	delegate := newAskTestSession(t, cfg)
 	if prop := communicateEndReasonProperty(t, delegate.ToolDefinitions()); prop != nil {
 		t.Fatalf("a delegate's communicate offers end_reason: %#v", prop)
+	}
+	headless := newAskTestSession(t, SessionConfig{NonInteractive: true})
+	if prop := communicateEndReasonProperty(t, headless.ToolDefinitions()); prop != nil {
+		t.Fatalf("a root nobody can answer offers end_reason: %#v", prop)
 	}
 	if prop := communicateEndReasonProperty(t, root.profile.ToolDefinitions()); prop != nil {
 		t.Fatal("offering end_reason to a root changed the profile's communicate definition")

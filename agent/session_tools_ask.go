@@ -53,10 +53,10 @@ func (s *Session) isSubagentSession() bool {
 	return s.cfg.spawn.parentSessionID != "" || s.restoredMetaIsSubagent
 }
 
-// offersCommunicateEndReason reports whether this session's communicate takes
-// end_reason: root sessions only, by the same predicate as ask_user.
-func (s *Session) offersCommunicateEndReason() bool {
-	return !s.isSubagentSession()
+// hasHumanPartnerToAsk reports whether someone can answer this session: an
+// interactive root. It gates ask_user and communicate's end_reason alike.
+func (s *Session) hasHumanPartnerToAsk() bool {
+	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
 }
 
 // askPendingCount returns the number of questions currently pending this turn
