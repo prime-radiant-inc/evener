@@ -72,6 +72,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 		{name: "root keeps the turn going", root: true, args: map[string]any{"end_turn": false, "end_reason": "needs_response"}, want: ""},
 		{name: "root states an unknown reason", root: true, args: map[string]any{"end_turn": true, "end_reason": "later"}, wantErr: true},
 		{name: "delegate ends its turn", root: false, args: map[string]any{"end_turn": true}, want: ""},
+		{name: "delegate states a reason", root: false, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -124,5 +125,17 @@ func TestCommunicateRecordsItsEndReason(t *testing.T) {
 	}
 	if got := communicates[0].Communicate.EndReason; got != "needs_response" {
 		t.Fatalf("recorded end reason = %q, want needs_response", got)
+	}
+}
+
+// Each widened definition owns its enum: changing one never reaches the
+// shared list of reasons.
+func TestCommunicateEndReasonEnumIsACopy(t *testing.T) {
+	t.Parallel()
+	def := tool.WithCommunicateEndReason(tool.DefCommunicate())
+	enum := def.Parameters["properties"].(map[string]any)["end_reason"].(map[string]any)["enum"].([]string)
+	enum[0] = "changed"
+	if tool.CommunicateEndReasons[0] != tool.CommunicateEndReasonDone {
+		t.Fatalf("shared reasons = %v, want them unchanged", tool.CommunicateEndReasons)
 	}
 }
