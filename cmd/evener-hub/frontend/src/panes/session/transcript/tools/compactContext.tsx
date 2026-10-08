@@ -16,10 +16,12 @@
 
 import type { ItemModel } from "@evener/appwire-client";
 import { clip, parseArgs, str, toolStepSummary } from "@evener/appwire-client";
+import type { ReactNode } from "react";
 import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
+import { WriteFileBody } from "./bodies";
 import styles from "./compactcontext.module.css";
 
 const CLASS = {
@@ -57,12 +59,13 @@ interface CompactContextParts {
   output: string | undefined;
 }
 
-function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "output">): CompactContextParts {
+function computeParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "output">): CompactContextParts {
   const args = parseArgs(item.argumentsJSON);
   const note = str(args, "note_to_self");
   const instructions = str(args, "compaction_instructions");
   const skills = reloadSkillsOf(args);
   const intent = str(args, "intent");
+  const trimmedIntent = intent?.trim();
 
   // The row renders the stated intent by the row's own rule (ToolRow's
   // statedIntentOf: a blank description means no stated intent). The body
@@ -70,7 +73,7 @@ function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "descriptio
   // it: an argument that differs from the stated intent, or a row with no
   // stated intent at all. Never duplicated, never dropped.
   const intentText =
-    intent !== undefined && intent.trim() !== "" && intent.trim() !== statedIntentOf(item) ? intent : undefined;
+    trimmedIntent !== undefined && trimmedIntent !== "" && trimmedIntent !== statedIntentOf(item) ? intent : undefined;
 
   // Everything the pretty blocks did not consume: keys outside the tool's
   // schema, and known keys whose values came in the wrong type (a
@@ -99,48 +102,75 @@ function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "descriptio
   // pins any non-empty string), so it renders like any other.
   return {
     intentText,
-    noteText: note !== undefined && note !== "" ? note : undefined,
-    instructionsText: instructions !== undefined && instructions !== "" ? instructions : undefined,
+    noteText: note || undefined,
+    instructionsText: instructions || undefined,
     skills,
     leftovers,
-    output: item.output !== undefined && item.output !== "" ? item.output : undefined,
+    output: item.output || undefined,
   };
 }
 
-function CompactContextBody({ item }: ToolRenderProps) {
-  const { intentText, noteText, instructionsText, skills, leftovers, output } = compactContextParts(item);
+// Items are immutable and a streaming delta builds a new item object, so a
+// weakly-keyed memo makes hasBody - which the row calls on every render,
+// collapsed or not - and the expanded body share one computation instead of
+// re-parsing a multi-KB argumentsJSON each time. Entries die with their
+// items.
+const partsMemo = new WeakMap<object, CompactContextParts>();
+
+function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "output">): CompactContextParts {
+  const cached = partsMemo.get(item);
+  if (cached !== undefined) return cached;
+  const parts = computeParts(item);
+  partsMemo.set(item, parts);
+  return parts;
+}
+
+// One labeled block per request field: the label idiom (meta-table style:
+// sentence-case caption-size sans) is shared, so the blocks cannot drift
+// apart in structure.
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className={CLASS.field}>
+      <div className={CLASS.label}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function CompactContextBody({ item, live }: ToolRenderProps) {
+  const { intentText, noteText, instructionsText, skills, leftovers } = compactContextParts(item);
   return (
     <div>
       {noteText !== undefined && (
-        <div className={CLASS.field}>
-          <div className={CLASS.label}>Note to self</div>
+        <Field label="Note to self">
           <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
-        </div>
+        </Field>
       )}
       {instructionsText !== undefined && (
-        <div className={CLASS.field}>
-          <div className={CLASS.label}>Compaction instructions</div>
+        <Field label="Compaction instructions">
           <Markdown source={clip(instructionsText, COMPACT_TEXT_MAX_CHARS)} />
-        </div>
+        </Field>
       )}
       {skills !== undefined && (
-        <div className={CLASS.field}>
-          <div className={CLASS.label}>Skills to reload</div>
+        <Field label="Skills to reload">
           <div className={CLASS.skills}>{skills.length > 0 ? skills.join(", ") : "None."}</div>
-        </div>
+        </Field>
       )}
       {intentText !== undefined && (
-        <div className={CLASS.field}>
-          <div className={CLASS.label}>Intent</div>
+        <Field label="Intent">
           <Markdown source={clip(intentText, COMPACT_TEXT_MAX_CHARS)} />
-        </div>
+        </Field>
       )}
       {Object.keys(leftovers).length > 0 && (
         <section aria-label="Additional arguments">
           <CodeBlock text={JSON.stringify(leftovers, null, 2)} copyLabel="Copy arguments" fold={false} />
         </section>
       )}
-      {output !== undefined && <div>{output}</div>}
+      {/* The tool's own prediction sentence, as plain text: the shared
+          confirmation-body shape write_file and memory_delete use
+          (bodies.tsx's WriteFileBody), which renders nothing for an empty
+          output. */}
+      <WriteFileBody item={item} live={live} />
     </div>
   );
 }
@@ -150,7 +180,7 @@ registerToolRenderer({
   icon: "fold",
   // The shared housekeeping words (housekeepingSteps.ts) - exactly what the
   // raw default produced, so web, native and run lines never drift.
-  summary: (item, ctx) => toolStepSummary(item, ctx),
+  summary: toolStepSummary,
   body: CompactContextBody,
   // A row whose body would render nothing offers no disclosure that opens
   // to nothing: the live note-clearing call (no fields, no leftovers, no
@@ -159,13 +189,13 @@ registerToolRenderer({
   // (ToolCallItem).
   hasBody(item) {
     const { intentText, noteText, instructionsText, skills, leftovers, output } = compactContextParts(item);
-    return Boolean(
+    return (
       intentText !== undefined ||
-        noteText !== undefined ||
-        instructionsText !== undefined ||
-        skills !== undefined ||
-        Object.keys(leftovers).length > 0 ||
-        output !== undefined,
+      noteText !== undefined ||
+      instructionsText !== undefined ||
+      skills !== undefined ||
+      Object.keys(leftovers).length > 0 ||
+      output !== undefined
     );
   },
 });
