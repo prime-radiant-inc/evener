@@ -50,10 +50,14 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 			// second client's would: a connection serves its requests in
 			// order, so one sharing the retire's would only queue behind it.
 			other := stack.dialRPC(ctx, t)
+			// Well inside the namer's 15s hold, so an action that waited
+			// behind the retire fails rather than racing its answer.
+			actionCtx, cancelAction := context.WithTimeout(ctx, 8*time.Second)
+			defer cancelAction()
 
 			switch overlap {
 			case "force stop":
-				if _, err := clientRequest[appwire.EmptyResponse](ctx, other, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}); err != nil {
+				if _, err := clientRequest[appwire.EmptyResponse](actionCtx, other, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}); err != nil {
 					t.Fatalf("force stop during the retire: %v", err)
 				}
 				releaseNamer()
@@ -62,7 +66,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 					t.Fatalf("retire overlapped by a force stop = accepted=%t, want its forward cancelled", got.resp.Accepted)
 				}
 			case "delete":
-				deleted, err := clientRequest[appwire.SessionDeleteResponse](ctx, other, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
+				deleted, err := clientRequest[appwire.SessionDeleteResponse](actionCtx, other, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
 				if err != nil {
 					t.Fatalf("delete during the retire: %v", err)
 				}
@@ -75,7 +79,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 					t.Fatalf("retire after a skipped delete = accepted=%t %v, want accepted once the namer settled", got.resp.Accepted, got.err)
 				}
 			case "resume":
-				if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
+				if _, err := clientRequest[appwire.ThreadResumeResponse](actionCtx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 					t.Fatalf("resume during the retire: %v", err)
 				}
 				assertRetireStillPending(t, retired)
@@ -134,7 +138,9 @@ func assertRetireStillPending(t *testing.T, retired <-chan overlappedRetire) {
 // served: a connection serves a thread/read after an earlier request, so a
 // short thread/read on the same connection times out behind the retire. The
 // probe repeats until one does, since the first can reach the hub before the
-// retire; it fails if the retire answers first.
+// retire; it fails if the retire answers first. It relies on retire being
+// served on the connection's serial lane: when #4080 moves it off, this needs
+// another signal that the retire is in flight.
 func awaitRetireInProgress(ctx context.Context, t *testing.T, client *appwire.Client, ref string, retired <-chan overlappedRetire) {
 	t.Helper()
 	for range 30 {

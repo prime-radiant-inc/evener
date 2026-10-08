@@ -224,9 +224,9 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 // the daemon's own exact-identity check before and after its claim keeps a
 // stale request from retiring a replacement, a force stop cancels the
 // forwarded request and ends the daemon, and a deletion skips the
-// still-live session, so the retire's answer stands. The daemon's answer passes through verbatim: a fresh
-// blocker refusal or Accepted with the current lifecycle; acceptance is
-// never reported as exit.
+// still-live session, so the retire's answer stands. The daemon's answer
+// passes through verbatim: a fresh blocker refusal or Accepted with the
+// current lifecycle; acceptance is never reported as exit.
 func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
 	ref, err := appwire.ParseRef(params.Identity.Ref)
 	if err != nil || ref.SourceID != "local" {
