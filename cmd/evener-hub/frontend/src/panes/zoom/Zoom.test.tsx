@@ -3,7 +3,7 @@ import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -437,6 +437,79 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
   expect(columnRefs()).toEqual(["root"]);
   expect(rootView.readable).toBe(true);
   expect(screen.queryByTestId("cascade-spine")).toBeNull();
+});
+
+// The drill reveals the leaf by scrolling the column track to its end. The
+// pane can narrow right after (on narrow desktop, a sidebar taking its width
+// mid-drill), which leaves the leaf past the track's right edge unless the
+// track keeps to its end (#4022).
+function trackGeometry() {
+  const resized: ResizeObserverCallback[] = [];
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resized.push(callback);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const geometry = { scrollWidth: 1172, clientWidth: 372 };
+  return {
+    geometry,
+    attach(track: HTMLElement) {
+      Object.defineProperty(track, "scrollWidth", { configurable: true, get: () => geometry.scrollWidth });
+      Object.defineProperty(track, "clientWidth", { configurable: true, get: () => geometry.clientWidth });
+    },
+    resize(clientWidth: number) {
+      geometry.clientWidth = clientWidth;
+      act(() => {
+        for (const callback of resized) callback([], {} as ResizeObserver);
+      });
+    },
+  };
+}
+
+test.each([
+  { name: "the drilled leaf stays revealed when the track narrows", scrollAway: false, want: 1172 - 152 },
+  { name: "a reader who scrolled back keeps their place when the track narrows", scrollAway: true, want: 100 },
+  {
+    name: "the reveal's own scroll event, after a column briefly widened the track, keeps the leaf followed",
+    scrollAway: false,
+    widenFirst: true,
+    want: 1182 - 152,
+  },
+])("$name", async ({ scrollAway, widenFirst, want }) => {
+  const track = trackGeometry();
+  try {
+    const { fake } = fixture();
+    mount(fake);
+    await screen.findByText("child content child-id");
+    const element = screen.getAllByTestId("cascade-column")[0]?.parentElement;
+    if (!element) throw new Error("Missing cascade track");
+    track.attach(element);
+    act(() =>
+      enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+    );
+    await screen.findByText("grandchild content grandchild-id");
+    expect(element.scrollLeft).toBe(1172 - 372);
+    if (scrollAway) {
+      element.scrollLeft = 100;
+      fireEvent.scroll(element);
+    }
+    if (widenFirst) {
+      track.geometry.scrollWidth = 1182;
+      fireEvent.scroll(element);
+    }
+
+    track.resize(152);
+
+    expect(element.scrollLeft).toBe(want);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 test.each([
