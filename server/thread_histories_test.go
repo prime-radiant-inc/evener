@@ -400,7 +400,13 @@ func closeRegistryWithADetachedReadParked(t *testing.T) *registryClosingOverAPar
 		})
 	}()
 	awaitClosed(t, inRead, "the read to hold the index")
-	go closeHistories([]*threadHistory{r.detach("delegate_d")})
+	// Detached before the registry's close starts, as a replace or release
+	// that finished detaching would have; closed on its own goroutine.
+	detached := r.detach("delegate_d")
+	if detached == nil {
+		t.Fatal("the history was not registered to detach")
+	}
+	go closeHistories([]*threadHistory{detached})
 	go func() {
 		r.close()
 		close(c.registryClosed)
