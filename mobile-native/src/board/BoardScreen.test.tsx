@@ -3,6 +3,9 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { DocumentMemory } from "../reader/documentMemory";
+// Imported at file scope, so the Reader's graph is transformed at collection
+// time, outside the timeout of the test that opens a real Reader.
+import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
 // reads go through the real BoardController to a fake hub that answers by
@@ -5440,7 +5443,6 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 // The Board's Continue reading row (spec 7.1, ruling 20).
 it("opens the complete literal reference left by a real Reader after a memory restart", async () => {
 	vi.useRealTimers();
-	const { ReaderScreen } = await import("../reader/ReaderScreen");
 	const id = hubId();
 	const disk = {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,
