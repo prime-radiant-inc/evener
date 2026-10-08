@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -19,7 +20,7 @@ func heldDeliveryFixture(t *testing.T) (*delegateTreeController, string, delegat
 	c.holdDeliveryClaim(held)
 	secondLease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
 	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
-	if len(plans.deliveries) != 1 || plans.deliveries[0].held == nil || plans.deliveries[0].held.DeliveryID != held.deliveryID {
+	if len(plans.deliveries) != 1 || len(plans.deliveries[0].held) != 1 || plans.deliveries[0].held[0].DeliveryID != held.deliveryID {
 		t.Fatalf("second generation's plans = %#v, want one carrying the held first", plans.deliveries)
 	}
 	return c, path, held, plans.deliveries[0], waiter
@@ -100,13 +101,13 @@ func TestHeldDeliveryReturnsToItsPlanWhenTheReplyIsAbandoned(t *testing.T) {
 		t.Fatalf("carrier: %v", err)
 	}
 	resolution := waitedResolution(t, waiter)
-	if resolution.earlier == nil || resolution.commit == nil {
+	if len(resolution.earlier) != 1 || resolution.commit == nil {
 		t.Fatalf("resolution = %#v, want the held result and the reply's own", resolution)
 	}
 	if _, admitted, _ := c.BeginDelivery(held); admitted {
 		t.Fatal("the held plan was admitted while the reply carried its result")
 	}
-	for _, commit := range []*delegateToolResultCommit{resolution.earlier.commit, resolution.commit} {
+	for _, commit := range []*delegateToolResultCommit{resolution.earlier[0].commit, resolution.commit} {
 		if _, err := commit.Complete(false); err != nil {
 			t.Fatalf("abandon: %v", err)
 		}
@@ -128,7 +129,7 @@ func TestHeldDeliveryAckFailureRetriesBothInline(t *testing.T) {
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	plans, err := completeDelegateDeliveryCommits([]*delegateToolResultCommit{resolution.earlier.commit, resolution.commit})
+	plans, err := completeDelegateDeliveryCommits([]*delegateToolResultCommit{resolution.earlier[0].commit, resolution.commit})
 	if err == nil || len(plans) != 0 {
 		t.Fatalf("acknowledging after store close: plans=%#v err=%v, want a failure and no plans", plans, err)
 	}
@@ -204,7 +205,7 @@ func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
 	c.holdDeliveryClaim(held)
 	secondLease, waiter := start(true)
 	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
-	if len(plans.deliveries) != 1 || plans.deliveries[0].held == nil {
+	if len(plans.deliveries) != 1 || len(plans.deliveries[0].held) != 1 {
 		t.Fatalf("second generation's plans = %#v, want one carrying the held first", plans.deliveries)
 	}
 	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
@@ -215,7 +216,7 @@ func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
-	for _, commit := range []*delegateToolResultCommit{resolution.earlier.commit, resolution.commit} {
+	for _, commit := range []*delegateToolResultCommit{resolution.earlier[0].commit, resolution.commit} {
 		if _, err := commit.Complete(false); err != nil {
 			t.Fatalf("abandon: %v", err)
 		}
@@ -249,5 +250,100 @@ func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
 	c.mu.Unlock()
 	if targetClaims != 0 || work {
 		t.Fatalf("after the stop: %d target claims left, owner delivery work=%t, want none", targetClaims, work)
+	}
+}
+
+// twoHeldDeliveriesFixture finishes a delegate's first generation and has its
+// receiver hold that result, then finishes a second generation, which queues
+// unplanned behind the held head, then a third with an inline waiter: the
+// third's plan carries both earlier results, oldest first (#3951).
+func twoHeldDeliveriesFixture(t *testing.T) (*delegateTreeController, delegateDeliveryPlan, delegateDeliveryPlan, *delegateInlineWaiter) {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 3, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	firstLease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
+	held := finishDelegateDeliveryGeneration(t, c, firstLease, "first").deliveries[0]
+	c.holdDeliveryClaim(held)
+	secondLease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
+	if plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second"); len(plans.deliveries) != 0 {
+		t.Fatalf("second generation's plans = %#v, want none behind the held head", plans.deliveries)
+	}
+	thirdLease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	plans := finishDelegateDeliveryGeneration(t, c, thirdLease, "third")
+	if len(plans.deliveries) != 1 {
+		t.Fatalf("third generation's plans = %#v, want one carrying both earlier results", plans.deliveries)
+	}
+	carrying := plans.deliveries[0]
+	pending := pendingDeliveryIDs(c, "dlg_target")
+	if len(carrying.held) != 2 || carrying.held[0].DeliveryID != pending[0] || carrying.held[1].DeliveryID != pending[1] || carrying.deliveryID != pending[2] {
+		t.Fatalf("carrying plan holds %#v for %q, want %v in order", carrying.held, carrying.deliveryID, pending)
+	}
+	return c, held, carrying, waiter
+}
+
+// A wait whose result queues behind a held result and another earlier one
+// answers with all three, oldest first, and acknowledging them in order
+// leaves nothing to deliver as a notification.
+func TestDelegateSendWaitCarriesEveryEarlierResultQueuedAheadOfIt(t *testing.T) {
+	c, _, carrying, waiter := twoHeldDeliveriesFixture(t)
+	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
+		t.Fatalf("carrier: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	if resolution.fallback || resolution.commit == nil || len(resolution.earlier) != 2 {
+		t.Fatalf("resolution = %#v, want two earlier results and the reply's own", resolution)
+	}
+	for i, want := range []string{"first", "second"} {
+		if got := string(resolution.earlier[i].packet.Message); !strings.Contains(got, want) {
+			t.Fatalf("earlier result %d = %s, want %q", i, got, want)
+		}
+	}
+	commits := []*delegateToolResultCommit{resolution.earlier[0].commit, resolution.earlier[1].commit, resolution.commit}
+	if _, err := completeDelegateDeliveryCommits(commits); err != nil {
+		t.Fatalf("acknowledge: %v", err)
+	}
+	if ids := pendingDeliveryIDs(c, "dlg_target"); len(ids) != 0 {
+		t.Fatalf("pending deliveries = %v, want all three acknowledged", ids)
+	}
+	c.mu.Lock()
+	claims, receipts := len(c.deliveryClaims), len(c.deliveries)
+	c.mu.Unlock()
+	if claims != 0 || receipts != 0 {
+		t.Fatalf("%d claims and %d receipts left, want none", claims, receipts)
+	}
+}
+
+// An abandoned reply that carried two earlier results gives the held head
+// back to its plan; once that is acknowledged, the others are planned in
+// order as notifications.
+func TestAbandonedReplyWithTwoEarlierResultsDeliversThemInOrder(t *testing.T) {
+	c, held, carrying, waiter := twoHeldDeliveriesFixture(t)
+	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
+		t.Fatalf("carrier: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	for _, commit := range []*delegateToolResultCommit{resolution.earlier[0].commit, resolution.earlier[1].commit, resolution.commit} {
+		if _, err := commit.Complete(false); err != nil {
+			t.Fatalf("abandon: %v", err)
+		}
+	}
+	token, admitted, err := c.BeginDelivery(held)
+	if err != nil || !admitted {
+		t.Fatalf("the held plan after the reply was abandoned: admitted=%t err=%v", admitted, err)
+	}
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
+		t.Fatalf("acknowledge the held result: %v", err)
+	}
+	for _, want := range []string{carrying.held[1].DeliveryID, carrying.deliveryID} {
+		if len(plans.deliveries) != 1 || plans.deliveries[0].deliveryID != want {
+			t.Fatalf("plans = %#v, want %q planned next", plans.deliveries, want)
+		}
+		if plans, err = deliverDelegatePacket(plans.deliveries[0], committedCallerDeliveryReceiver{}); err != nil {
+			t.Fatalf("deliver %q: %v", want, err)
+		}
+	}
+	if ids := pendingDeliveryIDs(c, "dlg_target"); len(ids) != 0 {
+		t.Fatalf("pending deliveries = %v, want all delivered", ids)
 	}
 }

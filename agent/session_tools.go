@@ -171,8 +171,7 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		return nil, outcome.result.Err
 	}
 	if outcome.commit != nil {
-		// A nil heldCommit is a no-op in both loops below.
-		commits := []*delegateToolResultCommit{outcome.heldCommit, outcome.commit}
+		commits := append(outcome.earlierCommits, outcome.commit)
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
 			for _, commit := range commits {
