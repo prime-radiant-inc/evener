@@ -93,8 +93,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		overflow = append(overflow, memoryPage{Path: fmt.Sprintf("opaque-%03d.md", i), Title: fmt.Sprintf("opaque %03d", i),
 			Description: "opaque-description " + strings.Repeat("x", 64), HasDescription: true, Tags: tags, Updated: "2026-10-01"})
 	}
-	partial, truncated := projectMemoryIndex(overflow, memoryProjectionCap)
-	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Truncated: truncated, Content: partial, Index: renderMemoryIndex(overflow)})
+	partial, full, truncated := projectMemoryIndex(overflow, memoryProjectionCap)
+	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Truncated: truncated, Content: partial, Index: full})
 	truncatedTurn, truncatedItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Content: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"})

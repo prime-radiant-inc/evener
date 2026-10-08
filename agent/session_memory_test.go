@@ -1123,15 +1123,44 @@ func TestMemoryConfigRoundTrip(t *testing.T) {
 	}
 }
 
+// memorySeedFrontmatter is a seeded page's frontmatter beyond its
+// description.
+type memorySeedFrontmatter struct {
+	tags    []string
+	updated string
+}
+
+// memorySeedOption changes a seeded page's frontmatter.
+type memorySeedOption func(*memorySeedFrontmatter)
+
+// memorySeedUpdated stamps a seeded page with date instead of 2026-10-01.
+func memorySeedUpdated(date string) memorySeedOption {
+	return func(f *memorySeedFrontmatter) { f.updated = date }
+}
+
+// memorySeedTags tags a seeded page.
+func memorySeedTags(tags ...string) memorySeedOption {
+	return func(f *memorySeedFrontmatter) { f.tags = tags }
+}
+
 // memorySeedPage writes one page into scope with a frontmatter description
-// and a fixed stamp, so its index line is stable, and returns its path.
-func memorySeedPage(t *testing.T, root, scope, name, description string) string {
+// and a fixed stamp (2026-10-01 unless an option changes it), so its index
+// line is stable, and returns its path.
+func memorySeedPage(t *testing.T, root, scope, name, description string, opts ...memorySeedOption) string {
 	t.Helper()
 	path := filepath.Join(root, "memory", scope, name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body := "---\ndescription: " + description + "\nupdated: 2026-10-01\n---\n"
+	front := memorySeedFrontmatter{updated: "2026-10-01"}
+	for _, opt := range opts {
+		opt(&front)
+	}
+	body := "---\ndescription: " + description + "\n"
+	if len(front.tags) > 0 {
+		body += "tags: [" + strings.Join(front.tags, ", ") + "]\n"
+	}
+	body += "updated: " + front.updated + "\n---\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1171,7 @@ func memorySeedPage(t *testing.T, root, scope, name, description string) string 
 // it, read straight from disk.
 func memoryExpectedIndex(t *testing.T, root, scope string) string {
 	t.Helper()
-	content, _ := projectMemoryIndex(memoryListedPages(t, root, scope), memoryProjectionCap)
+	content, _, _ := projectMemoryIndex(memoryListedPages(t, root, scope), memoryProjectionCap)
 	return content
 }
 

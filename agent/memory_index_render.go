@@ -115,16 +115,18 @@ func renderMemoryIndex(pages []memoryPage) string {
 
 // projectMemoryIndex is the index as projected into context within limit
 // bytes: the whole index when it fits; otherwise the header, the newest lines
-// that fit, and a closing line counting the pages left out.
-func projectMemoryIndex(pages []memoryPage, limit int) (string, bool) {
+// that fit, and a closing line counting the pages left out. full is the whole
+// index, rendered in the same pass.
+func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, truncated bool) {
 	sorted, prefix, lines := memoryIndexParts(pages)
+	full = prefix + strings.Join(lines, "")
 	sizes := make([]int, len(sorted)+1) // sizes[k]: prefix plus the first k lines
 	sizes[0] = len(prefix)
 	for i, line := range lines {
 		sizes[i+1] = sizes[i] + len(line)
 	}
 	if sizes[len(sorted)] <= limit {
-		return prefix + strings.Join(lines, ""), false
+		return full, full, false
 	}
 	// Only a k whose first k lines fit can also hold the closing line.
 	k := 0
@@ -134,8 +136,8 @@ func projectMemoryIndex(pages []memoryPage, limit int) (string, bool) {
 	for ; k >= 0; k-- {
 		closing := memoryNotShownLine(sorted[k:]) + "\n"
 		if sizes[k]+len(closing) <= limit {
-			return prefix + strings.Join(lines[:k], "") + closing, true
+			return prefix + strings.Join(lines[:k], "") + closing, full, true
 		}
 	}
-	return runetrim.Cut(prefix+memoryNotShownLine(sorted)+"\n", limit), true
+	return runetrim.Cut(prefix+memoryNotShownLine(sorted)+"\n", limit), full, true
 }

@@ -35,13 +35,6 @@ func memoryContextMessages(req llm.Request) int {
 	return n
 }
 
-func writeMemoryIndex(t *testing.T, path, body string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Another session's page write during a turn reaches no later model call of
 // that turn.
 func TestMemoryRefreshSkipsLaterRoundsOfATurn(t *testing.T) {
@@ -326,13 +319,8 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 // real 250 ms, which would project the scope as unavailable.
 func memorySeedManyPages(t *testing.T, root, scope string, count int, updated string) []memoryPage {
 	t.Helper()
-	dir := filepath.Join(root, "memory", scope)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	for i := range count {
-		body := fmt.Sprintf("---\ndescription: opaque-filler-%03d-%s\nupdated: %s\n---\n", i, strings.Repeat("x", 40), updated)
-		writeMemoryIndex(t, filepath.Join(dir, fmt.Sprintf("p%03d.md", i)), body)
+		memorySeedPage(t, root, scope, fmt.Sprintf("p%03d.md", i), fmt.Sprintf("opaque-filler-%03d-%s", i, strings.Repeat("x", 40)), memorySeedUpdated(updated))
 	}
 	return memoryListedPages(t, root, scope)
 }
@@ -573,7 +561,6 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	memorySeedManyPages(t, root, "personal", 200, "2026-01-01")
-	dir := filepath.Join(root, "memory", "personal")
 	var deltas []string
 	deltaTurn := func(want int) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
@@ -598,13 +585,13 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 		t.Fatal("fixture index fits the projection; it must outgrow it")
 	}
 	// The oldest page sorts last, outside the projected window.
-	writeMemoryIndex(t, filepath.Join(dir, "old.md"), "---\ndescription: opaque-old-page\nupdated: 2025-01-01\n---\n")
+	memorySeedPage(t, root, "personal", "old.md", "opaque-old-page", memorySeedUpdated("2025-01-01"))
 	turn()
 	// p000 is the newest page: stamps tie, and ties sort by path.
-	writeMemoryIndex(t, filepath.Join(dir, "p000.md"), "---\ndescription: opaque-head-2\nupdated: 2026-01-01\n---\n")
+	memorySeedPage(t, root, "personal", "p000.md", "opaque-head-2", memorySeedUpdated("2026-01-01"))
 	turn()
 	// A new newest page pushes the last shown page past the budget.
-	writeMemoryIndex(t, filepath.Join(dir, "new.md"), "---\ndescription: opaque-new-page\nupdated: 2026-06-01\n---\n")
+	memorySeedPage(t, root, "personal", "new.md", "opaque-new-page", memorySeedUpdated("2026-06-01"))
 	turn()
 	if !strings.Contains(deltas[1], `+ "- [old](old.md) — opaque-old-page`) || strings.Contains(deltas[1], `- "`) {
 		t.Fatalf("a page outside the window should arrive as one added line: %q", deltas[1])
@@ -1189,8 +1176,8 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	if err := os.MkdirAll(scope, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeMemoryIndex(t, filepath.Join(scope, "MEMORY.md"), "- [Cents](cents.md) — opaque-migrated-description\n")
-	writeMemoryIndex(t, filepath.Join(scope, "cents.md"), "# Cents\n")
+	writeMemoryPage(t, root, "MEMORY.md", "- [Cents](cents.md) — opaque-migrated-description\n")
+	writeMemoryPage(t, root, "cents.md", "# Cents\n")
 	var text string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 		text = latestMemoryContext(req, "personal")
@@ -1216,7 +1203,7 @@ func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
 	root := t.TempDir()
 	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
 	gone := memorySeedPage(t, root, "personal", "gone.md", "opaque-gone")
-	changed := memorySeedPage(t, root, "personal", "changed.md", "opaque-before")
+	memorySeedPage(t, root, "personal", "changed.md", "opaque-before")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response { return finalResponse("first") },
@@ -1231,7 +1218,7 @@ func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
 	}
-	writeMemoryIndex(t, changed, "---\ndescription: opaque-after\ntags: [newtag]\nupdated: 2026-10-01\n---\n")
+	memorySeedPage(t, root, "personal", "changed.md", "opaque-after", memorySeedTags("newtag"))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}

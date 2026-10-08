@@ -110,28 +110,23 @@ type memoryEnvironmentFlight struct {
 	err  error
 }
 
-// renderedMemoryScope is one rendering of a scope's pages.
-type renderedMemoryScope struct {
-	status    string // "current", or "missing" when the scope has no pages
-	full      string // the whole index
-	projected string // the index within the projection budget
-	truncated bool
-}
-
 // renderMemoryScope migrates a hand-written index if one remains, then
-// renders the scope's pages. A failed migration never blocks the rendering;
-// the next one retries it.
-func renderMemoryScope(env *execenv.LocalExecutionEnvironment) (renderedMemoryScope, error) {
+// renders the scope's pages into p: "current", or "missing" when the scope
+// has no pages. A failed migration never blocks the rendering; the next one
+// retries it. A failed listing leaves p as it was.
+func renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
 	_ = migrateMemoryScope(env)
 	pages, err := listMemoryPages(env)
 	if err != nil {
-		return renderedMemoryScope{}, err
+		return err
 	}
 	if len(pages) == 0 {
-		return renderedMemoryScope{status: "missing"}, nil
+		p.Status, p.Content, p.Index, p.Truncated = "missing", "", "", false
+		return nil
 	}
-	projected, truncated := projectMemoryIndex(pages, memoryProjectionCap)
-	return renderedMemoryScope{status: "current", full: renderMemoryIndex(pages), projected: projected, truncated: truncated}, nil
+	p.Status = "current"
+	p.Content, p.Index, p.Truncated = projectMemoryIndex(pages, memoryProjectionCap)
+	return nil
 }
 
 func (s *Session) unavailableMemoryToolNames() []string {
@@ -344,9 +339,7 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p, nil
 	}
-	if rendered, err := renderMemoryScope(env); err == nil {
-		p.Status, p.Content, p.Index, p.Truncated = rendered.status, rendered.projected, rendered.full, rendered.truncated
-	}
+	_ = renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
 		if record, ok := readMemoryPageRecord(env, page); ok {
@@ -383,12 +376,15 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 // changes again or a compaction or resume delivers the index in full; the
 // race is accepted as rare and cheap.
 func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, file string) {
-	var rendered renderedMemoryScope
-	err := s.beforeMemoryIO(scope, "record")
-	if err == nil {
-		rendered, err = renderMemoryScope(env)
+	adopt := s.memoryOwnWriteSetsBaseline(scope)
+	var rendered memoryProjection
+	var err error
+	if adopt {
+		if err = s.beforeMemoryIO(scope, "record"); err == nil {
+			err = renderMemoryScope(env, &rendered)
+		}
 	}
-	s.recordOwnMemoryIndex(scope, rendered, err)
+	s.recordOwnMemoryIndex(scope, adopt, rendered, err)
 	s.memoryMu.Lock()
 	_, tracked := s.memoryReadPages[scope][file]
 	s.memoryMu.Unlock()
@@ -402,29 +398,40 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 	s.recordMemoryContent(scope, file, raw, err, false)
 }
 
-// recordOwnMemoryIndex makes rendered the index the session knows for scope
-// after its own write; a failed rendering forgets the scope, so the next
-// boundary delivers it in full. A scope with no baseline adopts the rendering
-// only when the last projection found it missing: the model then knows the
-// scope held nothing before its own write. After any other state, such as
-// unavailable, the model never saw the index, so the scope stays unknown and
-// the next boundary delivers it in full. A read already in flight started
-// before the write, so its result is discarded.
-func (s *Session) recordOwnMemoryIndex(scope string, rendered renderedMemoryScope, err error) {
+// memoryOwnWriteSetsBaseline reports whether the session's own write to scope
+// makes the scope's new rendering its baseline: when it already has one, or
+// when the last projection found the scope missing, so the model knows it
+// held nothing before the write. After any other state, such as unavailable,
+// the model never saw the index; the scope stays unknown and the next
+// boundary delivers it in full.
+func (s *Session) memoryOwnWriteSetsBaseline(scope string) bool {
+	s.memoryMu.Lock()
+	defer s.memoryMu.Unlock()
+	_, known := s.memoryBaseline[scope]
+	return known || s.memoryLastProjected[scope].Status == "missing"
+}
+
+// recordOwnMemoryIndex records the session's own write to scope. A read
+// already in flight started before the write, so its result is discarded.
+// When adopt (memoryOwnWriteSetsBaseline) holds, rendered becomes the index
+// the session knows; a failed rendering forgets the scope, so the next
+// boundary delivers it in full.
+func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rendered memoryProjection, err error) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
 		flight.stale = true
 	}
-	_, known := s.memoryBaseline[scope]
+	if !adopt {
+		return
+	}
 	switch {
-	case !known && s.memoryLastState[scope] != "missing":
 	case err != nil:
 		delete(s.memoryBaseline, scope)
-	case rendered.status == "missing":
+	case rendered.Status == "missing":
 		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
 	default:
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: rendered.full})
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: rendered.Index})
 	}
 }
 
@@ -609,18 +616,16 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 		if s.memoryEverProjected == nil {
 			s.memoryEverProjected = make(map[string]bool)
 		}
-		if s.memoryLastState == nil {
-			s.memoryLastState = make(map[string]string)
-		}
-		s.memoryLastState[p.Scope] = p.Status
 		prior, exists := s.memoryLastProjected[p.Scope]
 		inContext := exists && prior == p
 		suppressed := !inContext && !s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))
 		known := p.Status == "current" && !suppressed && p.Content != ""
+		// A suppressed projection is recorded too: an own write reads the
+		// state the scope was last found in, even one the model was not shown.
+		s.memoryLastProjected[p.Scope] = p
 		if inContext || suppressed {
 			return "", known
 		}
-		s.memoryLastProjected[p.Scope] = p
 		s.memoryEverProjected[p.Scope] = true
 		size := ""
 		if p.Truncated {
@@ -738,7 +743,6 @@ func memoryIndexLines(index string) []string {
 func (s *Session) resetMemoryProjectionAfterCompaction() {
 	s.memoryMu.Lock()
 	s.memoryLastProjected = nil
-	s.memoryLastState = nil
 	s.memoryBaseline = nil
 	for _, flight := range s.memoryIndexFlights {
 		flight.stale = true

@@ -21,7 +21,7 @@ import (
 // (agent/memory_context_wire_fixture_test.go) is what pins that the two agree
 // against the real Session.
 func memoryContextRecord(scope, state string, truncated bool, content string) string {
-	return sizedMemoryContextRecord(scope, state, truncated, content, " Not every page is shown; the index's last line counts the rest.")
+	return sizedMemoryContextRecord(scope, state, truncated, content, memoryContextPartial)
 }
 
 // tooLongMemoryContextRecord is the envelope earlier builds wrote around a

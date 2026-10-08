@@ -56,19 +56,18 @@ func overflowPages(n int) []memoryPage {
 func TestProjectMemoryIndexFitsWhole(t *testing.T) {
 	t.Parallel()
 	pages := overflowPages(3)
-	content, truncated := projectMemoryIndex(pages, memoryProjectionCap)
-	if truncated || content != renderMemoryIndex(pages) {
-		t.Fatalf("truncated=%t content=%q", truncated, content)
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	if truncated || content != renderMemoryIndex(pages) || full != content {
+		t.Fatalf("truncated=%t content=%q full=%q", truncated, content, full)
 	}
 }
 
 func TestProjectMemoryIndexKeepsNewestAndCountsTheRest(t *testing.T) {
 	t.Parallel()
 	pages := overflowPages(200)
-	full := renderMemoryIndex(pages)
-	content, truncated := projectMemoryIndex(pages, memoryProjectionCap)
-	if !truncated || len(content) > memoryProjectionCap {
-		t.Fatalf("truncated=%t len=%d", truncated, len(content))
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	if !truncated || len(content) > memoryProjectionCap || full != renderMemoryIndex(pages) {
+		t.Fatalf("truncated=%t len=%d, full is the whole rendering=%t", truncated, len(content), full == renderMemoryIndex(pages))
 	}
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 	fullLines := strings.Split(strings.TrimSuffix(full, "\n"), "\n")
@@ -118,7 +117,7 @@ func TestProjectMemoryIndexHugeLine(t *testing.T) {
 		{Path: "huge.md", Title: "huge", Description: strings.Repeat("y", 9000), HasDescription: true, Tags: []string{"big"}, Updated: "2026-10-08"},
 		{Path: "small.md", Title: "small", Description: "fits", HasDescription: true, Updated: "2026-10-01"},
 	}
-	content, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
 	if !truncated || len(content) > memoryProjectionCap || strings.Contains(content, "yyy") {
 		t.Fatalf("truncated=%t len=%d content=%.200q", truncated, len(content), content)
 	}
@@ -134,7 +133,7 @@ func TestProjectMemoryIndexOversizedHeader(t *testing.T) {
 	for i := range 600 {
 		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{fmt.Sprintf("tag-number-%03d", i)}})
 	}
-	content, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
 	if !truncated || len(content) > memoryProjectionCap || !strings.HasPrefix(content, "Tags: ") {
 		t.Fatalf("truncated=%t len=%d", truncated, len(content))
 	}
