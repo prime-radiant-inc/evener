@@ -351,11 +351,23 @@ async function runOutputPagingJourney(fixture) {
     driver.milestone(name, value);
     return value;
   };
+  // Chrome latches closely spaced wheel events into one scroll gesture on the
+  // scroller the first of them could move. A wheel that starts with the output
+  // already at its edge in its direction can't move it, so the gesture latches
+  // past it to the page root, and a wheel within the next few hundred ms goes
+  // to the root too: it scrolls nothing even after paging has put the output
+  // mid-history again (#4020). So a wheel after one that started at the edge
+  // waits until that gesture has ended; measured, 600ms is enough.
+  let edgeWheelAt = 0;
   const wheel = async deltaY => {
-    const point = await read(`(() => { const scroller=${scrollerExpr}; if (!scroller) return null; const r=scroller.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,extent:scroller.scrollHeight+scroller.clientHeight}; })()`);
+    const since = Date.now() - edgeWheelAt;
+    if (since < 600) await new Promise(resolve => setTimeout(resolve, 600 - since));
+    const point = await read(`(() => { const scroller=${scrollerExpr}; if (!scroller) return null; const r=scroller.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,extent:scroller.scrollHeight+scroller.clientHeight,
+      atEdge:${deltaY} < 0 ? scroller.scrollTop <= 0 : scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1}; })()`);
     assert.ok(point, 'actual output scroller');
-    const {extent,...position}=point;
+    const {extent,atEdge,...position}=point;
     await driver.send('Input.dispatchMouseEvent', {type:'mouseWheel',...position,deltaX:0,deltaY:Math.abs(deltaY)>=40000 ? Math.sign(deltaY)*extent : deltaY});
+    if (atEdge) edgeWheelAt = Date.now();
   };
   const latest = async (marker, after = 0, totalBytes = 0) => {
     await waitFrames(() => outputCalls(after).some(request => page(request)?.totalBytes >= totalBytes && bytes(page(request)).includes(Buffer.from(marker))), `real latest contains ${marker}`);
