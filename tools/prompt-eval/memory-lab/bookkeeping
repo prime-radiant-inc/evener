@@ -268,9 +268,26 @@ def shell_paths(command):
     return written, read
 
 
+# Tools whose write is all-or-nothing, so a refused call (its TOOL_CALL_END carried an error) wrote nothing.
+# task_list stages, saves through a temp file and rename, then commits; notes_agent_set rolls back a failed
+# save; write_file and edit_file (and the memory tools built on them) refuse before writing, and under the
+# sandbox write by temp file and rename. Shell commands and apply_patch can write before they fail.
+ALL_OR_NOTHING_WRITERS = {"task_list", "write_file", "edit_file", "memory_write", "memory_edit", "notes_agent_set"}
+
+
 def classify(call):
     """Returns (kind, surfaces): kind is "write", "read" or "work"; surfaces lists every progress surface
-    the call writes or reads (a task_list update can set a status and add a note in one call)."""
+    the call writes or reads (a task_list update can set a status and add a note in one call). A refused
+    write by an all-or-nothing tool wrote nothing, so it is work; a refused read still cost a call and
+    counts as a read-back."""
+    kind, surfaces = _classify_args(call)
+    if kind == "write" and call.get("failed") and call["tool"] in ALL_OR_NOTHING_WRITERS:
+        return "work", []
+    return kind, surfaces
+
+
+def _classify_args(call):
+    """(kind, surfaces) for the call as its arguments describe it, whatever its result."""
     tool, a = call["tool"], args_of(call)
     path = str(a.get("file_path", ""))
     if tool == "apply_patch":
@@ -292,21 +309,24 @@ def classify(call):
     if tool == "notes_agent_set":
         return "write", ["whiteboard"]
     if tool == "task_list":
-        # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
-        # carrying notes records progress detail, which a skill's ledger already holds.
-        updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
-        surfaces = []
-        # Any update field besides id and notes (status, depends_on, reasoning_effort) changes the list.
-        if a.get("add") or any(k not in ("id", "notes") for u in updates for k in u):
-            surfaces.append("tasks")
-        if any(u.get("notes") for u in updates):
-            surfaces.append("task-notes")
-        return ("write", surfaces) if surfaces else ("read", ["tasks"])
+        # task_list takes top-level "add" and "update" arrays; a call with neither, or with both null or
+        # empty, only lists. Anything else is a mutation, and a call evener accepts changes the list. An
+        # update carrying a real note records progress detail, which a skill's ledger already holds.
+        if all(a.get(key) in (None, []) for key in ("add", "update")):
+            return "read", ["tasks"]
+        updates = [u for u in a["update"] if isinstance(u, dict)] if isinstance(a.get("update"), list) else []
+        return "write", ["tasks"] + (["task-notes"] if any(real_note(u.get("notes")) for u in updates) else [])
     if tool in READ_LABELS:
         return "read", [READ_LABELS[tool]]
     if tool == "read_file" and (surfaces := read_surfaces([path])):
         return "read", surfaces
     return "work", []
+
+
+def real_note(notes):
+    """Whether notes is a real task note: a string other than "" or "null" (trimmed, any case), which
+    task_list treats as a placeholder (isPlaceholderNote, agent/session_tools_task.go)."""
+    return isinstance(notes, str) and notes.strip().lower() not in ("", "null")
 
 
 def reconstruction(calls):
