@@ -1,6 +1,7 @@
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { activityChanged, activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -5035,7 +5036,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	it("reads the coordinator's tree again when this subagent's status changes", async () => {
 		const { hub } = await mountSubagent(subagent(true));
 		const before = jobReads(hub);
-		act(() => hub.notify(activityChanged({ ...COORDINATOR, sessionId: "fix" })));
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
@@ -5298,7 +5299,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
 			2,
 		);
-		act(() => hub.notify(activityChanged({ ...COORDINATOR, sessionId: "fix" })));
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");

@@ -7,7 +7,7 @@
 // produce the smallest payload the catalog actually permits, in one place,
 // rather than a Thread literal copy-pasted into every poke site.
 
-import type { AnyNotification, NavigationInvalidatedPayload, Thread } from "../types.gen";
+import type { AnyNotification, NavigationInvalidatedPayload, SessionActivityResource, Thread } from "../types.gen";
 
 const CAPABILITIES = {
   send: true,
@@ -77,5 +77,19 @@ export function navigationInvalidatedNotification(payload: NavigationInvalidated
   return {
     method: "evener/navigation/invalidated",
     params: payload,
+  };
+}
+
+/** The hub's word that a session's activity changed: the activity store
+ * re-reads the resources it names, summary, delegates and jobs unless a test
+ * names others. The session is the thread's own unless the target says
+ * otherwise. */
+export function activityChangedNotification(
+  target: { ref: string; threadId: string; sessionId?: string },
+  resources: SessionActivityResource[] = ["summary", "delegates", "jobs"],
+): AnyNotification {
+  return {
+    method: "evener/thread/activity/changed",
+    params: { ref: target.ref, threadId: target.threadId, sessionId: target.sessionId ?? target.threadId, resources },
   };
 }
