@@ -146,7 +146,7 @@ const THREAD_SCALAR_ONLY_METHODS = new Set<string>([
 	"evener/thread/modelRetry",
 ]);
 
-// Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
+// Mutation lifecycle state for send/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
 // the draft revision at submission (so type-then-delete after clear is
 // detected as an edit), and the conversation generation that initiated it.
@@ -155,7 +155,7 @@ const THREAD_SCALAR_ONLY_METHODS = new Set<string>([
 // (F4) so out-of-order completion cannot change a newer mutation, error, or
 // draft.
 export interface ConversationMutationState {
-	kind: "send" | "steer" | "queue" | "interrupt";
+	kind: "send" | "queue" | "interrupt";
 	status: "pending" | "failed";
 	draftSnapshot: string | null;
 	/** @internal — draft revision captured at submit; used to detect post-clear edits. */
@@ -170,7 +170,7 @@ export interface ConversationMutationState {
  * enqueue boundary, before the daemon answers), so the receipt is optional and
  * present only on the direct service path. */
 export interface AcceptedConversationMutation {
-	readonly kind: "send" | "steer" | "queue" | "interrupt";
+	readonly kind: ConversationMutationState["kind"];
 	readonly receipt?: MutationReceipt;
 }
 
@@ -397,7 +397,6 @@ export interface ConversationState {
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
 	send(service: ConversationService, input: InputItem[]): Promise<void>;
-	steer(service: ConversationService, input: InputItem[]): Promise<void>;
 	queue(service: ConversationService, input: InputItem[]): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
 	close(): void;
@@ -419,7 +418,7 @@ export interface ConversationState {
 // Required live state interface (F3): the production store always implements
 // these live-only methods. They are NOT optional-fallback to old open().
 // Base ConversationState is preserved for screen test mocks that only need
-// the basic open/send/steer/queue/interrupt/close surface.
+// the basic open/send/queue/interrupt/close surface.
 // F2: setCoalescer is removed from the public interface — openProjected
 // creates and binds the coalescer internally.
 export interface LiveConversationState extends ConversationState {
@@ -475,7 +474,7 @@ function isActionUnavailableError(err: unknown): boolean {
 // and the submit refuses the mutation here, with the control's own reason.
 // Runs in the store so the fake service (which gates on nothing) still
 // respects what the hub would refuse.
-function requireControl(conv: MobileConversation, control: "stop" | "steer" | "queue" | "send", action: string): void {
+function requireControl(conv: MobileConversation, control: "stop" | "queue" | "send", action: string): void {
 	const controls = sessionControls(conv.status.type, conv.capabilities, conv.queue?.depth ?? 0);
 	if (!controls[control]) {
 		throw new Error(controls.reason[control] ?? `Action "${action}" is not available for this thread`);
@@ -542,7 +541,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// The target ref and instance fence come from the operation binding the
 	// caller already captured and rechecks after the await.
 	function submitMutation(
-		kind: "send" | "steer" | "queue" | "interrupt",
+		kind: ConversationMutationState["kind"],
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
@@ -562,7 +561,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// means each action declares only its kind, binding and input.
 	function dispatchMutation(
 		service: ConversationService,
-		kind: "send" | "steer" | "queue" | "interrupt",
+		kind: ConversationMutationState["kind"],
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
@@ -571,8 +570,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		switch (kind) {
 			case "send":
 				return service.send(input);
-			case "steer":
-				return service.steer(input);
 			case "queue":
 				return service.queue(input);
 			case "interrupt":
@@ -2847,82 +2844,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								pendingSend: null,
 								pendingMutation: null,
 								lastAcceptedMutation: { kind: "send", receipt },
-							});
-						}
-						// I1: mutation settled (success) — drain deferred trailing reread.
-						drainTrailingReread();
-					}
-				} catch (err) {
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					handleMutationError(
-						err,
-						state.ref,
-						mutationId,
-						mutation,
-						draftText,
-						revisionAtSubmit,
-						entryErrorRev,
-						getDraftRevision,
-						getErrorOwnerRev,
-						set,
-						get,
-						requestRehydrate,
-					);
-					// I1: mutation settled (failed terminal) — drain deferred trailing
-					// reread after handleMutationError sets the failed state.
-					drainTrailingReread();
-				}
-			},
-
-			async steer(service, input) {
-				const state = get();
-				if (state.conversation === null) return;
-				requireControl(state.conversation, "steer", "steer");
-				// C1: Capture a service-specific operation binding.
-				const opBinding = captureOperationBinding(service);
-				if (opBinding === null) return;
-				const draftText = state.draft;
-				const gen = state.conversationGeneration;
-				const mutationId = ++mutationIdCounter;
-				const revisionAtSubmit = draftRevision;
-				const mutation: ConversationMutationState = {
-					kind: "steer",
-					status: "pending",
-					draftSnapshot: draftText,
-					draftRevisionAtSubmit: revisionAtSubmit,
-					generation: gen,
-					mutationId,
-				};
-				// Steer/queue clear the draft on submit like send.
-				// F10: any new mutation clears legacy pendingSend.
-				// Fix round 1 I3: atomically clear prior error with new pending mutation.
-				set({
-					draft: "",
-					pendingSend: null,
-					pendingMutation: mutation,
-					lastAcceptedMutation: null,
-					error: null,
-				});
-				// I1: Capture error-owner revision AFTER installing pending+error-clear.
-				const entryErrorRev = errorOwnerRev;
-				try {
-					const receipt = await dispatchMutation(service, "steer", opBinding, state.conversation, input);
-					// C1: Recheck the exact operation binding after the await.
-					if (!isBindingCurrent(opBinding)) return;
-					if (get().pendingMutation?.mutationId === mutationId) {
-						// I1: clear error only if error-owner revision is unchanged —
-						// revision equality ONLY.
-						if (entryErrorRev === errorOwnerRev) {
-							set({
-								pendingMutation: null,
-								lastAcceptedMutation: { kind: "steer", receipt },
-								error: null,
-							});
-						} else {
-							set({
-								pendingMutation: null,
-								lastAcceptedMutation: { kind: "steer", receipt },
 							});
 						}
 						// I1: mutation settled (success) — drain deferred trailing reread.

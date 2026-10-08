@@ -3,8 +3,7 @@ import type { ConversationMutationState } from "../../mobile/src/state/conversat
 // A transport loss cannot establish whether the hub accepted an in-flight message.
 // Keep its submitted text separate from any draft typed while it was pending.
 export function captureUnconfirmedInput(mutation: ConversationMutationState | null | undefined): string | null {
-	return mutation?.status === "pending" &&
-		(mutation.kind === "send" || mutation.kind === "steer" || mutation.kind === "queue")
+	return mutation?.status === "pending" && (mutation.kind === "send" || mutation.kind === "queue")
 		? mutation.draftSnapshot
 		: null;
 }
