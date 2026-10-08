@@ -572,10 +572,11 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
 // completeDelegateDeliveryCommits acknowledges one tool call's delivery
-// commits in order. A reply carrying a held result acknowledges it ahead of
-// its own (#3906), and the store takes them only in queue order, so after one
-// fails the rest are left for the same retry rather than abandoned: they are
-// already in the reply and must never come back as notifications.
+// commits in order. A reply carrying earlier results acknowledges them, oldest
+// first, ahead of its own (#3906, #3951), and the store takes them only in
+// queue order, so after one fails the rest are left for the same retry rather
+// than abandoned: they are already in the reply and must never come back as
+// notifications.
 func completeDelegateDeliveryCommits(commits []*delegateToolResultCommit) ([]delegateMutationPlans, error) {
 	var completed []delegateMutationPlans
 	for i, commit := range commits {

@@ -141,6 +141,14 @@ func TestHeldDeliveryAckFailureRetriesBothInline(t *testing.T) {
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
+	retryEveryDeliveryInline(t, c)
+}
+
+// retryEveryDeliveryInline replays c's deliveries after a failed
+// acknowledgement and requires every one to be an inline retry that is
+// acknowledged, leaving nothing to deliver as a notification.
+func retryEveryDeliveryInline(t *testing.T, c *delegateTreeController) {
+	t.Helper()
 	queue := c.ReplayDeliveries()
 	for len(queue) != 0 {
 		plan := queue[0]
@@ -158,7 +166,7 @@ func TestHeldDeliveryAckFailureRetriesBothInline(t *testing.T) {
 		queue = append(queue, next.deliveries...)
 	}
 	if ids := pendingDeliveryIDs(c, "dlg_target"); len(ids) != 0 {
-		t.Fatalf("pending deliveries after the retries = %v, want both acknowledged", ids)
+		t.Fatalf("pending deliveries after the retries = %v, want all acknowledged", ids)
 	}
 	c.mu.Lock()
 	claims := len(c.deliveryClaims)
@@ -257,9 +265,9 @@ func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
 // receiver hold that result, then finishes a second generation, which queues
 // unplanned behind the held head, then a third with an inline waiter: the
 // third's plan carries both earlier results, oldest first (#3951).
-func twoHeldDeliveriesFixture(t *testing.T) (*delegateTreeController, delegateDeliveryPlan, delegateDeliveryPlan, *delegateInlineWaiter) {
+func twoHeldDeliveriesFixture(t *testing.T) (*delegateTreeController, string, delegateDeliveryPlan, delegateDeliveryPlan, *delegateInlineWaiter) {
 	t.Helper()
-	c, _ := newDelegateControllerTestHarness(t, 3, 1)
+	c, path := newDelegateControllerTestHarness(t, 4, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	firstLease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
 	held := finishDelegateDeliveryGeneration(t, c, firstLease, "first").deliveries[0]
@@ -278,14 +286,14 @@ func twoHeldDeliveriesFixture(t *testing.T) (*delegateTreeController, delegateDe
 	if len(carrying.held) != 2 || carrying.held[0].DeliveryID != pending[0] || carrying.held[1].DeliveryID != pending[1] || carrying.deliveryID != pending[2] {
 		t.Fatalf("carrying plan holds %#v for %q, want %v in order", carrying.held, carrying.deliveryID, pending)
 	}
-	return c, held, carrying, waiter
+	return c, path, held, carrying, waiter
 }
 
 // A wait whose result queues behind a held result and another earlier one
 // answers with all three, oldest first, and acknowledging them in order
 // leaves nothing to deliver as a notification.
 func TestDelegateSendWaitCarriesEveryEarlierResultQueuedAheadOfIt(t *testing.T) {
-	c, _, carrying, waiter := twoHeldDeliveriesFixture(t)
+	c, _, _, carrying, waiter := twoHeldDeliveriesFixture(t)
 	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
 		t.Fatalf("carrier: %v", err)
 	}
@@ -317,7 +325,7 @@ func TestDelegateSendWaitCarriesEveryEarlierResultQueuedAheadOfIt(t *testing.T) 
 // back to its plan; once that is acknowledged, the others are planned in
 // order as notifications.
 func TestAbandonedReplyWithTwoEarlierResultsDeliversThemInOrder(t *testing.T) {
-	c, held, carrying, waiter := twoHeldDeliveriesFixture(t)
+	c, _, held, carrying, waiter := twoHeldDeliveriesFixture(t)
 	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
 		t.Fatalf("carrier: %v", err)
 	}
@@ -346,4 +354,51 @@ func TestAbandonedReplyWithTwoEarlierResultsDeliversThemInOrder(t *testing.T) {
 	if ids := pendingDeliveryIDs(c, "dlg_target"); len(ids) != 0 {
 		t.Fatalf("pending deliveries = %v, want all delivered", ids)
 	}
+}
+
+// A result behind the head that a reply has already taken is never carried
+// again: while an abandoned reply has handed the head back but still holds
+// the others, a new waiter's result is not planned over them.
+func TestNewWaiterDoesNotCarryResultsAnotherReplyStillHolds(t *testing.T) {
+	c, _, _, carrying, waiter := twoHeldDeliveriesFixture(t)
+	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
+		t.Fatalf("carrier: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	if _, err := resolution.earlier[0].commit.Complete(false); err != nil {
+		t.Fatalf("abandon the head: %v", err)
+	}
+	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	if plans := finishDelegateDeliveryGeneration(t, c, lease, "fourth"); len(plans.deliveries) != 0 {
+		t.Fatalf("fourth generation's plans = %#v, want none while the second is still in a reply", plans.deliveries)
+	}
+}
+
+// When acknowledging a reply's second earlier result fails after the first
+// succeeded, it and the reply's own result are retried inline in order.
+func TestSecondEarlierResultAckFailureRetriesTheRestInline(t *testing.T) {
+	c, path, _, carrying, waiter := twoHeldDeliveriesFixture(t)
+	if _, err := deliverDelegatePacket(carrying, nil); err != nil {
+		t.Fatalf("carrier: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	plans, err := completeDelegateDeliveryCommits([]*delegateToolResultCommit{resolution.earlier[0].commit})
+	if err != nil || len(plans) != 1 || len(plans[0].deliveries) != 0 {
+		t.Fatalf("acknowledging the first: plans=%#v err=%v, want nothing planned while the rest are in the reply", plans, err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := completeDelegateDeliveryCommits([]*delegateToolResultCommit{resolution.earlier[1].commit, resolution.commit}); err == nil {
+		t.Fatal("acknowledging after store close succeeded, want a failure")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	retryEveryDeliveryInline(t, c)
 }
