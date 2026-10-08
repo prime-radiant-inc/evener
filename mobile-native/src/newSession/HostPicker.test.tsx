@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
-import { pressable, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
+import { pressable, render, renderedText, settle, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { HostPicker } from "./HostPicker";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -25,11 +25,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 async function mount(hosts: HostRow[], source = "local") {
 	const fleet = scriptedFleet(hosts, [

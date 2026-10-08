@@ -1974,44 +1974,7 @@ describe("jumpToBottom landing reliability", () => {
   // can schedule a frame of its own. Without the null, markGesture sees a
   // non-null handle, returns early, and session B's marker is never cleared at
   // all - a permanently pending veto, the failure this PR exists to prevent.
-  // This stub keeps the callbacks instead of dropping them, and only ever runs
-  // the ones scheduled in a named window, so React's own frames are left alone.
-  function captureFrames() {
-    const scheduled = new Map<number, FrameRequestCallback>();
-    const cancelled: number[] = [];
-    let nextHandle = 0;
-    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      nextHandle += 1;
-      scheduled.set(nextHandle, callback);
-      return nextHandle;
-    });
-    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
-      cancelled.push(handle);
-      scheduled.delete(handle);
-    });
-    const pending = () => [...scheduled.keys()];
-    return {
-      cancelled,
-      pending,
-      /** Handles that appeared while `schedule` ran and are still uncancelled. */
-      scheduledBy(schedule: () => void): number[] {
-        const before = pending();
-        schedule();
-        return pending().filter((handle) => !before.includes(handle));
-      },
-      run(handles: number[]) {
-        for (const handle of handles) {
-          const callback = scheduled.get(handle);
-          scheduled.delete(handle);
-          callback?.(0);
-        }
-      },
-      restore() {
-        raf.mockRestore();
-        caf.mockRestore();
-      },
-    };
-  }
+  // So this case uses captureFrames, which keeps the callbacks.
 
   test("a session switch cancels the old clearing frame and lets the new session schedule its own", () => {
     const frames = captureFrames();
@@ -4046,6 +4009,165 @@ describe("registered transcript view preservation", () => {
     } finally {
       cleanup();
       list.dispose();
+    }
+  });
+});
+
+// A requestAnimationFrame stub that keeps the callbacks instead of dropping
+// them, and only ever runs the ones a test names, so React's own frames are
+// left alone.
+function captureFrames() {
+  const scheduled = new Map<number, FrameRequestCallback>();
+  const cancelled: number[] = [];
+  let nextHandle = 0;
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    nextHandle += 1;
+    scheduled.set(nextHandle, callback);
+    return nextHandle;
+  });
+  const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+    cancelled.push(handle);
+    scheduled.delete(handle);
+  });
+  const pending = () => [...scheduled.keys()];
+  return {
+    cancelled,
+    pending,
+    /** Handles that appeared while `schedule` ran and are still uncancelled. */
+    scheduledBy(schedule: () => void): number[] {
+      const before = pending();
+      schedule();
+      return pending().filter((handle) => !before.includes(handle));
+    },
+    run(handles: number[]) {
+      for (const handle of handles) {
+        const callback = scheduled.get(handle);
+        scheduled.delete(handle);
+        callback?.(0);
+      }
+    },
+    restore() {
+      raf.mockRestore();
+      caf.mockRestore();
+    },
+  };
+}
+
+// A native scrolling key's smooth scroll starts on the frame AFTER the key:
+// Chrome dispatched Shift-Space's first scroll event 20ms after its keydown,
+// after the gesture's one-frame clear had already run (#3880). Unrecorded, the
+// reader's backward movement left VirtualList's size-change rule unprotected.
+describe("native key scrolling that begins a frame later", () => {
+  const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
+
+  function mountKeyReader() {
+    const frames = captureFrames();
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(PORT);
+    const onReaderMovement = vi.fn();
+    const view = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+          onReaderMovement,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+    definePort(el, PORT);
+    const mountFrames = frames.pending();
+    return {
+      el,
+      onReaderMovement,
+      rerender: view.rerender,
+      shiftSpace: () =>
+        act(() => {
+          el.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
+        }),
+      wheelUp: () => act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))),
+      runFrame: () => act(() => frames.run(frames.pending().filter((handle) => !mountFrames.includes(handle)))),
+      scrollTo: (scrollTop: number) =>
+        act(() => {
+          el.scrollTop = scrollTop;
+          set({ scrollTop });
+          el.dispatchEvent(new Event("scroll"));
+        }),
+      restore: frames.restore,
+    };
+  }
+
+  test("the key's first scroll event, one frame late, is recorded as the reader's movement", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).toHaveBeenCalledWith(900);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  test("a key whose scroll never starts stops counting as a gesture after its second frame", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).not.toHaveBeenCalled();
+    } finally {
+      reader.restore();
+    }
+  });
+
+  test("a key whose instant scroll consumed its marker lends no extra frame to the next gesture", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.scrollTo(880);
+      reader.wheelUp();
+      reader.runFrame();
+      reader.scrollTo(860);
+
+      expect(reader.onReaderMovement).not.toHaveBeenCalledWith(880);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  // A key's marker forgotten before its frames run must not lend its second
+  // frame to the next gesture: a wheel's marker still lasts one frame.
+  test.each([
+    [
+      "the document going hidden",
+      () => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+        try {
+          act(() => document.dispatchEvent(new Event("visibilitychange")));
+        } finally {
+          Reflect.deleteProperty(document, "visibilityState");
+        }
+      },
+    ],
+    ["a session switch", (reader: ReturnType<typeof mountKeyReader>) => act(() => reader.rerender({ r: "ref_b" }))],
+  ])("%s forgets the key's extra frame", (_label, forget) => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      forget(reader);
+      reader.wheelUp();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).not.toHaveBeenCalled();
+    } finally {
+      reader.restore();
     }
   });
 });

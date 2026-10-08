@@ -29,3 +29,4 @@ import "./askUser";
 import "./taskCard";
 import "./readTranscript";
 import "./worktreeTool";
+import "./compactContext";

@@ -4,7 +4,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { type CreationDraft, CreationDraftRepository } from "../creationDraftRepository";
-import { render } from "../renderNative.testkit";
+import { render, settle } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { Routes } from "../screens";
 import { LaunchMemory } from "./launchMemory";
@@ -81,11 +81,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 async function mount(like?: SessionSeed) {
 	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom", like } };

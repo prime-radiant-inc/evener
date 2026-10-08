@@ -572,7 +572,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
     await this.send("Input.dispatchKeyEvent", {
@@ -580,7 +579,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
   }
@@ -1785,8 +1783,8 @@ async function runInlineEditing(driver) {
   // 229 code must not submit the message or accept a slash completion.
   await driver.focusComposer(ref);
   await driver.send("Input.imeSetComposition", { text: "あ", selectionStart: 1, selectionEnd: 1 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
   await driver.send("Input.insertText", { text: "あ" });
   // Composed straight against the last chip, which is exactly where a token
   // character has to be separated from it.

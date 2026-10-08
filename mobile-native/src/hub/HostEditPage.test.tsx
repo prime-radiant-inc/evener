@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { HostEditPage } from "./HostEditPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -33,11 +33,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 // Each mount's controllers, disposed after the test's trees unmount, so a
 // failing assertion can't leak them into the next test.
