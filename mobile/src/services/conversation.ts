@@ -324,7 +324,9 @@ function nonemptyString(raw: unknown, label: string): string {
 // The result envelope around a receipt stays exact via exactObject.
 const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId", "projectionState"] as const;
 
-const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
+type RequiredReceiptKey = (typeof RECEIPT_CORRELATION_KEYS)[number] | "turnId" | "queueEntryIds";
+
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly RequiredReceiptKey[]>> = {
 	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
@@ -396,7 +398,7 @@ function decodeMutationResult(
 	const receiptObject =
 		result.receipt !== null && typeof result.receipt === "object" ? (result.receipt as Record<string, unknown>) : null;
 	const kindReceiptKeys = REQUIRED_RECEIPT_KEYS_BY_KIND[kind];
-	const requiredReceiptKeys = [...kindReceiptKeys];
+	const requiredReceiptKeys: string[] = [...kindReceiptKeys];
 	for (const key of OPTIONAL_RECEIPT_KEYS_ANY_KIND) {
 		if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
 			requiredReceiptKeys.push(key);
