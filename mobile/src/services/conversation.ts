@@ -122,7 +122,7 @@ export interface ConversationReadProjection {
 }
 
 // The canonical service interface — preserved for screen test mocks that only
-// need the basic open/send/steer/queue/interrupt/close surface.
+// need the basic open/send/queue/interrupt/close surface.
 export interface ConversationService {
 	open(ref: string, cursor?: string): Promise<MobileConversation>;
 	// The page above cursor, or above before (the oldest row kept after a trim):
@@ -145,7 +145,6 @@ export interface ConversationService {
 	}>;
 	subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
 	send(input: InputItem[]): Promise<MutationReceipt>;
-	steer(input: InputItem[]): Promise<MutationReceipt>;
 	queue(input: InputItem[]): Promise<MutationReceipt>;
 	interrupt(): Promise<MutationReceipt>;
 	compact(): Promise<void>;
@@ -277,13 +276,12 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 	return caps;
 }
 
-type MutationKind = "send" | "steer" | "queue" | "cancel" | "interrupt" | "clear";
+type MutationKind = "send" | "queue" | "cancel" | "interrupt" | "clear";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
 export type CanonicalMutationDisposition = (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
 
 const CANONICAL_MUTATION_PROJECTION: Readonly<Record<MutationKind, "pending" | "reflected" | "removed">> = {
 	send: "pending",
-	steer: "pending",
 	queue: "pending",
 	cancel: "removed",
 	interrupt: "reflected",
@@ -328,7 +326,6 @@ const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId",
 
 const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
 	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-	steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
 	cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
@@ -427,7 +424,7 @@ function decodeMutationResult(
 		}
 		decoded.instanceId = expectedInstanceId;
 	}
-	if (kind === "send" || kind === "steer" || kind === "interrupt") {
+	if (kind === "send" || kind === "interrupt") {
 		decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
 	}
 	if (kind === "queue" || kind === "cancel") {
@@ -795,20 +792,6 @@ export function createConversationService<ReadLease = unknown>(
 				input,
 			});
 			return decodeMutationResult("send", result, clientMutationId, expectedInstanceId);
-		},
-
-		async steer(input) {
-			requireCap("steer", "steer");
-			const threadRef = requireRef();
-			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
-			const clientMutationId = idFactory();
-			const result = await client.request("turn/steer", {
-				ref: threadRef,
-				clientMutationId,
-				expectedInstanceId,
-				input,
-			});
-			return decodeMutationResult("steer", result, clientMutationId, expectedInstanceId);
 		},
 
 		async queue(input) {

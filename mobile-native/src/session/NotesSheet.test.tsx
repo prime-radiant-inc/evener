@@ -398,11 +398,11 @@ describe("links", () => {
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
-	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", () => {
+	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", async () => {
 		const os = Platform.OS;
 		(Platform as { OS: string }).OS = "android";
 		try {
-			provide(session({ sessionUrls: [web] }));
+			const { requests } = provide(session({ sessionUrls: [web] }));
 			const tree = sheet();
 			act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 			const request = alertRequests.at(-1);
@@ -413,6 +413,11 @@ describe("links", () => {
 			playedHaptics.length = 0;
 			act(() => request?.buttons?.[2]?.onPress?.());
 			expect(playedHaptics).toEqual(["impact:rigid"]);
+			await flush();
+			expect(
+				requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id),
+			).toEqual(["u1"]);
+			expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}

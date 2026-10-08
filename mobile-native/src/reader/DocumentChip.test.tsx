@@ -157,6 +157,8 @@ it("opens when pressed", async () => {
 	const tree = chip({ onOpen });
 	act(() => button(tree)?.props.onPress());
 	expect(onOpen).toHaveBeenCalledOnce();
+	// The chip's summary read is still out; let it land before the test ends.
+	await settle();
 });
 
 it("reads a document once for every chip that shows it", async () => {
