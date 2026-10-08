@@ -935,7 +935,7 @@ export class Driver {
   // center, as a real press would require; otherwise the wait tries again.
   pressRailRowExpr(ref) {
     return `(() => {
-      const text = document.querySelector(${JSON.stringify(`[data-session-ref="${ref}"]`)})?.firstElementChild;
+      const text = document.querySelector(${JSON.stringify(`[data-sidebar-rail] [data-session-ref="${ref}"]`)})?.firstElementChild;
       if (!text) return null;
       text.scrollIntoView({ block: "center" });
       const r = text.getBoundingClientRect();
@@ -946,7 +946,7 @@ export class Driver {
   }
 
   async openSession(ref) {
-    await this.waitPage(this.pressRailRowExpr(ref), { label: `rail row for ${ref}` });
+    await this.waitPage(this.pressRailRowExpr(ref), { label: `rail row for ${ref} present and uncovered` });
     await this.waitPage(
       `(() => document.querySelector(${JSON.stringify(this.composerSelector(ref))}) !== null ? true : null)()`,
       { label: `composer for ${ref}` },
