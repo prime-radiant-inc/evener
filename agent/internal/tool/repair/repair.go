@@ -246,9 +246,70 @@ func dropEmptyOptionals(schema, obj map[string]any, path []pathStep, keep []stri
 // it.
 func emptyMeansAbsent(schema map[string]any, raw any) bool {
 	if raw == nil {
-		return !candidateMatchesSchema(nil, schema)
+		return !schemaAcceptsNull(schema)
 	}
 	return hasListEntries(schema["enum"]) && !listHasValue(schema["enum"], raw)
+}
+
+// schemaAcceptsNull reports whether schema admits null: its own keywords, then
+// its combinators — some anyOf or oneOf branch (oneOf's "exactly one" can't
+// turn a null-accepting branch into a refusal worth repairing), and every
+// allOf branch. The package resolves no $ref, so a property behind one counts
+// as accepting null and its null stays for validation to judge.
+func schemaAcceptsNull(schema map[string]any) bool {
+	if !candidateMatchesSchema(nil, schema) {
+		return false
+	}
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		if branches, _ := schema[keyword].([]any); len(branches) > 0 && !slices.ContainsFunc(branches, branchAcceptsNull) {
+			return false
+		}
+	}
+	allOf, _ := schema["allOf"].([]any)
+	for _, branch := range allOf {
+		if !branchAcceptsNull(branch) {
+			return false
+		}
+	}
+	if negated, present := schema["not"]; present && definitelyAcceptsNull(negated) {
+		return false
+	}
+	return true
+}
+
+// branchAcceptsNull applies schemaAcceptsNull to one combinator branch. A
+// boolean schema accepts null exactly when it is true; any other non-object
+// branch imposes nothing here.
+func branchAcceptsNull(branch any) bool {
+	switch schema := branch.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		return schemaAcceptsNull(schema)
+	}
+	return true
+}
+
+// definitelyAcceptsNull reports whether a `not` subschema is sure to accept
+// null, so the `not` refuses it. Only true, or an object whose own keywords
+// accept null and that carries no combinator, conditional or reference of its
+// own, is sure; anything else keeps the null for validation to judge.
+func definitelyAcceptsNull(negated any) bool {
+	switch schema := negated.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		for key := range schema {
+			switch {
+			case isRefSegment(key):
+				return false
+			case key == "anyOf", key == "oneOf", key == "allOf", key == "not", key == "if":
+				return false
+			}
+		}
+		return candidateMatchesSchema(nil, schema)
+	}
+	return false
 }
 
 // dropEmptyOptionalsWithin applies dropEmptyOptionals inside a nested object or

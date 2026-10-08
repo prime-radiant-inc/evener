@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -678,6 +679,38 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 			"required": []string{"message", "end_turn", "output"},
 		},
 	}
+}
+
+// Why a root session's communicate call ends its turn: done (nothing waits
+// on the human partner), needs_response (the agent cannot go on until its
+// human partner answers or acts), or waiting_on_work (work the agent started
+// will wake it).
+const (
+	CommunicateEndReasonDone          = "done"
+	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
+)
+
+// CommunicateEndReasons lists the end_reason values in the order the
+// parameter advertises them.
+var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
+
+// WithCommunicateEndReason returns a copy of a communicate definition that
+// also offers end_reason. Only a root session gets it: a delegate's resting
+// state never asks for a person.
+func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["end_reason"] = map[string]any{
+		"type":        "string",
+		"enum":        slices.Clone(CommunicateEndReasons),
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you, so your human partner need not act.",
+	}
+	def.Parameters = params
+	return def
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
