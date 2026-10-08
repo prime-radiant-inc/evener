@@ -3,9 +3,8 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { DocumentMemory } from "../reader/documentMemory";
-// Static, not `await import()` in the test that opens a real Reader: the first
-// import transforms the Reader's whole graph, which would count against that
-// test's timeout (#4031).
+// Imported at file scope, so the Reader's graph is transformed at collection
+// time, outside the timeout of the test that opens a real Reader (#4031).
 import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
