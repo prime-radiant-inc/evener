@@ -211,7 +211,7 @@ it("names no exit code for a job that is running or exited cleanly", async () =>
 		}),
 	);
 	expect(renderedText(await mount())).not.toContain("Exited");
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	tree = treeWith(shellJob("j-test", { status: "completed", outcome: "success", exitCode: 0 }));
 	expect(renderedText(await mount())).not.toContain("Exited");
 });
@@ -271,15 +271,15 @@ it("says when the job wrote nothing, when its output can't be read, and when it'
 	});
 	expect(renderedText(await mount())).toContain("No output.");
 
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	output = () => Promise.reject(new Error("job not found: j-test"));
 	expect(renderedText(await mount())).toContain("The output couldn't be read right now.");
 
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	output = () => ({ data: { tail: 3 } });
 	expect(renderedText(await mount())).toContain("The output couldn't be read right now.");
 
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	tree = { revision: 1, root: session("local:coord", COORDINATOR.title, []) };
 	const gone = await mount();
 	expect(renderedText(gone)).toContain("This job is no longer listed.");
@@ -451,7 +451,7 @@ it.each([
 		expect(shown.includes("Showing the end of the output.")).toBe(partial);
 		expect(shown).toContain("go test ./agent/... -run TestSettle");
 	} finally {
-		realClient.close();
+		act(() => realClient.close());
 	}
 });
 
@@ -470,6 +470,6 @@ it("shows a structured pruning failure instead of an empty native output", async
 		expect(shown).toContain("The output couldn't be read right now.");
 		expect(shown).not.toContain("No output.");
 	} finally {
-		realClient.close();
+		act(() => realClient.close());
 	}
 });
