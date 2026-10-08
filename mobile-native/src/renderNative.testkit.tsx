@@ -671,12 +671,15 @@ export function render(element: ReactElement, options?: TestRendererOptions): Re
 	return tree;
 }
 
-/** Lets the mounted trees' pending work land inside act: one timer turn,
- * which also runs every microtask queued ahead of it (a fake hub's answer,
- * the store updates it starts). Under fake timers it never resolves:
- * advance the timers instead. */
+/** Lets the mounted trees' pending work land inside act: a run of
+ * microtask turns, then one timer turn, which also runs every microtask
+ * queued ahead of it (a fake hub's answer, the store updates it starts).
+ * The microtask turns come first so a timer the work itself schedules on
+ * the way is queued ahead of this one, and fires inside act too. Under
+ * fake timers it never resolves: advance the timers instead. */
 export async function settle(): Promise<void> {
 	await act(async () => {
+		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 }
