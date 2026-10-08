@@ -96,7 +96,11 @@ function computeParts(item: Pick<ItemModel, "argumentsJSON" | "description" | "o
   // additional-arguments block. A wrong-typed (non-string) intent stays
   // unconsumed and surfaces there.
   if (intent !== undefined) consumed.add("intent");
-  const leftovers: Record<string, unknown> = {};
+  // A null-prototype accumulator, the reducer's own idiom for the same
+  // hazard (reducer.ts's prunedForStringify): a key literally named
+  // __proto__ assigns as an own property instead of invoking the prototype
+  // setter, so it survives into the block like the generic dump shows it.
+  const leftovers: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(args)) {
     if (consumed.has(key) || (key === "reload_skills" && value === null)) continue;
     leftovers[key] = value;

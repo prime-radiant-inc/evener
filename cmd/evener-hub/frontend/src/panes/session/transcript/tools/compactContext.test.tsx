@@ -233,6 +233,27 @@ test("a known key with a wrong-typed value lands in the additional-arguments blo
   expect(extra.textContent).toContain("42");
 });
 
+test("an argument key named __proto__ survives into the additional-arguments block", () => {
+  const Body = toolRendererFor("compact_context").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "compact_context",
+        // JSON.parse makes __proto__ an own enumerable property; assigning
+        // it into a plain object would invoke the prototype setter instead
+        // and silently drop the argument the generic dump shows. The literal
+        // string, not an object literal: {__proto__: ...} in source is the
+        // prototype-setter syntax, not an own property.
+        argumentsJSON: '{"note_to_self":"n","__proto__":{"payload":"kept"}}',
+      })}
+      live={false}
+    />,
+  );
+  const extra = screen.getByLabelText("Additional arguments");
+  expect(extra.textContent).toContain("__proto__");
+  expect(extra.textContent).toContain("kept");
+});
+
 test("malformed or non-object argumentsJSON renders the raw text the generic body would show, and keeps the row expandable", () => {
   const d = toolRendererFor("compact_context");
   const Body = d.body!;
