@@ -650,6 +650,15 @@ export function unmountMountedTrees(): void {
 	for (const tree of mountedThisTest.splice(0).reverse()) act(() => tree.unmount());
 }
 
+/** Lets the mounted trees' pending promise work land inside act. The
+ * outermost async act resolves only after a setImmediate task, so every
+ * promise chain already queued finishes first; that holds under these
+ * suites' fake timers too. A fake that answers on a timer needs a timer turn
+ * instead. */
+export async function settleMicrotasks(): Promise<void> {
+	await act(async () => {});
+}
+
 /** Mounts `element` and flushes its effects, returning the test renderer.
  * `options.createNodeMock` hands host components' refs a stand-in, such as a
  * ScrollView whose scrollTo a test records.

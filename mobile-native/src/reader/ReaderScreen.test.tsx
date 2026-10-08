@@ -23,6 +23,7 @@ import {
 	render as renderElement,
 	renderedText,
 	settle,
+	settleMicrotasks,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -215,13 +216,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
-
-/** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
-async function settleMicrotasks() {
-	await act(async () => {
-		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
-	});
-}
 
 function navigationDouble() {
 	const options: NativeStackNavigationOptions[] = [];
