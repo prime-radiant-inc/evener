@@ -47,6 +47,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
@@ -443,6 +444,8 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
 // pane can narrow right after (on narrow desktop, a sidebar taking its width
 // mid-drill), and columns keep animating their widths, which leaves the leaf
 // past the track's right edge unless the track keeps to its end.
+type Geometry = { scrollWidth: number; clientWidth: number };
+
 function trackGeometry() {
   const resized: ResizeObserverCallback[] = [];
   const observed = new Set<Element>();
@@ -459,7 +462,7 @@ function trackGeometry() {
       disconnect() {}
     },
   );
-  const geometry = { scrollWidth: 1172, clientWidth: 372 };
+  const geometry: Geometry = { scrollWidth: 1172, clientWidth: 372 };
   return {
     geometry,
     observed,
@@ -467,7 +470,7 @@ function trackGeometry() {
       Object.defineProperty(track, "scrollWidth", { configurable: true, get: () => geometry.scrollWidth });
       Object.defineProperty(track, "clientWidth", { configurable: true, get: () => geometry.clientWidth });
     },
-    resize(change: Partial<typeof geometry>) {
+    resize(change: Partial<Geometry>) {
       Object.assign(geometry, change);
       act(() => {
         for (const callback of resized) callback([], {} as ResizeObserver);
@@ -476,14 +479,14 @@ function trackGeometry() {
   };
 }
 
-type TrackStep = (element: HTMLElement, geometry: { scrollWidth: number; clientWidth: number }) => void;
+type TrackStep = (element: HTMLElement, geometry: Geometry) => void;
 const scrollTo = (element: HTMLElement, left: number) => {
   element.scrollLeft = left;
   fireEvent.scroll(element);
 };
 const narrow = { clientWidth: 152 };
 
-test.each<{ name: string; before?: TrackStep; change: { scrollWidth?: number; clientWidth?: number }; want: number }>([
+test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: number }>([
   { name: "the drilled leaf stays revealed when the track narrows", change: narrow, want: 1172 - 152 },
   {
     name: "a reader who scrolled back keeps their place when the track narrows",
@@ -525,28 +528,24 @@ test.each<{ name: string; before?: TrackStep; change: { scrollWidth?: number; cl
   },
 ])("$name", async ({ before, change, want }) => {
   const track = trackGeometry();
-  try {
-    const { fake } = fixture();
-    mount(fake);
-    await screen.findByText("child content child-id");
-    const element = screen.getAllByTestId("cascade-column")[0]?.parentElement;
-    if (!element) throw new Error("Missing cascade track");
-    track.attach(element);
-    act(() =>
-      enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
-    );
-    await screen.findByText("grandchild content grandchild-id");
-    expect(element.scrollLeft).toBe(1172 - 372);
-    // Columns change the track's content width without resizing the track.
-    for (const column of element.children) expect(track.observed.has(column)).toBe(true);
-    before?.(element, track.geometry);
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const element = screen.getAllByTestId("cascade-column")[0]?.parentElement;
+  if (!element) throw new Error("Missing cascade track");
+  track.attach(element);
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(element.scrollLeft).toBe(1172 - 372);
+  // Columns change the track's content width without resizing the track.
+  for (const column of element.children) expect(track.observed.has(column)).toBe(true);
+  before?.(element, track.geometry);
 
-    track.resize(change);
+  track.resize(change);
 
-    expect(element.scrollLeft).toBe(want);
-  } finally {
-    vi.unstubAllGlobals();
-  }
+  expect(element.scrollLeft).toBe(want);
 });
 
 test.each([
