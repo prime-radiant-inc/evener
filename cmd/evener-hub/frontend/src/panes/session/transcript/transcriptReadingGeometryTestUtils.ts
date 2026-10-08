@@ -7,8 +7,8 @@ export interface TranscriptTestGeometry {
   entryBoxes?: Readonly<Record<string, { top: number; height: number }>>;
 }
 
-// A held frame runs these before its other animation frame callbacks, as a
-// browser's rendering update runs its scroll steps before them.
+// A held frame runs these first, as a browser's rendering update runs its scroll
+// steps before it takes that frame's animation frame callbacks.
 const scrollStepCallbacks = new WeakSet<FrameRequestCallback>();
 
 /** Holds browser scheduling, never the virtualizer's request or direction fields. */
@@ -28,13 +28,16 @@ export function holdReaderFrames() {
   return {
     pending,
     release() {
-      const frame = [...pending].sort(
-        ([, a], [, b]) => Number(scrollStepCallbacks.has(b)) - Number(scrollStepCallbacks.has(a)),
-      );
-      for (const [id, callback] of frame) {
-        pending.delete(id);
-        callback(performance.now());
-      }
+      const run = (scrollSteps: boolean) => {
+        for (const [id, callback] of [...pending]) {
+          if (scrollStepCallbacks.has(callback) !== scrollSteps) continue;
+          pending.delete(id);
+          callback(performance.now());
+        }
+      };
+      // A scroll handler's frame request joins this frame; its writes' events wait for the next.
+      run(true);
+      run(false);
     },
     restore() {
       window.requestAnimationFrame = request;
@@ -55,7 +58,8 @@ export function installTranscriptGeometry(
   const offsets = new WeakMap<HTMLElement, number>();
   let active = true;
   // A browser fires one scroll event per scrolled element in the next rendering
-  // update's scroll steps, never synchronously and never before React commits.
+  // update's scroll steps, never synchronously. They run at the next held frame
+  // or notify(); with frames unheld, at jsdom's timer-driven animation frame.
   const scrolled = new Set<HTMLElement>();
   const runScrollSteps = () => {
     const targets = [...scrolled];
@@ -181,7 +185,7 @@ export function installTranscriptGeometry(
       return [...observers].flatMap((observer) => [...observer.targets]);
     },
     notify(include = () => true) {
-      // Resize observations are delivered in a rendering update, after its scroll steps.
+      // Each delivery is a new rendering update, whose scroll steps come first.
       runScrollSteps();
       for (const observer of [...observers]) {
         const entries: ResizeObserverEntry[] = [...observer.targets].flatMap((target) => {
