@@ -170,7 +170,7 @@ export interface ConversationMutationState {
  * enqueue boundary, before the daemon answers), so the receipt is optional and
  * present only on the direct service path. */
 export interface AcceptedConversationMutation {
-	readonly kind: "send" | "queue" | "interrupt";
+	readonly kind: ConversationMutationState["kind"];
 	readonly receipt?: MutationReceipt;
 }
 
@@ -541,7 +541,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// The target ref and instance fence come from the operation binding the
 	// caller already captured and rechecks after the await.
 	function submitMutation(
-		kind: "send" | "queue" | "interrupt",
+		kind: ConversationMutationState["kind"],
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
@@ -561,7 +561,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// means each action declares only its kind, binding and input.
 	function dispatchMutation(
 		service: ConversationService,
-		kind: "send" | "queue" | "interrupt",
+		kind: ConversationMutationState["kind"],
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
