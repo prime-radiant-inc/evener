@@ -223,9 +223,14 @@ func TestTaskIDValue(t *testing.T) {
 		{float64(1.5), 0, false},
 		{float64(1e20), 0, false},
 		{int64(0), 0, false},
-		// One bound on every path: ids up to 2^53, exact in float64.
-		{float64(1 << 53), 1 << 53, true},
-		{int64(1 << 53), 1 << 53, true},
+		// One bound on every path: ids below 2^53. JSON 2^53+1 decodes to
+		// float64 2^53, so accepting 2^53 would let dispatch take an id the
+		// fingerprint's int64 view rejects.
+		{float64(1<<53 - 1), 1<<53 - 1, true},
+		{int64(1<<53 - 1), 1<<53 - 1, true},
+		{json.Number("9007199254740991"), 1<<53 - 1, true},
+		{float64(1 << 53), 0, false},
+		{int64(1 << 53), 0, false},
 		{float64(1<<53 + 2), 0, false},
 		{int64(1<<53 + 1), 0, false},
 		{int64(math.MaxInt64), 0, false},

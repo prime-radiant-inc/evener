@@ -356,23 +356,37 @@ func decodeIDList(raw []any) ([]int, error) {
 	return ids, nil
 }
 
-// isPlaceholderNote reports whether notes text carries nothing: empty, or the
-// string "null" that some models send for every optional field.
-func isPlaceholderNote(notes string) bool {
-	trimmed := strings.TrimSpace(notes)
-	return trimmed == "" || strings.EqualFold(trimmed, "null")
+// updatePlaceholders is the one table of placeholder values for an update
+// entry's optional fields. A placeholder is a value whose effect is identical
+// to omitting the field: decodeTaskArgs and the store leave the task as it
+// was. Some models fill every optional field on every call, so these are
+// dropped before validation. Values that change something are not here:
+// depends_on [0] clears the dependencies, and reasoning_effort "none" or
+// "null" turn thinking off.
+var updatePlaceholders = map[string]func(any) bool{
+	// The store applies only a non-empty status.
+	"status": func(v any) bool { return v == nil || v == "" },
+	// The store skips an empty note; "null" text is a filler by ruling (#3879).
+	"notes": func(v any) bool {
+		text, isString := v.(string)
+		trimmed := strings.TrimSpace(text)
+		return v == nil || (isString && (trimmed == "" || strings.EqualFold(trimmed, "null")))
+	},
+	// A nil list means no change; only [0] clears.
+	"depends_on": func(v any) bool {
+		list, isList := v.([]any)
+		return v == nil || (isList && len(list) == 0)
+	},
+	// normalizeTaskEffort turns "", whitespace and "inherit" into "", which
+	// the store reads as no change.
+	"reasoning_effort": func(v any) bool {
+		effort, isString := v.(string)
+		return v == nil || (isString && normalizeTaskEffort(effort) == "")
+	},
 }
 
-// isPlaceholderDependsOn reports whether an update's depends_on leaves the
-// dependencies unchanged: null or an empty list. Only [0] clears them.
-func isPlaceholderDependsOn(deps any) bool {
-	list, isList := deps.([]any)
-	return deps == nil || (isList && len(list) == 0)
-}
-
-// normalizeTaskListArgs is task_list's NormalizeArgs. Some models fill every
-// optional update field on every call, so it drops the placeholders (see
-// isPlaceholderDependsOn and isPlaceholderNote). An entry left with only a
+// normalizeTaskListArgs is task_list's NormalizeArgs. It drops each update
+// field whose value is a placeholder (updatePlaceholders). An entry left with only a
 // valid id changed nothing: beside other work it is dropped, so the rest of
 // the call still applies. When nothing else is left, the bare entries stay,
 // so decoding rejects the call in the tool, where the failure breaker records
@@ -393,11 +407,10 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 			continue
 		}
 		cleaned := maps.Clone(entry)
-		if deps, has := cleaned["depends_on"]; has && isPlaceholderDependsOn(deps) {
-			delete(cleaned, "depends_on")
-		}
-		if notes, isString := cleaned["notes"].(string); isString && isPlaceholderNote(notes) {
-			delete(cleaned, "notes")
+		for field, isPlaceholder := range updatePlaceholders {
+			if value, has := cleaned[field]; has && isPlaceholder(value) {
+				delete(cleaned, field)
+			}
 		}
 		cleanedUpdates = append(cleanedUpdates, cleaned)
 		// Only an entry left with a well-formed id may be dropped; a
@@ -424,10 +437,10 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 	return normalized, nil
 }
 
-// maxTaskID bounds task ids at 2^53, the largest integer float64 holds
-// exactly, so dispatch (float64) and the fingerprint (int64) accept the same
-// ids.
-const maxTaskID = 1 << 53
+// maxTaskID bounds task ids below 2^53, so every accepted id is exact in
+// float64 and dispatch (float64) and the fingerprint (int64) accept the same
+// set: JSON 2^53+1 decodes to float64 2^53, which must not be accepted.
+const maxTaskID = 1<<53 - 1
 
 // taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
 // number types NormalizeArgs may see: float64 from dispatch's decoder, and
