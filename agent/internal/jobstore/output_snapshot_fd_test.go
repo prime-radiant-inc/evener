@@ -388,6 +388,11 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppendAndPrune(t *testing.T) 
 
 var errFDPostReadObservation = errors.New("fd snapshot test: post-read observation fault")
 
+// fdPostReadObservationFaultFS makes a descriptor read's attempt see a real
+// change, then fails the observation after it: during the observation before
+// the attempt it renames a new file over the path, so the attempt's
+// generation check returns errOutputChanged without reading metadata, and it
+// fails the next metadata open, the observation after the attempt.
 type fdPostReadObservationFaultFS struct {
 	afero.Fs
 	path      string
@@ -397,20 +402,16 @@ type fdPostReadObservationFaultFS struct {
 func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
 	if name == outputMetaPath(fs.path) {
 		fs.metaOpens++
-		if fs.metaOpens == 2 {
-			appendFile, err := os.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
+		switch fs.metaOpens {
+		case 1:
+			replacement := fs.path + ".replacement"
+			if err := os.WriteFile(replacement, []byte("replaced\n"), 0o600); err != nil {
 				return nil, err
 			}
-			if _, err := appendFile.WriteString("changed\n"); err != nil {
-				_ = appendFile.Close()
+			if err := os.Rename(replacement, fs.path); err != nil {
 				return nil, err
 			}
-			if err := appendFile.Close(); err != nil {
-				return nil, err
-			}
-		}
-		if fs.metaOpens == 3 {
+		case 2:
 			return nil, errFDPostReadObservation
 		}
 	}
