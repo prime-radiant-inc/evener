@@ -9,7 +9,7 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import type { DraftStorage } from "./newSession";
 import { bindCreation, creationStore } from "./newSession/creations";
-import { render } from "./renderNative.testkit";
+import { render, settle } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	secure: new Map<string, string>(),
@@ -35,10 +35,6 @@ vi.mock("./nativeReaderPosition", () => ({ readerPositions: { removeHub: () => {
 vi.mock("./nativeOrganization", () => ({ removeOrganizationData: () => {} }));
 
 const noDrafts: DraftStorage = () => ({ read: () => null, write: () => {}, clear: () => {} });
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 /** A client whose requests never answer, as a connection that has gone quiet. */
 const quietClient = () => ({ request: () => new Promise(() => {}) }) as unknown as ConversationClientLike;
 

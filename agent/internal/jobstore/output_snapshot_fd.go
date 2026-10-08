@@ -75,6 +75,8 @@ func readOutputPageSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, be
 // These implementations intentionally remain separate: frozen path-reader
 // seams require afero path access, while descriptor reads must fence path/file
 // generations and give observation errors precedence over partial changes.
+// Descriptor reads validate the metadata once per read, relying on that
+// generation fence (see checkOutputSizeUnchanged).
 func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
@@ -145,16 +147,8 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		return OutputSnapshot{}, err
 	}
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
-	}
-	after, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || after != view {
-		return OutputSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputSnapshot{}, err
@@ -200,21 +194,30 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 	snapshot.End = end
 	snapshot.Truncated = view.visibleStart > 0 || offset > view.visibleStart || end < view.total
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
-	}
-	after, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputWindowSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || after != view {
-		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// checkOutputSizeUnchanged reports a read's file as changed when it no longer
+// holds the retainedBytes its metadata was validated against. A size check is
+// enough, so a read skips a second validation, which would hash the whole
+// retained file again: an append changes the descriptor's size, a compaction renames a new
+// file over the path (checkOutputFileGeneration), and no writer rewrites in
+// place.
+func checkOutputSizeUnchanged(f *os.File, retainedBytes int64) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output snapshot: %w", err)
+	}
+	if info.Size() != retainedBytes {
+		return errOutputChanged
+	}
+	return nil
 }
 
 func checkOutputFileGeneration(path string, f *os.File) error {

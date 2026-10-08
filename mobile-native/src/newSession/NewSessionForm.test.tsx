@@ -11,7 +11,14 @@ import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
-import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	render,
+	renderedText,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { creationStore, forgetCreationForHub } from "./creations";
 import { formFront } from "./formFront";
@@ -50,11 +57,6 @@ vi.mock("../nativeImagePicker", () => ({
 		id: () => "image-1",
 	},
 }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 const glm: ModelDescriptor = {
 	provider: "lunaroute",
@@ -266,7 +268,11 @@ async function mount(options: Options = {}) {
 		prompt,
 		setReady,
 		text: () => renderedText(tree),
-		dispose: () => (hosts.dispose(), live.dispose(), tree.unmount()),
+		dispose: () => {
+			unmountMountedTrees();
+			hosts.dispose();
+			live.dispose();
+		},
 	};
 }
 

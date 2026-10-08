@@ -47,6 +47,7 @@ import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
 import { SearchResults } from "./SearchResults";
+import { boardHoldKey, type HeldRecord } from "./boardHold";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
@@ -594,6 +595,8 @@ async function until(check: () => void) {
 		await vi.waitFor(check);
 	});
 }
+/** What the Board holds for hub `id`, as it stored it. */
+const heldIn = (id: string) => JSON.parse(harness.kv.get(boardHoldKey(id)) ?? "[]") as HeldRecord[];
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
 	await settle();
@@ -3510,7 +3513,7 @@ it("reflects a project change held offline in its menu and on its row, and its o
 	act(() => undo(0));
 	await settle();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
-	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
+	expect(heldIn(id)).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settle();
@@ -3556,6 +3559,12 @@ it("queues a project change behind the held one it answers, even once back onlin
 	await until(() => expect(favorites).toBe(1));
 	act(() => unpin(0));
 	await settle();
+	// The Pin to top is still out: the Unpin waits in the hold behind it.
+	expect(favorites).toBe(1);
+	expect(heldIn(id)).toMatchObject([
+		{ action: { kind: "project", action: "pin" } },
+		{ action: { kind: "project", action: "unpin" } },
+	]);
 	answerPin();
 	await until(() =>
 		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
@@ -3563,7 +3572,7 @@ it("queues a project change behind the held one it answers, even once back onlin
 			{ kind: "project", id: "evener", favorited: false },
 		]),
 	);
-	await until(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
+	await until(() => expect(heldIn(id)).toEqual([]));
 	act(() => tree.unmount());
 });
 
@@ -3596,7 +3605,7 @@ it("holds a project change while the journal is busy, and sends it once the jour
 	expect(sheet.options).toContain("Archive project");
 	act(() => choose(sheet.options.indexOf("Archive project")));
 	await settle();
-	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
+	expect(heldIn(id)).toHaveLength(1);
 	answerFirst();
 	await until(() =>
 		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
@@ -4179,7 +4188,6 @@ it("offers a row's actions offline too, to hold until the connection returns (ph
 });
 
 describe("Board actions held offline (phase 6 ruling 18)", () => {
-	const heldIn = (id: string) => JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]") as unknown[];
 	const interrupts = (fake: ReturnType<typeof hub>) =>
 		fake.threadCalls.filter((call) => call.method === "turn/interrupt");
 	async function reconnect(id: string, fake: ReturnType<typeof hub>, tree: ReactTestRenderer, nav: Navigation) {
@@ -4402,7 +4410,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const id = hubId();
 		adoptedAnHourAgo(id);
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				{
 					id: "a",
@@ -4433,7 +4441,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		adoptedAnHourAgo(id);
 		const ref = `local:${OTHER_SESSION_ID}`;
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				{
 					id: "a",
@@ -4477,7 +4485,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 			},
 		});
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				shutDown("a"),
 				{ ...shutDown("b"), action: { ...shutDown("b").action, ref: "paradise-park:pp" } },
@@ -4500,7 +4508,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await settle();
 		await settle();
 		expect(fake.mutations).toHaveLength(1);
-		expect(harness.kv.has(`evener.native.board-hold.${id}`)).toBe(false);
+		expect(harness.kv.has(boardHoldKey(id))).toBe(false);
 	});
 });
 

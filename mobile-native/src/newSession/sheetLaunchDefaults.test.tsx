@@ -6,7 +6,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, settle } from "../renderNative.testkit";
 import { AccessPicker } from "./AccessPicker";
 import { MoreOptions } from "./MoreOptions";
 import { NewSessionForm } from "./NewSessionForm";
@@ -38,11 +38,6 @@ vi.mock("../nativeImagePicker", () => ({
 		id: () => "image-1",
 	},
 }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 it("reads the defaults once for the form and both pages, and again when the hub's launch settings change", async () => {
 	const resolves: unknown[] = [];

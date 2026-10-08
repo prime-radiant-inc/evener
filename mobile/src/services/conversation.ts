@@ -324,7 +324,9 @@ function nonemptyString(raw: unknown, label: string): string {
 // The result envelope around a receipt stays exact via exactObject.
 const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId", "projectionState"] as const;
 
-const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
+type RequiredReceiptKey = (typeof RECEIPT_CORRELATION_KEYS)[number] | "turnId" | "queueEntryIds";
+
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly RequiredReceiptKey[]>> = {
 	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
@@ -395,7 +397,8 @@ function decodeMutationResult(
 
 	const receiptObject =
 		result.receipt !== null && typeof result.receipt === "object" ? (result.receipt as Record<string, unknown>) : null;
-	const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
+	const kindReceiptKeys = REQUIRED_RECEIPT_KEYS_BY_KIND[kind];
+	const requiredReceiptKeys: string[] = [...kindReceiptKeys];
 	for (const key of OPTIONAL_RECEIPT_KEYS_ANY_KIND) {
 		if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
 			requiredReceiptKeys.push(key);
@@ -424,10 +427,12 @@ function decodeMutationResult(
 		}
 		decoded.instanceId = expectedInstanceId;
 	}
-	if (kind === "send" || kind === "interrupt") {
+	// decodedReceipt has checked the kind's keys are present and no other
+	// known key is, so the kind's table says which of these the receipt holds.
+	if (kindReceiptKeys.includes("turnId")) {
 		decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
 	}
-	if (kind === "queue" || kind === "cancel") {
+	if (kindReceiptKeys.includes("queueEntryIds")) {
 		const ids = receipt.queueEntryIds;
 		if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || id.trim() === "")) {
 			throw new Error("ConversationService: queue entry ids are empty or invalid");

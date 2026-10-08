@@ -285,7 +285,7 @@ func TestOutputPageDescriptorFencesRejectedSelectorGeneration(t *testing.T) {
 	}{
 		{"pruned selector", 3, 2},
 		{"invalid selector", 9, 2},
-		{"successful selection, trailing observation", 8, 4},
+		{"successful selection, trailing observation", 8, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "job.log")
