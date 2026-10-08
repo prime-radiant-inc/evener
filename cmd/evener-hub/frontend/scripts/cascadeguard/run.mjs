@@ -1204,10 +1204,7 @@ async function reloadAndMobileJourney() {
     if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`, "existing phone Overview menu action");
   await driver.clickAt(overview.x, overview.y);
-  await wait(`(() => {
-    const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
-    return sidebar && getComputedStyle(sidebar).transform === 'none';
-  })()`, "phone Overview entrance settled before physical row tap");
+  await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
   await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
@@ -1217,6 +1214,16 @@ async function reloadAndMobileJourney() {
   driver.milestone("mobile-agents-transcript", { childRef: fixture.childRef, unrelatedPaneId: unrelatedId });
   await capture("mobile-agents-transcript");
 }
+
+// The activity sidebar slides in from translateX(320px). A press measured
+// mid-slide lands past its row, at the viewport's right edge, and elementBox's
+// rest check can't be trusted to see the slide: it accepted a box at x 1434 of
+// 1440 that was still moving. So a press on a sidebar row waits for the slide
+// to finish, as backgroundjobsguard does for the Jobs sidebar (#3897).
+const sidebarEntranceSettled = `(() => {
+  const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
+  return sidebar && getComputedStyle(sidebar).transform === 'none';
+})()`;
 
 async function reveal(edge, container) {
   const selector = `${container} ${row(edge)}`;
@@ -1282,6 +1289,7 @@ async function reconnect() {
 }
 
 async function drill(edge, level) {
+  await wait(sidebarEntranceSettled, `sidebar entrance settled before drill ${level}`);
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
