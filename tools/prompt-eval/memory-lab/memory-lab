@@ -833,12 +833,14 @@ def load_scenario(scen):
         for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
             if key in st and not isinstance(st[key], str):
                 sys.exit(f"{where}: \"{key}\" must be a string")
-        if "workspace" in st and (not st["workspace"] or "/" in st["workspace"] or st["workspace"] in (".", "..")):
-            sys.exit(f"{where}: \"workspace\" must name one dir in the trial, like work2")
+        # Any other name could be a path the lab makes in the trial (xdg, sessions, a stage's
+        # <name>.memory or .events.ndjson): a fixture stage would find it there, skip its setup, and run in it.
+        if "workspace" in st and not re.fullmatch(r"work[0-9]*", st["workspace"]):
+            sys.exit(f"{where}: \"workspace\" must be work or work followed by digits, like work2; another name "
+                     "could collide with a dir or file the lab makes in the trial")
         if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
             sys.exit(f"{where}: \"resume\" must name an earlier stage")
-        workspace = st.get("workspace")
-        if st.get("fixture") and not (workspace and workspace != "work"):
+        if st.get("fixture") and st.get("workspace", "work") == "work":
             sys.exit(f"{where}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
         seen = set()  # grades and cleanup errors are keyed by check name across every type

@@ -1775,7 +1775,9 @@ export function useTranscriptScroll({
       }
       const m = measure(el);
       lastScrollGeometryRef.current = m;
-      wasAtBottomRef.current = captured?.followingBottom ?? isAtBottom(m);
+      // A retained placement lands after its rows measure, so this geometry
+      // can still be estimates that fit the port; its capture says where the reader is.
+      wasAtBottomRef.current = (captured ?? initialViewCapture)?.followingBottom ?? isAtBottom(m);
       setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
