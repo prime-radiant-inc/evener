@@ -490,5 +490,30 @@ class CompactionTest(unittest.TestCase):
         self.assertEqual([c["output_chars"] for c in calls], [0, 0])
 
 
+class ScenarioValidationTest(unittest.TestCase):
+    """load_scenario refuses a scenario that can't run as written."""
+
+    def load(self, stage):
+        scen = tempfile.TemporaryDirectory()
+        self.addCleanup(scen.cleanup)
+        with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+            json.dump({"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}, f)
+        return bookkeeping.lab.load_scenario(scen.name)
+
+    def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
+        # A fixture stage whose workspace already exists skips its setup and runs there: the trial's
+        # state dirs, or an earlier stage's outputs.
+        for name in ("sessions", "xdg", "A.memory", "A.events.ndjson", "A.stdout", "A.grade.json", "..", "a/b"):
+            with self.subTest(workspace=name):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load({"fixture": "fixture2", "workspace": name})
+                self.assertIn('"workspace" must be work or work followed by digits', str(refused.exception))
+
+    def test_a_work_numbered_workspace_loads(self):
+        for name in ("work2", "work10"):
+            with self.subTest(workspace=name):
+                self.assertEqual(self.load({"fixture": "fixture2", "workspace": name})["stages"][1]["workspace"], name)
+
+
 if __name__ == "__main__":
     unittest.main()
