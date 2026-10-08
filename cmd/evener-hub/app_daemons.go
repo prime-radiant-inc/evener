@@ -219,14 +219,11 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 // Ownership, deletion, and protocol fences are revalidated under the locks,
 // which are released before the request is forwarded: the daemon can hold a
 // retire while its session namer settles (#3921), and every read, mutation
-// and relayed frame of the session takes the same locks (#4052). A resume,
-// force stop, deletion or archive may then overlap the forwarded request:
-// the daemon's own exact-identity check before and after its claim keeps a
-// stale request from retiring a replacement, a force stop cancels the
-// forwarded request and ends the daemon, and a deletion skips the
-// still-live session, so the retire's answer stands. The daemon's answer
-// passes through verbatim: a fresh blocker refusal or Accepted with the
-// current lifecycle; acceptance is never reported as exit.
+// and relayed frame of the session takes the same locks. An overlapping
+// resume, force stop or deletion is safe because the daemon checks the exact
+// identity before and after its claim; the design spec lists each outcome.
+// The daemon's answer passes through verbatim: a fresh blocker refusal or
+// Accepted with the current lifecycle; acceptance is never reported as exit.
 func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
 	ref, err := appwire.ParseRef(params.Identity.Ref)
 	if err != nil || ref.SourceID != "local" {

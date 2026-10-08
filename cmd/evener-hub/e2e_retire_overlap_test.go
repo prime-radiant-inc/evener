@@ -11,7 +11,7 @@ import (
 )
 
 // TestE2E_RetireOverlappedByAnotherOwnershipAction pins the contract #4052
-// gives the hub: it no longer holds a session's alias locks while a retire it
+// gives the hub: it holds none of a session's alias locks while a retire it
 // forwarded waits in the daemon (on a held session namer, #3921), so a
 // resume, force stop or deletion can overlap that retire. Each ends in a
 // consistent state, a stopped or re-resumed daemon and never one left
@@ -57,35 +57,30 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 
 			switch overlap {
 			case "force stop":
-				if _, err := clientRequest[appwire.EmptyResponse](actionCtx, other, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}); err != nil {
-					t.Fatalf("force stop during the retire: %v", err)
+				_, err = clientRequest[appwire.EmptyResponse](actionCtx, other, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref})
+			case "delete":
+				var deleted appwire.SessionDeleteResponse
+				deleted, err = clientRequest[appwire.SessionDeleteResponse](actionCtx, other, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
+				if err == nil && len(deleted.Deleted) != 0 {
+					t.Fatalf("delete during the retire deleted %v, want the live session skipped", deleted.Deleted)
 				}
+			case "resume":
+				_, err = clientRequest[appwire.ThreadResumeResponse](actionCtx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref})
+			}
+			if err != nil {
+				t.Fatalf("%s during the retire: %v", overlap, err)
+			}
+			if overlap == "force stop" {
 				releaseNamer()
 				// The stop cancels the forwarded retire before ending the daemon.
 				if got := <-retired; got.err == nil {
 					t.Fatalf("retire overlapped by a force stop = accepted=%t, want its forward cancelled", got.resp.Accepted)
 				}
-			case "delete":
-				deleted, err := clientRequest[appwire.SessionDeleteResponse](actionCtx, other, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
-				if err != nil {
-					t.Fatalf("delete during the retire: %v", err)
-				}
-				if len(deleted.Deleted) != 0 {
-					t.Fatalf("delete during the retire deleted %v, want the live session skipped", deleted.Deleted)
-				}
+			} else {
 				assertRetireStillPending(t, retired)
 				releaseNamer()
 				if got := <-retired; got.err != nil || !got.resp.Accepted {
-					t.Fatalf("retire after a skipped delete = accepted=%t %v, want accepted once the namer settled", got.resp.Accepted, got.err)
-				}
-			case "resume":
-				if _, err := clientRequest[appwire.ThreadResumeResponse](actionCtx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
-					t.Fatalf("resume during the retire: %v", err)
-				}
-				assertRetireStillPending(t, retired)
-				releaseNamer()
-				if got := <-retired; got.err != nil || !got.resp.Accepted {
-					t.Fatalf("retire after an overlapping resume = accepted=%t %v, want accepted once the namer settled", got.resp.Accepted, got.err)
+					t.Fatalf("retire overlapped by a %s = accepted=%t %v, want accepted once the namer settled", overlap, got.resp.Accepted, got.err)
 				}
 			}
 			if err := awaitDaemonGone(ctx, client, ref); err != nil {

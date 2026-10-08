@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -844,6 +845,7 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 	runDir := t.TempDir()
 	entry := residentEntryForTest(t, 4202)
 	entered, answer := make(chan struct{}), make(chan struct{})
+	answerRetire := sync.OnceFunc(func() { close(answer) })
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
 		close(entered)
@@ -864,6 +866,9 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
+	// Deferred last so it runs first: a failed check still answers the
+	// daemon before the hub and client close.
+	defer answerRetire()
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +889,6 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 	ref := "local:" + entry.ThreadID
 	unlock, ok := tryLockDeletionTarget(cfg, ref, entry.ThreadID) // a relayed frame's guard
 	if !ok {
-		close(answer)
 		t.Fatal("a relayed frame's lock was held while the retire waited on the daemon")
 	}
 	unlock()
@@ -892,10 +896,9 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 	defer cancel()
 	read, err := withSessionActionOwnership(ctx, cfg, ref, entry.ThreadID, func() (string, error) { return "read", nil })
 	if err != nil || read != "read" {
-		close(answer)
 		t.Fatalf("a session read while the retire waited = %q, %v; want it to proceed", read, err)
 	}
-	close(answer)
+	answerRetire()
 	if err := <-retired; err != nil {
 		t.Fatalf("retire: %v", err)
 	}
