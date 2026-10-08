@@ -3445,17 +3445,6 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 				}
 			}
 		}
-		if sess != nil {
-			// The initial-prompt namer runs detached and can outlive the
-			// run, taking the session lock to name and save the session.
-			sess.mu.Lock()
-			naming := sess.naming.pending
-			sess.mu.Unlock()
-			if naming != 0 {
-				why = fmt.Sprintf("%d session namer runs pending", naming)
-				return false
-			}
-		}
 		sub.mu.Lock()
 		done := sub.done
 		live := sub.running || sub.driving || sub.finalizing
@@ -3463,6 +3452,18 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 		if live || done == nil {
 			why = fmt.Sprintf("child live=%t completion channel=%t", live, done != nil)
 			return false
+		}
+		if sess != nil {
+			// The session namer is the last stage: a run launches it and it
+			// can outlive the run, taking the session lock to name and save
+			// the session.
+			sess.mu.Lock()
+			naming := sess.naming.pending
+			sess.mu.Unlock()
+			if naming != 0 {
+				why = fmt.Sprintf("%d session namer runs pending", naming)
+				return false
+			}
 		}
 		why = "completion channel open"
 		select {
@@ -4073,18 +4074,23 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 	}
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failure before the timer is armed must not leave the namer blocked
+	// for the session's close to wait out.
+	t.Cleanup(releaseNamer)
 	fixture.client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
 		<-release
 		return llm.Response{Provider: testSessionNamerProvider, Model: request.Model, Message: llm.Assistant(`{"name":"Slow Name"}`)}
 	}})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
-	time.AfterFunc(100*time.Millisecond, func() { close(release) })
+	time.AfterFunc(100*time.Millisecond, releaseNamer)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	sub.sess.mu.Lock()
-	pending := sub.sess.naming.pending
+	pending, name := sub.sess.naming.pending, sub.sess.naming.value
 	sub.sess.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("quiescence returned with %d child namer runs pending, want none", pending)
+	if pending != 0 || name != "Slow Name" {
+		t.Fatalf("quiescence returned with %d child namer runs pending and name %q, want none pending and the slow namer's name", pending, name)
 	}
 }
