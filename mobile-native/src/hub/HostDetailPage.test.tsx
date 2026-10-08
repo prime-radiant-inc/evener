@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, unmountMountedTrees, settle } from "../renderNative.testkit";
 import { Group } from "../sheet/Grouped";
 import { HostDetailPage } from "./HostDetailPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -21,11 +21,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 async function mount(fleet: ScriptedFleet, name: string, options: { ready?: boolean } = {}) {
 	const updates = createHubUpdateController({

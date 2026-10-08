@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees, settle } from "../renderNative.testkit";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { OwnHostPage } from "./OwnHostPage";
 
@@ -23,8 +23,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 
 async function mount(fleet: ScriptedFleet) {
 	const updates = createHubUpdateController({
