@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -530,8 +531,10 @@ func (r *Registry) Register(t RegisteredTool) error {
 		// registerCoreTools re-registers tools from NewRegistry). This
 		// avoids recompilation and guards against transient jsonschema
 		// library panics from os.Getwd() failures in ephemeral worktrees.
+		// A re-registration that changes the parameters (a root's
+		// communicate gains end_reason) compiles its own.
 		r.mu.RLock()
-		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil {
+		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil && reflect.DeepEqual(existing.Definition.Parameters, t.Definition.Parameters) {
 			t.Schema = existing.Schema
 		}
 		r.mu.RUnlock()

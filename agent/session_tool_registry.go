@@ -47,6 +47,10 @@ type toolDeps struct {
 	// resultToolName is the effective name of the communicate tool.
 	resultToolName func() string
 
+	// offersEndReason reports that communicate takes end_reason
+	// (Session.offersCommunicateEndReason).
+	offersEndReason bool
+
 	// cmdTimeouts is a live getter for the default and max shell command
 	// timeouts. It reads cfg on every call so cfg mutations are visible;
 	// the values are NOT snapshotted at registration time.
@@ -347,6 +351,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
+		offersEndReason:        s.offersCommunicateEndReason(),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

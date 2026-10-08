@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -29,6 +30,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
+	if deps.offersEndReason {
+		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
+	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
@@ -44,6 +48,16 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			endTurn, ok := args["end_turn"].(bool)
 			if !ok {
 				return nil, errors.New("communicate requires end_turn")
+			}
+			endReason := ""
+			if endTurn && deps.offersEndReason {
+				endReason = tool.CommunicateEndReasonDone
+				if v, ok := args["end_reason"]; ok && v != nil {
+					endReason = fmt.Sprint(v)
+				}
+				if !slices.Contains(tool.CommunicateEndReasons, endReason) {
+					return nil, fmt.Errorf("communicate end_reason must be one of %s", strings.Join(tool.CommunicateEndReasons, ", "))
+				}
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -71,9 +85,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:  callIDFromContext(ctx),
-				EndTurn: endTurn,
-				Message: message,
+				CallID:    callIDFromContext(ctx),
+				EndTurn:   endTurn,
+				Message:   message,
+				EndReason: endReason,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing

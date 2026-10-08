@@ -1515,6 +1515,9 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
+			if s.offersCommunicateEndReason() {
+				defs[i] = tool.WithCommunicateEndReason(defs[i])
+			}
 			if s.memorySaveInstructionsEnabled() {
 				defs[i].Description += " " + memoryReportReminder
 			}

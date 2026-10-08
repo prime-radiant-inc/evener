@@ -182,6 +182,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.
 	data.HasAskUser = s.reg.Get("ask_user") != nil
+	data.HasEndReason = s.offersCommunicateEndReason()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()

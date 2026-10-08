@@ -55,6 +55,9 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	normalized["message"] = message
 	normalized["end_turn"] = endTurn
 	normalized["output"] = output
+	if reason, ok := args["end_reason"]; ok {
+		normalized["end_reason"] = reason
+	}
 
 	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{

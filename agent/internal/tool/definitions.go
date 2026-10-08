@@ -680,6 +680,37 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
+// Why a root session's communicate call ends its turn. A session that ends
+// on needs_response is waiting on its human partner; done and
+// waiting_on_work leave it idle.
+const (
+	CommunicateEndReasonDone          = "done"
+	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
+)
+
+// CommunicateEndReasons lists the end_reason values in the order the
+// parameter advertises them.
+var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
+
+// WithCommunicateEndReason returns a copy of a communicate definition that
+// also offers end_reason. Only a root session gets it: a delegate's resting
+// state never asks for a person.
+func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["end_reason"] = map[string]any{
+		"type":        "string",
+		"enum":        CommunicateEndReasons,
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session shows Idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows Needs you. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session asks nobody for attention.",
+	}
+	def.Parameters = params
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{

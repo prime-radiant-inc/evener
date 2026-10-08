@@ -557,9 +557,10 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
-	CallID  string `json:"call_id,omitempty"`
-	EndTurn bool   `json:"end_turn"`
-	Message string `json:"message"`
+	CallID    string `json:"call_id,omitempty"`
+	EndTurn   bool   `json:"end_turn"`
+	Message   string `json:"message"`
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.

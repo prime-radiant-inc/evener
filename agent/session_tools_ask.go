@@ -53,6 +53,12 @@ func (s *Session) isSubagentSession() bool {
 	return s.cfg.spawn.parentSessionID != "" || s.restoredMetaIsSubagent
 }
 
+// offersCommunicateEndReason reports whether this session's communicate takes
+// end_reason: root sessions only, by the same predicate as ask_user.
+func (s *Session) offersCommunicateEndReason() bool {
+	return !s.isSubagentSession()
+}
+
 // askPendingCount returns the number of questions currently pending this turn
 // (spec §5.1's per-turn pending set) — a later round-boundary check uses this
 // to decide whether the round just posted question(s).
