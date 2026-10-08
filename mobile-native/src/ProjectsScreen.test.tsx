@@ -333,16 +333,17 @@ it("reads no archived list while the connection is not ready", async () => {
 });
 
 // An archived list nothing has loaded yet waits for a ready connection: the
-// screen doesn't read it while the connection is away. The hub double stays
-// ready, so a read the screen attempted would be recorded rather than
-// refused.
+// screen doesn't read it while the connection is away. The client refuses a
+// call while not ready without recording it, so a spy catches the attempt,
+// and the screen shows no refusal.
 it("reads no unloaded archived list until the connection is ready", async () => {
-	const hub = new FakeClient("ready");
-	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	const hub = new FakeClient("reconnecting");
+	const request = vi.spyOn(hub, "request");
 	harness.connection = screenConnection(hub, "reconnecting");
-	render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await settleMicrotasks();
-	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toEqual([]);
+	expect(request.mock.calls.filter(([method]) => method === "evener/archived/list")).toEqual([]);
+	expect(renderedText(tree)).not.toContain("cannot call");
 });
 
 // A recovered connection drops every archived list (archivedLists.ts), and
