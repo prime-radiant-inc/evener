@@ -1802,8 +1802,19 @@ export function useTranscriptScroll({
       // boundary alone cannot be trusted to clear it. A held middle button is
       // read rather than consumed - native autoscroll scrolls the port for as
       // long as it is down, so every scroll event it produces is the reader's.
+      //
+      // Only an event the gesture could have caused consumes the marker: one
+      // whose content and viewport heights held. A measurement correction
+      // (heights changed) can land between a native key and its smooth scroll,
+      // a frame later; it is still vetoed, but leaves the marker for the key's
+      // own scroll, measured from the corrected offset.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
-      gestureFramesLeftRef.current = 0;
+      const previous = lastScrollGeometryRef.current;
+      if (m.scrollHeight === previous.scrollHeight && m.clientHeight === previous.clientHeight) {
+        gestureFramesLeftRef.current = 0;
+      } else if (readerGestureRef.current) {
+        readerGestureRef.current = { ...readerGestureRef.current, beforeOffset: m.scrollTop };
+      }
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving
       // backwards: the virtualizer correcting its own estimates, not the reader
@@ -1847,7 +1858,6 @@ export function useTranscriptScroll({
       // trigger - to that same pin event. It always arrives: this branch is only
       // taken when the gap is already past the at-bottom threshold, so the
       // assignment genuinely moves scrollTop and the browser dispatches for it.
-      const previous = lastScrollGeometryRef.current;
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
       if (
