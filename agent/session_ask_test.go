@@ -2606,9 +2606,9 @@ func TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder
 		t.Fatalf("live pending count after the accepted steer = %d, want 0", got)
 	}
 
-	// The same-round daemon task reminder, appended exactly as production
-	// appends daemon nudges (appendSteeringTurn: task-inactive kind, no user
-	// source), and the round's plain final response after it. Both are
+	// The same-round daemon task reminder (stand-in text), appended the way
+	// production appends daemon reminders (appendSteeringTurn: task-inactive
+	// kind, no user source), and the round's plain final response after it. Both are
 	// transcript-shape-only appends, like the trailing-steering oracle's:
 	// the restore scan inspects shape, not which mechanism produced it.
 	sess.appendSteeringTurn("<SYSTEM-REMINDER>\nYou have not touched your task list in a while.\n</SYSTEM-REMINDER>", events.SteeringKindTaskInactive)

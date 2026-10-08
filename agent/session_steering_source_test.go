@@ -142,7 +142,7 @@ func TestDrainAsSteer_MarksUserSource(t *testing.T) {
 }
 
 // TestSystemSteeringPaths_KeepEmptySource pins the other queue entry points
-// (internal Steer callers: task nudges, hook context, job notifications, …)
+// (internal Steer callers: task reminders, hook context, job notifications, …)
 // to the empty system source so they keep the steering-divider rendering.
 func TestSystemSteeringPaths_KeepEmptySource(t *testing.T) {
 	t.Parallel()

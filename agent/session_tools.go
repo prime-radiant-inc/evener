@@ -1624,7 +1624,6 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 	s.mu.Unlock()
 
 	roundsSinceUse := totalRounds - lastRound
-	canUseTaskList := s.canInstructTool("task_list")
 
 	// Tasks exist, not used in 25+ rounds.
 	if everUsed && roundsSinceUse >= 25 {
@@ -1633,7 +1632,7 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 			s.mu.Lock()
 			s.taskToolLastRound = totalRounds
 			s.mu.Unlock()
-			return taskReminderForInactivity(store, canUseTaskList), events.SteeringKindTaskInactive
+			return taskReminderForInactivity(store, s.canInstructTool("task_list")), events.SteeringKindTaskInactive
 		}
 	}
 
