@@ -19,20 +19,21 @@ import {
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
-	flatListCalls,
-	flatListScrollFailures,
-	keyboard,
 	alertRequests,
 	dockBody,
 	dropped as droppedConnection,
-	type PanGestureMock,
+	flatListCalls,
+	flatListScrollFailures,
+	keyboard,
 	playedHaptics,
 	pressable,
 	render,
 	renderedText,
 	screenConnection,
+	settle,
 	systemGlass,
 	textOf,
+	type PanGestureMock,
 	unmountMountedTrees,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -221,16 +222,6 @@ const navigation = {
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
-
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
 
 async function advanceFakeTimers(ms: number) {
 	await act(async () => {
@@ -555,7 +546,7 @@ async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
 	act(() => input.props.onChangeText(text));
-	await flush();
+	await settle();
 }
 
 async function press(tree: ReactTestRenderer, label: string) {
@@ -3831,7 +3822,7 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
 		expect(host?.session.capabilities).toMatchObject({ send: true });
 		act(() => host?.choose("/goal"));
-		await flush();
+		await settle();
 		expect(field(tree)?.props.value).toBe("/goal hello");
 	});
 });
