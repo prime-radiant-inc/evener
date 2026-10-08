@@ -506,3 +506,14 @@ func TestRenderToolCallDelegateSendIgnoresARawStateThatIsNotASendResult(t *testi
 		t.Fatalf("render = %q, want the unvalidated raw output ignored", got)
 	}
 }
+
+// A padded status is shown as the shared reader's delegateSendEarlierLabel
+// shows it: only a status that is exactly "completed" is left off.
+func TestRenderToolCallDelegateSendShowsAPaddedEarlierStatus(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":" completed ","output":"FIRST"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	if !strings.Contains(got, "earlier reply 1 of 1 ·  completed") {
+		t.Fatalf("render = %q, want the padded status shown as written", got)
+	}
+}
