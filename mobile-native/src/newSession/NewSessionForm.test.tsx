@@ -215,8 +215,8 @@ async function mount(options: Options = {}) {
 		/** The connection drops, or comes back, under the reopened sheet. */
 		const setReopenedReady = async (ready: boolean) => {
 			context = { ...context, ready };
-			store.getState().bind(ready ? createNewSessionService(client as never) : null);
 			await act(async () => {
+				store.getState().bind(ready ? createNewSessionService(client as never) : null);
 				reopened.update(form(next.navigation));
 			});
 			await settle();
@@ -231,8 +231,9 @@ async function mount(options: Options = {}) {
 	const prompt = () => tree.root.findByProps({ accessibilityLabel: "What should the agent do?" });
 	const setReady = async (ready: boolean) => {
 		context = { ...context, ready };
-		store.getState().bind(ready ? createNewSessionService(client as never) : null);
 		await act(async () => {
+			// The store tells the mounted form at once, so the bind belongs in act.
+			store.getState().bind(ready ? createNewSessionService(client as never) : null);
 			tree.update(form());
 		});
 		await settle();
