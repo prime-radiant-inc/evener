@@ -1610,11 +1610,11 @@ func promptSectionNames(prompt string) []string {
 
 // checkSummaryReply rejects a summarization reply that cannot stand in for the
 // history it folds: an empty one, or, under the default prompt, one with none
-// of the required sections. Weak models sometimes answer the prompt in
-// character ("I'll read the plan, then...") instead of summarizing (#3978).
-// One section is enough, so a summary that drops some sections still keeps
-// what it has. Caller instructions replace the sections, so under them only
-// emptiness is checked.
+// of the required sections with content under it. Weak models sometimes
+// answer the prompt in character ("I'll read the plan, then...") instead of
+// summarizing (#3978). One filled section is enough, so a summary that drops
+// some sections still keeps what it has. Caller instructions replace the
+// sections, so under them only emptiness is checked.
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {
@@ -1623,14 +1623,32 @@ func checkSummaryReply(reply, instructions string) error {
 	if instructions != "" {
 		return nil
 	}
+	inSection := false
 	for line := range strings.Lines(text) {
-		// Accept any heading style: "## Progress", "### progress", "**Progress**".
-		name := strings.Trim(strings.TrimSpace(line), "#* ")
-		if slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
+		line = strings.TrimSpace(line)
+		if name, ok := markdownHeading(line); ok {
+			inSection = slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) })
+			continue
+		}
+		if inSection && line != "" {
 			return nil
 		}
 	}
-	return errors.New("summarizer reply has none of the summary sections")
+	return errors.New("summarizer reply has no summary section with content")
+}
+
+// markdownHeading returns the text of a heading line: "## Progress",
+// "### progress" or "**Progress**". A line without heading markup is not one.
+func markdownHeading(line string) (string, bool) {
+	if strings.HasPrefix(line, "#") {
+		return strings.Trim(line, "#* "), true
+	}
+	if inner, ok := strings.CutPrefix(line, "**"); ok {
+		if inner, ok := strings.CutSuffix(inner, "**"); ok {
+			return strings.TrimSpace(inner), true
+		}
+	}
+	return "", false
 }
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.

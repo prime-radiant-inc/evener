@@ -275,8 +275,9 @@ The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
 
 A reply that is not a summary counts as a summarizer failure: the layer emits
 the "LLM summarization failed" warning and the checkpoint stands. Not a summary
-means empty, or, under the default prompt, holding none of the prompt's `##`
-section names as a heading line in any heading style. Weak models sometimes
+means empty, or, under the default prompt, holding no section with content: a
+heading line (`#` markup or a `**bold**` line) naming one of the prompt's `##`
+sections, followed by a non-heading line with text. Weak models sometimes
 answer in character ("I'll read the plan, then...") instead of summarizing.
 Under caller instructions, which replace the sections, only an empty reply is
 rejected.

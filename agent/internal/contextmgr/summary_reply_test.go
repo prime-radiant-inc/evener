@@ -39,6 +39,12 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		"empty":      "",
 		"whitespace": " \n\t",
 		"narration":  "I'll read the plan to get the exact Task 3 and Task 4 code, then check current state.",
+		// A recognized heading with nothing under it carries no state.
+		"heading only":      "## Progress",
+		"headings only":     "## Progress\n\n## Pending Work\n",
+		"heading then none": "**Current State**\n   \n",
+		// A section name without heading markup is prose, not a section.
+		"bare section name": "Progress\nI'll read the plan next.",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
