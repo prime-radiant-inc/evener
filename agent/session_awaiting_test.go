@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/tool"
 	"strings"
 	"testing"
 	"time"
@@ -488,5 +491,40 @@ func TestRestore_NotificationAfterNeedsResponseRestsIdle(t *testing.T) {
 	})
 	if live != SessionIdle || restored != SessionIdle {
 		t.Fatalf("live %q, restored %q; want both idle", live, restored)
+	}
+}
+
+// A result replaced because its PostToolUse hook context could not be
+// delivered keeps its tool state: a turn-ending communicate's records the end
+// reason restore reads.
+func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
+	t.Parallel()
+	sess, _ := intg_hookSession(t, `{
+		"hooks": {
+			"PostToolUse": [
+				{"matcher": "*", "hooks": [{"type": "command", "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"post-context-note\"}}'"}]}
+			]
+		}
+	}`)
+	defer sess.Close()
+	sess.RegisterTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		return tool.StateResult{Output: "ok", State: communicateEndState{EndReason: "needs_response"}}, nil
+	})
+	// A retiring session refuses the hook context's steering.
+	retirement, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retirement.mu.Lock()
+	retirement.phase = "claimed"
+	retirement.mu.Unlock()
+	sess.retirementController.Store(retirement)
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "call_state", Name: "stateful_probe", Arguments: json.RawMessage(`{}`)}, "")
+	if !res.IsError {
+		t.Fatalf("result = %+v, want the hook-failure error", res)
+	}
+	if string(res.ToolState) != `{"communicate_end_reason":"needs_response"}` {
+		t.Fatalf("tool state = %s, want the original kept", res.ToolState)
 	}
 }
