@@ -844,6 +844,9 @@ func TestDaemonActionRetireReturnsFreshBlockers(t *testing.T) {
 func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 	runDir := t.TempDir()
 	entry := residentEntryForTest(t, 4202)
+	// A resumed session has a session id of its own, so the retire locks
+	// more than one alias.
+	entry.SessionID = hubtest.SessionID(t)
 	entered, answer := make(chan struct{}), make(chan struct{})
 	answerRetire := sync.OnceFunc(func() { close(answer) })
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
@@ -892,6 +895,17 @@ func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
 		t.Fatal("a relayed frame's lock was held while the retire waited on the daemon")
 	}
 	unlock()
+	aliases := forceStopAliases(entry)
+	if len(aliases) < 2 {
+		t.Fatalf("fixture aliases = %v, want the session and thread ids apart", aliases)
+	}
+	for _, alias := range aliases {
+		lock := cfg.ResumeLocks.For(alias)
+		if !lock.TryLock() {
+			t.Fatalf("alias %q was held while the retire waited on the daemon", alias)
+		}
+		lock.Unlock()
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	read, err := withSessionActionOwnership(ctx, cfg, ref, entry.ThreadID, func() (string, error) { return "read", nil })

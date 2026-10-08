@@ -246,8 +246,10 @@ Extend typed AppWire contracts using the repository's catalog and generator:
   A resume, force stop, deletion or archive may overlap the forwarded
   request: the daemon's own exact-identity check before and after its claim
   keeps a stale request from retiring a replacement, a force stop cancels the
-  forwarded request and ends the daemon, and a deletion skips the still-live
-  session, so the retire's answer stands (#4052).
+  forwarded request and ends the daemon, a deletion skips the still-live
+  session, and an archive persists its decision; after a deletion or an
+  archive, the retire already checked stands (an archived session's daemon
+  retires anyway) (#4052).
 - Existing `evener/thread/forceStop` remains the explicit destructive operation.
 - Daemon diagnostics supply effective timeout, eligible-since/deadline, phase,
   and blocker categories. Hub consumes these through its existing probing path.

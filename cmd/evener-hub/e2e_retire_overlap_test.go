@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
-	for _, overlap := range []string{"force stop", "delete", "resume"} {
+	for _, overlap := range []string{"force stop", "delete", "resume", "archive"} {
 		t.Run(overlap, func(t *testing.T) {
 			provider, err := fakellm.New()
 			if err != nil {
@@ -66,6 +67,12 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 				}
 			case "resume":
 				_, err = clientRequest[appwire.ThreadResumeResponse](actionCtx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref})
+			case "archive":
+				// The retire was checked before the archive, so it stands: an
+				// archived session's daemon retires anyway.
+				_, err = clientRequest[appwire.ArchiveResponse](actionCtx, other, appwire.MethodEvenerArchiveSet, appwire.ArchiveParams{
+					Kind: appwire.ArchiveTargetSession, ID: strings.TrimPrefix(ref, "local:"), WorkingDir: stack.workDir, Archived: true,
+				})
 			}
 			if err != nil {
 				t.Fatalf("%s during the retire: %v", overlap, err)
@@ -101,8 +108,15 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 				t.Fatalf("evener/daemon/list: %v", err)
 			}
 			for _, row := range list.Daemons {
-				if row.Identity.Ref == ref && row.Lifecycle != nil && row.Lifecycle.Phase != "resident" {
+				if row.Identity.Ref != ref {
+					continue
+				}
+				if row.Lifecycle != nil && row.Lifecycle.Phase != "resident" {
 					t.Fatalf("the re-resumed daemon is in phase %q, want resident", row.Lifecycle.Phase)
+				}
+				// The archive overlapping the retire persisted its decision.
+				if row.Archived != (overlap == "archive") {
+					t.Fatalf("the re-resumed daemon's row archived=%t after the %s", row.Archived, overlap)
 				}
 			}
 			if _, found := residentIdentityForRef(list, ref); !found {
