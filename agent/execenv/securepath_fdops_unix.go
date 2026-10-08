@@ -41,6 +41,7 @@ func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, er
 	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return 0, 0, time.Time{}, err
 	}
+	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each).
 	return st.Size, os.FileMode(st.Mode & 0o777), time.Unix(st.Mtim.Unix()), nil
 }
 
@@ -599,7 +600,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 		if relPrefix != "" {
 			relName = filepath.Join(relPrefix, name)
 		}
-		de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+		de := DirEntry{Name: relName, IsDir: ent.IsDir(), IsRegular: ent.Type().IsRegular()}
 		if ent.Type()&os.ModeSymlink != 0 {
 			de.IsSymlink = true
 		}

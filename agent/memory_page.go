@@ -89,15 +89,46 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	return p
 }
 
-// firstMarkdownHeading returns the text of body's first ATX heading, or "".
+// firstMarkdownHeading returns the text of body's first ATX heading outside a
+// fenced code block, without closing hashes, or "".
 func firstMarkdownHeading(body string) string {
+	var fence string // the open fence's marker ("```" or "~~~"), "" outside one
 	for line := range strings.SplitSeq(body, "\n") {
+		indented := strings.TrimLeft(line, " ")
+		if len(line)-len(indented) <= 3 {
+			if marker := fenceMarker(indented); marker != "" {
+				switch fence {
+				case "":
+					fence = marker
+				case marker:
+					fence = ""
+				}
+				continue
+			}
+		}
+		if fence != "" {
+			continue
+		}
 		trimmed := strings.TrimLeft(line, "#")
 		level := len(line) - len(trimmed)
 		if level >= 1 && level <= 6 && (trimmed == "" || trimmed[0] == ' ' || trimmed[0] == '\t') {
-			if text := strings.TrimSpace(trimmed); text != "" {
+			text := strings.TrimSpace(trimmed)
+			if stripped := strings.TrimRight(text, "#"); stripped != text && (stripped == "" || strings.HasSuffix(stripped, " ") || strings.HasSuffix(stripped, "\t")) {
+				text = strings.TrimSpace(stripped)
+			}
+			if text != "" {
 				return text
 			}
+		}
+	}
+	return ""
+}
+
+// fenceMarker returns "```" or "~~~" when line opens or closes a code fence.
+func fenceMarker(line string) string {
+	for _, marker := range []string{"```", "~~~"} {
+		if strings.HasPrefix(line, marker) {
+			return marker
 		}
 	}
 	return ""
@@ -167,8 +198,8 @@ func memoryStampDate(v any) string {
 	return ""
 }
 
-// listMemoryPages reads every page of env's scope. Directories, symlinks and
-// non-page paths are skipped; a page removed since the listing is skipped,
+// listMemoryPages reads every page of env's scope. Only regular files on
+// page paths are listed; a page removed since the listing is skipped,
 // and one that cannot be read is listed by its filename.
 func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
 	root := env.WorkingDirectory()
@@ -179,7 +210,7 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 	var pages []memoryPage
 	for _, entry := range entries {
 		rel := filepath.ToSlash(entry.Name)
-		if entry.IsDir || entry.IsSymlink || !isMemoryPagePath(rel) {
+		if !entry.IsRegular || !isMemoryPagePath(rel) {
 			continue
 		}
 		if path.Ext(rel) != ".md" {

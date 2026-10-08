@@ -1871,7 +1871,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 			if relPrefix != "" {
 				relName = filepath.Join(relPrefix, name)
 			}
-			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+			de := DirEntry{Name: relName, IsDir: ent.IsDir(), IsRegular: ent.Type().IsRegular()}
 			if ent.Type()&os.ModeSymlink != 0 {
 				de.IsSymlink = true
 			}
