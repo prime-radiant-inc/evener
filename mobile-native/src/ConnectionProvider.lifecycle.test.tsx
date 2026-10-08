@@ -81,7 +81,6 @@ it("retires a removed hub's New session store with the rest of its data", async 
 	await settle();
 	expect(store.getState().retired).toBe(true);
 	expect(creationStore(hubId, noDrafts)).not.toBe(store);
-	app.tree.unmount();
 });
 
 it("lets go of a start bound to a client the connection has left", async () => {
@@ -101,5 +100,4 @@ it("lets go of a start bound to a client the connection has left", async () => {
 	harness.client = quietClient();
 	await app.rerender();
 	expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
-	app.tree.unmount();
 });
