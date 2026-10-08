@@ -526,7 +526,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 		reply = next;
 		await act(async () => {
-			client.emitNotification(activityChanged({ ref: COORDINATOR.ref, threadId: "root" }, ["delegates"]));
+			client.emitNotification(activityChanged(COORDINATOR, ["delegates"]));
 			await vi.runOnlyPendingTimersAsync();
 		});
 		expect(renderedText(screen)).toContain("Second run report.");
