@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
@@ -35,12 +36,12 @@ var (
 // a dup of dirFd as os.NewFile(fd, ""), whose DirEntry.Info() would lstat("/"+name)
 // against the host root; resolving beneath the fd keeps the metadata anchored to
 // the directory actually being listed.
-func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, error) {
+func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, error) {
 	var st unix.Stat_t
 	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return 0, 0, err
+		return 0, 0, time.Time{}, err
 	}
-	return st.Size, os.FileMode(st.Mode & 0o777), nil
+	return st.Size, os.FileMode(st.Mode & 0o777), time.Unix(st.Mtim.Unix()), nil
 }
 
 // close releases every cached root fd. Safe to call more than once.
@@ -603,8 +604,9 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			de.IsSymlink = true
 		}
 		if !ent.IsDir() {
-			if size, mode, ierr := secureEntryInfo(dirFd, name); ierr == nil {
+			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
 				de.Size = size
+				de.ModTime = modTime
 				if mode&0o111 != 0 {
 					de.IsExec = true
 				}

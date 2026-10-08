@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"time"
 )
 
 // ErrDetachUnsupported reports that an environment cannot disown commands.
@@ -26,6 +27,9 @@ type DirEntry struct {
 	IsSymlink bool   `json:"is_symlink,omitempty"`
 	IsExec    bool   `json:"is_exec,omitempty"`
 	Size      int64  `json:"size,omitempty"`
+	// ModTime is the file's modification time. It is not part of list_dir's
+	// output; the memory index orders unstamped pages by it.
+	ModTime time.Time `json:"-"`
 }
 
 // DetachedProcess identifies a command disowned by its execution environment.
