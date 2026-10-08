@@ -440,7 +440,9 @@ type RegisteredTool struct {
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
-	// validation. It must preserve all non-normalized caller values.
+	// validation. It must preserve all non-normalized caller values. The failure
+	// breaker's fingerprint runs it too, on a copy whose numbers are int64 or
+	// float64, so it must not mutate its input or depend on a number's Go type.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
 	// PreValidate optionally rejects a tool-specific argument shape before the
 	// generic JSON schema validator renders its diagnostic.
@@ -725,10 +727,19 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	r.mu.RUnlock()
 	// Compute both ledger keys once for this dispatch. check, clearFailures,
 	// and record all consult the same two keys, so the argument body is
 	// canonicalized at most once per call instead of once per ledger operation.
-	key := newDispatchKey(name, call.Arguments)
+	// The fingerprint applies the tool's NormalizeArgs, the same rule dispatch
+	// applies below; an unknown tool is still judged, just without one.
+	var normalize func(map[string]any) (map[string]any, error)
+	if ok {
+		normalize = t.NormalizeArgs
+	}
+	key := newDispatchKey(name, call.Arguments, normalize)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
@@ -743,9 +754,6 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		r.breaker.clearFailures(key)
 	}
 
-	r.mu.RLock()
-	t, ok := r.tools[name]
-	r.mu.RUnlock()
 	if !ok {
 		msg := "unknown tool: " + name
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))

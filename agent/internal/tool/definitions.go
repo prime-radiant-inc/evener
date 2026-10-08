@@ -680,19 +680,6 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
-// IsPlaceholderDependsOn reports whether a task_list update's depends_on value
-// leaves the dependencies unchanged: null or an empty list, which some models
-// send on every update. Only [0] clears them.
-func IsPlaceholderDependsOn(v any) bool {
-	switch deps := v.(type) {
-	case nil:
-		return true
-	case []any:
-		return len(deps) == 0
-	}
-	return false
-}
-
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
 	reasoningSchema := map[string]any{

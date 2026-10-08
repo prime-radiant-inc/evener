@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -223,10 +224,10 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
-		if n, ok := m["notes"].(string); ok && !isPlaceholderNote(n) {
+		if n, ok := m["notes"].(string); ok {
 			u.Notes = n
 		}
-		if depsRaw := m["depends_on"]; !tool.IsPlaceholderDependsOn(depsRaw) {
+		if depsRaw, has := m["depends_on"]; has {
 			arr, ok := depsRaw.([]any)
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
@@ -352,11 +353,63 @@ func isPlaceholderNote(notes string) bool {
 	return trimmed == "" || strings.EqualFold(trimmed, "null")
 }
 
+// isPlaceholderDependsOn reports whether an update's depends_on leaves the
+// dependencies unchanged: null or an empty list. Only [0] clears them.
+func isPlaceholderDependsOn(deps any) bool {
+	list, isList := deps.([]any)
+	return deps == nil || (isList && len(list) == 0)
+}
+
+// errPlaceholderOnlyUpdate rejects a call whose every update entry held only
+// placeholders: dropping them would otherwise turn the call into a bare view.
+var errPlaceholderOnlyUpdate = errors.New(`every update entry changed nothing: depends_on of [] or null and notes of "" or "null" are placeholders and were ignored; send a status, real notes, new depends_on IDs, or depends_on: [0] to clear dependencies`)
+
+// normalizeTaskListArgs is task_list's NormalizeArgs. Some models fill every
+// optional update field on every call, so it drops the placeholders (see
+// isPlaceholderDependsOn and isPlaceholderNote), and drops an entry left with
+// only its id, so the rest of the call still applies. Dispatch and the failure
+// breaker's fingerprint both run it, which keeps the placeholder rule in one
+// place.
+func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
+	rawUpdates, isList := args["update"].([]any)
+	if !isList || len(rawUpdates) == 0 {
+		return args, nil
+	}
+	kept := make([]any, 0, len(rawUpdates))
+	for _, raw := range rawUpdates {
+		entry, isObject := raw.(map[string]any)
+		if !isObject {
+			kept = append(kept, raw)
+			continue
+		}
+		cleaned := maps.Clone(entry)
+		if deps, has := cleaned["depends_on"]; has && isPlaceholderDependsOn(deps) {
+			delete(cleaned, "depends_on")
+		}
+		if notes, isString := cleaned["notes"].(string); isString && isPlaceholderNote(notes) {
+			delete(cleaned, "notes")
+		}
+		_, hasID := cleaned["id"]
+		if hasID && len(cleaned) == 1 && len(entry) > 1 {
+			continue
+		}
+		kept = append(kept, cleaned)
+	}
+	adds, _ := args["add"].([]any)
+	if len(kept) == 0 && len(adds) == 0 {
+		return nil, errPlaceholderOnlyUpdate
+	}
+	normalized := maps.Clone(args)
+	normalized["update"] = kept
+	return normalized, nil
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
-		Definition:  tool.DefTaskList(deps.reasoningEffortLevels),
-		PreValidate: validateTaskListArgs,
+		Definition:    tool.DefTaskList(deps.reasoningEffortLevels),
+		NormalizeArgs: normalizeTaskListArgs,
+		PreValidate:   validateTaskListArgs,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()

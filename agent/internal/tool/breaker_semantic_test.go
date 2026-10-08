@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 )
@@ -177,10 +178,10 @@ func TestBreakerDispatch_SuccessClearsOnlyMatchingRun(t *testing.T) {
 		t.Fatalf("setup invocations = %d, want 5", fake.calls)
 	}
 
-	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`))); streak != 1 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`), nil)); streak != 1 {
 		t.Fatalf("A's run after its own success = %d, want 1", streak)
 	}
-	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`))); streak != 2 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`), nil)); streak != 2 {
 		t.Fatalf("B's run was altered by A's success: streak = %d, want 2", streak)
 	}
 
@@ -230,7 +231,7 @@ func TestBreakerDispatch_BypassStillExecutesSemanticallyParkedCall(t *testing.T)
 }
 
 func fp(name, args string) string {
-	return failureFingerprint(name, []byte(args))
+	return failureFingerprint(name, []byte(args), nil)
 }
 
 func TestFailureFingerprint_KeyOrderWhitespaceAndIntentAreEquivalent(t *testing.T) {
@@ -275,28 +276,38 @@ func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	}
 }
 
-// task_list's update contract reads an empty or null depends_on as no change,
-// so those placeholders are the same call as leaving it out; [0] clears and
-// keeps its own fingerprint, as does a placeholder on add or outside task_list.
-func TestFailureFingerprint_TaskListPlaceholderDependsOnIsOmitted(t *testing.T) {
-	omitted := fp("task_list", `{"update":[{"id":2,"status":"done"}]}`)
-	for _, args := range []string{
-		`{"update":[{"id":2,"status":"done","depends_on":[]}]}`,
-		`{"update":[{"id":2,"status":"done","depends_on":null}]}`,
-	} {
-		if got := fp("task_list", args); got != omitted {
-			t.Errorf("fingerprint(%s) = %q, want the omitted form %q", args, got, omitted)
+// A tool's NormalizeArgs is its own contract for what a value means, so what
+// it removes fingerprints as the omitted call. It sees numbers already folded
+// to int64, and a normalizer error leaves the un-normalized view: dispatch
+// rejects that call anyway.
+func TestFailureFingerprint_ToolNormalizerFoldsWhatItRemoves(t *testing.T) {
+	var sawCount any
+	dropEmptyNote := func(args map[string]any) (map[string]any, error) {
+		sawCount = args["count"]
+		if args["note"] == "bad" {
+			return nil, errors.New("rejected")
 		}
+		out := maps.Clone(args)
+		if out["note"] == "" {
+			delete(out, "note")
+		}
+		return out, nil
 	}
-	if fp("task_list", `{"update":[{"id":2,"status":"done","depends_on":[0]}]}`) == omitted {
-		t.Error("depends_on: [0] clears dependencies and must not fingerprint as omitted")
+	nfp := func(args string) string { return failureFingerprint("t", []byte(args), dropEmptyNote) }
+	if nfp(`{"count":1,"note":""}`) != nfp(`{"count":1}`) {
+		t.Error("a field the normalizer removes must fingerprint as omitted")
 	}
-	addOmitted := fp("task_list", `{"add":[{"type":"fix","description":"d","prompt":"p"}]}`)
-	if fp("task_list", `{"add":[{"type":"fix","description":"d","prompt":"p","depends_on":null}]}`) == addOmitted {
-		t.Error("add's depends_on contract is unchanged; a null there must keep its own fingerprint")
+	if sawCount != int64(1) {
+		t.Errorf("normalizer saw count %#v, want int64(1)", sawCount)
 	}
-	if fp("other_tool", `{"update":[{"id":2,"depends_on":[]}]}`) == fp("other_tool", `{"update":[{"id":2}]}`) {
-		t.Error("only task_list's contract folds a placeholder depends_on")
+	if nfp(`{"count":1,"note":"x"}`) == nfp(`{"count":1}`) {
+		t.Error("a value the normalizer keeps must keep its own fingerprint")
+	}
+	if nfp(`{"count":1,"note":"bad"}`) != fp("t", `{"count":1,"note":"bad"}`) {
+		t.Error("a normalizer error must fall back to the un-normalized fingerprint")
+	}
+	if fp("t", `{"count":1,"note":""}`) == fp("t", `{"count":1}`) {
+		t.Error("without a normalizer, values are never folded by content")
 	}
 }
 
@@ -438,7 +449,7 @@ func TestFailureFingerprint_UnparseableArgumentsFallBackToExact(t *testing.T) {
 		`{"a":1}{"b":2}`,
 		`not json`,
 	} {
-		if got, want := failureFingerprint("t", []byte(args)), exactSignature("t", []byte(args)); got != want {
+		if got, want := failureFingerprint("t", []byte(args), nil), exactSignature("t", []byte(args)); got != want {
 			t.Errorf("fallback fingerprint(%s) = %q, want exact %q", args, got, want)
 		}
 	}
@@ -525,7 +536,7 @@ func TestBreakerDispatch_SuccessFloodDoesNotEvictPendingFailureRun(t *testing.T)
 	if churn.calls != maxFailureLedgerEntries+1 {
 		t.Fatalf("churn invocations = %d, want %d", churn.calls, maxFailureLedgerEntries+1)
 	}
-	if streak, _, _ := r.breaker.check(newDispatchKey("flaky", []byte(`{"target":"a"}`))); streak != 1 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("flaky", []byte(`{"target":"a"}`), nil)); streak != 1 {
 		t.Fatalf("pending failure run was evicted by successful traffic: streak = %d, want 1", streak)
 	}
 

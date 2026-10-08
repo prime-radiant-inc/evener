@@ -13,7 +13,7 @@ import (
 // once. The output is large enough that the duplicate work is visible.
 func BenchmarkFailureLedger_RecordRepeatFailure(b *testing.B) {
 	l := newFailureLedger()
-	key := newDispatchKey("read_file", []byte(`{"path":"broken"}`))
+	key := newDispatchKey("read_file", []byte(`{"path":"broken"}`), nil)
 	output := strings.Repeat("error: connection refused while dialing the host; retry was not scheduled\n", 40)
 
 	b.ReportAllocs()
