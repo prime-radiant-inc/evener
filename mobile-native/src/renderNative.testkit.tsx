@@ -681,9 +681,11 @@ export async function settle(): Promise<void> {
 	});
 }
 
-/** Waits for wire or store state inside act, so the updates it lets through
- * stay in act. React renders only when the act scope exits, so `check` must
- * not read the rendered tree. */
+/** Waits for `check` inside one act scope, so the updates it lets through
+ * stay in act. Default-priority renders flush only when the scope exits, so
+ * `check` should read wire or store state; sync-priority renders (a
+ * useSyncExternalStore store's update) do land while it waits. To wait on
+ * the rendered tree, poll so act exits between checks instead. */
 export async function until(check: () => void): Promise<void> {
 	await act(async () => {
 		await vi.waitFor(check);
