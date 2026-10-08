@@ -31,7 +31,14 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "diagnostic-sentinel"); err != nil || !appended {
 		t.Fatalf("append diagnostic attention = %t, %v", appended, err)
 	}
-	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	// The child's initial-prompt session namer can still be running after
+	// the run quiesces, taking the session lock as it names and saves the
+	// session, and the snapshot records session_lock_busy rather than wait.
+	// Hold the lock here as the namer would, so the uncontended keys below
+	// are read once it is free.
+	sub.sess.mu.Lock()
+	time.AfterFunc(heldSessionLockForSnapshotRetry, sub.sess.mu.Unlock)
+	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) || snapshot["current_run_open"] != false || snapshot["done_closed"] != true {
 		t.Fatalf("snapshot omitted strict pending predicate or finished warm channel: %#v", snapshot)
 	}
@@ -96,7 +103,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	if err != nil {
 		t.Fatalf("reserve attention: %v", err)
 	}
-	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	wantReservation := []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": false, "resolution_ready": false}}
 	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) {
 		t.Fatalf("unaccepted reservation diagnostics = %#v", snapshot)
@@ -107,7 +114,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
 		t.Fatalf("accept attention: %v", err)
 	}
-	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	wantReservation = []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": true, "resolution_ready": true}}
 	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"attention_reservations"}) {
 		t.Fatalf("accepted reservation diagnostics = %#v", snapshot)
@@ -124,7 +131,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 		t.Fatalf("launch attention: %v", err)
 	}
 	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
-	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["attention_reservations"], []map[string]any{}) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{}) || snapshot["generation"] != uint64(2) {
 		t.Fatalf("settled reservation diagnostics = %#v", snapshot)
 	}
@@ -170,7 +177,7 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"subagent_finalizing", "current_run_open", "completion_channel"}) {
 		t.Fatalf("settlement transcript or blockers = %#v", snapshot)
 	}
-	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["settlement_claims"], []map[string]any{}) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{}) {
 		t.Fatalf("settled claim diagnostics = %#v", snapshot)
 	}
@@ -232,7 +239,7 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	}
 	restore()
 	restored = true
-	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{"attention:diagnostic-a", "attention:diagnostic-z"}) ||
 		!reflect.DeepEqual(snapshot["pending_attention_ids"], []string{"attention:diagnostic-z", "attention:diagnostic-a"}) ||
 		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"arm_retry_ids", "pending_attention_ids"}) {
@@ -240,7 +247,7 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	}
 	clock.Advance(jobNotificationRetryInitialDelay)
 	clock.Drain()
-	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{}) || snapshot["needs_attention"] != true || snapshot["generation"] != uint64(1) {
 		t.Fatalf("successful retry diagnostics = %#v", snapshot)
 	}
@@ -278,7 +285,7 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 			t.Fatalf("route diagnostic job event %q: %v", event.Kind, err)
 		}
 	}
-	snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	want := []jobNotification{{
 		Kind: jobNotificationKindTerminal, JobID: "job_diagnostic", JobType: "shell", Status: "failed", Reason: "exit_nonzero",
 		Description: "notification-label", Intent: "notification-intent", TerminalGen: "diagnostic-generation", OutputBytes: 42, ExitCode: &code,
@@ -290,7 +297,7 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	sub.clearDisposeGate()
 	sub.sess.notify()
 	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
-	snapshot = stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if notifications, ok := snapshot["pending_notifications"].([]jobNotification); !ok || len(notifications) != 0 {
 		t.Fatalf("drained notification diagnostics = %#v", snapshot)
 	}
@@ -301,6 +308,41 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	if record := records["job_diagnostic"]; record == nil || record.NotifyState != jobstore.NotifyDelivered || record.TerminalGen != "diagnostic-generation" {
 		t.Fatalf("durable notification delivery = %#v", record)
 	}
+}
+
+// heldSessionLockForSnapshotRetry is how long a test holds a session lock to
+// make uncontendedStableSupervisionSnapshot's first attempt find it busy. It
+// is not a deadline: the helper retries until the lock is free, so any length
+// passes; it only has to outlast that first attempt for the retry to run.
+const heldSessionLockForSnapshotRetry = 50 * time.Millisecond
+
+// uncontendedStableSupervisionSnapshot is stableSupervisionFailureSnapshot
+// taken once no lock it reads is busy. The snapshot never waits for a lock,
+// and paths outside the run, such as the child's session namer, can hold one
+// briefly after it quiesces, so a test that checks its uncontended keys
+// retries it instead.
+func uncontendedStableSupervisionSnapshot(t *testing.T, root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {
+	t.Helper()
+	var snapshot map[string]any
+	var busy []string
+	defer func() {
+		if t.Failed() && len(busy) != 0 {
+			t.Logf("locks still busy: %v", busy)
+		}
+	}()
+	// TRIPWIRE: incidental holders keep a lock for milliseconds; 30s only
+	// fires on a lock that is genuinely leaked.
+	waitForCondition(t, 30*time.Second, "a snapshot with no busy lock", func() bool {
+		snapshot = stableSupervisionFailureSnapshot(root, sub, adapter)
+		busy = busy[:0]
+		for key := range snapshot {
+			if strings.HasSuffix(key, "_lock_busy") {
+				busy = append(busy, key)
+			}
+		}
+		return len(busy) == 0
+	})
+	return snapshot
 }
 
 func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {

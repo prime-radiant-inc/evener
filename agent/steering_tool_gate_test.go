@@ -74,31 +74,6 @@ func TestCurrentTaskSteeringFallsBackWhenToolMissing(t *testing.T) {
 	}
 }
 
-// TestTaskNudgeSuppressedWhenToolMissing: the "you have a task_list tool"
-// suggestion is nothing BUT a tool instruction, so a session without the tool
-// gets no reminder at all rather than tool-free filler.
-func TestTaskNudgeSuppressedWhenToolMissing(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	s.reg.Remove("task_list")
-	s.mu.Lock()
-	s.totalRounds = 10
-	s.mu.Unlock()
-
-	if msg, kind := s.maybeInjectTaskReminder(); msg != "" {
-		t.Fatalf("task nudge fired without the tool: kind=%s msg=%q", kind, msg)
-	}
-
-	s2 := newTestSession(t)
-	s2.mu.Lock()
-	s2.totalRounds = 10
-	s2.mu.Unlock()
-	msg, _ := s2.maybeInjectTaskReminder()
-	if !strings.Contains(msg, "task_list") {
-		t.Fatalf("task nudge with the tool present = %q, want it to name task_list", msg)
-	}
-}
-
 // TestTasksDoneReminderUsesTheSessionResultToolName: the reminder that closes a
 // finished task list points at the result tool, whose name a session may
 // rename. Hardcoding "communicate" names a tool the session does not have.

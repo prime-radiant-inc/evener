@@ -20,7 +20,7 @@ test("leaves out the current task and the task list, which the tasks surfaces ow
 
 test("says the task reminders the way the phone always has, in both clients", () => {
   expect(STEERING_KIND_LABELS["tasks-done"]).toBe("Tasks complete");
-  expect(STEERING_KIND_LABELS["task-nudge"]).toBe("Task reminder");
+  expect(STEERING_KIND_LABELS["task-inactive"]).toBe("Task list idle");
 });
 
 test("says a detector's and a provider's steers as events", () => {

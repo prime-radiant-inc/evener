@@ -1513,7 +1513,7 @@ func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 }
 
 // kindedSteeringTurn is a daemon steering turn of one kind (a job
-// notification reminder, a task nudge), owned by the turn it lands in.
+// notification reminder, a task-inactive reminder), owned by the turn it lands in.
 func kindedSteeringTurn(text, kind, owningTurnID string) schema.Turn {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind

@@ -22,6 +22,7 @@ import {
 	render,
 	render as renderElement,
 	renderedText,
+	settle,
 	settleMicrotasks,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
@@ -215,13 +216,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function navigationDouble() {
 	const options: NativeStackNavigationOptions[] = [];

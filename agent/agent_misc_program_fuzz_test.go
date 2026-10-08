@@ -82,7 +82,7 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	}
 	// Both tool-availability variants of the gated reminders keep the envelope.
 	for _, hasTaskList := range []bool{true, false} {
-		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate"), taskReminderNudge()} {
+		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate")} {
 			if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
 				t.Fatalf("invalid task reminder %q", reminder)
 			}

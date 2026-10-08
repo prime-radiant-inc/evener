@@ -41,6 +41,7 @@ import {
 	swipeRowFully,
 	systemGlass,
 	unmountMountedTrees,
+	until,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -582,14 +583,6 @@ function connect(hub: string, client: unknown, state: ConnectionState, over: Rec
 }
 function screen(nav: Navigation) {
 	return <BoardScreen navigation={nav as never} route={{ key: "Sessions", name: "Sessions" } as never} />;
-}
-/** Waits for wire or store state inside act, so the updates it lets through
- * stay in act. React renders only when the act scope exits, so `check` must
- * not read the rendered tree. */
-async function until(check: () => void) {
-	await act(async () => {
-		await vi.waitFor(check);
-	});
 }
 /** What the Board holds for hub `id`, as it stored it. */
 const heldIn = (id: string) => JSON.parse(harness.kv.get(boardHoldKey(id)) ?? "[]") as HeldRecord[];

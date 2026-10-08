@@ -682,11 +682,22 @@ export function render(element: ReactElement, options?: TestRendererOptions): Re
 
 /** Lets the mounted trees' pending work land inside act: one timer turn,
  * which also runs every microtask queued ahead of it (a fake hub's answer,
- * the store updates it starts). Under fake timers it never resolves:
- * advance the timers instead. */
+ * the store updates it starts). Under fake timers it resolves only if they
+ * advance on their own (shouldAdvanceTime); otherwise advance them instead. */
 export async function settle(): Promise<void> {
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+/** Waits for `check` inside one act scope, so the updates it lets through
+ * stay in act. Default-priority renders flush only when the scope exits, so
+ * `check` should read wire or store state; sync-priority renders (a
+ * useSyncExternalStore store's update) do land while it waits. To wait on
+ * the rendered tree, poll so act exits between checks instead. */
+export async function until(check: () => void): Promise<void> {
+	await act(async () => {
+		await vi.waitFor(check);
 	});
 }
 

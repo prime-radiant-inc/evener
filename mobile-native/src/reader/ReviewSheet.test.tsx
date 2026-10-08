@@ -8,7 +8,7 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -176,13 +176,6 @@ afterEach(async () => {
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const tree = render(
