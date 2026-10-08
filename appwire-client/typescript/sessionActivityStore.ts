@@ -216,14 +216,8 @@ export class SessionActivityStore {
         // behind it or walking on after it runs, so a store another holder
         // keeps alive takes in no closed view's late page.
         read.releases += 1;
-        this.cancelTimer(read);
-        this.cancelPace(read);
-        read.rootQueued = false;
-        read.pageQueued = false;
+        this.stopReadDemand(read, false);
         read.oneShot = false;
-        // The next observer's reads start their backoff afresh, not from the
-        // failures a closed view's reads left behind.
-        read.failures = 0;
         if (read.refresh) read.refresh.advance = false;
         this.change(resource, { pending: false });
       }
@@ -294,18 +288,14 @@ export class SessionActivityStore {
       this.statusUpdate = null;
     for (const resource of resources) {
       const read = this.reads[resource];
-      this.cancelTimer(read);
       const demanded = read.observers > 0 || read.oneShot || read.rootQueued || read.pageQueued;
-      read.rootQueued = resource === source ? read.rootQueued : demanded;
-      read.pageQueued = false;
+      this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
       read.sessionId = undefined;
       read.incomplete = false;
       read.boundary = undefined;
       read.refresh = null;
-      this.cancelPace(read);
-      read.failures = 0;
     }
     const freshCollection = <Row>(resource: SessionActivityCollection): SessionActivityCollectionState<Row> => ({
       ...collectionState<Row>(),
@@ -635,6 +625,17 @@ export class SessionActivityStore {
     this.clock.clearTimeout(read.pace.handle);
     read.pace.resume();
   }
+  /** Stops a read's scheduled and queued requests, shared by an observer
+   * release, a session replacement and dispose. `rootQueued` says whether a
+   * root read stays queued; failures reset so the next reads start their
+   * backoff afresh, not from the failures earlier reads left behind. */
+  private stopReadDemand(read: ResourceRead, rootQueued: boolean): void {
+    this.cancelTimer(read);
+    this.cancelPace(read);
+    read.rootQueued = rootQueued;
+    read.pageQueued = false;
+    read.failures = 0;
+  }
   private cancelTimer(read: ResourceRead): void {
     if (read.timer !== null) this.clock.clearTimeout(read.timer);
     read.timer = null;
@@ -736,13 +737,10 @@ export class SessionActivityStore {
     this.generation += 1;
     for (const resource of resources) {
       const read = this.reads[resource];
-      this.cancelTimer(read);
-      this.cancelPace(read);
+      this.stopReadDemand(read, false);
       read.boundary = undefined;
       read.refresh = null;
       read.observers = 0;
-      read.rootQueued = false;
-      read.pageQueued = false;
     }
     this.lease?.release();
     this.lease = null;
