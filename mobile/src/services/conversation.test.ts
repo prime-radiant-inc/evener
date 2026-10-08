@@ -406,7 +406,7 @@ describe("ConversationService", () => {
 			const service = createConversationService(client, {
 				onReadComplete: () => Promise.reject(new Error("mutation storage down")),
 			});
-			// Each read's failed fence is reported, not swallowed.
+			// Each read reports its failed fence.
 			const fenceFailure = ["ConversationService: read fence failed", new Error("mutation storage down")];
 			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 			try {
