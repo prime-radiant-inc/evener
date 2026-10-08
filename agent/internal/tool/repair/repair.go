@@ -53,15 +53,16 @@ var aliasTable = map[string]string{
 
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
 // It applies, in order, aliasing, coercion, dropping empty optional enums, and
-// drop-unknown.
+// drop-unknown. keep names argument paths (as "add[0].reasoning_effort") whose
+// explicit empty value the tool's handler judges itself, so repair leaves them.
 // It never mutates its input; it returns a fresh map plus the changes made.
-func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
+func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []Change) {
 	out := make(map[string]any, len(args))
 	maps.Copy(out, args)
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
 	changes = append(changes, applyCoercions(params, out)...)
-	changes = append(changes, dropEmptyOptionalEnums(params, out)...)
+	changes = append(changes, dropEmptyOptionalEnums(params, out, nil, keep)...)
 	changes = append(changes, dropUnknown(params, out)...)
 	return out, changes
 }
@@ -205,27 +206,74 @@ func nullableUnionNonNullType(v any) string {
 
 // dropEmptyOptionalEnums removes an optional enum argument sent as "" or null,
 // which models often send for a field they mean to leave out, so the
-// parameter's documented default applies. A required argument, or an enum
-// that lists the empty value itself, keeps the value for validation to judge.
-func dropEmptyOptionalEnums(params, args map[string]any) []Change {
-	props := schemaProps(params)
-	required := asStringSlice(params["required"])
+// parameter's documented default applies. It descends into nested objects and
+// array items, each judged against its own schema's required list. A required
+// argument, an enum that lists the empty value itself, or a kept path stays for
+// validation or the handler to judge. obj is modified in place; the caller
+// owns it.
+func dropEmptyOptionalEnums(schema, obj map[string]any, path []pathStep, keep []string) []Change {
+	props := schemaProps(schema)
+	required := asStringSlice(schema["required"])
 	var changes []Change
-	for key, raw := range args {
-		if raw != nil && raw != "" {
-			continue
-		}
+	for key, raw := range obj {
 		p, ok := props[key].(map[string]any)
-		if !ok || slices.Contains(required, key) {
+		if !ok {
 			continue
 		}
-		if !hasListEntries(p["enum"]) || listHasValue(p["enum"], raw) {
+		at := append(slices.Clip(path), pathStep{name: key})
+		if raw != nil && raw != "" {
+			if nested, c := dropEmptyEnumsWithin(p, raw, at, keep); len(c) > 0 {
+				obj[key] = nested
+				changes = append(changes, c...)
+			}
 			continue
 		}
-		delete(args, key)
-		changes = append(changes, Change{Kind: ChangeNormalizeDefault, Field: key, Detail: "dropped empty optional " + key})
+		field := stepPathDisplay(at)
+		if slices.Contains(required, key) || !hasListEntries(p["enum"]) || listHasValue(p["enum"], raw) || slices.Contains(keep, field) {
+			continue
+		}
+		delete(obj, key)
+		changes = append(changes, Change{Kind: ChangeNormalizeDefault, Field: field, Detail: "dropped empty optional " + field})
 	}
 	return changes
+}
+
+// dropEmptyEnumsWithin applies dropEmptyOptionalEnums inside a nested object or
+// array value. It copies only the containers it changes, so the caller's value
+// is never modified, and returns value itself when nothing changed.
+func dropEmptyEnumsWithin(schema map[string]any, value any, path []pathStep, keep []string) (any, []Change) {
+	switch v := value.(type) {
+	case map[string]any:
+		if schemaProps(schema) == nil {
+			return value, nil
+		}
+		repaired := maps.Clone(v)
+		if changes := dropEmptyOptionalEnums(schema, repaired, path, keep); len(changes) > 0 {
+			return repaired, changes
+		}
+	case []any:
+		items, ok := schema["items"].(map[string]any)
+		if !ok {
+			return value, nil
+		}
+		var repaired []any
+		var changes []Change
+		for i, element := range v {
+			nested, c := dropEmptyEnumsWithin(items, element, append(slices.Clip(path), pathStep{name: strconv.Itoa(i), index: true}), keep)
+			if len(c) == 0 {
+				continue
+			}
+			if repaired == nil {
+				repaired = slices.Clone(v)
+			}
+			repaired[i] = nested
+			changes = append(changes, c...)
+		}
+		if repaired != nil {
+			return repaired, changes
+		}
+	}
+	return value, nil
 }
 
 // dropUnknown removes keys matching no declared property, but only when the

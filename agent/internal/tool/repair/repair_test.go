@@ -2,6 +2,7 @@ package repair
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -261,5 +262,61 @@ func TestRepairArgs_EmptyEnumKeptWhenRequiredOrAllowedOrNotEnum(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("expected no changes, got %+v", changes)
+	}
+}
+
+func TestRepairArgs_EmptyOptionalEnumKeptPathIsLeft(t *testing.T) {
+	args := map[string]any{"kind": "a", "mode": ""}
+	out, changes := RepairArgs(emptyEnumParams(), args, "mode")
+	if !reflect.DeepEqual(out, args) || len(changes) != 0 {
+		t.Fatalf("kept path repaired: out=%v changes=%+v", out, changes)
+	}
+}
+
+// nestedEnumParams nests emptyEnumParams under an object property and in
+// array items, each level with its own required list.
+func nestedEnumParams() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"opts":  emptyEnumParams(),
+			"items": map[string]any{"type": "array", "items": emptyEnumParams()},
+		},
+	}
+}
+
+func nestedEnumArgs() map[string]any {
+	return map[string]any{
+		"opts": map[string]any{"kind": "a", "mode": ""},
+		"items": []any{
+			map[string]any{"kind": "b"},
+			map[string]any{"kind": "", "mode": nil},
+		},
+	}
+}
+
+func TestRepairArgs_NestedEmptyOptionalEnumIsAbsent(t *testing.T) {
+	args := nestedEnumArgs()
+	out, changes := RepairArgs(nestedEnumParams(), args)
+	want := map[string]any{
+		"opts": map[string]any{"kind": "a"},
+		"items": []any{
+			map[string]any{"kind": "b"},
+			map[string]any{"kind": ""}, // required at its own level, so left for validation
+		},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %v, want %v", out, want)
+	}
+	var fields []string
+	for _, c := range changes {
+		fields = append(fields, c.Field)
+	}
+	slices.Sort(fields)
+	if !reflect.DeepEqual(fields, []string{"items[1].mode", "opts.mode"}) {
+		t.Fatalf("changed fields = %v", fields)
+	}
+	if !reflect.DeepEqual(args, nestedEnumArgs()) {
+		t.Fatalf("input mutated: %v", args)
 	}
 }
