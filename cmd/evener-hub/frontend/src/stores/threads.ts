@@ -160,6 +160,17 @@ export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
+  // Reconciliation failures this page attributes to unavailable storage rather
+  // than a mutation-state conflict: the same wedge that fences the durable
+  // write also fails the reconcile read, and treating that as a real failure
+  // fences the direct-dispatch fallback too, re-breaking the promise that a
+  // send survives a storage wedge. Storage-blocked refs stay fenced for the
+  // durable dispatcher; the send fallback is the one caller that may admit
+  // them. Recorded at the reconcile's rejection, or classified earlier by the
+  // send fallback's own storage-timeout observation while the reconcile is
+  // still pending. Cleared by a successful reconciliation; retried by every
+  // discovery pass.
+  mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
@@ -1135,13 +1146,29 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 // ordering guard: undeliveredMutationIds (the committed rows this tab has not
 // proven delivered) plus inflightDurableEnqueues (a durable enqueue for the ref
 // still in flight).
-function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
+function currentDispatchClient(
+  targetRef?: string,
+  method?: string,
+  requireArmed = true,
+  options?: { storageBlockedAdmissible?: boolean },
+): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
   const state = threadsStore.getState();
+  // A storage-blocked ref (its reconcile failed only because storage would not
+  // answer) is fenced here like any reconcile failure: the durable dispatcher
+  // waits for discovery's retry to reconcile before it can order anything.
+  // The send fallback is the one caller that may admit it
+  // ({ storageBlockedAdmissible }): a storage wedge must not strand a send,
+  // and the fallback's own in-memory ordering guards carry the ordering
+  // responsibility instead. Admitting the ref also waives the reconcile still
+  // pending for it - that read sits on the same wedge, so waiting for it
+  // cannot produce ordering facts anyway.
+  const storageBlocked = targetRef !== undefined && state.mutationReconciliationStorageBlocked.has(targetRef);
+  const storageBlockedWaived = storageBlocked && options?.storageBlockedAdmissible === true;
   if (
     targetRef &&
-    (pendingMutationReconciliations.has(targetRef) ||
+    (((storageBlocked || pendingMutationReconciliations.has(targetRef)) && !storageBlockedWaived) ||
       // A Force stop this page started is its own fence for its whole drain
       // window: the hub holds Stopping > 0 and refuses EVERY method there,
       // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
@@ -1316,7 +1343,13 @@ export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
+  const state = threadsStore.getState();
+  // Storage-blocked refs ride the same retry: the wedge that failed their
+  // reconcile lifts with storage itself, and this pass is what re-reads the
+  // outbox and re-arms the ref once it does.
+  const refs = [
+    ...new Set([...targetRefs, ...state.mutationReconciliationFailures, ...state.mutationReconciliationStorageBlocked]),
+  ];
   for (const targetRef of refs) pinMutationRef(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
@@ -1326,9 +1359,15 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
     if (pendingMutationReconciliations.has(targetRef)) continue;
+    const refState = threadsStore.getState();
     if (
       dispatchableMutationRefs.has(targetRef) &&
-      !threadsStore.getState().mutationReconciliationFailures.has(targetRef)
+      !refState.mutationReconciliationFailures.has(targetRef) &&
+      // A storage-blocked ref must fall through to handleReady's reconcile
+      // retry, not take the authority refresh: that refresh's outbox read
+      // would wedge on the same storage, and only a successful reconcile
+      // clears the storage-blocked fence.
+      !refState.mutationReconciliationStorageBlocked.has(targetRef)
     ) {
       // Another tab can block a shared record after this tab's snapshot.
       // Cached authority cannot settle that newly uncertain send.
@@ -2008,7 +2047,11 @@ export async function retryBlockedMutation(
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef) ||
+    // A storage-blocked ref cannot answer the ordering questions a Retry
+    // press asks either: its reconcile sits on the same wedge, and
+    // discovery's retry is what clears this fence.
+    state.mutationReconciliationStorageBlocked.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
@@ -3063,6 +3106,12 @@ async function enqueueMutationIntent(
     // stoppingRefs, the restart obligation with turn/start's resume-only
     // carve-out, and restartRequired). requireArmed is off: the fallback's own
     // ordering guard is not the dispatcher's arm but the two checks below.
+    // A reconcile the same storage wedge failed is admissible here and nowhere
+    // else: storage-blocked is the one fence whose cause cannot be waited out
+    // inside the wedge, so the fallback waives it (and the reconcile still
+    // pending on that wedge) rather than strand the send. The pending record
+    // is classified below when the fallback's own timeout observes the wedge,
+    // so the waiver does not wait for the reconcile's own watchdog.
     //
     // A fallback send must not jump an earlier durable send for the ref, and
     // two in-memory facts cover what this tab can see. undeliveredMutationIds
@@ -3079,7 +3128,19 @@ async function enqueueMutationIntent(
     // lives in storage, which is unavailable here; these two are what the
     // in-memory state proves, and the fallback refuses on either rather than
     // reorder.
-    const dispatchClient = currentDispatchClient(ref, intent.method, false);
+    // The fallback's own timeout is the same storage the reconcile reads, so
+    // a reconcile still pending for the ref sits on the same wedge: classify
+    // it now rather than wait for its watchdog. Without this, a send whose
+    // fallback decision lands while the wedged reconcile has not yet rejected
+    // meets the pending fence and dies with the wedge's error - the exact
+    // window the fallback exists to close. A reconcile that later succeeds
+    // clears the record, so a read that was healthy after all self-corrects.
+    if (pendingMutationReconciliations.has(ref)) {
+      threadsStore.setState((state) => ({
+        mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
+      }));
+    }
+    const dispatchClient = currentDispatchClient(ref, intent.method, false, { storageBlockedAdmissible: true });
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
     if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
       disarmQuiescedMutationArm(ref);
@@ -3727,9 +3788,16 @@ async function publishAndReconcileThreadHydration(
         pending.client === wiredClient
       ) {
         threadsStore.setState((state) => {
+          // Returning the same reference skips the merge and the listener
+          // pass (zustand/vanilla drops identical states), and a healthy ref
+          // settles neither fence on most reconciles.
+          if (!state.mutationReconciliationFailures.has(ref) && !state.mutationReconciliationStorageBlocked.has(ref))
+            return state;
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           mutationReconciliationFailures.delete(ref);
-          return { mutationReconciliationFailures };
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          mutationReconciliationStorageBlocked.delete(ref);
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
         });
       }
     } catch (error) {
@@ -3739,11 +3807,29 @@ async function publishAndReconcileThreadHydration(
         pending.epoch === readyEpoch &&
         pending.client === wiredClient
       ) {
-        // Discovery retries the authoritative read after storage recovers.
-        // Keep the failure visible and dispatch closed until that succeeds.
-        threadsStore.setState((state) => ({
-          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(ref),
-        }));
+        // A storage-unavailable reconcile is not a mutation-state fact: the
+        // same wedge that fences the durable write failed this read, so record
+        // the ref aside as storage-blocked - the slice the send fallback may
+        // admit - and let discovery retry the read on every pass. A genuine
+        // failure recorded earlier (a real reconcile conflict, a blocked
+        // shared record) must survive the timeout: erasing it would unfence
+        // the fallback through the waivable slice, so the timeout only adds
+        // the storage-blocked record. Any non-timeout failure keeps its old
+        // meaning and supersedes the storage-blocked state, being the
+        // stricter fence: record it in failures and clear the storage-blocked
+        // record. A successful reconcile clears both.
+        const storageBlocked = isStorageUnavailable(error);
+        threadsStore.setState((state) => {
+          const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          if (storageBlocked) {
+            mutationReconciliationStorageBlocked.add(ref);
+          } else {
+            mutationReconciliationFailures.add(ref);
+            mutationReconciliationStorageBlocked.delete(ref);
+          }
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
+        });
       }
       throw error;
     } finally {
@@ -4710,6 +4796,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
+  mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
   resumedIdentities: new Map(),

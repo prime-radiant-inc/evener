@@ -115,6 +115,56 @@ async function flushMicrotasks(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
+// A storage-unavailable wedge on the outbox's read path: while armed, every
+// per-ref listOutbox read rejects with the adapter's watchdog error - the
+// same shape a never-answering IndexedDB open produces. The bound real read
+// is returned so a test can still inspect rows while the fault is armed.
+function wedgeOutboxReads(storage: MutationOutboxIndexedDB) {
+  let armed = false;
+  const readOutbox = storage.listOutbox.bind(storage);
+  vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+    if (armed && ref) throw new MutationStorageTimeoutError();
+    return readOutbox(ref);
+  });
+  return {
+    arm: () => {
+      armed = true;
+    },
+    lift: () => {
+      armed = false;
+    },
+    readOutbox,
+  };
+}
+
+// Parks the ref's reconcile read forever: its listOutbox never settles, so
+// the ref sits in pendingMutationReconciliations until the test ends. The
+// store registers the pending entry before awaiting the read, so the probe
+// turning true means the fence is already visible to currentDispatchClient.
+function parkRefReconcileRead(storage: MutationOutboxIndexedDB, ref: string) {
+  let readOpened = false;
+  const listOutbox = storage.listOutbox.bind(storage);
+  vi.spyOn(storage, "listOutbox").mockImplementation((parkedRef?: string) => {
+    if (parkedRef === ref) {
+      readOpened = true;
+      return new Promise<never>(() => {});
+    }
+    return listOutbox(parkedRef);
+  });
+  return {
+    opened: () => readOpened,
+  };
+}
+
+// The durable write cannot be made: every enqueue attempt rejects with the
+// adapter's watchdog error, the one storage failure the send fallback
+// answers.
+function timeOutDurableEnqueues(storage: MutationOutboxIndexedDB): void {
+  storage.enqueueIntent = async () => {
+    throw new MutationStorageTimeoutError();
+  };
+}
+
 function nextHandledRequest<M extends MethodName>(
   fake: FakeClient,
   method: M,
@@ -9969,6 +10019,194 @@ test("periodic discovery recovers failed compatible reconciliation after storage
   }
 });
 
+// A reconciliation that storage unavailability fails is not a mutation-state
+// fact: the same wedge that fences the durable write also fails the reconcile
+// read. Recording it as a genuine failure would fence the direct-dispatch
+// fallback and strand every send behind a page reload, so a storage-unavailable
+// reconcile records the ref as storage-blocked - the slice the send fallback
+// may admit - while every other failure keeps its old, fencing meaning.
+test("a storage-unavailable reconciliation records the ref as storage-blocked, not failed", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-reconcile" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await settleCallerContinuations();
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+});
+
+// A genuine reconcile failure must survive a later storage-timeout reconcile:
+// the timeout adds the storage-blocked record but does not supersede the real
+// failure, so the failures fence - and the fallback refusal it carries - hold
+// through the wedge until a successful reconcile clears both.
+test("a storage-timeout reconcile does not erase a genuine reconciliation failure", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await ensureActiveMutationTarget(fake, "ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+
+  // The genuine failure: a blocked shared record or a real reconcile conflict.
+  threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) });
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+
+  timeOutDurableEnqueues(storage);
+  await expect(threadsStore.getState().send("ref_a", "sent while both fences hold")).rejects.toBeInstanceOf(
+    MutationStorageTimeoutError,
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The storage-blocked fence must self-heal, not stick: discovery retries the
+// ref on every pass, and once storage answers the reconcile succeeds, the
+// slice clears, and the durable dispatcher resumes the ref's queued row - so a
+// transient wedge costs a wedge-long dispatch pause, not a reload. The
+// sentinel row parks behind the restart fence while the wedge is armed, so
+// the healthy hydrate can never race its dispatch out first.
+test("periodic discovery recovers a storage-blocked reconciliation after storage returns", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-recovery" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    const wedge = wedgeOutboxReads(storage);
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    // Hydrate behind the restart fence: the healthy reconcile runs, but the
+    // sentinel row stays parked, so no healthy window can dispatch it before
+    // the wedge lands.
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    wedge.arm();
+    status = "idle";
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+    // The sentinel row is still parked: nothing left while the reconcile was
+    // wedged.
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+
+    wedge.lift();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The union clause: a storage-blocked ref with NO durable row is invisible to
+// every row-driven discovery trigger, so only the storage-blocked slice's own
+// membership in the discovery pass can retry its reconcile. Without that
+// clause the slice would stick until a manual refresh or a reload.
+test("periodic discovery retries a storage-blocked ref that has no durable row", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    const wedge = wedgeOutboxReads(storage);
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    wedge.arm();
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+    wedge.lift();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The record-level gate: a storage-blocked ref cannot answer the ordering
+// questions a Retry press asks, so the press refuses and the canceled row
+// stays put until discovery's retry reconciles. The press is otherwise
+// admissible here - idle, authoritative, nothing pending - so the refusal
+// isolates the storage-blocked clause.
+test("a storage-blocked ref refuses a queued record's Retry press", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-storage-blocked-retry";
+  const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const record = await seeder.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  await seeder.cancelUnattempted("ref_a");
+  seeder.close();
+
+  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await settleCallerContinuations();
+
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+  expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+  // The row is untouched: still canceled, and nothing reached the daemon.
+  expect((await wedge.readOutbox("ref_a")).map((row) => row.state)).toEqual(["canceled"]);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
 test("periodic discovery recovers reconciliation after the final durable record settles", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
@@ -13993,6 +14231,187 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       vi.useRealTimers();
       openSpy.mockRestore();
     }
+  });
+
+  // The wedge this fallback exists for also fails the ref's reconciliation
+  // (its outbox read never answers), and that failure must not undo the
+  // fallback: a storage-blocked ref is admissible to the send, whose own
+  // in-memory ordering guards carry the ordering responsibility, while the
+  // durable dispatcher stays fenced until discovery's retry reconciles. Before
+  // the split, the reconcile failure fenced the fallback and every send died
+  // with the watchdog's error until a page reload.
+  test("a send survives a reconciliation that the same storage wedge failed", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-reconcile-wedge";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Retire the connection and wedge every open on the outbox database, then
+    // fail a reconciliation through it: its outbox read meets the same
+    // never-answering open the send's capture will.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      void threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      // The reconcile read's watchdog is the only thing that ends it.
+      await vi.advanceTimersByTimeAsync(11_000);
+      await flushMicrotasks();
+
+      const send = threadsStore.getState().send("ref_a", "sent while the wedge also failed the reconcile");
+      // The assertion attaches before the advance: the watchdog's rejection
+      // fires inside it, across an Immediate boundary, and a promise still
+      // without a handler there would surface as an unhandled rejection.
+      const delivered = expect(send).resolves.toBeUndefined();
+      // The click-time capture's open never answers either; the watchdog ends
+      // it and the send must survive both the wedge and the reconcile failure
+      // it caused.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await delivered;
+
+      // The ref really was recorded storage-blocked by the failed reconcile -
+      // the premise this journey exists for, not an incidental pass.
+      expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toBeDefined();
+      const sentParams = sent?.params as { clientMutationId?: string; input?: unknown } | undefined;
+      expect(sentParams?.clientMutationId).toBeTruthy();
+      expect(sentParams?.input).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // The wedged enqueue left no durable row, and neither did the fallback.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A wedged reconcile read never settles, so the ref can sit in
+  // pendingMutationReconciliations for exactly as long as the wedge holds -
+  // the one fence the storage-blocked admission must also skip, or the fallback
+  // would strand the send for the whole wedge anyway. The enqueue is wedged to
+  // the same storage timeout the fallback answers; the record path is pinned
+  // by the storage-blocked classification test, so the slice is set by hand
+  // here to isolate this fence.
+  test("a send survives a reconciliation still pending on the same storage wedge", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Hold a reconcile open forever: its outbox read never settles.
+    const parked = parkRefReconcileRead(storage, "ref_a");
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntil(parked.opened);
+    threadsStore.setState({ mutationReconciliationStorageBlocked: new Set(["ref_a"]) });
+
+    // The durable write cannot be made: both enqueue attempts time out. The
+    // capture read is a different storage method and still succeeds, so the
+    // fallback decision is the only seam this exercises.
+    timeOutDurableEnqueues(storage);
+
+    const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
+    await send;
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // The classification must not wait for the reconcile's own watchdog. The
+  // send's fallback decision can land while the wedged reconcile is still
+  // pending - before the reconcile rejected and recorded the ref - and a send
+  // pressed in that window must still deliver: the fallback's own storage
+  // timeout is the same wedge, so it classifies the pending read itself
+  // instead of meeting the pending fence and dying with the wedge's error.
+  // (This replaces an earlier test that hand-injected the slice; a real
+  // MutationStorageTimeoutError IS storage unavailability, so "healthy
+  // pending reconcile plus a timeout-class enqueue failure" is not a state
+  // production can reach. The pending fence still holds every non-fallback
+  // caller, and a reconcile that later succeeds clears the record.)
+  test("a send survives a wedged reconcile that has not yet rejected", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-pending-wedge";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      // The send goes out first: its capture read parks on the wedge, and the
+      // shared open's watchdog ends it at +10s.
+      const send = threadsStore.getState().send("ref_a", "sent while the wedged reconcile is still pending");
+      const delivered = expect(send).resolves.toBeUndefined();
+      // Two seconds later a refresh starts a reconcile whose read parks on
+      // the same wedged open; its rejection - and the record it would write -
+      // lands only when the shared watchdog fires.
+      await vi.advanceTimersByTimeAsync(2_000);
+      void threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(9_000);
+      await delivered;
+
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toBeDefined();
+      // The reconcile's own rejection still records the ref afterwards - the
+      // attempt was never stolen from it.
+      expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // The fence this split must not widen: a GENUINE reconciliation failure (a
+  // mutation-state conflict, not a storage timeout) still refuses the fallback,
+  // exactly as before the storage-blocked slice existed.
+  test("a genuine reconciliation failure still refuses the send fallback", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) });
+    timeOutDurableEnqueues(storage);
+
+    await expect(threadsStore.getState().send("ref_a", "sent while a real reconcile failed")).rejects.toBeInstanceOf(
+      MutationStorageTimeoutError,
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // The guard is `err instanceof WireError`, i.e. EVERY settled WireError -

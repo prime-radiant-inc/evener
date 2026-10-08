@@ -4054,6 +4054,29 @@ test("keeps recovery failure visible on a compatible session until reconciliatio
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+// The storage-blocked split: a ref whose reconciliation failed only because
+// storage would not answer is not "recovery incomplete". The banner keeps
+// reading mutationReconciliationFailures alone, so a storage-blocked ref
+// renders no recovery banner - the write-stall banner already covers the
+// honest state while a send is actually stalled.
+test("a storage-blocked ref does not render the recovery banner", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  act(() =>
+    threadsStore.setState({
+      mutationReconciliationFailures: new Set(),
+      mutationReconciliationStorageBlocked: new Set(["ref_a"]),
+    }),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 // The reconciliationFailed fence is its own fourth fence: it stays for the
 // Send-resumes face (unlike the resume-required notice), while Send is what the
 // pane offers and the fence's standalone Resume control stays gone.
