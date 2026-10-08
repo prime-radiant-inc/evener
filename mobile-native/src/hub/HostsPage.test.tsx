@@ -6,7 +6,7 @@ import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { HostsPage } from "./HostsPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -87,7 +87,16 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 			await settle();
 		});
 	};
-	return { tree, navigation, hosts, live, row, setReady, setFocus, dispose: () => (hosts.dispose(), live.dispose()) };
+	return {
+		tree,
+		navigation,
+		hosts,
+		live,
+		row,
+		setReady,
+		setFocus,
+		dispose: () => (unmountMountedTrees(), hosts.dispose(), live.dispose()),
+	};
 }
 
 beforeEach(() => {
