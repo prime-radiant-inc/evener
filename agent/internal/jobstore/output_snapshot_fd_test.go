@@ -455,25 +455,22 @@ func TestReadOutputWindowSnapshotFromFilePreservesRawBytes(t *testing.T) {
 	}
 }
 
-// metaOpenCountingFs counts opens of one metadata sidecar.
-type metaOpenCountingFs struct {
+// metaOpenCountingFS counts opens of path's metadata sidecar.
+type metaOpenCountingFS struct {
 	afero.Fs
-	metaPath string
-	opens    *int
+	path      string
+	metaOpens int
 }
 
-func (fs metaOpenCountingFs) Open(name string) (afero.File, error) {
-	if name == fs.metaPath {
-		*fs.opens++
+func (fs *metaOpenCountingFS) Open(name string) (afero.File, error) {
+	if name == outputMetaPath(fs.path) {
+		fs.metaOpens++
 	}
 	return fs.Fs.Open(name)
 }
 
-// A descriptor read hashes the retained file once (#3903). Each metadata
-// validation hashes the whole retained file, up to the cap, so the read
-// validates once; the observations before and after it, which only compare
-// the sidecar bytes and the file's size, time and identity, open the sidecar
-// once each.
+// A descriptor read opens the sidecar once per observation (before and after)
+// and once for its single metadata validation, which hashes the retained file.
 func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
 	for _, api := range []string{"snapshot", "window", "page"} {
 		t.Run(api, func(t *testing.T) {
@@ -485,8 +482,7 @@ func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = f.Close() })
-			opens := 0
-			fs := metaOpenCountingFs{Fs: afero.NewOsFs(), metaPath: outputMetaPath(path), opens: &opens}
+			fs := &metaOpenCountingFS{Fs: afero.NewOsFs(), path: path}
 			var got []byte
 			switch api {
 			case "snapshot":
@@ -512,8 +508,8 @@ func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
 				t.Fatalf("content = %q, want %q", got, content)
 			}
 			const observations = 2
-			if opens != observations+1 {
-				t.Fatalf("metadata opened %d times, want %d observations and one validation", opens, observations)
+			if fs.metaOpens != observations+1 {
+				t.Fatalf("metadata opened %d times, want %d observations and one validation", fs.metaOpens, observations)
 			}
 		})
 	}

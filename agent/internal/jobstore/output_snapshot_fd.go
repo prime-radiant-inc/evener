@@ -75,8 +75,8 @@ func readOutputPageSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, be
 // These implementations intentionally remain separate: frozen path-reader
 // seams require afero path access, while descriptor reads must fence path/file
 // generations and give observation errors precedence over partial changes.
-// Descriptor reads also validate the metadata once, not before and after the
-// window (see checkOutputSizeUnchanged).
+// Descriptor reads validate the metadata once per read, relying on that
+// generation fence (see checkOutputSizeUnchanged).
 func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
@@ -204,12 +204,10 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 }
 
 // checkOutputSizeUnchanged reports a read's file as changed when it no longer
-// holds the retainedBytes its metadata was validated against. The metadata is
-// validated once per read (#3903), since that hashes the whole retained file.
-// A second validation could only differ on an in-place rewrite, which no
-// writer does: an append moves the descriptor's size, and a compaction moves
-// the sidecar bytes the caller's observations compare and renames a new file
-// over the path, which checkOutputFileGeneration sees.
+// holds the retainedBytes its metadata was validated against. A size check is
+// enough: an append changes the descriptor's size, a compaction renames a new
+// file over the path (checkOutputFileGeneration), and no writer rewrites in
+// place.
 func checkOutputSizeUnchanged(f *os.File, retainedBytes int64) error {
 	info, err := f.Stat()
 	if err != nil {
