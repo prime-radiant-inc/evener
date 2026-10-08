@@ -4060,10 +4060,10 @@ function captureFrames() {
 describe("native key scrolling that begins a frame later", () => {
   const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
 
-  function mountKeyReader() {
+  function mountKeyReader(port: ScrollMetrics = PORT) {
     const frames = captureFrames();
     const { ref, el } = makeListHandle();
-    const { measure, set } = makeMeasure(PORT);
+    const { measure, set } = makeMeasure(port);
     const onReaderMovement = vi.fn();
     const view = renderHook(
       ({ r }) =>
@@ -4077,12 +4077,13 @@ describe("native key scrolling that begins a frame later", () => {
         }),
       { initialProps: { r: "ref_a" } },
     );
-    definePort(el, PORT);
+    definePort(el, port);
     const mountFrames = frames.pending();
     return {
       el,
       onReaderMovement,
       rerender: view.rerender,
+      set,
       shiftSpace: () =>
         act(() => {
           el.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
@@ -4121,6 +4122,23 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
+  // Chrome sometimes starts the smooth scroll a frame later still: 37.8ms
+  // after Shift-Space's keydown in cascadeguard, against about 20ms usually
+  // (#4065).
+  test("the key's first scroll event, on the third frame, is recorded as the reader's movement", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).toHaveBeenCalledWith(900);
+    } finally {
+      reader.restore();
+    }
+  });
+
   test("a measurement correction between the key and its scroll leaves the key's movement recorded", () => {
     const reader = mountKeyReader();
     try {
@@ -4136,15 +4154,37 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  test("a key whose scroll never starts stops counting as a gesture after its second frame", () => {
+  test("a key whose scroll never starts stops counting as a gesture after its third frame", () => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
       reader.runFrame();
       reader.runFrame();
+      reader.runFrame();
       reader.scrollTo(880);
 
       expect(reader.onReaderMovement).not.toHaveBeenCalled();
+    } finally {
+      reader.restore();
+    }
+  });
+
+  // Over-marking is the harmful direction: a key whose scroll never starts
+  // must not veto the bottom-hold correction once its frames are over.
+  test("a correction after an un-scrolled key's three frames is still applied", () => {
+    const reader = mountKeyReader({ scrollTop: 1500, scrollHeight: 2000, clientHeight: 500 });
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.runFrame();
+      reader.runFrame();
+      act(() => {
+        definePort(reader.el, { scrollTop: 1500, scrollHeight: 2300, clientHeight: 500 });
+        reader.set({ scrollHeight: 2300 });
+        reader.el.dispatchEvent(new Event("scroll"));
+      });
+
+      expect(reader.el.scrollTop).toBe(1800);
     } finally {
       reader.restore();
     }
