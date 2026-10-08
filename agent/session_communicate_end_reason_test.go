@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -92,17 +91,17 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 			}
 			reg := tool.NewRegistry()
 			registerCommunicateTool(reg, deps)
-			args := map[string]any{"message": "report", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}}
+			args := map[string]any{"message": "report"}
 			maps.Copy(args, tc.args)
-			_, err := reg.Get("communicate").Exec(context.Background(), execenv.ExecutionEnvironment(nil), args)
+			res := reg.ExecuteCall(context.Background(), nil, communicateCallArgs("comm-1", args))
 			if tc.wantErr {
-				if err == nil || len(delivered) != 0 {
-					t.Fatalf("err = %v, delivered = %+v; want a refusal that delivers nothing", err, delivered)
+				if !res.IsError || len(delivered) != 0 {
+					t.Fatalf("result = %+v, delivered = %+v; want a refusal that delivers nothing", res, delivered)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("exec: %v", err)
+			if res.IsError {
+				t.Fatalf("exec: %s", res.Output)
 			}
 			if len(delivered) != 1 || delivered[0].EndReason != tc.want {
 				t.Fatalf("delivered = %+v, want one message with end reason %q", delivered, tc.want)

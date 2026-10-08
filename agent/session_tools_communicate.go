@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -49,14 +48,12 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if !ok {
 				return nil, errors.New("communicate requires end_turn")
 			}
+			// The registry's schema has already held end_reason to its enum.
 			endReason := ""
 			if endTurn && deps.offersEndReason {
-				endReason = tool.CommunicateEndReasonDone
-				if v, ok := args["end_reason"]; ok && v != nil {
-					endReason = fmt.Sprint(v)
-				}
-				if !slices.Contains(tool.CommunicateEndReasons, endReason) {
-					return nil, fmt.Errorf("communicate end_reason must be one of %s", strings.Join(tool.CommunicateEndReasons, ", "))
+				endReason, _ = args["end_reason"].(string)
+				if endReason == "" {
+					endReason = tool.CommunicateEndReasonDone
 				}
 			}
 
