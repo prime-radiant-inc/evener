@@ -1,4 +1,4 @@
-import { activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChanged, activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
 // A shell job's detail (Jesse's ruling on shell jobs, PR 2): the job as its
 // coordinator's tree carries it (command, how it's doing, who started it),
 // and its output's tail from evener/jobs/output, read again whenever the job
@@ -143,17 +143,7 @@ async function mount(over: { ownerRef?: string } = {}) {
 // at once.
 async function treeChanges(next: { revision: number; root: unknown }) {
 	tree = next;
-	act(() =>
-		client.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: "coord",
-				sessionId: "coord",
-				ref: "local:coord",
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => client.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 }
 
