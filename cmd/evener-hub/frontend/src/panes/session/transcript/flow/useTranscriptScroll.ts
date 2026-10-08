@@ -1225,6 +1225,8 @@ export function useTranscriptScroll({
   //     it instead.
   //   touch         - the same predicate, on real vertical movement only, so a
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
+  //   native keys   - the wheel's predicate, by key direction. The one marker
+  //     that lasts two frames, since the key's smooth scroll starts a frame late.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag that does scroll. The PRIMARY button marks only
@@ -1233,8 +1235,6 @@ export function useTranscriptScroll({
   //     is down, stationary pointer included. Ruled out are a finger (it has the
   //     touch path, which is more exact), a secondary button, a drag that is
   //     over (no button held), and one that has left the port.
-  //   native keys   - the wheel's predicate, by key direction. The one marker
-  //     that lasts two frames, since the key's smooth scroll starts a frame late.
   const startPointerDrag = useCallback((event: PointerEvent) => {
     // A finger produces BOTH event streams. The touch path knows about
     // direction and nested scrollers; adopting the same finger here as a drag
@@ -1953,8 +1953,8 @@ export function useTranscriptScroll({
     // frame markGesture schedules its own clear on). Only armed for a growth
     // the gesture actually vetoed, so it is not a poll: for a drag or wheel the
     // marker is gone by the next frame (a native key's by the one after), and
-    // for the one unbounded case (a
-    // stationary middle-button hold) it stops the moment the hold does.
+    // for the one unbounded case (a stationary middle-button hold) it stops the
+    // moment the hold does.
     function scheduleReanchorRetry() {
       if (reanchorRetryFrame !== null) return;
       reanchorRetryFrame = requestAnimationFrame(() => {
@@ -2094,6 +2094,7 @@ export function useTranscriptScroll({
     endPointerDrag,
     endAutoscrollOnFocusLoss,
     forgetGesturesWhenHidden,
+    forgetPendingMarker,
   ]);
 
   // A mode change commits a different row set into the same VirtualList. This

@@ -4147,8 +4147,11 @@ describe("native key scrolling that begins a frame later", () => {
       "the document going hidden",
       () => {
         Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-        act(() => document.dispatchEvent(new Event("visibilitychange")));
-        Reflect.deleteProperty(document, "visibilityState");
+        try {
+          act(() => document.dispatchEvent(new Event("visibilitychange")));
+        } finally {
+          Reflect.deleteProperty(document, "visibilityState");
+        }
       },
     ],
     ["a session switch", (reader: ReturnType<typeof mountKeyReader>) => act(() => reader.rerender({ r: "ref_b" }))],
