@@ -796,8 +796,9 @@ func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
 	cmd := exec.Command(bin, "dev", "hub-shards", "-overlay=overlay.json")
 	cmd.Dir = workRoot
 	// PWD as a shell would set it: exec leaves the inherited PWD alone once Env
-	// is set, and the go command then names its directory by the canonical
-	// path, which on macOS (/var -> /private/var) misses the overlay's keys.
+	// is set, and hub-shards and the go command it starts then name the
+	// directory by its canonical path, which on macOS (/var -> /private/var)
+	// misses the overlay's keys.
 	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "HUB_SHARD_COUNT=2", "PWD="+workRoot)...)
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "OVERLAY-REACHED-THE-BUILD") {
