@@ -43,26 +43,30 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	// Hold the background session namer past the opening turn, as a slow
-	// provider does on a loaded runner: its in-flight work is an obligation the
-	// daemon refuses to retire over, which a single retire request used to
-	// ignore and then wait out (#3876). The namer gives up on its own after
-	// agent's sessionNameTimeout (15s), far longer than this scripted turn takes.
-	// The deferred release runs before every t.Cleanup, so a held namer never
+	// provider does on a loaded runner. A user's retire sent while it runs
+	// waits for the namer to settle and then retires (#3921), so the one
+	// retire sent here, with the namer released once it is on its way, is
+	// accepted. (The agent's retirement tests pin the wait itself.) The
+	// deferred release runs before every t.Cleanup, so a held namer never
 	// stalls the session's shutdown cleanup however the test ends; releasing
 	// twice is harmless.
 	releaseNamer := provider.HoldNamer()
 	defer releaseNamer()
 	ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
-	refused := requestDaemonRetire(ctx, t, client, ref)
-	if refused.Accepted || !slices.ContainsFunc(refused.Lifecycle.Blockers, func(blocker appwire.DaemonBlocker) bool {
-		return blocker.Category == "autonomous"
-	}) {
-		t.Fatalf("retire with the session namer in flight: accepted=%t lifecycle=%+v, want refused over an autonomous blocker", refused.Accepted, refused.Lifecycle)
+	type retireResult struct {
+		resp appwire.DaemonRetireResponse
+		err  error
 	}
+	identity := residentDaemonIdentity(ctx, t, client, ref)
+	retired := make(chan retireResult, 1)
+	go func() {
+		resp, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
+		retired <- retireResult{resp, err}
+	}()
 	releaseNamer()
-
-	// Exit the daemon.
-	retireDaemonUntilAccepted(ctx, t, client, ref)
+	if got := <-retired; got.err != nil || !got.resp.Accepted {
+		t.Fatalf("retire sent with the session namer in flight: accepted=%t lifecycle=%+v err=%v, want accepted once the namer settled", got.resp.Accepted, got.resp.Lifecycle, got.err)
+	}
 	if err := awaitDaemonGone(ctx, client, ref); err != nil {
 		t.Fatalf("the daemon never exited: %v", err)
 	}
@@ -139,7 +143,8 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 // requestDaemonRetire asks the resident daemon serving ref to retire, once.
 // The daemon answers Accepted false, with the blocking obligations, while it
 // has work in flight.
-func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+// residentDaemonIdentity is the identity of the resident daemon serving ref.
+func residentDaemonIdentity(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonIdentity {
 	t.Helper()
 	list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
 	if err != nil {
@@ -149,6 +154,12 @@ func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Clie
 	if !found {
 		t.Fatalf("no resident daemon for %s in %+v", ref, list.Daemons)
 	}
+	return identity
+}
+
+func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+	t.Helper()
+	identity := residentDaemonIdentity(ctx, t, client, ref)
 	resp, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
 	if err != nil {
 		t.Fatalf("evener/daemon/retire: %v", err)

@@ -202,8 +202,11 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 // the session and settles on its own, so a retire that arrives while namers
 // are the only work holding the process waits for them to release, up to
 // sessionNameTimeout, before claiming, rather than being refused over them
-// (#3921). With any other work held the retire is refused at once, as
-// TryClaim does, since waiting would end in the same refusal.
+// (#3921). With any other lease held the retire is refused at once, as
+// TryClaim does, since waiting would end in the same refusal. Work that holds
+// no lease (an open question, an active goal between turns) is not seen
+// here, so a retire beside it still waits out the namer before TryClaim
+// refuses it (#4055).
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
 	c.awaitNaming(ctx, sessionNameTimeout)
 	return c.TryClaim(true)
