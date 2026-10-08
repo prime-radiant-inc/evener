@@ -31,10 +31,11 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "diagnostic-sentinel"); err != nil || !appended {
 		t.Fatalf("append diagnostic attention = %t, %v", appended, err)
 	}
-	// Incidental paths take the session lock briefly even with no run open,
-	// and the snapshot records session_lock_busy rather than wait. Hold it
-	// here as such a path would, so the uncontended keys below are read once
-	// it is free.
+	// The child's initial-prompt session namer can still be running after
+	// the run quiesces, taking the session lock as it names and saves the
+	// session, and the snapshot records session_lock_busy rather than wait.
+	// Hold the lock here as the namer would, so the uncontended keys below
+	// are read once it is free.
 	sub.sess.mu.Lock()
 	released := make(chan struct{})
 	go func() {
@@ -317,18 +318,27 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 
 // uncontendedStableSupervisionSnapshot is stableSupervisionFailureSnapshot
 // taken once no lock it reads is busy. The snapshot never waits for a lock,
-// so a test that checks its uncontended keys retries it instead.
+// and paths outside the run, such as the child's session namer, can hold one
+// briefly after it quiesces, so a test that checks its uncontended keys
+// retries it instead.
 func uncontendedStableSupervisionSnapshot(t *testing.T, root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {
 	t.Helper()
 	var snapshot map[string]any
+	var busy []string
+	defer func() {
+		if t.Failed() && len(busy) != 0 {
+			t.Logf("locks still busy: %v", busy)
+		}
+	}()
 	waitForCondition(t, 5*time.Second, "a snapshot with no busy lock", func() bool {
 		snapshot = stableSupervisionFailureSnapshot(root, sub, adapter)
+		busy = busy[:0]
 		for key := range snapshot {
 			if strings.HasSuffix(key, "_lock_busy") {
-				return false
+				busy = append(busy, key)
 			}
 		}
-		return true
+		return len(busy) == 0
 	})
 	return snapshot
 }
