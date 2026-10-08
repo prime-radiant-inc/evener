@@ -53,7 +53,6 @@ async function dispatchActivationKey(send) {
       key: " ",
       code: "Space",
       windowsVirtualKeyCode: 32,
-      nativeVirtualKeyCode: 32,
     });
   }
   await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
