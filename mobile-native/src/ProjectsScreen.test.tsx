@@ -195,7 +195,6 @@ it.each(["project", "location"] as const)("keeps settled delegate tallies quiet 
 		["Conversation", { hubId: "hub-1", ref: "local:a", title: "Alpha" }],
 		["Conversation", { hubId: "hub-1", ref: "local:b", title: "Beta" }],
 	]);
-	act(() => tree.unmount());
 });
 
 // A v3 page the hub cut short by its node or byte budget is only paged: the
@@ -360,12 +359,16 @@ it("reads the archived list again once a dropped connection recovers", async () 
 	await settleMicrotasks();
 	expect(reads()).toBe(1);
 
-	hub.emitStateChange("reconnecting");
 	harness.connection = screenConnection(hub, "reconnecting");
-	await act(async () => tree.update(screen()));
-	hub.emitReady();
+	await act(async () => {
+		hub.emitStateChange("reconnecting");
+		tree.update(screen());
+	});
 	harness.connection = screenConnection(hub, "ready");
-	await act(async () => tree.update(screen()));
+	await act(async () => {
+		hub.emitReady();
+		tree.update(screen());
+	});
 	await settleMicrotasks();
 	expect(reads()).toBe(2);
 	expect(renderedText(tree)).toContain("Alpha");

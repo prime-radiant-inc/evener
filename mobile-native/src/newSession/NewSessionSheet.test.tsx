@@ -235,9 +235,11 @@ it("never lets a reopened sheet's edits be lost to the start it was swiped away 
 	// The reopened sheet shows the start on its way, and takes no edits until it lands.
 	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: true, prompt: "go" });
-	harness.heldStart?.(created);
-	expect(await outcome).toMatchObject({ status: "created" });
-	await settle();
+	// The start lands while the reopened sheet is mounted, so its re-render stays inside act.
+	await act(async () => {
+		harness.heldStart?.(created);
+		await expect(outcome).resolves.toMatchObject({ status: "created" });
+	});
 	// The landing clears only the draft it started; the form is ready for the next one.
 	expect(harness.drafts.read("hub-1")).toBeNull();
 	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
@@ -254,9 +256,11 @@ it("shows a reopened sheet the start still on its way, and never starts it twice
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: true, prompt: "go" });
 	expect(await reopened.context().store.getState().submit()).toEqual({ status: "blocked" });
 	expect(harness.requests.filter((request) => request.method === "thread/start")).toHaveLength(1);
-	harness.heldStart?.(created);
-	expect(await outcome).toMatchObject({ status: "created" });
-	await settle();
+	// The start lands while the reopened sheet is mounted, so its re-render stays inside act.
+	await act(async () => {
+		harness.heldStart?.(created);
+		await expect(outcome).resolves.toMatchObject({ status: "created" });
+	});
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: false, prompt: "", cwd: "" });
 });
 

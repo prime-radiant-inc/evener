@@ -680,19 +680,6 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
-// IsPlaceholderDependsOn reports whether a task_list update's depends_on value
-// leaves the dependencies unchanged: null or an empty list, which some models
-// send on every update. Only [0] clears them.
-func IsPlaceholderDependsOn(v any) bool {
-	switch deps := v.(type) {
-	case nil:
-		return true
-	case []any:
-		return len(deps) == 0
-	}
-	return false
-}
-
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
 	reasoningSchema := map[string]any{
@@ -712,9 +699,9 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
 		// violation) or "depends_on": [] on every update item. Opting out keeps
-		// optional fields genuinely omittable; decodeTaskArgs still reads an
-		// empty or null depends_on as no change, since some models send them
-		// anyway.
+		// optional fields genuinely omittable; task_list's NormalizeArgs still
+		// drops an empty or null depends_on as no change, since some models
+		// send them anyway.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
