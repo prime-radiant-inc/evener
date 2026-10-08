@@ -409,7 +409,7 @@ func TestRenderToolCallShowsDelegateSendReplyAndEarlierResults(t *testing.T) {
 func assertRenderedLinesInOrder(t *testing.T, got string, want ...string) {
 	t.Helper()
 	at := 0
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		line = strings.TrimSpace(line)
 		if at < len(want) && (line == want[at] || at == 0 && strings.HasPrefix(line, want[at])) {
 			at++
