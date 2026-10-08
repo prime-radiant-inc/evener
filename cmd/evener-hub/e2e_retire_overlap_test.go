@@ -45,20 +45,24 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 				resp, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
 				retired <- overlappedRetire{resp, err}
 			}()
+			awaitRetireInProgress(ctx, t, client, ref, retired)
+			// The overlapping action comes from its own connection, as a
+			// second client's would: a connection serves its requests in
+			// order, so one sharing the retire's would only queue behind it.
+			other := stack.dialRPC(ctx, t)
 
 			switch overlap {
 			case "force stop":
-				// From its own connection, as a second client would stop it.
-				stopper := stack.dialRPC(ctx, t)
-				if _, err := clientRequest[appwire.EmptyResponse](ctx, stopper, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}); err != nil {
+				if _, err := clientRequest[appwire.EmptyResponse](ctx, other, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref}); err != nil {
 					t.Fatalf("force stop during the retire: %v", err)
 				}
 				releaseNamer()
-				if got := <-retired; got.err == nil && got.resp.Accepted {
-					t.Logf("the retire was accepted before the stop landed")
+				// The stop cancels the forwarded retire before ending the daemon.
+				if got := <-retired; got.err == nil {
+					t.Fatalf("retire overlapped by a force stop = accepted=%t, want its forward cancelled", got.resp.Accepted)
 				}
 			case "delete":
-				deleted, err := clientRequest[appwire.SessionDeleteResponse](ctx, client, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
+				deleted, err := clientRequest[appwire.SessionDeleteResponse](ctx, other, appwire.MethodEvenerSessionDelete, appwire.SessionDeleteParams{Ref: ref})
 				if err != nil {
 					t.Fatalf("delete during the retire: %v", err)
 				}
@@ -71,7 +75,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 					t.Fatalf("retire after a skipped delete = accepted=%t %v, want accepted once the namer settled", got.resp.Accepted, got.err)
 				}
 			case "resume":
-				if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, client, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
+				if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, other, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 					t.Fatalf("resume during the retire: %v", err)
 				}
 				assertRetireStillPending(t, retired)
@@ -114,9 +118,9 @@ type overlappedRetire struct {
 	err  error
 }
 
-// assertRetireStillPending requires the retire to be unanswered: the daemon
-// holds it while the session namer is held, so an action that returned
-// meanwhile overlapped it.
+// assertRetireStillPending requires the retire to be unanswered after the
+// overlapping action returned: the daemon holds it while the session namer is
+// held, and it was already in progress (awaitRetireInProgress).
 func assertRetireStillPending(t *testing.T, retired <-chan overlappedRetire) {
 	t.Helper()
 	select {
@@ -124,4 +128,27 @@ func assertRetireStillPending(t *testing.T, retired <-chan overlappedRetire) {
 		t.Fatalf("the retire answered (accepted=%t, %v) while the namer was held, so nothing overlapped it", got.resp.Accepted, got.err)
 	default:
 	}
+}
+
+// awaitRetireInProgress returns once the retire sent on client is being
+// served: a connection serves a thread/read after an earlier request, so a
+// short thread/read on the same connection times out behind the retire. The
+// probe repeats until one does, since the first can reach the hub before the
+// retire; it fails if the retire answers first.
+func awaitRetireInProgress(ctx context.Context, t *testing.T, client *appwire.Client, ref string, retired <-chan overlappedRetire) {
+	t.Helper()
+	for range 30 {
+		behind, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		_, err := clientRequest[appwire.ThreadReadResponse](behind, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+		cancel()
+		if err != nil {
+			return
+		}
+		select {
+		case got := <-retired:
+			t.Fatalf("the retire answered (accepted=%t, %v) before anything could overlap it", got.resp.Accepted, got.err)
+		default:
+		}
+	}
+	t.Fatal("no thread/read on the retire's connection ever waited behind it")
 }
