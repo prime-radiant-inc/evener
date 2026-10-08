@@ -389,8 +389,11 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	}
 	if !jobRef && !artifactRef {
 		// On a session ref an optional field sent as null means the model left
-		// it out, the same rule generic repair applies to empty optional enums.
-		// Empty strings and zeros stay for the handler to judge.
+		// it out. Generic repair's dropEmptyOptionalEnums covers only enum
+		// fields, and never runs here because these fields are schema-nullable,
+		// so this applies its null-as-absent rule to range, expand_turn,
+		// output_match and context_lines as well as format. Empty strings and
+		// zeros stay for the handler to judge.
 		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
 			if value, present := normalized[field]; present && value == nil {
 				remove(field)
