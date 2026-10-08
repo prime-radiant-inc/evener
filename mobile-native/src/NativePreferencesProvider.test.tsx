@@ -6,8 +6,6 @@ import { DRAFT_RESTORE_FAILED_MESSAGE } from "@evener/appwire-client";
 import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
 import { render, unmountMountedTrees } from "./renderNative.testkit";
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
 	const storage = {
