@@ -358,7 +358,6 @@ func TestDocImageServesLiveDescriptorURLWithoutPast(t *testing.T) {
 	}
 	sessionID := "02wMz5Txv2enqVTitaig6F"
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
-	t.Cleanup(daemon.Close)
 	daemon.SetAppIdentity("local", sessionID)
 	daemon.SetStatus(daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: cwd})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
