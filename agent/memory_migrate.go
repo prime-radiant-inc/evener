@@ -128,9 +128,15 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 // linked page with no description gets the one its index line gave, then the
 // index is renamed to memoryLegacyIndexBackup. It is idempotent and needs no
 // lock: concurrent runs write the same descriptions, skip pages that have
-// one, and the run that finds the index already renamed is done. A page that can't be
-// read or written is skipped; failing to read or rename the index returns an
-// error and leaves it in place, so the next run finishes the job.
+// one, and the run that finds the index already renamed is done. A linked
+// target that can't be read (missing, a directory, a refused symlink) is
+// skipped. Failing to write a real page, or to read or rename the index,
+// returns an error and leaves the index in place, so the next run finishes the
+// job.
+//
+// Migration runs once per scope and the window between a page's read and its
+// write is tiny; a concurrent edit landing in it would be overwritten, which is
+// accepted.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	root := env.WorkingDirectory()
 	legacy := filepath.Join(root, memoryIndexFile)
@@ -153,7 +159,11 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 			continue
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
-		_ = env.WriteFileRaw(abs, described, 0o644) // a page that can't be written stays undescribed
+		// WriteFileRaw truncates an existing file and keeps its mode, so the 0o644
+		// applies only to new files, which migration never creates.
+		if err := env.WriteFileRaw(abs, described, 0o644); err != nil {
+			return err
+		}
 	}
 	if err := env.RenamePath(legacy, filepath.Join(root, memoryLegacyIndexBackup)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
