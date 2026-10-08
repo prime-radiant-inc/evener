@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { Group } from "../sheet/Grouped";
 import { HostDetailPage } from "./HostDetailPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -71,7 +71,14 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 	const button = (label: string) =>
 		tree.root.findAllByProps({ accessibilityRole: "button" }).find((node) => node.props.accessibilityLabel === label) ??
 		null;
-	return { tree, navigation, hosts, labelled, button, dispose: () => (hosts.dispose(), live.dispose()) };
+	return {
+		tree,
+		navigation,
+		hosts,
+		labelled,
+		button,
+		dispose: () => (unmountMountedTrees(), hosts.dispose(), live.dispose()),
+	};
 }
 
 const drifting: HostRow = hostRow("paradise-park", {
