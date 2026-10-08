@@ -248,11 +248,12 @@ func TestFailureFingerprint_KeyOrderWhitespaceAndIntentAreEquivalent(t *testing.
 	}
 }
 
-// A value that looks like a default is presence, not omission. Fields are
-// dropped by name only, so each of these keeps its own fingerprint rather than
-// folding into the omitted form. read_transcript's offset_bytes=0 selects the
-// retained-page operation and task_list's depends_on: [0] clears dependencies; a
-// provider-materialized default is a real argument too.
+// The canonicalizer on its own, as for a tool with no NormalizeArgs: a value
+// that looks like a default is presence, not omission. Fields are dropped by
+// name only, so each of these keeps its own fingerprint rather than folding
+// into the omitted form. Only a tool's own NormalizeArgs may fold a value; the
+// real read_transcript's fold is covered at the registry, in the agent
+// package's TestReadTranscriptFingerprintFoldsOnlyNeutralJobDefaults.
 func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	base := fp("read_transcript", `{"transcript_ref":"job:j1"}`)
 	for _, args := range []string{

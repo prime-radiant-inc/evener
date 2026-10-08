@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -155,14 +156,18 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // validateTaskListItemFields validator, so their allowlists and targeted
 // diagnostics remain one shared contract rather than duplicated behavior.
 //
-// Placeholder update fields are dropped earlier, by normalizeTaskListArgs
-// (the tool's NormalizeArgs); here depends_on: [] clears dependencies and
-// null is rejected, so a direct caller must normalize first.
+// Placeholder update fields follow the one rule in normalizeTaskListArgs.
+// Dispatch already ran it as the tool's NormalizeArgs; it is idempotent, so
+// decoding runs it again and a direct caller gets the same reading.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	for _, retired := range []string{"action", "tasks", "updates"} {
 		if _, supplied := args[retired]; supplied {
 			return nil, nil, fmt.Errorf("task_list no longer takes %s; use add and/or update, or a bare call to view", retired)
 		}
+	}
+	args, err = normalizeTaskListArgs(args)
+	if err != nil {
+		return nil, nil, err
 	}
 	rawAdds, _ := args["add"].([]any)
 	adds = make([]taskpkg.TaskInput, 0, len(rawAdds))
@@ -393,8 +398,9 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		if notes, isString := cleaned["notes"].(string); isString && isPlaceholderNote(notes) {
 			delete(cleaned, "notes")
 		}
-		_, hasID := cleaned["id"]
-		if hasID && len(cleaned) == 1 && len(entry) > 1 {
+		// Drop the entry only when what is left is a well-formed id; a
+		// malformed one stays so validation rejects the whole call.
+		if len(cleaned) == 1 && len(entry) > 1 && isIntegerID(cleaned["id"]) {
 			continue
 		}
 		kept = append(kept, cleaned)
@@ -404,8 +410,24 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		return nil, errPlaceholderOnlyUpdate
 	}
 	normalized := maps.Clone(args)
-	normalized["update"] = kept
+	if len(kept) == 0 {
+		delete(normalized, "update")
+	} else {
+		normalized["update"] = kept
+	}
 	return normalized, nil
+}
+
+// isIntegerID reports whether v is an integral JSON number: a float64 from
+// dispatch's decoder, or an int64 from the failure fingerprint's canonical view.
+func isIntegerID(v any) bool {
+	switch id := v.(type) {
+	case float64:
+		return id == math.Trunc(id)
+	case int64:
+		return true
+	}
+	return false
 }
 
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {

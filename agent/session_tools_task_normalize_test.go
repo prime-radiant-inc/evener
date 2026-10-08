@@ -1,13 +1,42 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
+
+const parkedMarker = "evener did not execute this call"
+
+// thirdCallParked runs a, b, then a again through reg, each expected to fail
+// in its executor with wantFailure. The breaker parks the third call only when
+// a and b share a failure fingerprint, so the result says whether they do.
+func thirdCallParked(t *testing.T, reg *tool.Registry, name, a, b, wantFailure string) bool {
+	t.Helper()
+	exec := func(args string) tool.ExecResult {
+		return reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: "c", Name: name, Arguments: json.RawMessage(args)})
+	}
+	for i, args := range []string{a, b} {
+		res := exec(args)
+		if !res.IsError || !strings.Contains(res.FullOutput, wantFailure) {
+			t.Fatalf("call %d (%s) should fail with %q: %s", i+1, args, wantFailure, res.FullOutput)
+		}
+	}
+	return strings.HasPrefix(exec(a).FullOutput, parkedMarker)
+}
+
+func alwaysFails(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+	return nil, errors.New("boom")
+}
 
 // The task_list placeholder rule lives in one argument normalizer that both
 // dispatch and the failure breaker's fingerprint use (#4002), so a call that
@@ -86,5 +115,121 @@ func TestTaskTool_AllPlaceholderUpdateRejectedWithExplanation(t *testing.T) {
 	}
 	if got := taskByID(t, h.store, 2).DependsOn; !slices.Equal(got, []int{1}) {
 		t.Fatalf("rejected call changed depends_on: %v", got)
+	}
+}
+
+// Only placeholders fold. [0] clears, add entries have no placeholder
+// contract, and a tool without task_list's normalizer folds nothing.
+func TestTaskTool_NonPlaceholderFieldsKeepTheirFingerprint(t *testing.T) {
+	t.Parallel()
+	h := newDependentTaskHarness(t)
+	if thirdCallParked(t, h.reg, "task_list",
+		`{"update":[{"id":99,"status":"done","depends_on":[0]}]}`,
+		`{"update":[{"id":99,"status":"done"}]}`,
+		"unknown task ID 99") {
+		t.Error("depends_on: [0] must not fingerprint as omitted")
+	}
+	if thirdCallParked(t, h.reg, "task_list",
+		`{"add":[{"type":"fix","description":"a","prompt":"p","depends_on":[99]},{"type":"fix","description":"b","prompt":"p","depends_on":[]}]}`,
+		`{"add":[{"type":"fix","description":"a","prompt":"p","depends_on":[99]},{"type":"fix","description":"b","prompt":"p"}]}`,
+		"unknown task 99") {
+		t.Error("an add entry's depends_on: [] must keep its own fingerprint")
+	}
+	other := tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "other_tool", Description: "test tool", Parameters: map[string]any{"type": "object"}},
+		Exec:       alwaysFails,
+	}
+	if err := h.reg.Register(other); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if thirdCallParked(t, h.reg, "other_tool",
+		`{"update":[{"id":99,"depends_on":[]}]}`,
+		`{"update":[{"id":99}]}`,
+		"boom") {
+		t.Error("another tool's depends_on: [] must not fold")
+	}
+}
+
+// A placeholder-only entry is dropped only when its id is a real integer;
+// otherwise it stays, so validation rejects the whole call and no sibling
+// add commits.
+func TestTaskTool_PlaceholderEntryWithBadIDRejectsTheCall(t *testing.T) {
+	t.Parallel()
+	h := newDependentTaskHarness(t)
+	res := h.call(t, map[string]any{
+		"add":    []any{map[string]any{"type": "verify", "description": "third", "prompt": "p3"}},
+		"update": []any{map[string]any{"id": "bad", "notes": ""}},
+	})
+	if !res.IsError {
+		t.Fatalf("an update with a malformed id must fail the call: %s", res.FullOutput)
+	}
+	if n := len(h.store.View()); n != 2 {
+		t.Fatalf("the sibling add committed: %d tasks", n)
+	}
+}
+
+// decodeTaskArgs applies the placeholder rule itself, so a direct caller gets
+// the same reading as dispatch.
+func TestDecodeTaskArgs_NormalizesPlaceholders(t *testing.T) {
+	t.Parallel()
+	_, updates, err := decodeTaskArgs(map[string]any{"update": []any{
+		map[string]any{"id": float64(2), "status": "done", "depends_on": []any{}, "notes": "null"},
+	}})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(updates) != 1 || updates[0].DependsOn != nil || updates[0].Notes != "" {
+		t.Fatalf("placeholders should be no change, got %+v", updates)
+	}
+}
+
+// When every update entry is dropped beside real adds, the update key goes
+// too, so the call is the add-only call.
+func TestNormalizeTaskListArgs_DropsEmptiedUpdateKey(t *testing.T) {
+	t.Parallel()
+	add := []any{map[string]any{"type": "verify", "description": "third", "prompt": "p3"}}
+	normalized, err := normalizeTaskListArgs(map[string]any{
+		"add":    add,
+		"update": []any{map[string]any{"id": float64(2), "depends_on": []any{}}},
+	})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if _, has := normalized["update"]; has {
+		t.Fatalf("emptied update should be removed: %#v", normalized)
+	}
+}
+
+// read_transcript's NormalizeArgs folds exactly the neutral fields it removes
+// for job refs; other present values keep their own fingerprint.
+func TestReadTranscriptFingerprintFoldsOnlyNeutralJobDefaults(t *testing.T) {
+	t.Parallel()
+	newReg := func(t *testing.T) *tool.Registry {
+		t.Helper()
+		reg := tool.NewRegistry()
+		readTranscript := readTranscriptTool(&toolDeps{})
+		readTranscript.Exec = alwaysFails
+		if err := reg.Register(readTranscript); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		return reg
+	}
+	const job = `{"transcript_ref":"job:j1"}`
+	for _, folded := range []string{
+		`{"transcript_ref":"job:j1","range":""}`,
+		`{"transcript_ref":"job:j1","format":null}`,
+		`{"transcript_ref":"job:j1","context_lines":0}`,
+	} {
+		if !thirdCallParked(t, newReg(t), "read_transcript", folded, job, "boom") {
+			t.Errorf("%s should fingerprint as %s", folded, job)
+		}
+	}
+	for _, distinct := range [][2]string{
+		{`{"transcript_ref":"job:j1","offset_bytes":0}`, job},
+		{`{"transcript_ref":"current","range":""}`, `{"transcript_ref":"current"}`},
+	} {
+		if thirdCallParked(t, newReg(t), "read_transcript", distinct[0], distinct[1], "boom") {
+			t.Errorf("%s must keep its own fingerprint", distinct[0])
+		}
 	}
 }
