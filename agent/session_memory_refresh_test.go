@@ -1269,3 +1269,28 @@ func TestMemoryRefreshIgnoresOwnPageWriteOfAnyPage(t *testing.T) {
 		}
 	}
 }
+
+// An own page write while the model was last told the scope is unavailable
+// does not make the rendering a baseline: the model never saw the index, so
+// the next completed boundary delivers it in full, other pages included.
+func TestMemoryRefreshOwnPageWriteAfterUnavailableDeliversFullIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "other.md", "opaque-other-page")
+	r := newStalledMemoryRefresh(t, root)
+	flight := r.stalledBoundary(t)
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stalled first boundary appended %d contexts, want the unavailable projection", got)
+	}
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine-page\n---\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	r.finish(flight)
+	r.boundary()
+	r.boundary()
+	text := lastMemoryContextText(r.s)
+	display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+	if got := memoryContextCount(r.s); got != 2 || !ok || display.State != "current" || !strings.Contains(display.Content, "opaque-other-page") {
+		t.Fatalf("contexts=%d last=%q, want the full index after the unavailable one", got, text)
+	}
+}

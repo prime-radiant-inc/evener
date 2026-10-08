@@ -57,9 +57,9 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 }
 
 // execOwnMemoryWrite runs a write, edit or delete of one memory file and,
-// once it succeeds, records the result as the session's own: a change to the
-// index becomes its baseline and a change to a page it read becomes that
-// page's record, so neither is echoed back.
+// once it succeeds, records the result as the session's own: the scope is
+// rendered again and that rendering becomes its index baseline, and a page
+// it read gets its new record, so neither is echoed back.
 func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error)) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", operation)

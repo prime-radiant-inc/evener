@@ -260,6 +260,10 @@ type Session struct {
 	memoryClosed        bool
 	memoryLastProjected map[string]memoryProjection
 	memoryEverProjected map[string]bool
+	// memoryLastState holds, per scope, the state the last full projection
+	// settled on, whether it was shown to the model or suppressed. An own
+	// write consults it when the scope has no baseline.
+	memoryLastState map[string]string
 	// memoryBaseline holds, per scope, the index the session already knows: the
 	// last current one projected to it, or the one it wrote or deleted itself.
 	// Compaction and any non-current projection clear it; a resumed session

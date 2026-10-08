@@ -404,15 +404,21 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 
 // recordOwnMemoryIndex makes rendered the index the session knows for scope
 // after its own write; a failed rendering forgets the scope, so the next
-// boundary delivers it in full. A read already in flight started before the
-// write, so its result is discarded.
+// boundary delivers it in full. A scope with no baseline adopts the rendering
+// only when the last projection found it missing: the model then knows the
+// scope held nothing before its own write. After any other state, such as
+// unavailable, the model never saw the index, so the scope stays unknown and
+// the next boundary delivers it in full. A read already in flight started
+// before the write, so its result is discarded.
 func (s *Session) recordOwnMemoryIndex(scope string, rendered renderedMemoryScope, err error) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
 		flight.stale = true
 	}
+	_, known := s.memoryBaseline[scope]
 	switch {
+	case !known && s.memoryLastState[scope] != "missing":
 	case err != nil:
 		delete(s.memoryBaseline, scope)
 	case rendered.status == "missing":
@@ -547,10 +553,10 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 // appendMemoryContext appends the memory-context message body returns for
 // p's scope, unless the session is closing or body returns "". body runs
 // under memoryMu and reports whether the model now knows p's current index:
-// that index, as projected, becomes the baseline. Anything else forgets the
-// scope, so the next current read delivers the full index: the model was
-// last told there is no index, that it could not be read, or that it is
-// empty, or was told nothing about a first empty one.
+// its whole rendering, p.Index, becomes the baseline. Anything else forgets
+// the scope, so the next current read delivers the full index: the model was
+// last told the scope has no pages, that it could not be read, or that it is
+// revoked, or was told nothing about a first such state.
 func (s *Session) appendMemoryContext(p memoryProjection, body func() (text string, known bool)) {
 	s.appendMemoryContextText(p.Scope, func() string {
 		text, known := body()
@@ -603,6 +609,10 @@ func (s *Session) appendMemoryProjection(p memoryProjection) {
 		if s.memoryEverProjected == nil {
 			s.memoryEverProjected = make(map[string]bool)
 		}
+		if s.memoryLastState == nil {
+			s.memoryLastState = make(map[string]string)
+		}
+		s.memoryLastState[p.Scope] = p.Status
 		prior, exists := s.memoryLastProjected[p.Scope]
 		inContext := exists && prior == p
 		suppressed := !inContext && !s.memoryEverProjected[p.Scope] && (p.Status == "missing" || p.Status == "revoked" || (p.Status == "current" && p.Content == ""))
@@ -728,6 +738,7 @@ func memoryIndexLines(index string) []string {
 func (s *Session) resetMemoryProjectionAfterCompaction() {
 	s.memoryMu.Lock()
 	s.memoryLastProjected = nil
+	s.memoryLastState = nil
 	s.memoryBaseline = nil
 	for _, flight := range s.memoryIndexFlights {
 		flight.stale = true
