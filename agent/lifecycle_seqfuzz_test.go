@@ -39,7 +39,7 @@ import (
 //	                      from the in-session fake clock) — a hang is a wedge.
 //	Oracle 3 (status):    State() is observed only at op boundaries, where it must be
 //	                      idle, awaiting, or closed, and once closed it stays closed.
-//	                      awaiting (attention-status-model v5) is a clean-turn resting
+//	                      awaiting is a clean-turn resting
 //	                      state, not a mid-turn one, so it is boundary-legal too.
 //	Oracle 4 (counters):  the turns and modelResponses counters never decrease.
 //	Oracle 5 (transcript): history stays well-formed (no orphaned tool call) and

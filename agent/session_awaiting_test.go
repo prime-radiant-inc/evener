@@ -297,17 +297,19 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 }
 
 // TestRestore_UserLastTurnStaysIdle is the companion negative case for
-// TestRestore_AgentLastTurnResumesAwaiting: a restored session whose persisted
-// transcript ends with the user's turn (the daemon stopped before the agent
-// replied — simulated here the same way TestProcessInput_InterruptStaysIdle
-// does, by cancelling before the adapter responds) must stay idle. Only an
-// agent-last transcript upgrades; this guards recomputeRestoredState's
-// backward-walk against over-triggering on a dangling user turn.
+// TestRestore_RestsByEndReason: a restored session whose persisted transcript
+// ends with the user's turn (the daemon stopped before the agent replied —
+// simulated here the same way TestProcessInput_InterruptStaysIdle does, by
+// cancelling before the adapter responds) must stay idle, even though the
+// input before it ended on needs_response. This guards
+// recomputeRestoredState's backward-walk against reading past a dangling
+// user turn to an earlier needs_response.
 func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
 		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
 	}})
 	dir := t.TempDir()
@@ -316,6 +318,12 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after needs_response = %q, want %q (test setup broken)", got, SessionAwaiting)
+	}
 	done := make(chan struct{})
 	go func() { _, _ = sess.ProcessInput(ctx, "dangling question", nil); close(done) }()
 	time.Sleep(50 * time.Millisecond)

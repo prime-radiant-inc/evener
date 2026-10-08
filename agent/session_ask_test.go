@@ -1251,14 +1251,14 @@ func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (test setup broken)", got)
+		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (test setup broken)", got)
 	}
 
 	if err := sess.Compact(context.Background()); err != nil && strings.Contains(err.Error(), compactErrPending) {
-		t.Fatalf("Compact on a plain awaiting rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this general rest)", err)
+		t.Fatalf("Compact on a needs_response rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this needs_response rest)", err)
 	}
 }
 
@@ -4244,10 +4244,10 @@ func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testin
 		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if restored.HasPendingAsk() {
-		t.Fatal("HasPendingAsk() = true after restoring a GENERIC awaiting rest with no ask, want false")
+		t.Fatal("HasPendingAsk() = true after restoring a needs_response rest with no ask, want false")
 	}
 	if got := restored.askPendingCount(); got != 0 {
-		t.Fatalf("restored askPendingCount = %d, want 0 (a generic awaiting rest must never rebuild a pending set)", got)
+		t.Fatalf("restored askPendingCount = %d, want 0 (a needs_response rest must never rebuild a pending set)", got)
 	}
 
 	var kicked []string
@@ -4257,7 +4257,7 @@ func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testin
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal against a restored GENERIC awaiting rest must report started=true and kick immediately (nothing is genuinely pending)")
+		t.Fatal("SetGoal against a restored needs_response rest must report started=true and kick immediately (nothing is genuinely pending)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))

@@ -149,7 +149,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				}
 			}
 			b, _ := json.Marshal(resp)
-			if endTurn && accepted && endReason != "" {
+			if accepted && endReason != "" {
 				// The accepted end reason rides the result's tool state, which
 				// restore reads (endedOnNeedsResponse): the result text can be
 				// truncated or carry a repeated-call nudge.

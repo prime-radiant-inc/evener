@@ -388,10 +388,10 @@ func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	}
 
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (a GENERIC awaiting rest, no pending question — test setup broken)", got)
+		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (a needs_response rest, no pending question — test setup broken)", got)
 	}
 
 	started, err := sess.SetGoal(ctx, "ship it")
@@ -399,7 +399,7 @@ func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal on a plain awaiting rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this general rest)")
+		t.Fatal("SetGoal on a needs_response rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this needs_response rest)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))
