@@ -1,5 +1,6 @@
 import { hydrateThread, type SessionJobsResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
@@ -80,10 +81,7 @@ test("closed trigger counts subagents at every depth while an open recursive tre
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs", "delegates", "watches"] },
-    }),
+    client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs", "delegates", "watches"])),
   );
   await waitFor(() => expect(client.calls.length).toBeGreaterThan(before));
   expect(
@@ -150,12 +148,7 @@ test("visible rows and disclosure survive same-session invalidation failures", a
   client.on("evener/thread/jobs/list", () => {
     throw new Error("temporary source");
   });
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
   expect(await screen.findByText("Activity is updating…")).toBeTruthy();
   expect(screen.getByText("retained completed")).toBeTruthy();
   expect(activityPanelStore.getState().entries.get(ref)?.expandedFoldIDs).toEqual([`session:${ref}:inactive-fold`]);
@@ -193,16 +186,7 @@ test("closed failure history does not block later-page current work through refr
   expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
   vi.useFakeTimers();
   for (const recover of [
-    () =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: {
-          ref,
-          threadId: "owner",
-          sessionId: "owner",
-          resources: ["jobs"],
-        },
-      }),
+    () => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])),
     () => {
       client.emitStateChange("reconnecting");
       client.emitStateChange("ready");
@@ -273,12 +257,7 @@ test("permanent refusal keeps useful rows without claiming ongoing recovery", as
   client.on("evener/thread/jobs/list", () => {
     throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.permanent).toBe(true));
   expect(screen.getByText("useful retained work")).toBeTruthy();
   expect(screen.queryByText("Activity is updating…")).toBeNull();

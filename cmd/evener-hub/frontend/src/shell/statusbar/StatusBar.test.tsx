@@ -1,4 +1,5 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
@@ -322,12 +323,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   expectCounts(2, 6);
   active = 1;
   total = 7;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
   await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
   expectCounts(1, 7);
 });
