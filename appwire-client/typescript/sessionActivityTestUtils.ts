@@ -4,6 +4,7 @@ import { activityChangedNotification } from "./testing/notifications";
 import type {
   JobActivityJob,
   SessionActivityContext,
+  SessionActivityResource,
   SessionActivityScope,
   SessionActivitySummary,
   SessionDelegate,
@@ -121,7 +122,7 @@ export function activityClient(state: "ready" | "connecting" = "ready"): FakeCli
 }
 export function activityChanged(
   client: FakeClient,
-  resources: ("summary" | "delegates" | "jobs" | "watches")[],
+  resources: SessionActivityResource[],
   sessionId = "session",
   ref = activityRef,
 ): void {
