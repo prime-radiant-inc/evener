@@ -5,7 +5,7 @@ Run: python3 -B tools/prompt-eval/memory-lab/test_bookkeeping.py
 Each case is a tool call as the lab records it and the (kind, surfaces) classify must return; the
 compaction tests cover how a compacted session's calls are tagged and its reconstruction counted, and
 the --context-window tests cover the trial's providers.toml."""
-import importlib.machinery, importlib.util, json, os, sys, tempfile, unittest
+import argparse, importlib.machinery, importlib.util, json, os, stat, sys, tempfile, unittest
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -130,26 +130,114 @@ class ClassifyTest(unittest.TestCase):
 class ContextWindowConfigTest(unittest.TestCase):
     """memory-lab run --context-window: the trial's providers.toml is the user's plus one override row."""
 
-    def config(self, user_toml):
+    def user_file(self, user_toml):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         path = os.path.join(root.name, "providers.toml")
-        with open(path, "w") as f:
-            f.write(user_toml)
+        if user_toml is not None:
+            with open(path, "w") as f:
+                f.write(user_toml)
         self.enterContext(mock.patch.dict(os.environ, {"EVENER_PROVIDERS_CONFIG": path}))
-        return bookkeeping.lab.context_window_config("lunar/flash-bg.1", 44000)
+        return path
+
+    def config(self, user_toml, model="lunar/flash-bg.1"):
+        import tomllib
+        self.user_file(user_toml)
+        return tomllib.loads(bookkeeping.lab.context_window_config(model, 44000))
 
     def test_adds_a_row_after_the_users_own_config(self):
-        import tomllib
-        text = self.config('default = "lunar"\n[providers]\n  [providers.lunar]\n    base = "openai"\n')
-        got = tomllib.loads(text)
+        got = self.config('default = "lunar"\n[providers]\n  [providers.lunar]\n    base = "openai"\n')
         self.assertEqual(got["default"], "lunar")
         self.assertEqual(got["providers"]["lunar"]["base"], "openai")
         self.assertEqual(got["providers"]["lunar"]["models"]["flash-bg.1"], {"context_window": 44000})
 
-    def test_refuses_a_config_that_already_has_the_models_row(self):
-        with self.assertRaises(SystemExit):
-            self.config('[providers.lunar.models."flash-bg.1"]\ncontext_window = 9\n')
+    def test_overrides_an_existing_models_row_in_place(self):
+        got = self.config('[providers.lunar.models."flash-bg.1"]\ncontext_window = 9\nmax_output_tokens = 7\n')
+        self.assertEqual(got["providers"]["lunar"]["models"]["flash-bg.1"],
+                         {"context_window": 44000, "max_output_tokens": 7})
+
+    def test_extends_inline_tables(self):
+        got = self.config('[providers.lunar]\nbase = "openai"\nmodels = {}\nheaders = { "X-A" = "b" }\n')
+        self.assertEqual(got["providers"]["lunar"]["models"], {"flash-bg.1": {"context_window": 44000}})
+        self.assertEqual(got["providers"]["lunar"]["headers"], {"X-A": "b"})
+
+    def test_keeps_every_value_type(self):
+        user = ('when = 2026-10-08T01:02:03Z\nratio = 0.5\non = true\nn = -3\nlist = [1, "two", { a = 1 }]\n'
+                's = "quote \\" tab \\t uni é"\n[providers.lunar]\nbase = "openai"\n')
+        import tomllib
+        want = tomllib.loads(user)
+        got = self.config(user)
+        del got["providers"]["lunar"]["models"]
+        self.assertEqual(got, want)
+
+    def test_canonicalizes_the_model_ref_like_the_cli(self):
+        got = self.config('[providers.openai]\nbase = "openai"\n', model=" OPENAI / gpt-5.5 ")
+        self.assertEqual(got["providers"]["openai"]["models"], {"gpt-5.5": {"context_window": 44000}})
+
+    def test_a_missing_user_file_means_no_user_layer(self):
+        got = self.config(None)
+        self.assertEqual(got, {"providers": {"lunar": {"models": {"flash-bg.1": {"context_window": 44000}}}}})
+
+    def test_an_unreadable_user_file_exits_with_its_path(self):
+        path = self.user_file(None)
+        os.mkdir(path)  # a directory: open fails with an error other than "missing"
+        with self.assertRaises(SystemExit) as e:
+            bookkeeping.lab.context_window_config("lunar/flash-bg.1", 44000)
+        self.assertIn(path, str(e.exception.code))
+
+    def test_a_malformed_user_file_exits_with_its_path(self):
+        path = self.user_file("[providers\n")
+        with self.assertRaises(SystemExit) as e:
+            bookkeeping.lab.context_window_config("lunar/flash-bg.1", 44000)
+        self.assertIn(path, str(e.exception.code))
+
+
+class TrialStateTest(unittest.TestCase):
+    """make_state_dir writes the trial's providers.toml, and fixture_env points every session at it."""
+
+    def run_trial(self, work_root):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        user = os.path.join(root.name, "config", "providers.toml")
+        os.makedirs(os.path.dirname(user))
+        self.enterContext(mock.patch.dict(os.environ, {"EVENER_PROVIDERS_CONFIG": user}))
+        os.environ.pop("EVENER_CREDENTIALS_CONFIG", None)
+        trial = os.path.join(root.name, "trial")
+        os.makedirs(trial)
+        work = os.path.join(root.name, "shop-abc")
+        args = argparse.Namespace(work_root=os.path.join(root.name, "wr") if work_root else None,
+                                  providers_config="[x]\ny = 1\n")
+        bookkeeping.lab.make_state_dir(args, trial, work)
+        xdg = os.path.join(trial, "xdg")
+        return root.name, xdg, bookkeeping.lab.fixture_env(work, xdg), user
+
+    def check(self, work_root):
+        root, xdg, env, user = self.run_trial(work_root)
+        real = os.path.join(os.path.realpath(xdg), "providers.toml")
+        if work_root:
+            self.assertTrue(os.path.islink(xdg))
+            self.assertEqual(real, os.path.join(os.path.realpath(root), "wr", ".state", "shop-abc", "providers.toml"))
+        self.assertEqual(env["EVENER_PROVIDERS_CONFIG"], real)
+        with open(real) as f:
+            self.assertEqual(f.read(), "[x]\ny = 1\n")
+        self.assertEqual(stat.S_IMODE(os.stat(real).st_mode), 0o600)
+        self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(os.path.dirname(user), "credentials.toml"))
+
+    def test_under_work_root(self):
+        self.check(work_root=True)
+
+    def test_inside_the_trial(self):
+        self.check(work_root=False)
+
+    def test_no_override_without_context_window(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        trial = os.path.join(root.name, "trial")
+        os.makedirs(trial)
+        bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=None, providers_config=None), trial,
+                                       os.path.join(root.name, "w"))
+        env = bookkeeping.lab.fixture_env(os.path.join(root.name, "w"), os.path.join(trial, "xdg"))
+        self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))
 
 
 def event(kind, **data):
@@ -177,6 +265,17 @@ class CompactionTest(unittest.TestCase):
         self.assertEqual([(c["compactions_before"], c["output_chars"]) for c in calls], [(0, 400), (1, 0), (1, 0)])
         self.assertEqual(bookkeeping.lab.context_record(f.name),
                          (40000, [["observation_mask", "checkpoint", "summarize"], ["checkpoint"]]))
+
+    def test_output_chars_counts_an_empty_output_as_empty(self):
+        lines = [event("TOOL_CALL_START", tool_name="shell", call_id="a", arguments_json="{}"),
+                 event("TOOL_CALL_END", tool_name="shell", call_id="a", output="", error="x" * 10),
+                 event("TOOL_CALL_START", tool_name="memory_read", call_id="b", arguments_json="{}"),
+                 event("TOOL_CALL_END", tool_name="memory_read", call_id="b", error="no such file")]
+        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+        self.addCleanup(os.remove, f.name)
+        calls, _, _, _ = bookkeeping.lab.parse_events(f.name)
+        self.assertEqual([c["output_chars"] for c in calls], [0, len("no such file")])
 
     def test_reconstruction_counts_reads_in_the_window_after_each_compaction(self):
         def at(c, compactions, chars=0):

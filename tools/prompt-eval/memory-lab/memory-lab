@@ -135,31 +135,82 @@ def user_credentials_config():
 
 def toml_key(key):
     """key as a TOML key: bare when it can be, otherwise a quoted basic string."""
-    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else toml_value(key)
+
+
+def toml_value(value):
+    """value, as tomllib parses it, written back as TOML: inline for arrays and for tables inside them."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)  # inf, -inf, nan and 1e+20 are TOML as written
+    if isinstance(value, str):
+        # A JSON string is a TOML basic string, except that TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{toml_key(k)} = {toml_value(v)}" for k, v in value.items()) + " }"
+    return value.isoformat()  # tomllib's datetime, date and time values
+
+
+def toml_document(table, path=()):
+    """table, as tomllib parses a document, written back as TOML: each sub-table under its own header."""
+    lines = [f"{toml_key(k)} = {toml_value(v)}" for k, v in table.items() if not isinstance(v, dict)]
+    for k, v in table.items():
+        if isinstance(v, dict):
+            header = ".".join(toml_key(part) for part in path + (k,))
+            lines += ["", f"[{header}]", toml_document(v, path + (k,))]
+    return "\n".join(lines).strip("\n") + ("\n" if not path else "")
+
+
+def model_ref(model):
+    """(instance, model id) from --model, canonicalized as evener's CLI does (cmdutil.ParseModelRef): the
+    whole ref and each half trimmed, the instance lowercased, split at the first slash. Exits when either half
+    is empty."""
+    instance, sep, model_id = model.strip().partition("/")
+    instance, model_id = instance.strip().lower(), model_id.strip()
+    if not (sep and instance and model_id):
+        sys.exit(f"memory-lab: --context-window needs --model as instance/model, not {model!r}")
+    return instance, model_id
 
 
 def context_window_config(model, window):
     """The text of a providers.toml that is the user's own plus a context_window override for model
     ("instance/model"), so the session budgets, and compacts, against window tokens. The user layer
-    outranks the catalog and the live listing, so the override holds. Exits on a model without an
-    instance, or a user config that already has a table for that model."""
+    outranks the catalog and the live listing, so the override holds. The user's file is parsed, the
+    override set in its model row (other facts in that row are kept), and the result written back out:
+    comments and layout are not kept, but every value is, which the re-parse below checks. A missing
+    file is no user layer; an unreadable or malformed one exits with its path."""
     import tomllib
-    instance, sep, model_id = model.partition("/")
-    if not (sep and instance and model_id):
-        sys.exit(f"memory-lab: --context-window needs --model as instance/model, not {model!r}")
+    instance, model_id = model_ref(model)
     path = user_providers_config()
-    base = read_file(path) if path else ""
+    base = ""
+    if path:
+        try:
+            with open(path) as f:
+                base = f.read()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            sys.exit(f"memory-lab: can't read {path}: {e.strerror or e}")
     try:
-        user = tomllib.loads(base)
+        config = tomllib.loads(base)
     except tomllib.TOMLDecodeError as e:
         sys.exit(f"memory-lab: {path}: {e}")
-    if model_id in user.get("providers", {}).get(instance, {}).get("models", {}):
-        sys.exit(f"memory-lab: {path} already has a table for {model}; --context-window can't add its override")
-    text = (base.rstrip("\n") + "\n\n" if base.strip() else "") + \
-        f"[providers.{toml_key(instance)}.models.{toml_key(model_id)}]\ncontext_window = {window}\n"
-    merged = tomllib.loads(text)
-    if merged["providers"][instance]["models"][model_id].get("context_window") != window:
-        sys.exit(f"memory-lab: couldn't add a context_window override for {model} to {path}")
+    table = config
+    for key in ("providers", instance, "models", model_id):
+        table = table.setdefault(key, {})
+        if not isinstance(table, dict):
+            sys.exit(f"memory-lab: {path}: {key} isn't a table, so --context-window can't add its override for {model}")
+    table["context_window"] = window
+    text = toml_document(config)
+    try:
+        written = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        sys.exit(f"memory-lab: couldn't write {path} back out with the override: {e}")
+    if written != config:
+        sys.exit(f"memory-lab: couldn't write {path} back out with the override: a value changed")
     return text
 
 
@@ -229,7 +280,7 @@ def parse_events(path):
                 folds.tool_call()
                 reasoning.append(f"\n[{data.get('tool_name')}]\n")
             elif kind == "TOOL_CALL_END" and data.get("call_id") in by_id:
-                by_id[data["call_id"]]["output_chars"] = len(str(data.get("output") or data.get("error") or ""))
+                by_id[data["call_id"]]["output_chars"] = len(str(data["output"] if data.get("output") is not None else data.get("error") or ""))
             elif kind == "CONTEXT_COMPACTION":
                 folds.layer(data.get("layer", ""))
             elif kind == "REASONING_SUMMARY_DELTA":
@@ -293,7 +344,9 @@ def make_state_dir(args, trial, work):
         os.makedirs(real)
         os.symlink(real, xdg)
     if args.providers_config:
-        with open(os.path.join(xdg, TRIAL_PROVIDERS), "w") as f:
+        # Owner-only: the user's providers.toml can hold literal keys.
+        fd = os.open(os.path.join(xdg, TRIAL_PROVIDERS), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write(args.providers_config)
 
 
