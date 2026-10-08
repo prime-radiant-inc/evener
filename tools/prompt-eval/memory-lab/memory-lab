@@ -115,22 +115,25 @@ def user_config_dir():
 
 
 def user_providers_config():
-    """The providers.toml path evener would read without the lab: EVENER_PROVIDERS_CONFIG, else
-    $XDG_CONFIG_HOME/evener/providers.toml, else ~/.config/evener/providers.toml. None when
-    EVENER_PROVIDERS_CONFIG is set and empty (no user layer)."""
+    """The providers.toml path evener would read without the lab, as cmdutil.ProvidersConfigPath picks it:
+    EVENER_PROVIDERS_CONFIG, else $XDG_CONFIG_HOME/evener/providers.toml, else ~/.config/evener/providers.toml.
+    None when EVENER_PROVIDERS_CONFIG is set but blank (no user layer). Absolute, resolved against the
+    lab's cwd: the sessions that read it run in the trial workspace."""
     if "EVENER_PROVIDERS_CONFIG" in os.environ:
-        return os.environ["EVENER_PROVIDERS_CONFIG"] or None
-    return os.path.join(user_config_dir(), "providers.toml")
+        value = os.environ["EVENER_PROVIDERS_CONFIG"]
+        return os.path.abspath(value) if value.strip() else None
+    return os.path.abspath(os.path.join(user_config_dir(), "providers.toml"))
 
 
 def user_credentials_config():
-    """The credentials.toml evener would read without the lab: EVENER_CREDENTIALS_CONFIG, else the
-    sibling of the user's providers.toml."""
+    """The credentials.toml evener would read without the lab, as cmdutil.CredentialsPath picks it:
+    EVENER_CREDENTIALS_CONFIG, else the sibling of the user's providers.toml, else
+    <config dir>/credentials.toml. Absolute, like user_providers_config."""
     if os.environ.get("EVENER_CREDENTIALS_CONFIG", "").strip():
-        return os.environ["EVENER_CREDENTIALS_CONFIG"]
+        return os.path.abspath(os.environ["EVENER_CREDENTIALS_CONFIG"])
     providers = user_providers_config()
     root = os.path.dirname(providers) if providers else user_config_dir()
-    return os.path.join(root, "credentials.toml")
+    return os.path.abspath(os.path.join(root, "credentials.toml"))
 
 
 def toml_key(key):

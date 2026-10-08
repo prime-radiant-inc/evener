@@ -195,33 +195,46 @@ class ContextWindowConfigTest(unittest.TestCase):
 class TrialStateTest(unittest.TestCase):
     """make_state_dir writes the trial's providers.toml, and fixture_env points every session at it."""
 
-    def run_trial(self, work_root):
+    def setUp(self):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
-        user = os.path.join(root.name, "config", "providers.toml")
-        os.makedirs(os.path.dirname(user))
-        self.enterContext(mock.patch.dict(os.environ, {"EVENER_PROVIDERS_CONFIG": user}))
-        os.environ.pop("EVENER_CREDENTIALS_CONFIG", None)
-        trial = os.path.join(root.name, "trial")
+        self.root = os.path.realpath(root.name)
+        os.makedirs(os.path.join(self.root, "config"))
+        # The launcher's cwd: relative config paths resolve against it, never against a trial workspace.
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+
+    def environ(self, **values):
+        """Patches os.environ for this test: each name set to its value, or unset when the value is None.
+        patch.dict restores the whole environment, removals included, at cleanup."""
+        self.enterContext(mock.patch.dict(os.environ, {k: v for k, v in values.items() if v is not None}))
+        for k, v in values.items():
+            if v is None:
+                os.environ.pop(k, None)
+
+    def run_trial(self, work_root, providers="config/providers.toml", credentials=None):
+        self.environ(EVENER_PROVIDERS_CONFIG=providers, EVENER_CREDENTIALS_CONFIG=credentials)
+        trial = os.path.join(self.root, "trial")
         os.makedirs(trial)
-        work = os.path.join(root.name, "shop-abc")
-        args = argparse.Namespace(work_root=os.path.join(root.name, "wr") if work_root else None,
+        work = os.path.join(self.root, "shop-abc")
+        args = argparse.Namespace(work_root=os.path.join(self.root, "wr") if work_root else None,
                                   providers_config="[x]\ny = 1\n")
         bookkeeping.lab.make_state_dir(args, trial, work)
         xdg = os.path.join(trial, "xdg")
-        return root.name, xdg, bookkeeping.lab.fixture_env(work, xdg), user
+        return xdg, bookkeeping.lab.fixture_env(work, xdg)
 
     def check(self, work_root):
-        root, xdg, env, user = self.run_trial(work_root)
+        xdg, env = self.run_trial(work_root, providers=os.path.join(self.root, "config", "providers.toml"))
         real = os.path.join(os.path.realpath(xdg), "providers.toml")
         if work_root:
             self.assertTrue(os.path.islink(xdg))
-            self.assertEqual(real, os.path.join(os.path.realpath(root), "wr", ".state", "shop-abc", "providers.toml"))
+            self.assertEqual(real, os.path.join(self.root, "wr", ".state", "shop-abc", "providers.toml"))
         self.assertEqual(env["EVENER_PROVIDERS_CONFIG"], real)
         with open(real) as f:
             self.assertEqual(f.read(), "[x]\ny = 1\n")
         self.assertEqual(stat.S_IMODE(os.stat(real).st_mode), 0o600)
-        self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(os.path.dirname(user), "credentials.toml"))
+        self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
 
     def test_under_work_root(self):
         self.check(work_root=True)
@@ -229,14 +242,28 @@ class TrialStateTest(unittest.TestCase):
     def test_inside_the_trial(self):
         self.check(work_root=False)
 
+    def test_relative_config_paths_resolve_against_the_launch_dir(self):
+        _, env = self.run_trial(work_root=True, providers="config/providers.toml")
+        self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
+
+    def test_a_relative_credentials_path_resolves_against_the_launch_dir(self):
+        _, env = self.run_trial(work_root=True, credentials="secrets/credentials.toml")
+        self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "secrets", "credentials.toml"))
+
+    def test_a_whitespace_providers_config_means_no_user_layer(self):
+        # cmdutil.ProvidersConfigPath: present and blank after TrimSpace is no user layer, and credentials
+        # then come from <config-root>/credentials.toml.
+        self.environ(EVENER_PROVIDERS_CONFIG="  ", EVENER_CREDENTIALS_CONFIG=None, XDG_CONFIG_HOME=self.root)
+        self.assertIsNone(bookkeeping.lab.user_providers_config())
+        self.assertEqual(bookkeeping.lab.user_credentials_config(),
+                         os.path.join(self.root, "evener", "credentials.toml"))
+
     def test_no_override_without_context_window(self):
-        root = tempfile.TemporaryDirectory()
-        self.addCleanup(root.cleanup)
-        trial = os.path.join(root.name, "trial")
+        trial = os.path.join(self.root, "trial")
         os.makedirs(trial)
         bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=None, providers_config=None), trial,
-                                       os.path.join(root.name, "w"))
-        env = bookkeeping.lab.fixture_env(os.path.join(root.name, "w"), os.path.join(trial, "xdg"))
+                                       os.path.join(self.root, "w"))
+        env = bookkeeping.lab.fixture_env(os.path.join(self.root, "w"), os.path.join(trial, "xdg"))
         self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))
 
 
