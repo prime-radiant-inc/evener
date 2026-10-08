@@ -107,6 +107,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
 | `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Its checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner: a held-out test of all four helpers (coupon bounds, empty cart, unknown SKU) must pass on some branch. |
 | `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | The same held-out behavior check as `sdd-plan`. |
+| `index-overflow` | Seeded project memory of 120 tagged pages whose index overflows the 8 KiB projection. The fact the task needs (coupons never stack) is on the oldest page, which the projection leaves out. B adds ApplyCoupons | Measures finding a page through the "Not shown" tag counts or memory_search, and whether new pages reuse seeded tags and carry a description. The seed also has a hand-written MEMORY.md so a build without the generated index gets one; regenerate with make_seed.py. |
 
 ## Scenario format
 
@@ -114,6 +115,7 @@ The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
 - stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (`work` plus digits, like `work2`; `run` refuses a `fixture` without one other than `work`) and `resume` (continue an earlier stage's session)
+- Seeded `MEMORY.md` files are migrated into page frontmatter by builds with the generated index, so a seeded scenario compares the hand-written index (base) with the generated one (try) without per-version seeds.
 - checks come in these types:
   - `checks`: shell commands
   - `trace`: tool-call regexes
