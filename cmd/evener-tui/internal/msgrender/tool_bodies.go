@@ -523,10 +523,13 @@ func notesTextBody(args ToolArgs, output string, width int) string {
 // marshalDelegateSendResult writes: the reply is the raw state's output, else
 // what the tool printed above its footer, unless the reply carried earlier
 // results, whose text is never its own; an earlier entry that isn't an object
-// is dropped on its own.
+// is dropped on its own. A raw state that isn't a delegate_send result reads
+// as none.
 func DelegateSendReplyBody(raw, output string, width int) string {
 	var state map[string]any
-	_ = json.Unmarshal([]byte(raw), &state) // a raw state that isn't an object reads as none
+	if json.Unmarshal([]byte(raw), &state) != nil || !isDelegateSendResult(state) {
+		state = nil
+	}
 	earlier, _ := state["earlier_results"].([]any)
 	th := tuitheme.ActiveTheme()
 	heading := lipgloss.NewStyle().Foreground(th.TextDim)
@@ -554,6 +557,28 @@ func DelegateSendReplyBody(raw, output string, width int) string {
 		blocks = append(blocks, heading.Render("reply"), text.Render(strings.TrimRight(reply, "\n")))
 	}
 	return strings.Join(blocks, "\n")
+}
+
+// isDelegateSendResult reports whether state is a delegate_send's raw state,
+// as appwire-client's isDelegateSendResult decides: a non-blank action, a
+// boolean running_in_background, and its optional text fields absent or
+// strings.
+func isDelegateSendResult(state map[string]any) bool {
+	action, _ := state["action"].(string)
+	if strings.TrimSpace(action) == "" {
+		return false
+	}
+	if _, ok := state["running_in_background"].(bool); !ok {
+		return false
+	}
+	for _, key := range []string{"delegate_id", "output", "transcript_ref", "wait_ignored_reason"} {
+		if value, present := state[key]; present {
+			if _, ok := value.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // jsonString is object[key] when it is a string, else "".

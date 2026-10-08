@@ -495,3 +495,14 @@ func TestRenderToolCallDelegateSendFindsOnlyARealFooter(t *testing.T) {
 		t.Fatalf("render = %q, want the reply indented two spaces past its heading", got)
 	}
 }
+
+// A raw state that isn't a delegate_send result, as the shared reader's
+// isDelegateSendResult decides (here missing action and
+// running_in_background), is not trusted: the reply is the printed one.
+func TestRenderToolCallDelegateSendIgnoresARawStateThatIsNotASendResult(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(`{"output":"raw text"}`, "printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "printed reply")
+	if strings.Contains(got, "raw text") {
+		t.Fatalf("render = %q, want the unvalidated raw output ignored", got)
+	}
+}
