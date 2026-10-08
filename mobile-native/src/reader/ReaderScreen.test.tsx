@@ -216,7 +216,6 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-/** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
 async function settle() {
 	await act(async () => {
 		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
