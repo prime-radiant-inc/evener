@@ -2,6 +2,7 @@ package repair
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -223,5 +224,99 @@ func TestRepairArgs_Order_AliasBeforeDrop(t *testing.T) {
 		if c.Kind == ChangeDropUnknown {
 			t.Fatalf("old_str was dropped instead of aliased: %+v", c)
 		}
+	}
+}
+
+func emptyEnumParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode":     map[string]any{"type": "string", "enum": []any{"fast", "slow"}},
+			"kind":     map[string]any{"type": "string", "enum": []string{"a", "b"}},
+			"blankok":  map[string]any{"type": "string", "enum": []any{"", "x"}},
+			"nullok":   map[string]any{"type": []any{"string", "null"}, "enum": []any{"x", nil}},
+			"freeform": map[string]any{"type": "string"},
+		},
+		"required": []any{"kind"},
+	}
+}
+
+func TestRepairArgs_EmptyOptionalEnumIsAbsent(t *testing.T) {
+	for _, value := range []any{"", nil} {
+		out, changes := RepairArgs(emptyEnumParams(), map[string]any{"kind": "a", "mode": value})
+		if !reflect.DeepEqual(out, map[string]any{"kind": "a"}) {
+			t.Fatalf("mode=%#v: got %v", value, out)
+		}
+		if len(changes) != 1 || changes[0].Kind != ChangeNormalizeDefault || changes[0].Field != "mode" {
+			t.Fatalf("mode=%#v: changes = %+v", value, changes)
+		}
+	}
+}
+
+func TestRepairArgs_EmptyEnumKeptWhenRequiredOrAllowedOrNotEnum(t *testing.T) {
+	args := map[string]any{"kind": "", "blankok": "", "nullok": nil, "freeform": nil}
+	out, changes := RepairArgs(emptyEnumParams(), args)
+	if !reflect.DeepEqual(out, args) {
+		t.Fatalf("got %v, want unchanged %v", out, args)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected no changes, got %+v", changes)
+	}
+}
+
+func TestRepairArgs_EmptyOptionalEnumKeptPathIsLeft(t *testing.T) {
+	args := map[string]any{"kind": "a", "mode": ""}
+	out, changes := RepairArgs(emptyEnumParams(), args, "mode")
+	if !reflect.DeepEqual(out, args) || len(changes) != 0 {
+		t.Fatalf("kept path repaired: out=%v changes=%+v", out, changes)
+	}
+}
+
+// nestedEnumParams nests emptyEnumParams under an object property and in
+// array items, each level with its own required list.
+func nestedEnumParams() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"opts":  emptyEnumParams(),
+			"items": map[string]any{"type": "array", "items": emptyEnumParams()},
+		},
+	}
+}
+
+func nestedEnumArgs() map[string]any {
+	return map[string]any{
+		"opts": map[string]any{"kind": "a", "mode": ""},
+		"items": []any{
+			map[string]any{"kind": "b"},
+			map[string]any{"kind": "", "mode": nil},
+		},
+	}
+}
+
+func TestRepairArgs_NestedEmptyOptionalEnumIsAbsent(t *testing.T) {
+	args := nestedEnumArgs()
+	out, changes := RepairArgs(nestedEnumParams(), args)
+	want := map[string]any{
+		"opts": map[string]any{"kind": "a"},
+		"items": []any{
+			map[string]any{"kind": "b"},
+			map[string]any{"kind": ""}, // required at its own level, so left for validation
+		},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %v, want %v", out, want)
+	}
+	var fields []string
+	for _, c := range changes {
+		fields = append(fields, c.Field)
+	}
+	slices.Sort(fields)
+	if !reflect.DeepEqual(fields, []string{"items[1].mode", "opts.mode"}) {
+		t.Fatalf("changed fields = %v", fields)
+	}
+	if !reflect.DeepEqual(args, nestedEnumArgs()) {
+		t.Fatalf("input mutated: %v", args)
 	}
 }

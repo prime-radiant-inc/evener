@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { OwnHostPage } from "./OwnHostPage";
 
@@ -74,7 +74,7 @@ async function mount(fleet: ScriptedFleet) {
 		tree.root.findAll(
 			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith(label),
 		)[0]?.props.accessibilityLabel ?? null;
-	return { tree, labelled, setReady, dispose: () => (hosts.dispose(), live.dispose()) };
+	return { tree, labelled, setReady, dispose: () => (unmountMountedTrees(), hosts.dispose(), live.dispose()) };
 }
 
 beforeEach(() => {

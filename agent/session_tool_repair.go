@@ -154,7 +154,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
 			return res
 		}
-		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
+		healed, c := repair.RepairArgs(t.Definition.Parameters, args, handlerJudgedArgs(t.Definition.Name, args)...)
 		finalErrorArgs := args
 		// Scalar repair can turn provider-materialized strings such as
 		// expand_turn="0" into their neutral numeric forms. Normalize those
@@ -393,6 +393,24 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 		}
 	}
 	return normalized, changes
+}
+
+// handlerJudgedArgs names the arguments whose explicit presence the tool's
+// handler judges, even when empty, so generic repair must not drop them.
+// read_transcript rejects every argument its retained ref kind doesn't accept
+// (retainedReadIncompatibleFields), an empty format on an artifact ref included.
+func handlerJudgedArgs(toolName string, args map[string]any) []string {
+	if toolName != "read_transcript" {
+		return nil
+	}
+	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	switch {
+	case strings.HasPrefix(ref, "artifact:"):
+		return retainedReadIncompatibleFields("artifact", args)
+	case strings.HasPrefix(ref, "job:"):
+		return retainedReadIncompatibleFields("job", args)
+	}
+	return nil
 }
 
 // normalizeRetainedReadArgsForValidation extends the typed retained-default

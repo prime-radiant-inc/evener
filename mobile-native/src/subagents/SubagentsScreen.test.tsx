@@ -278,7 +278,7 @@ it("filters to a chip's state, and offers no chip for a state with no subagents"
 		root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]),
 	}));
 	harness.connection = screenConnection(client, "ready");
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	const other = await mount();
 	expect(pressable(other, "Failed, 0")).toBeUndefined();
 	expect(pressable(other, "Running, 1")).toBeDefined();
