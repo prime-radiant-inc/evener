@@ -14,6 +14,7 @@ import {
 	pressable,
 	render,
 	renderedText,
+	settle,
 	textOf,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
@@ -157,12 +158,6 @@ function sheet(): ReactTestRenderer {
 	const tree = render(<SessionInfoSheet {...props} />);
 	mounted.push(tree);
 	return tree;
-}
-
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 }
 
 function press(tree: ReactTestRenderer, label: string) {
@@ -608,7 +603,7 @@ describe("actions", () => {
 		act(() => confirm?.buttons?.[1]?.onPress?.());
 		// Spec 16.6: rigid on a destructive confirmation.
 		expect(playedHaptics).toEqual(["impact:rigid"]);
-		await flush();
+		await settle();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});
 
@@ -616,7 +611,7 @@ describe("actions", () => {
 		const { calls } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
 		const tree = sheet();
 		press(tree, "Compact context");
-		await flush();
+		await settle();
 		expect(calls).toEqual(["act:compact"]);
 		expect(renderedText(tree)).toContain("Compacting context");
 	});
@@ -631,7 +626,7 @@ describe("actions", () => {
 			const { calls } = provide(conversation({ capabilities: { ...NONE, ...capabilities } }));
 			const tree = sheet();
 			press(tree, label);
-			await flush();
+			await settle();
 			expect(calls).toEqual(["goBack", `act:${action}`, `toast:${action} done`]);
 		},
 	);
@@ -644,7 +639,7 @@ describe("actions", () => {
 			}),
 		);
 		press(sheet(), "Fork from latest");
-		await flush();
+		await settle();
 		expect(calls.slice(0, 2)).toEqual(["goBack", "act:fork"]);
 	});
 

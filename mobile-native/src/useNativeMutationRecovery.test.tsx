@@ -11,7 +11,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, test, vi } from "vitest";
 import { TABLES } from "./mutationOutboxStorage";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
+import { render, renderHook, settle, unmountMountedTrees } from "./renderNative.testkit";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
@@ -77,12 +77,6 @@ function recoveryRows(projection: NativeMutationRecoveryProjection) {
 	);
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 // A gate at the DB layer, the one layer this suite is allowed to double:
 // holding recovery-table SELECTs makes the real runtime's read() reject
 // without touching any runtime or storage behavior.
@@ -146,7 +140,7 @@ test("refreshes only on the real runtime's storage changes for the exact target 
 	// A zero-row discard still publishes the storage change (the runtime's
 	// zero-included rule); the other target's change must not re-read.
 	await runtime.discardRecovery("missing", OTHER_TARGET);
-	await flush();
+	await settle();
 	expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]);
 
 	await runtime.discardRecovery("missing", TARGET);
@@ -210,7 +204,7 @@ test("clears the old snapshot when the runtime is replaced and drops the old gen
 	// now holds a second row - and show A's rows here, stably.
 	await seedRecovery(runtimeA, TARGET, "daemon refused a-2");
 	await runtimeA.discardRecovery("missing", TARGET);
-	await flush();
+	await settle();
 	expect(recoveryRows(hook.result.current)).toEqual([{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" }]);
 });
 
@@ -221,7 +215,7 @@ test("drops a replaced generation's in-flight read completion", async () => {
 	await seedRecovery(runtimeB, TARGET, "daemon refused b-1");
 	let runtime: NativeMutationRuntime | null = runtimeA;
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
-	// No flush: the old generation's read is still in flight when the swap
+	// No settle: the old generation's read is still in flight when the swap
 	// happens, so its completion lands late - after the replacement.
 
 	runtime = null;
@@ -236,7 +230,7 @@ test("drops a replaced generation's in-flight read completion", async () => {
 	// Resolving the old read now: if the fence were broken the stale snapshot
 	// would repopulate this projection, and with no runtime mounted nothing
 	// would overwrite it.
-	await flush();
+	await settle();
 	expect(hook.result.current).toMatchObject({
 		targetKey: TARGET,
 		loading: false,
@@ -319,7 +313,7 @@ test("switches the composite target key without leaking the old target's rows", 
 	// though the runtime the subscription lives on is the same.
 	await seedRecovery(runtime, TARGET, "daemon refused a-2");
 	await runtime.discardRecovery("missing", TARGET);
-	await flush();
+	await settle();
 	expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-2", kind: "rejected", reason: "daemon refused b-1" }]);
 
 	// The new key's own storage change refreshes it.
@@ -379,7 +373,7 @@ test("unsubscribes on unmount and the runtime stays usable for the next mount", 
 	hook.unmount();
 	expect(live).toBe(0);
 	expect(removed).toBe(1);
-	await flush();
+	await settle();
 
 	const remounted = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 	await vi.waitFor(() =>
