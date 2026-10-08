@@ -151,7 +151,7 @@ async function settle() {
 
 // The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	act(() => hubClient.emitNotification(activityChanged({ ref: "local:coord", threadId: "coord" })));
+	act(() => hubClient.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 }
 

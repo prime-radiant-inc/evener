@@ -143,7 +143,7 @@ async function mount(over: { ownerRef?: string } = {}) {
 // at once.
 async function treeChanges(next: { revision: number; root: unknown }) {
 	tree = next;
-	act(() => client.emitNotification(activityChanged({ ref: "local:coord", threadId: "coord" })));
+	act(() => client.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 }
 

@@ -217,8 +217,9 @@ export function installActivityFixture(
 }
 
 /** The hub's word that a session's activity changed: the activity store
- * re-reads the resources it names, all three unless a test names fewer. The
- * session is the thread's own unless the target says otherwise. */
+ * re-reads the resources it names: summary, delegates and jobs unless a test
+ * names others. The session is the thread's own unless the target says
+ * otherwise. */
 export function activityChanged(
 	target: { ref: string; threadId: string; sessionId?: string },
 	resources: SessionActivityResource[] = ["summary", "delegates", "jobs"],
