@@ -1705,7 +1705,7 @@ func TestMemoryFreshSession(t *testing.T) {
 	if _, err := a.ProcessInput(context.Background(), "save", nil); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]string{"lesson.md": body, "nested/unusual name.txt": topic} {
+	for path, want := range map[string]string{"lesson.md": "---\n" + memoryOwnStamps(a) + "---\n" + body, "nested/unusual name.txt": topic} {
 		got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", path))
 		if err != nil || string(got) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, got, err)
@@ -1955,7 +1955,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatalf("delete=%v", err)
 	}
 	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "overview.md"))
-	if err != nil || string(got) != "opaque-index-94\n" {
+	if want := "---\n" + memoryOwnStamps(s) + "---\nopaque-index-94\n"; err != nil || string(got) != want {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
 }

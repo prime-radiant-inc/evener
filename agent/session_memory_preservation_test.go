@@ -183,7 +183,7 @@ func TestMemoryPreservation(t *testing.T) {
 		if _, err := s.ProcessInput(context.Background(), "correct fixture fact", nil); err != nil {
 			t.Fatal(err)
 		}
-		for name, want := range map[string]string{"fact.md": "---\ndescription: opaque-correct-213 opaque-keep-index-208\nupdated: 2026-10-01\n---\n", "topic": "opaque-correct-213\nopaque-keep-topic-209\n", "log.md": "opaque-keep-log-210\n", "unrelated": original["unrelated"]} {
+		for name, want := range map[string]string{"fact.md": "---\ndescription: opaque-correct-213 opaque-keep-index-208\n" + memoryOwnStamps(s) + "---\n", "topic": "opaque-correct-213\nopaque-keep-topic-209\n", "log.md": "---\n" + memoryOwnStamps(s) + "---\nopaque-keep-log-210\n", "unrelated": original["unrelated"]} {
 			got, err := os.ReadFile(filepath.Join(wiki, name))
 			if err != nil || string(got) != want {
 				t.Fatalf("%s=%q want=%q err=%v", name, got, want, err)

@@ -1509,9 +1509,14 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 	if bytes.IndexByte(b, 0) >= 0 {
 		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
 	}
-	s := strings.ReplaceAll(string(b), "\r\n", "\n")
-	lines := strings.Split(s, "\n")
+	return NumberLines(string(b), offsetLine, limitLines), b, nil
+}
 
+// NumberLines presents text as ReadFile presents a text file: CRLF
+// normalized to LF, lines numbered from offsetLine (default 1), at most
+// limitLines lines (default 2000), and "" past the end.
+func NumberLines(text string, offsetLine, limitLines *int) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start := 1
 	if offsetLine != nil && *offsetLine > 0 {
 		start = *offsetLine
@@ -1521,14 +1526,14 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		limit = *limitLines
 	}
 	if start > len(lines) {
-		return "", b, nil
+		return ""
 	}
 	end := min(start-1+limit, len(lines))
 	var out strings.Builder
 	for i := start; i <= end; i++ {
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
-	return out.String(), b, nil
+	return out.String()
 }
 
 // readFileNotFoundSuggestion renders a "did you mean" hint for a read_file
