@@ -154,7 +154,6 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(sess.Close)
 
 	sessionID := sess.ID()
 	ref := "local:" + sessionID
