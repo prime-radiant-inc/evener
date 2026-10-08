@@ -20,7 +20,7 @@ func heldDeliveryFixture(t *testing.T) (*delegateTreeController, string, delegat
 	c.holdDeliveryClaim(held)
 	secondLease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
 	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
-	if len(plans.deliveries) != 1 || len(plans.deliveries[0].held) != 1 || plans.deliveries[0].held[0].DeliveryID != held.deliveryID {
+	if len(plans.deliveries) != 1 || len(plans.deliveries[0].carried) != 1 || plans.deliveries[0].carried[0].DeliveryID != held.deliveryID {
 		t.Fatalf("second generation's plans = %#v, want one carrying the held first", plans.deliveries)
 	}
 	return c, path, held, plans.deliveries[0], waiter
@@ -213,7 +213,7 @@ func TestHeldDeliveryStaysWithAStopThatCoversItsOwner(t *testing.T) {
 	c.holdDeliveryClaim(held)
 	secondLease, waiter := start(true)
 	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
-	if len(plans.deliveries) != 1 || len(plans.deliveries[0].held) != 1 {
+	if len(plans.deliveries) != 1 || len(plans.deliveries[0].carried) != 1 {
 		t.Fatalf("second generation's plans = %#v, want one carrying the held first", plans.deliveries)
 	}
 	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
@@ -283,8 +283,8 @@ func twoHeldDeliveriesFixture(t *testing.T) (*delegateTreeController, string, de
 	}
 	carrying := plans.deliveries[0]
 	pending := pendingDeliveryIDs(c, "dlg_target")
-	if len(carrying.held) != 2 || carrying.held[0].DeliveryID != pending[0] || carrying.held[1].DeliveryID != pending[1] || carrying.deliveryID != pending[2] {
-		t.Fatalf("carrying plan holds %#v for %q, want %v in order", carrying.held, carrying.deliveryID, pending)
+	if len(carrying.carried) != 2 || carrying.carried[0].DeliveryID != pending[0] || carrying.carried[1].DeliveryID != pending[1] || carrying.deliveryID != pending[2] {
+		t.Fatalf("carrying plan carries %#v for %q, want %v in order", carrying.carried, carrying.deliveryID, pending)
 	}
 	return c, path, held, carrying, waiter
 }
@@ -343,7 +343,7 @@ func TestAbandonedReplyWithTwoEarlierResultsDeliversThemInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acknowledge the held result: %v", err)
 	}
-	for _, want := range []string{carrying.held[1].DeliveryID, carrying.deliveryID} {
+	for _, want := range []string{carrying.carried[1].DeliveryID, carrying.deliveryID} {
 		if len(plans.deliveries) != 1 || plans.deliveries[0].deliveryID != want {
 			t.Fatalf("plans = %#v, want %q planned next", plans.deliveries, want)
 		}

@@ -93,12 +93,12 @@ type delegateDeliveryPlan struct {
 	claim           delegateDeliveryClaimToken
 	receiver        delegateDeliveryReceiver
 	callerCommitted bool
-	// held is every delivery queued ahead of this waiter-bearing plan's own,
-	// oldest first, which it carries (#3906, #3951): the delegate's head,
+	// carried is every delivery queued ahead of this waiter-bearing plan's own,
+	// oldest first, which its reply carries (#3906, #3951): the delegate's head,
 	// which its receiver is holding for its next round, and any behind it.
 	// heldClaim is the receiver's claim on the head, which this plan's claim
 	// replaces until it is admitted or refused.
-	held      []delegatestore.PendingDelivery
+	carried   []delegatestore.PendingDelivery
 	heldClaim *delegateDeliveryClaim
 }
 
@@ -196,10 +196,10 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// A refused carrier gives its held delivery back to the receiver's
 		// claim and drops its own, which would otherwise keep its delivery
 		// from ever being planned once the held one is acknowledged.
-		if admitted || len(plan.held) == 0 {
+		if admitted || len(plan.carried) == 0 {
 			return
 		}
-		if claim := c.deliveryClaims[plan.held[0].DeliveryID]; claim != nil && claim.token == plan.claim {
+		if claim := c.deliveryClaims[plan.carried[0].DeliveryID]; claim != nil && claim.token == plan.claim {
 			c.restoreHeldClaimLocked(plan.heldClaim)
 			c.evidenceVersion++
 		}
@@ -232,11 +232,11 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		return delegateDeliveryToken{}, false, nil
 	}
 	head := aggregate.PendingDeliveries[0]
-	if len(plan.held) > 0 {
-		if len(aggregate.PendingDeliveries) <= len(plan.held) || !reflect.DeepEqual(aggregate.PendingDeliveries[:len(plan.held)], plan.held) {
+	if len(plan.carried) > 0 {
+		if len(aggregate.PendingDeliveries) <= len(plan.carried) || !reflect.DeepEqual(aggregate.PendingDeliveries[:len(plan.carried)], plan.carried) {
 			return delegateDeliveryToken{}, false, nil
 		}
-		head = aggregate.PendingDeliveries[len(plan.held)]
+		head = aggregate.PendingDeliveries[len(plan.carried)]
 	}
 	if head.DeliveryID != plan.deliveryID || head.OwnerDelegateID != plan.ownerDelegateID || !reflect.DeepEqual(head.Packet, plan.packet) {
 		return delegateDeliveryToken{}, false, nil
@@ -261,13 +261,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
 	}
-	if len(plan.held) > 0 {
-		delete(c.deliveryClaims, plan.held[0].DeliveryID)
+	if len(plan.carried) > 0 {
+		delete(c.deliveryClaims, plan.carried[0].DeliveryID)
 		// The held head is admitted under the receiver's own claim token, so
 		// a retry of it is planned as that delivery's. The deliveries behind
 		// it were never planned, so each gets a claim token of its own.
 		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
-		for _, behind := range plan.held[1:] {
+		for _, behind := range plan.carried[1:] {
 			c.nextToken++
 			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
 		}
@@ -524,11 +524,11 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			packet: &packet,
 			commit: &delegateToolResultCommit{controller: plan.controller, token: token, deliveryID: plan.deliveryID},
 		}
-		for _, earlier := range plan.held {
-			held := plan.controller.admittedDeliveryToken(earlier.DeliveryID)
+		for _, earlier := range plan.carried {
+			earlierToken := plan.controller.admittedDeliveryToken(earlier.DeliveryID)
 			resolution.earlier = append(resolution.earlier, delegateInlineEarlier{
 				packet: cloneDelegateTerminalPacket(earlier.Packet),
-				commit: &delegateToolResultCommit{controller: plan.controller, token: held, deliveryID: held.deliveryID},
+				commit: &delegateToolResultCommit{controller: plan.controller, token: earlierToken, deliveryID: earlierToken.deliveryID},
 			})
 		}
 		resolveDelegateInlineClaim(plan.waiter, resolution)
@@ -619,7 +619,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		return nil
 	}
 	head := aggregate.PendingDeliveries[0]
-	var held []delegatestore.PendingDelivery
+	var carried []delegatestore.PendingDelivery
 	var heldClaim *delegateDeliveryClaim
 	if head.DeliveryID != deliveryID {
 		var at int
@@ -628,7 +628,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		}
 		for _, pending := range aggregate.PendingDeliveries[:at] {
 			pending.Packet = cloneDelegateTerminalPacket(pending.Packet)
-			held = append(held, pending)
+			carried = append(carried, pending)
 		}
 		head = aggregate.PendingDeliveries[at]
 	}
@@ -657,10 +657,10 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		cold:       cold,
 	}
 	c.deliveryClaims[deliveryID] = claim
-	if len(held) > 0 {
+	if len(carried) > 0 {
 		// The held head's claim moves to this plan, so the plan its receiver
 		// holds is no longer admitted and no new one is made.
-		c.deliveryClaims[held[0].DeliveryID] = claim
+		c.deliveryClaims[carried[0].DeliveryID] = claim
 	}
 	c.evidenceVersion++
 	return &delegateDeliveryPlan{
@@ -673,7 +673,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		packet:          cloneDelegateTerminalPacket(head.Packet),
 		claim:           claimToken,
 		receiver:        receiver,
-		held:            held,
+		carried:         carried,
 		heldClaim:       heldClaim,
 	}
 }
