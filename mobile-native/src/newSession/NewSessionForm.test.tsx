@@ -11,7 +11,7 @@ import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
-import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, playedHaptics, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { creationStore, forgetCreationForHub } from "./creations";
 import { formFront } from "./formFront";
@@ -266,7 +266,11 @@ async function mount(options: Options = {}) {
 		prompt,
 		setReady,
 		text: () => renderedText(tree),
-		dispose: () => (hosts.dispose(), live.dispose(), tree.unmount()),
+		dispose: () => {
+			unmountMountedTrees();
+			hosts.dispose();
+			live.dispose();
+		},
 	};
 }
 
