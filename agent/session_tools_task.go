@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -153,11 +156,19 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // PreValidate. The preparation and decode paths both call the single
 // validateTaskListItemFields validator, so their allowlists and targeted
 // diagnostics remain one shared contract rather than duplicated behavior.
+//
+// Placeholder update fields follow the one rule in normalizeTaskListArgs.
+// Dispatch already ran it as the tool's NormalizeArgs; it is idempotent, so
+// decoding runs it again and a direct caller gets the same reading.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	for _, retired := range []string{"action", "tasks", "updates"} {
 		if _, supplied := args[retired]; supplied {
 			return nil, nil, fmt.Errorf("task_list no longer takes %s; use add and/or update, or a bare call to view", retired)
 		}
+	}
+	args, err = normalizeTaskListArgs(args)
+	if err != nil {
+		return nil, nil, err
 	}
 	rawAdds, _ := args["add"].([]any)
 	adds = make([]taskpkg.TaskInput, 0, len(rawAdds))
@@ -215,18 +226,18 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if err := validateTaskListItemFields("update", i, m); err != nil {
 			return nil, nil, err
 		}
-		idFloat, ok := m["id"].(float64)
+		id, ok := taskIDValue(m["id"])
 		if !ok {
-			return nil, nil, fmt.Errorf("update entry %d requires an integer id", i)
+			return nil, nil, fmt.Errorf("update entry %d requires a positive integer id", i)
 		}
-		u := taskpkg.TaskUpdate{ID: int(idFloat)}
+		u := taskpkg.TaskUpdate{ID: id}
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
-		if n, ok := m["notes"].(string); ok && !isPlaceholderNote(n) {
+		if n, ok := m["notes"].(string); ok {
 			u.Notes = n
 		}
-		if depsRaw := m["depends_on"]; !tool.IsPlaceholderDependsOn(depsRaw) {
+		if depsRaw, has := m["depends_on"]; has {
 			arr, ok := depsRaw.([]any)
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
@@ -251,7 +262,7 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			}
 		}
 		if u.Status == "" && u.Notes == "" && u.DependsOn == nil && u.ReasoningEffort == "" {
-			return nil, nil, fmt.Errorf("update entry for task %d changes nothing; include status, notes, depends_on, or reasoning_effort", u.ID)
+			return nil, nil, fmt.Errorf(`update entry for task %d changes nothing; depends_on of [] or null and notes of "" or "null" are placeholders and are ignored. Include a status, real notes, new depends_on IDs, depends_on: [0] to clear dependencies, or reasoning_effort`, u.ID)
 		}
 		updates = append(updates, u)
 	}
@@ -352,11 +363,107 @@ func isPlaceholderNote(notes string) bool {
 	return trimmed == "" || strings.EqualFold(trimmed, "null")
 }
 
+// isPlaceholderDependsOn reports whether an update's depends_on leaves the
+// dependencies unchanged: null or an empty list. Only [0] clears them.
+func isPlaceholderDependsOn(deps any) bool {
+	list, isList := deps.([]any)
+	return deps == nil || (isList && len(list) == 0)
+}
+
+// normalizeTaskListArgs is task_list's NormalizeArgs. Some models fill every
+// optional update field on every call, so it drops the placeholders (see
+// isPlaceholderDependsOn and isPlaceholderNote). An entry left with only a
+// valid id changed nothing: beside other work it is dropped, so the rest of
+// the call still applies. When nothing else is left, the bare entries stay,
+// so decoding rejects the call in the tool, where the failure breaker records
+// it under this normalized form. Dispatch, the fingerprint and decoding all
+// run it, which keeps the placeholder rule in one place. It never fails.
+func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
+	rawUpdates, isList := args["update"].([]any)
+	if !isList || len(rawUpdates) == 0 {
+		return args, nil
+	}
+	cleanedUpdates := make([]any, 0, len(rawUpdates))
+	kept := make([]any, 0, len(rawUpdates))
+	for _, raw := range rawUpdates {
+		entry, isObject := raw.(map[string]any)
+		if !isObject {
+			cleanedUpdates = append(cleanedUpdates, raw)
+			kept = append(kept, raw)
+			continue
+		}
+		cleaned := maps.Clone(entry)
+		if deps, has := cleaned["depends_on"]; has && isPlaceholderDependsOn(deps) {
+			delete(cleaned, "depends_on")
+		}
+		if notes, isString := cleaned["notes"].(string); isString && isPlaceholderNote(notes) {
+			delete(cleaned, "notes")
+		}
+		cleanedUpdates = append(cleanedUpdates, cleaned)
+		// Only an entry left with a well-formed id may be dropped; a
+		// malformed one stays so validation rejects the whole call.
+		if _, validID := taskIDValue(cleaned["id"]); validID && len(cleaned) == 1 && len(entry) > 1 {
+			continue
+		}
+		kept = append(kept, cleaned)
+	}
+	// A present add counts as other work unless it is an empty list, so an
+	// add of the wrong type still reaches validation.
+	rawAdd, hasAdd := args["add"]
+	addList, addIsList := rawAdd.([]any)
+	otherWork := len(kept) > 0 || (hasAdd && (!addIsList || len(addList) > 0))
+	normalized := maps.Clone(args)
+	switch {
+	case !otherWork:
+		normalized["update"] = cleanedUpdates
+	case len(kept) == 0:
+		delete(normalized, "update")
+	default:
+		normalized["update"] = kept
+	}
+	return normalized, nil
+}
+
+// maxTaskID bounds task ids at 2^53, the largest integer float64 holds
+// exactly, so dispatch (float64) and the fingerprint (int64) accept the same
+// ids.
+const maxTaskID = 1 << 53
+
+// taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
+// number types NormalizeArgs may see: float64 from dispatch's decoder, and
+// int64 or (past int64) json.Number from the failure fingerprint's canonical
+// view.
+func taskIDValue(v any) (int, bool) {
+	var id int64
+	switch n := v.(type) {
+	case float64:
+		if n != math.Trunc(n) || n < 1 || n > maxTaskID {
+			return 0, false
+		}
+		id = int64(n)
+	case int64:
+		id = n
+	case json.Number:
+		parsed, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		id = parsed
+	default:
+		return 0, false
+	}
+	if id < 1 || id > maxTaskID {
+		return 0, false
+	}
+	return int(id), true
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
-		Definition:  tool.DefTaskList(deps.reasoningEffortLevels),
-		PreValidate: validateTaskListArgs,
+		Definition:    tool.DefTaskList(deps.reasoningEffortLevels),
+		NormalizeArgs: normalizeTaskListArgs,
+		PreValidate:   validateTaskListArgs,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()
