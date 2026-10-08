@@ -927,12 +927,26 @@ export class Driver {
 
   // ---- composer gestures ----
 
+  // A rail row is pressed in the same page turn it is found and measured. A
+  // press measured in one turn and sent in the next can land on a neighbouring
+  // row once the rail shifts (a session's activity reorders it), opening the
+  // wrong session (#3874). The press goes to the row's text column, where the
+  // row's activation handler lives, and only while that text is topmost at its
+  // center, as a real press would require; otherwise the wait tries again.
+  pressRailRowExpr(ref) {
+    return `(() => {
+      const text = document.querySelector(${JSON.stringify(`[data-session-ref="${ref}"]`)})?.firstElementChild;
+      if (!text) return null;
+      text.scrollIntoView({ block: "center" });
+      const r = text.getBoundingClientRect();
+      if (!text.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+      text.click();
+      return true;
+    })()`;
+  }
+
   async openSession(ref) {
-    await this.waitPage(
-      `(() => document.querySelector("[data-session-ref='${ref}']") !== null ? true : null)()`,
-      { label: `rail row for ${ref}` },
-    );
-    await this.click(`[data-session-ref="${ref}"]`);
+    await this.waitPage(this.pressRailRowExpr(ref), { label: `rail row for ${ref}` });
     await this.waitPage(
       `(() => document.querySelector(${JSON.stringify(this.composerSelector(ref))}) !== null ? true : null)()`,
       { label: `composer for ${ref}` },

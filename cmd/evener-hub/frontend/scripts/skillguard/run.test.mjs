@@ -57,6 +57,43 @@ describe("railRowsExpr readiness predicate", () => {
 // where it was and the next typeText would then read -- and type into -- a
 // position the scenario never meant. These pin the confirm/re-apply/fail
 // contract against a scripted state sequence, no browser needed.
+// openSession presses a rail row in the same page turn it finds and measures
+// it. A press measured in one turn and sent in the next landed on the
+// neighbouring session's row once the rail shifted, and the target's composer
+// never mounted (#3874).
+describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
+  function renderRows() {
+    document.body.innerHTML = ["other", "target"]
+      .map((ref) => `<span data-session-ref="${ref}"><span class="text">${ref}</span><span>now</span></span>`)
+      .join("");
+    const clicks = [];
+    for (const text of document.querySelectorAll(".text")) {
+      text.addEventListener("click", () => clicks.push(text.textContent));
+      text.scrollIntoView = () => {};
+    }
+    return clicks;
+  }
+
+  test("presses the target row's text when it is topmost at its center", () => {
+    const clicks = renderRows();
+    document.elementFromPoint = () => document.querySelector('[data-session-ref="target"] .text');
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBe(true);
+    expect(clicks).toEqual(["target"]);
+  });
+
+  test("presses nothing and reports not ready while another row is at its center", () => {
+    const clicks = renderRows();
+    document.elementFromPoint = () => document.querySelector('[data-session-ref="other"] .text');
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBeNull();
+    expect(clicks).toEqual([]);
+  });
+
+  test("reports not ready while the row is absent", () => {
+    document.elementFromPoint = () => null;
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBeNull();
+  });
+});
+
 describe("selectAll holds the whole-text selection", () => {
   const editState = (start, end, value = "PROSE_QUEUE_14c first pass /pkg:probe") => ({
     value,
