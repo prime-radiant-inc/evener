@@ -179,7 +179,7 @@ func dropPlaceholderDependsOn(args any) {
 	updates, _ := root["update"].([]any)
 	for _, raw := range updates {
 		entry, _ := raw.(map[string]any)
-		if deps, has := entry["depends_on"]; has && IsPlaceholderDependsOn(deps) {
+		if IsPlaceholderDependsOn(entry["depends_on"]) {
 			delete(entry, "depends_on")
 		}
 	}

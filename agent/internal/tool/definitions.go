@@ -684,8 +684,13 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 // leaves the dependencies unchanged: null or an empty list, which some models
 // send on every update. Only [0] clears them.
 func IsPlaceholderDependsOn(v any) bool {
-	list, isList := v.([]any)
-	return v == nil || (isList && len(list) == 0)
+	switch deps := v.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(deps) == 0
+	}
+	return false
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
