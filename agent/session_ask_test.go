@@ -1412,7 +1412,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 }
 
 // TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering covers spec §6's
-// carve-out: a steering turn trailing the ask's ack (e.g. a task-nudge
+// carve-out: a steering turn trailing the ask's ack (e.g. a task-inactive
 // reminder injected before the round-boundary check runs — injectPostToolSteering
 // running before deliverIfCommunicated) does not resolve the question; the
 // tail scan must see past it to the ack underneath. Built directly via
@@ -2552,7 +2552,7 @@ func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
 // steer is accepted through the real queue/claim/carrier path (so its turn
 // and journal record are exactly what production writes), and the round it
 // opens then carries a daemon task reminder (the same shape
-// injectPostToolSteering appends via appendSteeringTurn: kind task-nudge, no
+// injectPostToolSteering appends via appendSteeringTurn: kind task-inactive, no
 // user source) before a plain final response. On restore, the final
 // response is a generic completion whose round-entry check
 // (roundEntryResolvesAskBoundary) walks back and FIRST meets the reminder —
@@ -2607,11 +2607,11 @@ func TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder
 	}
 
 	// The same-round daemon task reminder, appended exactly as production
-	// appends daemon nudges (appendSteeringTurn: task-nudge kind, no user
+	// appends daemon nudges (appendSteeringTurn: task-inactive kind, no user
 	// source), and the round's plain final response after it. Both are
 	// transcript-shape-only appends, like the trailing-steering oracle's:
 	// the restore scan inspects shape, not which mechanism produced it.
-	sess.appendSteeringTurn(taskReminderNudge(), events.SteeringKindTaskNudge)
+	sess.appendSteeringTurn("<SYSTEM-REMINDER>\nYou have not touched your task list in a while.\n</SYSTEM-REMINDER>", events.SteeringKindTaskInactive)
 	sess.appendTurn(schema.TurnAssistant, llm.Assistant("noted"))
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("live pending count after the reminder and completion = %d, want 0 (neither may resurrect the cleared ask)", got)

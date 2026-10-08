@@ -1621,22 +1621,12 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 	totalRounds := s.totalRounds
 	lastRound := s.taskToolLastRound
 	everUsed := s.taskToolEverUsed
-	nudgeFired := s.taskNudgeFired
 	s.mu.Unlock()
 
 	roundsSinceUse := totalRounds - lastRound
 	canUseTaskList := s.canInstructTool("task_list")
 
-	// Trigger 3: never used task_list, 10+ rounds in. A session without the
-	// tool is told nothing: this reminder is nothing but a call suggestion.
-	if canUseTaskList && !everUsed && !nudgeFired && totalRounds >= 10 {
-		s.mu.Lock()
-		s.taskNudgeFired = true
-		s.mu.Unlock()
-		return taskReminderNudge(), events.SteeringKindTaskNudge
-	}
-
-	// Trigger 2: tasks exist, not used in 25+ rounds.
+	// Tasks exist, not used in 25+ rounds.
 	if everUsed && roundsSinceUse >= 25 {
 		store := s.getOrCreateTaskStore()
 		if len(store.View()) > 0 {
