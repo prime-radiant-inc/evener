@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
 import { type QueueHost, QueueSheet, queueHosts } from "./QueueSheet";
-import { pressable, render, renderedText, unmountMountedTrees } from "./renderNative.testkit";
+import { pressable, render, renderedText, settle, unmountMountedTrees } from "./renderNative.testkit";
 import type { Ghost } from "./session/ghosts";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -75,12 +75,6 @@ function mountSheet(provided: QueueHost | undefined) {
 	return tree;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 it("lists every queued message the session carries, not only the three the transcript shows", () => {
 	const tree = mountSheet(host());
 	const text = renderedText(tree);
@@ -112,7 +106,7 @@ it("runs Cancel through the host and shows the toast it returns in the sheet", a
 	const tree = mountSheet(provided);
 	const cancel = pressable(tree, "Cancel");
 	await act(async () => cancel?.props.onPress());
-	await flush();
+	await settle();
 	expect(act_).toHaveBeenCalledWith(provided.ghosts[0], "cancel");
 	expect(renderedText(tree)).toContain("Couldn't take this message out of the queue.");
 	expect(navigation.goBack).not.toHaveBeenCalled();
@@ -147,7 +141,7 @@ it("shows an Edit's toast on the session, since the sheet has closed", async () 
 		(index: number) => void,
 	];
 	await act(async () => pick(0));
-	await flush();
+	await settle();
 	expect(showOnSession).toHaveBeenCalledWith(moved);
 	expect(renderedText(tree)).not.toContain(moved.text);
 });
