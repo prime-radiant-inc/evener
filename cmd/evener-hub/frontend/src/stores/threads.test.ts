@@ -10009,7 +10009,9 @@ test("a storage-unavailable reconciliation records the ref as storage-blocked, n
 // The storage-blocked fence must self-heal, not stick: discovery retries the
 // ref on every pass, and once storage answers the reconcile succeeds, the
 // slice clears, and the durable dispatcher resumes the ref's queued row - so a
-// transient wedge costs a wedge-long dispatch pause, not a reload.
+// transient wedge costs a wedge-long dispatch pause, not a reload. The
+// sentinel row parks behind the restart fence while the wedge is armed, so
+// the healthy hydrate can never race its dispatch out first.
 test("periodic discovery recovers a storage-blocked reconciliation after storage returns", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
@@ -10029,19 +10031,24 @@ test("periodic discovery recovers a storage-blocked reconciliation after storage
     });
     setMutationStorageForTests(storage);
     const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
     fake.emitReady();
+    // Hydrate behind the restart fence: the healthy reconcile runs, but the
+    // sentinel row stays parked, so no healthy window can dispatch it before
+    // the wedge lands.
     await threadsStore.getState().ensureThread("ref_a");
     await settleCallerContinuations();
     faultEnabled = true;
+    status = "idle";
     await threadsStore
       .getState()
       .refreshThread("ref_a")
       .catch(() => undefined);
     expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
-    // The wedged reconcile also fences the durable dispatcher: the sentinel
-    // row cannot leave while the fence holds.
+    // The sentinel row is still parked: nothing left while the reconcile was
+    // wedged.
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
 
     faultEnabled = false;
@@ -10053,6 +10060,89 @@ test("periodic discovery recovers a storage-blocked reconciliation after storage
   } finally {
     vi.useRealTimers();
   }
+});
+
+// The union clause: a storage-blocked ref with NO durable row is invisible to
+// every row-driven discovery trigger, so only the storage-blocked slice's own
+// membership in the discovery pass can retry its reconcile. Without that
+// clause the slice would stick until a manual refresh or a reload.
+test("periodic discovery retries a storage-blocked ref that has no durable row", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-rowless" });
+    let faultEnabled = false;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      if (faultEnabled && ref) throw new MutationStorageTimeoutError();
+      return listOutbox(ref);
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    faultEnabled = true;
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+    faultEnabled = false;
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The record-level gate: a storage-blocked ref cannot answer the ordering
+// questions a Retry press asks, so the press refuses and the canceled row
+// stays put until discovery's retry reconciles. The press is otherwise
+// admissible here - idle, authoritative, nothing pending - so the refusal
+// isolates the storage-blocked clause.
+test("a storage-blocked ref refuses a queued record's Retry press", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-storage-blocked-retry";
+  const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const record = await seeder.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  await seeder.cancelUnattempted("ref_a");
+  seeder.close();
+
+  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  let faultEnabled = false;
+  const listOutbox = storage.listOutbox.bind(storage);
+  vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+    if (faultEnabled && ref) throw new MutationStorageTimeoutError();
+    return listOutbox(ref);
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await settleCallerContinuations();
+
+  faultEnabled = true;
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+  expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+  // The row is untouched: still canceled, and nothing reached the daemon.
+  expect((await listOutbox("ref_a")).map((row) => row.state)).toEqual(["canceled"]);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
 });
 
 test("periodic discovery recovers reconciliation after the final durable record settles", async () => {
@@ -14190,6 +14280,43 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
     await send;
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // The waiver's negative: the fallback's admission option is not a blank
+  // check. A ref whose reconcile is merely in flight on HEALTHY storage has
+  // no storage-blocked record, and the pending reconciliation still fences
+  // the fallback - that read can produce ordering facts, so the send waits
+  // for it rather than jumping whatever it may find.
+  test("a send still refuses while a healthy reconcile is pending", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let reconcileReadOpened = false;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation((ref?: string) => {
+      if (ref === "ref_a") {
+        reconcileReadOpened = true;
+        return new Promise<never>(() => {});
+      }
+      return listOutbox(ref);
+    });
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntil(() => reconcileReadOpened);
+
+    storage.enqueueIntent = async () => {
+      throw new MutationStorageTimeoutError();
+    };
+
+    await expect(
+      threadsStore.getState().send("ref_a", "sent while a healthy reconcile is pending"),
+    ).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // The fence this split must not widen: a GENUINE reconciliation failure (a
