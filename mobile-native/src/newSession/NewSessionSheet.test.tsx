@@ -245,7 +245,6 @@ it("never lets a reopened sheet's edits be lost to the start it was swiped away 
 		harness.heldStart?.(created);
 		await expect(outcome).resolves.toMatchObject({ status: "created" });
 	});
-	await settle();
 	// The landing clears only the draft it started; the form is ready for the next one.
 	expect(harness.drafts.read("hub-1")).toBeNull();
 	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
@@ -268,7 +267,6 @@ it("shows a reopened sheet the start still on its way, and never starts it twice
 		harness.heldStart?.(created);
 		await expect(outcome).resolves.toMatchObject({ status: "created" });
 	});
-	await settle();
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: false, prompt: "", cwd: "" });
 	reopened.tree.unmount();
 });
