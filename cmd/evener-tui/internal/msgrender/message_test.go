@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
@@ -378,3 +380,56 @@ func TestJSONBody(t *testing.T) {
 // ansiPattern matches terminal SGR escape sequences so tests can compare the
 // underlying text without syntax-highlighting color codes.
 var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func delegateSendToolCall(raw, output string) transcript.ToolCallInfo {
+	return transcript.ToolCallInfo{
+		Name:     "delegate_send",
+		RawArgs:  `{"to":"dlg_ABCDEFGH1234","message":"do the next part","max_wait_ms":60000}`,
+		Raw:      raw,
+		Output:   output,
+		Done:     true,
+		Expanded: true,
+		Subagent: &transcript.SubagentRunInfo{DelegateID: "dlg_ABCDEFGH1234", Status: "idle", Outcome: "completed", Terminal: true},
+	}
+}
+
+// A delegate_send that waited shows the delegate's reply under its run row,
+// after any earlier results the wait carried, oldest first, each headed as
+// the web and phone head them (#3956).
+func TestRenderToolCallShowsDelegateSendReplyAndEarlierResults(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"LATEST REPLY",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST REPLY"},` +
+		`{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"failed","reason":"it broke"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "printed text"), 100, false))
+	order := []string{"Delegate dlg_ABCD", "earlier reply 1 of 2", "FIRST REPLY", "earlier reply 2 of 2 · failed", "it broke", "reply", "LATEST REPLY"}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(got[at:], want)
+		if i < 0 {
+			t.Fatalf("render is missing %q after offset %d, want %q in order; got:\n%s", want, at, order, got)
+		}
+		at += i + len(want)
+	}
+}
+
+// Without a raw state the reply is what the tool printed above its footer.
+func TestRenderToolCallShowsDelegateSendReplyFromPrintedOutput(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall("", "the printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	if !strings.Contains(got, "the printed reply") {
+		t.Fatalf("render = %q, want the printed reply", got)
+	}
+	if strings.Contains(got, "[delegate_id") {
+		t.Fatalf("render = %q, want the footer kept out of the reply", got)
+	}
+}
+
+// A reply that carried earlier results but has no text of its own shows no
+// reply: what it printed is the earlier results, never its reply.
+func TestRenderToolCallShowsNoDelegateSendReplyWhenOnlyEarlierResultsHaveText(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST REPLY"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "earlier result 1 of 1, not delivered before:\nFIRST REPLY\n[delegate_id dlg_ABCDEFGH1234 · started]"), 100, false))
+	if !strings.Contains(got, "earlier reply 1 of 1") || strings.Count(got, "FIRST REPLY") != 1 || strings.Contains(got, "not delivered before") {
+		t.Fatalf("render = %q, want the one earlier reply and no reply of its own", got)
+	}
+}

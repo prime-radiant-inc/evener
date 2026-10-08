@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -513,4 +514,60 @@ func jsonBody(_ ToolArgs, output string, width int) string {
 // command output is legitimate.
 func notesTextBody(args ToolArgs, output string, width int) string {
 	return jsonBody(args, tuitext.StripControls(output), width)
+}
+
+// delegateSendState is the part of a delegate_send's raw state its reply
+// reads (agent marshalDelegateSendResult); each earlier result has the same
+// shape.
+type delegateSendState struct {
+	Output         string              `json:"output"`
+	Reason         string              `json:"reason"`
+	Status         string              `json:"status"`
+	EarlierResults []delegateSendState `json:"earlier_results"`
+}
+
+// DelegateSendReplyBody shows what a delegate_send that waited got back:
+// the earlier results its wait carried, oldest first, each headed "earlier
+// reply i of n" (with its status when it didn't complete), then the
+// delegate's reply. It reads as appwire-client's delegateSendResponse and
+// delegateSendEarlierResponses do: the reply is the raw state's output, else
+// what the tool printed above its footer, unless the reply carried earlier
+// results, whose text is never its own. "" when there is neither.
+func DelegateSendReplyBody(raw, output string, width int) string {
+	var state delegateSendState
+	decoded := raw != "" && json.Unmarshal([]byte(raw), &state) == nil
+	th := tuitheme.ActiveTheme()
+	heading := lipgloss.NewStyle().Foreground(th.TextDim)
+	text := lipgloss.NewStyle().Width(max(width, 1))
+	var blocks []string
+	for i, earlier := range state.EarlierResults {
+		label := fmt.Sprintf("earlier reply %d of %d", i+1, len(state.EarlierResults))
+		if status := strings.TrimSpace(earlier.Status); status != "" && status != "completed" {
+			label += " · " + status
+		}
+		body := envvars.FirstNonEmpty(strings.TrimSpace(earlier.Output), strings.TrimSpace(earlier.Reason), "(no reply)")
+		blocks = append(blocks, heading.Render(label), text.Render(body))
+	}
+	reply := strings.TrimSpace(state.Output)
+	if reply == "" && (!decoded || len(state.EarlierResults) == 0) {
+		reply = delegateSendPrintedReply(output)
+	}
+	if reply != "" {
+		blocks = append(blocks, heading.Render("reply"), text.Render(reply))
+	}
+	return strings.Join(blocks, "\n")
+}
+
+// delegateSendPrintedReply is what a delegate_send printed above its footer,
+// the last line that opens "[delegate_id " and closes "]"; all of it when
+// there is no footer.
+func delegateSendPrintedReply(output string) string {
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	for i, line := range slices.Backward(lines) {
+		if strings.HasPrefix(line, "[delegate_id ") && strings.HasSuffix(line, "]") {
+			lines = lines[:i]
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
