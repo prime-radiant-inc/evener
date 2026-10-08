@@ -87,7 +87,6 @@ it("keeps settled delegate tallies quiet in Pins without losing session access",
 		["Conversation", { hubId: "hub-1", ref: "local:a", title: "Alpha" }],
 		["Conversation", { hubId: "hub-1", ref: "local:b", title: "Beta" }],
 	]);
-	act(() => tree.unmount());
 });
 
 it("reads a change the hub announced while a conversation covered the section", async () => {
