@@ -326,6 +326,19 @@ class TrialStateTest(unittest.TestCase):
     def test_inside_the_trial(self):
         self.check(work_root=False)
 
+    def test_session_state_leaves_the_results_tree_under_work_root(self):
+        # Delegate worktrees live under the session state dir, so its path is shown to agents.
+        self.run_trial(work_root=True)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        state = bookkeeping.lab.stage_state_dir(trial, "A")
+        self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
+        self.assertEqual(state, os.path.realpath(os.path.join(trial, "sessions", "A")))
+
+    def test_session_state_stays_in_the_trial_without_work_root(self):
+        self.run_trial(work_root=False)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        self.assertEqual(bookkeeping.lab.stage_state_dir(trial, "A"), os.path.join(trial, "sessions", "A"))
+
     def test_relative_config_paths_resolve_against_the_launch_dir(self):
         _, env = self.run_trial(work_root=True, providers="config/providers.toml")
         self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
