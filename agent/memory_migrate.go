@@ -159,8 +159,8 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 			continue
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
-		// WriteFileRaw truncates an existing file and keeps its mode, so the 0o644
-		// applies only to new files, which migration never creates.
+		// WriteFileRaw keeps an existing file's mode, so the 0o644 applies only to
+		// new files, which migration never creates.
 		if err := env.WriteFileRaw(abs, described, 0o644); err != nil {
 			return err
 		}
