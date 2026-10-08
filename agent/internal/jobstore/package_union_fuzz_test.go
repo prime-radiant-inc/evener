@@ -8,10 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io"
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -227,12 +225,6 @@ func jobstorePackageMatcherEdges(t *testing.T) {
 	_ = m.FeedAt([]byte("x"), int64(len(m.carry))+1)
 	_, _ = grepReaderLimit(bufio.NewReaderSize(&jobstorePackageErrReader{}, 1), regexp.MustCompile("x"), 8, 0, 8)
 	_, _ = grepReaderLimit(bufio.NewReader(bytes.NewBufferString("xxxx\r")), regexp.MustCompile("x"), 8, 0, 4)
-	_, _ = grepFileLimitAtOpen("x", regexp.MustCompile("x"), 8, 0, 8, 0, func(string) (io.ReadCloser, error) {
-		return &jobstorePackageReadCloser{Reader: strings.NewReader("x\n"), closeErr: jcpInjectedErr}, nil
-	})
-	_, _ = grepFileLimitAtOpen("x", regexp.MustCompile("x"), 8, 0, 8, 0, func(string) (io.ReadCloser, error) {
-		return &jobstorePackageReadCloser{Reader: &jobstorePackageErrReader{}}, nil
-	})
 }
 
 type jobstorePackageErrReader struct{}
@@ -254,10 +246,3 @@ func (fs *jobstorePackageOpenFaultFS) Open(name string) (afero.File, error) {
 	}
 	return fs.Fs.Open(name)
 }
-
-type jobstorePackageReadCloser struct {
-	io.Reader
-	closeErr error
-}
-
-func (r *jobstorePackageReadCloser) Close() error { return r.closeErr }

@@ -632,40 +632,6 @@ func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxM
 	return matches, nil
 }
 
-// GrepFileLimit scans a closed output log with the same bounded line handling as
-// OutputStore.GrepLimitLineBytes.
-func GrepFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) (matches []Match, err error) {
-	return GrepFileLimitAt(path, re, limitBytes, maxMatches, maxLineBytes, 0)
-}
-
-// GrepFileLimitAt is like GrepFileLimit, but shifts returned offsets by
-// retainedStart when the file contains only a retained tail.
-func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64) (matches []Match, err error) {
-	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, retainedStart, func(path string) (io.ReadCloser, error) { return os.Open(path) })
-}
-
-func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64, open func(string) (io.ReadCloser, error)) (matches []Match, err error) {
-	if scan, err := grepLimitScans(limitBytes); !scan {
-		return nil, err
-	}
-
-	f, err := open(path)
-	if err != nil {
-		return nil, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-	matches, err = grepReaderLimit(bufio.NewReaderSize(f, 64*1024), re, limitBytes, maxMatches, maxLineBytes)
-	if err != nil {
-		return nil, err
-	}
-	shiftMatches(matches, retainedStart)
-	return matches, nil
-}
-
 // grepLimitScans reports whether a grep with limitBytes scans anything: an
 // empty budget scans nothing, and a negative one is an error.
 func grepLimitScans(limitBytes int) (bool, error) {
