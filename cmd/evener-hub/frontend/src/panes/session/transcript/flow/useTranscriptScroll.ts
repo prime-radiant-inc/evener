@@ -1173,7 +1173,7 @@ export function useTranscriptScroll({
   //
   // A native scrolling key's marker lasts three frames. The browser's smooth
   // scroll for the key starts a frame or two after it, so its first scroll
-  // event arrives after a one-frame clear (Chrome: usually 20ms after
+  // event arrives after one or two frame clears (Chrome: usually 20ms after
   // Shift-Space's keydown, #3880, and sometimes 37.8ms, #4065). An instant key
   // scroll consumes the marker in the first frame.
   const markGesture = useCallback(
@@ -1811,7 +1811,7 @@ export function useTranscriptScroll({
       // Only an event the gesture could have caused consumes the marker: one
       // whose content and viewport heights held. A measurement correction
       // (heights changed) can land between a native key and its smooth scroll,
-      // a frame later; it is still vetoed, but leaves the marker for the key's
+      // a frame or two later; it is still vetoed, but leaves the marker for the key's
       // own scroll, measured from the corrected offset.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
       const previous = lastScrollGeometryRef.current;

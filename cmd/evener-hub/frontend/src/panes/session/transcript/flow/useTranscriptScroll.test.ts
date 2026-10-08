@@ -4053,10 +4053,11 @@ function captureFrames() {
   };
 }
 
-// A native scrolling key's smooth scroll starts on the frame AFTER the key:
+// A native scrolling key's smooth scroll starts a frame or two AFTER the key:
 // Chrome dispatched Shift-Space's first scroll event 20ms after its keydown,
-// after the gesture's one-frame clear had already run (#3880). Unrecorded, the
-// reader's backward movement left VirtualList's size-change rule unprotected.
+// after the gesture's one-frame clear had already run (#3880), and once 37.8ms
+// after it (#4065). Unrecorded, the reader's backward movement left
+// VirtualList's size-change rule unprotected.
 describe("native key scrolling that begins a frame later", () => {
   const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
 
@@ -4103,6 +4104,14 @@ describe("native key scrolling that begins a frame later", () => {
           const metrics = measure();
           el.scrollTop = metrics.scrollTop + delta;
           set({ scrollTop: metrics.scrollTop + delta, scrollHeight: metrics.scrollHeight + delta });
+          el.dispatchEvent(new Event("scroll"));
+        }),
+      // Content measured in below the viewport: the offset holds.
+      growBelow: (delta: number) =>
+        act(() => {
+          const scrollHeight = measure().scrollHeight + delta;
+          definePort(el, { ...measure(), scrollHeight });
+          set({ scrollHeight });
           el.dispatchEvent(new Event("scroll"));
         }),
       restore: frames.restore,
@@ -4178,11 +4187,7 @@ describe("native key scrolling that begins a frame later", () => {
       reader.runFrame();
       reader.runFrame();
       reader.runFrame();
-      act(() => {
-        definePort(reader.el, { scrollTop: 1500, scrollHeight: 2300, clientHeight: 500 });
-        reader.set({ scrollHeight: 2300 });
-        reader.el.dispatchEvent(new Event("scroll"));
-      });
+      reader.growBelow(300);
 
       expect(reader.el.scrollTop).toBe(1800);
     } finally {
@@ -4190,7 +4195,7 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  test("a key whose instant scroll consumed its marker lends no extra frame to the next gesture", () => {
+  test("a key whose instant scroll consumed its marker lends no extra frames to the next gesture", () => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
@@ -4205,8 +4210,8 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  // A key's marker forgotten before its frames run must not lend its second
-  // frame to the next gesture: a wheel's marker still lasts one frame.
+  // A key's marker forgotten before its frames run must not lend its extra
+  // frames to the next gesture: a wheel's marker still lasts one frame.
   test.each([
     [
       "the document going hidden",
@@ -4220,7 +4225,7 @@ describe("native key scrolling that begins a frame later", () => {
       },
     ],
     ["a session switch", (reader: ReturnType<typeof mountKeyReader>) => act(() => reader.rerender({ r: "ref_b" }))],
-  ])("%s forgets the key's extra frame", (_label, forget) => {
+  ])("%s forgets the key's extra frames", (_label, forget) => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
