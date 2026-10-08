@@ -406,12 +406,21 @@ describe("ConversationService", () => {
 			const service = createConversationService(client, {
 				onReadComplete: () => Promise.reject(new Error("mutation storage down")),
 			});
-			await service.open("ref-1");
-			// The authoritative read succeeded; the fence failure leaves the durable
-			// dispatch gate blocked but must not fail the projection.
-			await expect(service.readProjection("ref-1")).resolves.toMatchObject({
-				olderCursor: "cursor",
-			});
+			// Each read reports its failed fence.
+			const fenceFailure = ["ConversationService: read fence failed", new Error("mutation storage down")];
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				await service.open("ref-1");
+				expect(consoleError.mock.calls).toEqual([fenceFailure]);
+				// The authoritative read succeeded; the fence failure leaves the durable
+				// dispatch gate blocked but must not fail the projection.
+				await expect(service.readProjection("ref-1")).resolves.toMatchObject({
+					olderCursor: "cursor",
+				});
+				expect(consoleError.mock.calls).toEqual([fenceFailure, fenceFailure]);
+			} finally {
+				consoleError.mockRestore();
+			}
 		});
 
 		it("invokes the host read fence only after the projection commits", async () => {
