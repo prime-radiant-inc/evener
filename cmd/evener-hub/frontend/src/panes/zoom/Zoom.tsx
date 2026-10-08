@@ -131,13 +131,14 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const reducedMotion = useReducedMotion();
   const track = useRef<HTMLDivElement>(null);
   const userTransition = params !== undefined && hasCascadeUserTransition(params);
-  // A drill or pop reveals the leaf at the track's right end. The pane can
-  // narrow just after (a sidebar opening alongside it on a narrow desktop), and
-  // a narrower track keeps its scrollLeft, which leaves the leaf past its right
-  // edge. So the track keeps to its end through resizes until the reader
-  // scrolls it away from there. Its own write's scroll event can arrive after
-  // a column's width animation has briefly widened the track, short of the new
-  // end; it is recognised by the offset written, not by being at the end.
+  // A drill or pop reveals the leaf at the track's right end, and the track
+  // keeps to its end while it is there: the pane can narrow just after (a
+  // sidebar opening alongside it on a narrow desktop), and columns keep
+  // animating their widths, either of which would otherwise leave the leaf past
+  // the right edge. A scroll away from the end stops that; a scroll back to it
+  // resumes it. followsLeaf holds the offset last written, because that write's
+  // own scroll event can arrive after a column has briefly widened the track,
+  // short of the new end. A browser clamp to a shrunk end is at the end.
   const followsLeaf = useRef<number | null>(null);
   useLayoutEffect(() => {
     if (!params || !userTransition) return;
@@ -149,17 +150,25 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
     const element = track.current;
     if (!mounted || !element || typeof ResizeObserver === "undefined") return;
     const scrolled = () => {
-      if (followsLeaf.current === null) return;
       if (element.scrollLeft >= element.scrollWidth - element.clientWidth - 1) followsLeaf.current = element.scrollLeft;
       else if (element.scrollLeft !== followsLeaf.current) followsLeaf.current = null;
     };
-    const observer = new ResizeObserver(() => {
+    const resized = new ResizeObserver(() => {
       if (followsLeaf.current !== null) followsLeaf.current = scrollToEnd(element);
     });
-    observer.observe(element);
+    // The track's own box changes when the pane does; its content width changes
+    // only through its columns.
+    const observeColumns = () => {
+      for (const column of element.children) resized.observe(column);
+    };
+    resized.observe(element);
+    observeColumns();
+    const columns = new MutationObserver(observeColumns);
+    columns.observe(element, { childList: true });
     element.addEventListener("scroll", scrolled);
     return () => {
-      observer.disconnect();
+      resized.disconnect();
+      columns.disconnect();
       element.removeEventListener("scroll", scrolled);
     };
   }, [mounted]);

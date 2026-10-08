@@ -441,17 +441,20 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
 
 // The drill reveals the leaf by scrolling the column track to its end. The
 // pane can narrow right after (on narrow desktop, a sidebar taking its width
-// mid-drill), which leaves the leaf past the track's right edge unless the
-// track keeps to its end (#4022).
+// mid-drill), and columns keep animating their widths, which leaves the leaf
+// past the track's right edge unless the track keeps to its end.
 function trackGeometry() {
   const resized: ResizeObserverCallback[] = [];
+  const observed = new Set<Element>();
   vi.stubGlobal(
     "ResizeObserver",
     class {
       constructor(callback: ResizeObserverCallback) {
         resized.push(callback);
       }
-      observe() {}
+      observe(target: Element) {
+        observed.add(target);
+      }
       unobserve() {}
       disconnect() {}
     },
@@ -459,12 +462,13 @@ function trackGeometry() {
   const geometry = { scrollWidth: 1172, clientWidth: 372 };
   return {
     geometry,
+    observed,
     attach(track: HTMLElement) {
       Object.defineProperty(track, "scrollWidth", { configurable: true, get: () => geometry.scrollWidth });
       Object.defineProperty(track, "clientWidth", { configurable: true, get: () => geometry.clientWidth });
     },
-    resize(clientWidth: number) {
-      geometry.clientWidth = clientWidth;
+    resize(change: Partial<typeof geometry>) {
+      Object.assign(geometry, change);
       act(() => {
         for (const callback of resized) callback([], {} as ResizeObserver);
       });
@@ -472,16 +476,54 @@ function trackGeometry() {
   };
 }
 
-test.each([
-  { name: "the drilled leaf stays revealed when the track narrows", scrollAway: false, want: 1172 - 152 },
-  { name: "a reader who scrolled back keeps their place when the track narrows", scrollAway: true, want: 100 },
+type TrackStep = (element: HTMLElement, geometry: { scrollWidth: number; clientWidth: number }) => void;
+const scrollTo = (element: HTMLElement, left: number) => {
+  element.scrollLeft = left;
+  fireEvent.scroll(element);
+};
+const narrow = { clientWidth: 152 };
+
+test.each<{ name: string; before?: TrackStep; change: { scrollWidth?: number; clientWidth?: number }; want: number }>([
+  { name: "the drilled leaf stays revealed when the track narrows", change: narrow, want: 1172 - 152 },
+  {
+    name: "a reader who scrolled back keeps their place when the track narrows",
+    before: (element) => scrollTo(element, 100),
+    change: narrow,
+    want: 100,
+  },
+  {
+    name: "a reader who scrolls back to the end follows the leaf again",
+    before: (element) => {
+      scrollTo(element, 100);
+      scrollTo(element, 1172 - 372);
+    },
+    change: narrow,
+    want: 1172 - 152,
+  },
   {
     name: "the reveal's own scroll event, after a column briefly widened the track, keeps the leaf followed",
-    scrollAway: false,
-    widenFirst: true,
+    before: (element, geometry) => {
+      geometry.scrollWidth = 1182;
+      fireEvent.scroll(element);
+    },
+    change: narrow,
     want: 1182 - 152,
   },
-])("$name", async ({ scrollAway, widenFirst, want }) => {
+  {
+    name: "a scroll the browser clamped to a shrunk end keeps the leaf followed",
+    before: (element, geometry) => {
+      geometry.scrollWidth = 1150;
+      scrollTo(element, 1150 - 372);
+    },
+    change: narrow,
+    want: 1150 - 152,
+  },
+  {
+    name: "a column widening after the reveal keeps the leaf revealed",
+    change: { scrollWidth: 1600 },
+    want: 1600 - 372,
+  },
+])("$name", async ({ before, change, want }) => {
   const track = trackGeometry();
   try {
     const { fake } = fixture();
@@ -495,16 +537,11 @@ test.each([
     );
     await screen.findByText("grandchild content grandchild-id");
     expect(element.scrollLeft).toBe(1172 - 372);
-    if (scrollAway) {
-      element.scrollLeft = 100;
-      fireEvent.scroll(element);
-    }
-    if (widenFirst) {
-      track.geometry.scrollWidth = 1182;
-      fireEvent.scroll(element);
-    }
+    // Columns change the track's content width without resizing the track.
+    for (const column of element.children) expect(track.observed.has(column)).toBe(true);
+    before?.(element, track.geometry);
 
-    track.resize(152);
+    track.resize(change);
 
     expect(element.scrollLeft).toBe(want);
   } finally {
