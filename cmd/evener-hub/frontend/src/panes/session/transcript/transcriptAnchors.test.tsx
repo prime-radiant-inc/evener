@@ -1310,7 +1310,10 @@ test.each(["tools", "intent"] as const)(
       expect(closed?.querySelector("summary")?.getBoundingClientRect().top).toBe(0);
       expect(closed?.querySelector("summary")?.getBoundingClientRect().height).toBe(40);
       expect(document.activeElement).toBe(outside);
-      expect(captureTranscriptView("alias-reflow")?.anchorId).toBe(level === "tools" ? "run:a" : "intent:a");
+      // The restore completes on its landing's scroll event, a frame after it lands.
+      await waitFor(() =>
+        expect(captureTranscriptView("alias-reflow")?.anchorId).toBe(level === "tools" ? "run:a" : "intent:a"),
+      );
     } finally {
       mounted?.unmount();
       external.restore();
