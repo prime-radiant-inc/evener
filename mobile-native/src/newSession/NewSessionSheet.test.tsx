@@ -117,7 +117,6 @@ it("names the hub's own machine after the hub (ruling 3)", async () => {
 	const sheet = await mount();
 	expect(sheet.context().hostLabel("local")).toBe("magic-kingdom");
 	expect(sheet.context().hostLabel("paradise-park")).toBe("paradise-park");
-	sheet.tree.unmount();
 });
 
 it("opens on the newest remembered start and reads that host's models", async () => {
@@ -134,13 +133,12 @@ it("opens on the newest remembered start and reads that host's models", async ()
 		method: "evener/host/request",
 		params: { host: "paradise-park", method: "model/list", params: { cwd: "/Users/jesse/git/evener" } },
 	});
-	sheet.tree.unmount();
 });
 
 // The hub announces a refreshed model list on evener/auth/updated (#3539):
 // the form reads its list again, in place.
 it("reads the form's model list again when the hub announces a refreshed one", async () => {
-	const sheet = await mount();
+	await mount();
 	const reads = () => harness.requests.filter((request) => request.method === "model/list").length;
 	const before = reads();
 	expect(before).toBeGreaterThan(0);
@@ -149,7 +147,6 @@ it("reads the form's model list again when the hub announces a refreshed one", a
 	});
 	await settle();
 	expect(reads()).toBe(before + 1);
-	sheet.tree.unmount();
 });
 
 it("opens like a session when New session like this opened it", async () => {
@@ -167,7 +164,6 @@ it("opens like a session when New session like this opened it", async () => {
 	harness.drafts.write("hub-1", draft);
 	const sheet = await mount({ host: "paradise-park", cwd: "/Users/jesse/git/evener" });
 	expect(sheet.context().store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
-	sheet.tree.unmount();
 });
 
 it("asks the hub nothing until the connection is ready, then loads projects and models", async () => {
@@ -181,7 +177,6 @@ it("asks the hub nothing until the connection is ready, then loads projects and 
 	expect(harness.requests.map((request) => request.method)).toEqual(
 		expect.arrayContaining(["evener/projects/recent", "model/list"]),
 	);
-	sheet.tree.unmount();
 });
 
 it("finishes a start the sheet was swiped away from, so the session it made is known (#3048)", async () => {
@@ -249,7 +244,6 @@ it("never lets a reopened sheet's edits be lost to the start it was swiped away 
 	expect(harness.drafts.read("hub-1")).toBeNull();
 	await act(async () => reopened.context().store.getState().setPrompt("the next thing"));
 	expect(harness.drafts.read("hub-1")).toMatchObject({ prompt: "the next thing" });
-	reopened.tree.unmount();
 });
 
 it("shows a reopened sheet the start still on its way, and never starts it twice (#3104)", async () => {
@@ -268,7 +262,6 @@ it("shows a reopened sheet the start still on its way, and never starts it twice
 		await expect(outcome).resolves.toMatchObject({ status: "created" });
 	});
 	expect(reopened.context().store.getState()).toMatchObject({ submitting: false, prompt: "", cwd: "" });
-	reopened.tree.unmount();
 });
 
 it("closes at once, making no store, for a hub that has been removed (#3104)", async () => {
@@ -276,7 +269,6 @@ it("closes at once, making no store, for a hub that has been removed (#3104)", a
 	const sheet = await mount();
 	expect(harness.context).toBeNull();
 	expect(sheet.goBack).toHaveBeenCalledTimes(1);
-	sheet.tree.unmount();
 });
 
 it("closes when its hub is removed while it is open (#3104)", async () => {
@@ -285,7 +277,6 @@ it("closes when its hub is removed while it is open (#3104)", async () => {
 	harness.profiles = [];
 	await sheet.rerender();
 	expect(sheet.goBack).toHaveBeenCalledTimes(1);
-	sheet.tree.unmount();
 });
 
 it("makes no store for a hub that has been removed (#3104)", async () => {
@@ -300,8 +291,7 @@ it("makes no store for a hub that has been removed (#3104)", async () => {
 		write: () => {},
 		clear: () => {},
 	} as unknown as CreationDraftRepository;
-	const sheet = await mount();
+	await mount();
 	expect(harness.context).toBeNull();
 	expect(reads).toBe(0);
-	sheet.tree.unmount();
 });
