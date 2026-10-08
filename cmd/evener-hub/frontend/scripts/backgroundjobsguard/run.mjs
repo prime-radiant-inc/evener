@@ -58,6 +58,14 @@ function observe(event) {
 }
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const response = (request) => frames.find(f => f.direction === "Network.webSocketFrameReceived" && f.socketId === request.socketId && f.id === request.id);
+// Opens the Jobs sidebar and waits for its slide-in to finish. A row clicked
+// mid-slide is measured where it is still moving; the press then misses it
+// (#3897 clips the slide's overhang, so nothing scrolls the row back into view).
+async function openJobsSidebar() {
+  await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
+  await wait(`(() => { const s=document.querySelector(${q(sidebar)}); return s && getComputedStyle(s).transform === 'none'; })()`, "Jobs sidebar entrance settled");
+}
+
 async function waitFrames(predicate, label) {
   if (predicate()) return;
   await new Promise((resolve, reject) => {
@@ -208,8 +216,7 @@ try {
   if (fixture.journey === "output-paging") {
     await runOutputPagingJourney(fixture);
   } else {
-  await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
-  await wait(`(() => { const s=document.querySelector(${q(sidebar)}); return s && getComputedStyle(s).transform === 'none'; })()`, "Jobs sidebar entrance settled");
+  await openJobsSidebar();
   const initial = await completeWalk(0, "closed history finds live work on the fourth page");
   assert.equal(initial.pages[3].result.jobs[0].jobId, fixture.laterJobId);
   const failed = initial.jobs.find(job => job.status === "command_exited_nonzero");
@@ -445,11 +452,7 @@ async function runOutputPagingJourney(fixture) {
     await bounded();
     return outputCalls(after).find(request => request.params.beforeBytes !== undefined && page(request));
   };
-  await driver.click('[data-testid="statusbar"] button[aria-label^="Jobs,"]');
-  // A row clicked mid-slide is measured where it is still moving; the press
-  // then misses it (#3897 clips the slide's overhang, so nothing scrolls the
-  // row back into view).
-  await wait(`(() => { const s=document.querySelector(${q(sidebar)}); return s && getComputedStyle(s).transform === 'none'; })()`, 'Jobs sidebar entrance settled');
+  await openJobsSidebar();
   await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
   await driver.click(row(fixture.outputJobId));
   await latest('SPLIT_é_');
