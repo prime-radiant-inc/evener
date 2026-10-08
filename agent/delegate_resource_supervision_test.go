@@ -4073,17 +4073,16 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 	}
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
-	// A failure before the timer is armed must not leave the namer blocked
-	// for the session's close to wait out.
-	t.Cleanup(releaseNamer)
+	released, releaseNamer := context.WithCancel(context.Background())
 	fixture.client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
-		<-release
+		<-released.Done()
 		return llm.Response{Provider: testSessionNamerProvider, Model: request.Model, Message: llm.Assistant(`{"name":"Slow Name"}`)}
 	}})
 	root := restoreSupervisionRoot(t, fixture, nil)
+	// Registered after the root's Close cleanup so it runs first: a failure
+	// before the timer is armed must not leave the namer blocked for Close
+	// to wait out.
+	t.Cleanup(releaseNamer)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	time.AfterFunc(100*time.Millisecond, releaseNamer)
 	waitForStableSupervisionRun(t, root, fixture.childID)
