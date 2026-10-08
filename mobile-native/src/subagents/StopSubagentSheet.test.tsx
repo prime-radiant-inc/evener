@@ -14,6 +14,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settle,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
@@ -209,13 +210,6 @@ afterEach(async () => {
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const mounted = render(
