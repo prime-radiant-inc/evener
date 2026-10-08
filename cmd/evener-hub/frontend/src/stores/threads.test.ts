@@ -10051,6 +10051,38 @@ test("a storage-unavailable reconciliation records the ref as storage-blocked, n
   expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
 });
 
+// A genuine reconcile failure must survive a later storage-timeout reconcile:
+// the timeout adds the storage-blocked record but does not supersede the real
+// failure, so the failures fence - and the fallback refusal it carries - hold
+// through the wedge until a successful reconcile clears both.
+test("a storage-timeout reconcile does not erase a genuine reconciliation failure", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await ensureActiveMutationTarget(fake, "ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+
+  // The genuine failure: a blocked shared record or a real reconcile conflict.
+  threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) });
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+
+  timeOutDurableEnqueues(storage);
+  await expect(threadsStore.getState().send("ref_a", "sent while both fences hold")).rejects.toBeInstanceOf(
+    MutationStorageTimeoutError,
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // The storage-blocked fence must self-heal, not stick: discovery retries the
 // ref on every pass, and once storage answers the reconcile succeeds, the
 // slice clears, and the durable dispatcher resumes the ref's queued row - so a

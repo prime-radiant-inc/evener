@@ -3794,16 +3794,20 @@ async function publishAndReconcileThreadHydration(
         // A storage-unavailable reconcile is not a mutation-state fact: the
         // same wedge that fences the durable write failed this read, so record
         // the ref aside as storage-blocked - the slice the send fallback may
-        // admit - and let discovery retry the read on every pass. Any other
-        // failure keeps its old meaning: keep it visible and dispatch closed
-        // until that retry succeeds.
+        // admit - and let discovery retry the read on every pass. A genuine
+        // failure recorded earlier (a real reconcile conflict, a blocked
+        // shared record) must survive the timeout: erasing it would unfence
+        // the fallback through the waivable slice, so the timeout only adds
+        // the storage-blocked record. Any non-timeout failure keeps its old
+        // meaning and supersedes the storage-blocked state, being the
+        // stricter fence: record it in failures and clear the storage-blocked
+        // record. A successful reconcile clears both.
         const storageBlocked = isStorageUnavailable(error);
         threadsStore.setState((state) => {
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
           if (storageBlocked) {
             mutationReconciliationStorageBlocked.add(ref);
-            mutationReconciliationFailures.delete(ref);
           } else {
             mutationReconciliationFailures.add(ref);
             mutationReconciliationStorageBlocked.delete(ref);
