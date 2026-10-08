@@ -981,18 +981,10 @@ export class Driver {
       { label: `slash menu row ${row}` },
     );
     // Click the skill's own row (native mouse events), not a keyboard commit,
-    // so the scenario never depends on highlight ordering.
-    const rowBox = await this.elementBox(
-      `[data-testid='composer-slash-menu'] button`,
-    );
-    if (!rowBox) throw new Error("slash menu row vanished before click");
-    const rows = await evaluate(
-      this.send,
-      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-        return [...menu.querySelectorAll("button")].filter((b) => b.textContent.includes(${JSON.stringify(row)})).map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }); })()`,
-    );
-    if (!rows || rows.length === 0) throw new Error(`no ${row} row in slash menu`);
-    await this.clickAt(rows[0].x, rows[0].y);
+    // so the scenario never depends on highlight ordering. Native, because the
+    // row's mousedown is what keeps the editor focused through the selection.
+    const point = await this.waitPage(this.slashRowPointExpr(row), { label: `slash menu row ${row} uncovered` });
+    await this.clickAt(point.x, point.y);
     await this.waitPage(
       `(() => { const pane = ${this.paneScopeExpr(ref)};
         const chips = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
@@ -1022,19 +1014,41 @@ export class Driver {
   // `View <name>` and `Remove <name>`), so the remove button is the one whose
   // label starts with "Remove ". The tile count is re-read between removals:
   // each click takes one tile, and the caller's loop ends when none are left.
+  // The skill's slash-menu row, found, scrolled to and hit-tested in the turn
+  // that returns its center, so the native press that follows is measured as
+  // late as it can be. A point measured a turn earlier can land on a
+  // neighbouring row once the menu shifts (#4071, the openSession race of #3874).
+  slashRowPointExpr(row) {
+    return `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const b = menu && [...menu.querySelectorAll("button")].find((n) => n.textContent.includes(${JSON.stringify(row)}));
+      if (!b) return null;
+      b.scrollIntoView({ block: "nearest" });
+      const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return b.contains(document.elementFromPoint(x, y)) ? { x, y } : null; })()`;
+  }
+
+  // The first attachment tile's remove button, found, hit-tested and clicked in
+  // one page turn (its handler is a plain click). Returns the button's label,
+  // "missing" or "covered".
+  removeAttachmentExpr(ref) {
+    return `(() => { const pane = ${this.paneScopeExpr(ref)};
+      const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
+      const b = tiles
+        .map((tile) => [...tile.querySelectorAll("button")].find((n) => (n.getAttribute("aria-label") ?? "").startsWith("Remove ")))
+        .find(Boolean);
+      if (!b) return "missing";
+      b.scrollIntoView({ block: "center" });
+      const r = b.getBoundingClientRect();
+      if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return "covered";
+      b.click();
+      return b.getAttribute("aria-label"); })()`;
+  }
+
   async removeAttachmentTile(ref) {
-    const labels = await evaluate(
-      this.send,
-      `(() => { const pane = ${this.paneScopeExpr(ref)};
-        const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
-        const buttons = tiles
-          .map((tile) => [...tile.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Remove ")))
-          .filter(Boolean);
-        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
-    );
-    if (!labels || labels.length === 0) throw new Error("no attachment remove button");
-    await this.clickAt(labels[0].x, labels[0].y);
-    return labels[0].label;
+    const label = await evaluate(this.send, this.removeAttachmentExpr(ref));
+    if (label === "missing") throw new Error("no attachment remove button");
+    if (label === "covered") throw new Error("attachment remove button is covered at its center");
+    return label;
   }
 
   // Every action that SENDS the composer's draft states the draft it means to
