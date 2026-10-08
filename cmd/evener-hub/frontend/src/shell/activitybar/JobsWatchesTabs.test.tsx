@@ -1,5 +1,6 @@
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import "../../panes/transcript";
@@ -286,10 +287,7 @@ test("closed terminal history discovers page-three live work and keeps its settl
     expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(3);
     finished = true;
     act(() =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-      }),
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, ["jobs"])),
     );
     await screen.findByText("3 completed jobs");
     await waitFor(() => expect(screen.queryByText("older active")).toBeNull());

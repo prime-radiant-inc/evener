@@ -1,4 +1,5 @@
-import { activityChanged, installActivityFixture } from "./sessionActivityTestUtils";
+import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Activity list (spec 9): a coordinator's subagents and shell jobs, read
 // through typed activity reads, with live work and independent quiet histories,
 // the strip, the chips, search, and each row's why and last line.
@@ -144,7 +145,7 @@ beforeEach(() => {
 
 // The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	act(() => hubClient.emitNotification(activityChanged(COORDINATOR)));
+	act(() => hubClient.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 }
 

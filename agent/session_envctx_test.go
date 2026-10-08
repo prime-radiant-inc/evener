@@ -683,7 +683,7 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{
 		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
 	}}))
@@ -766,7 +766,7 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-preserved-tail", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
 	seedNumberedSessionHistory(t, s, 6)
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -845,7 +845,7 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	s := newScriptedSummaryCompactSession(t, "env-merge-tail", func(llm.Request) llm.Response {
 		once.Do(func() { close(started) })
 		<-release
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
 	t.Cleanup(releaseProvider)
 	seedNumberedSessionHistory(t, s, 12)

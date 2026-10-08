@@ -2,6 +2,7 @@ import type { SessionActivityContext, ThreadReadResponse } from "@evener/appwire
 import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
@@ -598,10 +599,9 @@ test("a new cursor epoch for the same root preserves child branch and retained r
   const initialReads = rootReads();
   setEpoch("epoch-2");
   act(() =>
-    fake.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref: "root", threadId: "wire-old-root", sessionId: "old-root", resources: ["summary"] },
-    }),
+    fake.emitNotification(
+      activityChangedNotification({ ref: "root", threadId: "wire-old-root", sessionId: "old-root" }, ["summary"]),
+    ),
   );
   await waitFor(() => expect(rootReads()).toBe(initialReads + 1));
   expect(currentParams().ref).toBe("child");

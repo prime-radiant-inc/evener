@@ -126,7 +126,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "fold-tail-cheap/model")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -258,7 +258,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "fold-tail-cheap/model")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})

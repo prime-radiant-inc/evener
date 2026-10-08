@@ -1,13 +1,14 @@
-// Wire-true builders for the two session-lifecycle notifications that stores
-// consume as bare "something changed, refetch" pokes (tree, credentials,
-// extensions). Those stores key off the notification's method and never read
-// its params, but the params are no longer free-form: appwire declares
-// ThreadStartedParams/ThreadClosedParams, so a `params: {}` stand-in is a
-// frame the server would never send and no longer type-checks. These builders
-// produce the smallest payload the catalog actually permits, in one place,
-// rather than a Thread literal copy-pasted into every poke site.
+// Wire-true builders for notifications tests feed the stores, so each shape
+// is written once, typed against the catalog, rather than a literal
+// copy-pasted into every site. Some stores treat a notification as a bare
+// "something changed, refetch" poke and never read its params (the session
+// lifecycle ones: tree, credentials, extensions); others read them (the
+// activity store reads activity-changed's ref, session and resources). Either
+// way the params aren't free-form: a `params: {}` stand-in is a frame the
+// server would never send and no longer type-checks, so these builders
+// produce the smallest payload the catalog permits.
 
-import type { AnyNotification, NavigationInvalidatedPayload, Thread } from "../types.gen";
+import type { AnyNotification, NavigationInvalidatedPayload, SessionActivityResource, Thread } from "../types.gen";
 
 const CAPABILITIES = {
   send: true,
@@ -77,5 +78,19 @@ export function navigationInvalidatedNotification(payload: NavigationInvalidated
   return {
     method: "evener/navigation/invalidated",
     params: payload,
+  };
+}
+
+/** The hub's word that a session's activity changed: the activity store
+ * re-reads the resources it names, summary, delegates and jobs unless a test
+ * names others. The session is the thread's own unless the target says
+ * otherwise. */
+export function activityChangedNotification(
+  target: { ref: string; threadId: string; sessionId?: string },
+  resources: SessionActivityResource[] = ["summary", "delegates", "jobs"],
+): AnyNotification {
+  return {
+    method: "evener/thread/activity/changed",
+    params: { ref: target.ref, threadId: target.threadId, sessionId: target.sessionId ?? target.threadId, resources },
   };
 }
