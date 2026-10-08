@@ -497,7 +497,7 @@ class ScenarioValidationTest(unittest.TestCase):
         scen = tempfile.TemporaryDirectory()
         self.addCleanup(scen.cleanup)
         with open(os.path.join(scen.name, "scenario.json"), "w") as f:
-            json.dump({"stages": [{"name": "A", "prompt": "p"}, dict({"name": "B", "prompt": "p"}, **stage)]}, f)
+            json.dump({"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}, f)
         return bookkeeping.lab.load_scenario(scen.name)
 
     def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
