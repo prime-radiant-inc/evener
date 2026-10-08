@@ -128,7 +128,7 @@ func (r *threadHistories) ensureLocked(
 		recordedLength: recordedLength,
 		epoch:          epoch,
 		bootGeneration: bootGeneration,
-		closed:         r.unclosed.Done,
+		onClosed:       r.unclosed.Done,
 	})
 	// Counted once it exists (construction panics on a missing boot
 	// generation) and before anything can close it: closes reach a history
