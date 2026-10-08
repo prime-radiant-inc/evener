@@ -370,8 +370,9 @@ func TestThreadHistoriesRegisterNothingOnceClosing(t *testing.T) {
 	inRead, release := make(chan struct{}), make(chan struct{})
 	releaseRead := sync.OnceFunc(func() { close(release) })
 	defer releaseRead()
+	readDone := make(chan error, 1)
 	go func() {
-		_ = h.read(func(*transcriptindex.Index) error {
+		readDone <- h.read(func(*transcriptindex.Index) error {
 			close(inRead)
 			<-release
 			return nil
@@ -410,4 +411,7 @@ func TestThreadHistoriesRegisterNothingOnceClosing(t *testing.T) {
 	}
 	releaseRead()
 	awaitClosed(t, registryClosed, "the registry's close")
+	if err := <-readDone; err != nil {
+		t.Fatalf("the read in flight: %v", err)
+	}
 }

@@ -35,9 +35,8 @@ type threadHistories struct {
 	// before it closes the shared cache (#4064).
 	unclosed sync.WaitGroup
 	// closing is set, under mu, when close begins: from then on nothing is
-	// registered and the served root stays empty, so every history counted
-	// in unclosed exists before close waits and is closed by it or by the
-	// caller that detached it.
+	// registered, so every history counted in unclosed exists before close
+	// waits and is closed by it or by the caller that detached it.
 	closing bool
 }
 
@@ -187,9 +186,6 @@ func (r *threadHistories) detachLocked(threadID string) *threadHistory {
 func (r *threadHistories) detachExcept(keep string) []*threadHistory {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closing {
-		keep = ""
-	}
 	r.root = keep
 	var detached []*threadHistory
 	r.threads.Range(func(key, _ any) bool {
