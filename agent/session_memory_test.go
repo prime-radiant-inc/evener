@@ -558,7 +558,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("opaque-fold-58")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
+	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nopaque-fold-58")} }, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
 	assertIndexes := func(req llm.Request) llm.Response {
 		for _, msg := range req.Messages {
 			if strings.Contains(msg.Text(), "opaque-not-preloaded-406") {
@@ -715,7 +715,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 		return finalResponse("child observed indexes")
 	}
 	s := newScriptedSummaryCompactSession(t, "memory-child-summary", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("opaque-child-summary-403")}
+		return llm.Response{Message: llm.Assistant("## Progress\nopaque-child-summary-403")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2, AcquireSessionOwnership: func(string) error { return nil }, testOnly: testConfig{disableDelegateIdleRelease: true}}))
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step, step}})
 	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture enabled child", AgentType: "explorer", DelegationAllowance: new(0)})
@@ -1484,7 +1484,7 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 			root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 			path := memorySeed(t, root, "personal", "opaque-surviving-61")
 			s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("opaque-summary-53")}
+				return llm.Response{Message: llm.Assistant("## Progress\nopaque-summary-53")}
 			}, withDir(workspace), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "saved-project", DisableMemory: tc.saved, StateDir: history}))
 			for range 12 {
 				s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-historical-37"), llm.User("opaque-historical-37"))
