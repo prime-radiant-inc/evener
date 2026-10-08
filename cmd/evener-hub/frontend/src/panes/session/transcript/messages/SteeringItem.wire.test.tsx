@@ -28,7 +28,6 @@ test.each([
   ["steer-loop-detected", "System steered: Loop detected"],
   ["steer-provider-failure", "System steered: Provider failed"],
   ["steer-transcript-pointer", "System steered: Where to find the full transcript"],
-  ["steer-task-nudge", "System steered: Task reminder"],
   ["steer-note-handoff", "System steered: Note to self"],
 ] as const)("folds %s to %s, opening to what it said", (name, label) => {
   render(<SteeringItem item={steer(name)} turn={turn} live={false} />);
