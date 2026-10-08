@@ -77,7 +77,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
    ```bash
    tmpdir=$(mktemp -d -t evener-e2e-attn-wd-XXXXX)
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Reply with exactly the word PONG.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Ask me in one sentence which color I prefer, then end your turn with end_reason needs_response to wait for my answer. Do not use ask_user.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn" | jq -r '.session_id')
    echo "SID=$SID"
    ```

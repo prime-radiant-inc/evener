@@ -37,10 +37,10 @@ type composerPanel struct {
 	// is genuinely pending — an unresolved ask_user call in the transcript,
 	// per pendingAskQuestions (spec §6.2) — independent of ChipContext,
 	// which carries harness/model/branch metadata rather than transient
-	// state. This is NOT simply "the session is awaiting": under
-	// attention-status-model v5 a session re-arms State=="awaiting" after
-	// any clean output-producing turn, including the reply that resolves
-	// an ask_user question, so an awaiting rest can have nothing pending.
+	// state. This is NOT simply "the session is awaiting": a session also
+	// rests State=="awaiting" after a turn that ended on needs_response,
+	// including the reply that resolves an ask_user question, so an
+	// awaiting rest can have nothing pending.
 	AwaitingQuestion bool
 }
 
@@ -300,8 +300,8 @@ func (p composerPanel) View() string {
 	// Waiting chip (spec §6.2): shown whenever a question is genuinely
 	// pending (an unresolved ask_user call in the transcript), independent
 	// of the harness/model chip strip above — NOT merely whenever the
-	// session rests awaiting, since attention-status-model v5 can re-arm
-	// that rest state with nothing left pending. ctrl+q is the ONLY way to
+	// session rests awaiting, since a needs_response turn rests there with
+	// nothing pending. ctrl+q is the ONLY way to
 	// open the question overlay — this chip is discoverability chrome, not
 	// a button.
 	if p.AwaitingQuestion {

@@ -2056,10 +2056,9 @@ func printServeSandboxLine(w io.Writer, line string) {
 // transition — so the AppWire status shadow must not flip to active around a wake
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
-// predicate exactly — hasPendingAsk, not raw state (attention-status-model
-// v5 reconciliation: SessionAwaiting alone no longer implies a pending
-// question, so a general inbox-semantics re-arm with no ask pending must NOT
-// be held; async wakes re-arm by design there). EntryUserInput is always let
+// predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
+// does not imply a pending question: a needs_response rest with no ask
+// pending must NOT be held; async wakes may move it on). EntryUserInput is always let
 // through since it is how the reply resolves a pending ask (spec §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
 	return kind != agent.EntryUserInput && hasPendingAsk

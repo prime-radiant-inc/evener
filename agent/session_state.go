@@ -409,7 +409,8 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 // finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
 // was rejected by the same transcript-tail rule restore uses. Marker rejection
 // can follow an admitted reply, which clears askPending before a completed
-// tool-results turn leaves the durable session awaiting. Generic failures keep
+// tool-results turn that ended on needs_response leaves the durable session
+// awaiting. Generic failures keep
 // the pending-set rule above; this path is only for an interrupt marker that
 // never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
@@ -591,8 +592,7 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // an upgrade back out once autonomy signals that were not yet restored the
 // first time — live children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
-// they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
+// they are not re-kicked on restore ("loaded but idle"). divergenceTurn is the same value
 // its one caller (RestoreSessionFromMetaWithConfig) already computed for
 // escapeHistoryWithSessionProvenance, in the same units as s.history at this
 // point: a forked child's inherited prefix must not be decided by this

@@ -73,10 +73,9 @@ func (s *Session) askPendingCount() int {
 // refusal predicate (session_lifecycle.go's processInputKindWithProvenance,
 // spec §5.3) exactly: cmd/evener/serve.go's pre-dispatch status shadow-write
 // hold must skip the write for precisely the wakes the entry gate will
-// refuse. Keying on the pending set rather than raw SessionState matters
-// since attention-status-model v5: SessionAwaiting no longer implies a
-// pending question on its own (the general inbox-semantics upgrade also
-// rests a session awaiting after any clean, output-producing turn).
+// refuse. Keying on the pending set rather than raw SessionState matters:
+// SessionAwaiting does not imply a pending question on its own (a turn that
+// ended on needs_response also rests awaiting).
 func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
@@ -716,36 +715,56 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 	return SessionIdle
 }
 
-// endedOnNeedsResponse reports whether the round whose tool results sit at
-// toolResultsIdx ended its turn with a completed communicate call that said
-// needs_response. Only a root's communicate takes end_reason, so the call is
-// found by its arguments rather than by the result tool's name.
+// endedOnNeedsResponse reports whether the input whose last round's tool
+// results sit at toolResultsIdx ended its turn on needs_response. The live
+// settle reads the first turn-ending communicate call the input accepted
+// (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
+// input on past it), so this finds that same call: the earliest end_turn=true
+// call, among this input's rounds, whose result says it was accepted. An
+// input is the run of turns sharing the decisive turn's TurnID; a legacy
+// history without turn ids ends the walk at the user input that opened it.
+// Only a root's communicate takes end_reason, so the call is found by its
+// arguments and result rather than by the result tool's name.
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
-	completed := map[string]bool{}
-	for _, part := range history[toolResultsIdx].Message.Content {
-		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError {
-			completed[part.ToolResult.ToolCallID] = true
+	turnID := history[toolResultsIdx].TurnID
+	accepted := map[string]bool{}
+	reason := ""
+	for j := toolResultsIdx; j >= 0; j-- {
+		turn := history[j]
+		if (turnID != "" && turn.TurnID != turnID) || (turnID == "" && turn.Kind == schema.TurnUserInput) {
+			break
+		}
+		switch turn.Kind {
+		case schema.TurnToolResults:
+			for _, part := range turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError && communicateAccepted(part.ToolResult.Content) {
+					accepted[part.ToolResult.ToolCallID] = true
+				}
+			}
+		case schema.TurnAssistant:
+			for _, call := range assistantToolCalls(turn.Message) {
+				var args struct {
+					EndTurn   bool   `json:"end_turn"`
+					EndReason string `json:"end_reason"`
+				}
+				if accepted[call.ID] && json.Unmarshal(call.Arguments, &args) == nil && args.EndTurn {
+					reason = args.EndReason
+					break
+				}
+			}
 		}
 	}
-	for j := toolResultsIdx - 1; j >= 0; j-- {
-		if history[j].Kind != schema.TurnAssistant {
-			continue
-		}
-		for _, call := range assistantToolCalls(history[j].Message) {
-			if !completed[call.ID] {
-				continue
-			}
-			var args struct {
-				EndTurn   bool   `json:"end_turn"`
-				EndReason string `json:"end_reason"`
-			}
-			if json.Unmarshal(call.Arguments, &args) == nil && args.EndTurn && args.EndReason == tool.CommunicateEndReasonNeedsResponse {
-				return true
-			}
-		}
-		return false
+	return reason == tool.CommunicateEndReasonNeedsResponse
+}
+
+// communicateAccepted reports whether a tool result is a communicate call's
+// response that says the call was accepted.
+func communicateAccepted(content any) bool {
+	text, _ := content.(string)
+	var resp struct {
+		Accepted bool `json:"accepted"`
 	}
-	return false
+	return json.Unmarshal([]byte(text), &resp) == nil && resp.Accepted
 }
 
 // deriveRestoredAskPending rebuilds the pending-ask SET from a restored

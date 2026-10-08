@@ -275,6 +275,7 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 		want   SessionState
 	}{
 		{reason: "", want: SessionIdle},
+		{reason: "done", want: SessionIdle},
 		{reason: "waiting_on_work", want: SessionIdle},
 		{reason: "needs_response", want: SessionAwaiting},
 	} {
@@ -359,5 +360,92 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	defer restored.Close()
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored user-last session state = %q, want idle", got)
+	}
+}
+
+// Live settle and restore read the same call: the first turn-ending
+// communicate the input accepted. A later needs_response call in the same
+// round loses the capture, so neither rests awaiting on it; the other order
+// rests awaiting on both sides.
+func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		first, second string
+		want          SessionState
+	}{
+		{name: "done wins", first: "done", second: "needs_response", want: SessionIdle},
+		{name: "needs_response wins", first: "needs_response", second: "done", want: SessionAwaiting},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return toolCallResponse(
+						communicateCallArgs("c1", map[string]any{"message": "one", "end_reason": tc.first}),
+						communicateCallArgs("c2", map[string]any{"message": "two", "end_reason": tc.second}),
+					)
+				},
+			}})
+			dir := t.TempDir()
+			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := sess.State(); got != tc.want {
+				t.Fatalf("live state = %q, want %q", got, tc.want)
+			}
+			id := sess.ID()
+			sess.Close()
+			meta, err := schema.LoadSessionMeta(dir, id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			c2 := llm.NewClient()
+			c2.Register(&fakeAdapter{name: "openai"})
+			restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMeta: %v", err)
+			}
+			defer restored.Close()
+			if got := restored.State(); got != tc.want {
+				t.Fatalf("restored state = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// needs_response rests awaiting only when nothing autonomous is in flight: a
+// live child keeps the session idle, since its report will move it.
+func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+	}})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	child := newTestSessionForState(t)
+	sess.subagents.mu.Lock()
+	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
+	sess.subagents.mu.Unlock()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle while a child runs", got)
 	}
 }
