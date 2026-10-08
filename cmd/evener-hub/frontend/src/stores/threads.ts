@@ -160,6 +160,15 @@ export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
+  // Reconciliation failures this page attributes to unavailable storage rather
+  // than a mutation-state conflict: the same wedge that fences the durable
+  // write also fails the reconcile read, and treating that as a real failure
+  // fences the direct-dispatch fallback too, re-breaking the promise that a
+  // send survives a storage wedge. Storage-blocked refs stay fenced for the
+  // durable dispatcher; the send fallback is the one caller that may admit
+  // them. Cleared by a successful reconciliation; retried by every discovery
+  // pass.
+  mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
@@ -4710,6 +4719,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
+  mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
   resumedIdentities: new Map(),
