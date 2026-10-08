@@ -398,7 +398,7 @@ describe("links", () => {
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
-	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", () => {
+	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", async () => {
 		const os = Platform.OS;
 		(Platform as { OS: string }).OS = "android";
 		try {
@@ -413,6 +413,8 @@ describe("links", () => {
 			playedHaptics.length = 0;
 			act(() => request?.buttons?.[2]?.onPress?.());
 			expect(playedHaptics).toEqual(["impact:rigid"]);
+			// The removal is still out; let it land before the test ends.
+			await flush();
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}

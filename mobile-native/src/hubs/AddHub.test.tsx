@@ -133,10 +133,11 @@ it("says an invalid code isn't a pairing code and keeps the camera", () => {
 	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
 });
 
-it("asks for the camera once on mount when it hasn't asked yet", () => {
+it("asks for the camera once on mount when it hasn't asked yet", async () => {
 	mocks.permission.value = { granted: false, canAskAgain: true, status: "undetermined" };
 	const { tree } = mount("scan");
-	act(() => {
+	// The request answers at once; its answer lands here, not after the test.
+	await act(async () => {
 		tree.update(<AddHub how="scan" onConnected={() => {}} />);
 	});
 	expect(mocks.request).toHaveBeenCalledTimes(1);
