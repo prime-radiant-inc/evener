@@ -1171,10 +1171,11 @@ export function useTranscriptScroll({
   // the reader actually returns to the bottom: one false veto reinstates the
   // mount strand permanently, rather than costing a single frame.
   //
-  // A native scrolling key's marker lasts two frames. The browser's smooth
-  // scroll for the key starts on the frame after it, so its first scroll event
-  // arrives after a one-frame clear (Chrome: 20ms after Shift-Space's keydown,
-  // #3880). An instant key scroll consumes the marker in the first frame.
+  // A native scrolling key's marker lasts three frames. The browser's smooth
+  // scroll for the key starts a frame or two after it, so its first scroll
+  // event arrives after one or two frame clears (Chrome: usually 20ms after
+  // Shift-Space's keydown, #3880, and sometimes 37.8ms, #4065). An instant key
+  // scroll consumes the marker in the first frame.
   const markGesture = useCallback(
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
@@ -1226,8 +1227,9 @@ export function useTranscriptScroll({
   //   touch         - the same predicate, on real vertical movement only, so a
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   native keys   - the wheel's predicate, by key direction. The one marker
-  //     that lasts two frames, since the key's smooth scroll starts a frame late,
-  //     so a key whose scroll never starts can veto a correction in each frame.
+  //     that lasts three frames, since the key's smooth scroll starts a frame or
+  //     two late, so a key whose scroll never starts can veto a correction in
+  //     each of them.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag that does scroll. The PRIMARY button marks only
@@ -1412,7 +1414,7 @@ export function useTranscriptScroll({
         !verticalInputCanMovePort(port, measure(port), event.target, direction)
       )
         return;
-      markGesture(true, undefined, 2);
+      markGesture(true, undefined, 3);
     },
     [markGesture, measure],
   );
@@ -1809,7 +1811,7 @@ export function useTranscriptScroll({
       // Only an event the gesture could have caused consumes the marker: one
       // whose content and viewport heights held. A measurement correction
       // (heights changed) can land between a native key and its smooth scroll,
-      // a frame later; it is still vetoed, but leaves the marker for the key's
+      // a frame or two later; it is still vetoed, but leaves the marker for the key's
       // own scroll, measured from the corrected offset.
       const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
       const previous = lastScrollGeometryRef.current;
@@ -1959,7 +1961,7 @@ export function useTranscriptScroll({
     // Re-run once the frame boundary clears a pending gesture marker (the same
     // frame markGesture schedules its own clear on). Only armed for a growth
     // the gesture actually vetoed, so it is not a poll: for a drag or wheel the
-    // marker is gone by the next frame (a native key's by the one after), and
+    // marker is gone by the next frame (a native key's within three), and
     // for the one unbounded case (a stationary middle-button hold) it stops the
     // moment the hold does.
     function scheduleReanchorRetry() {
