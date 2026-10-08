@@ -2,8 +2,10 @@
 """Behavior tests for the bookkeeping tool's call classifier.
 
 Run: python3 -B tools/prompt-eval/memory-lab/test_bookkeeping.py
-Each case is a tool call as the lab records it and the (kind, surfaces) classify must return."""
-import importlib.machinery, importlib.util, json, os, sys, unittest
+Each case is a tool call as the lab records it and the (kind, surfaces) classify must return; the
+compaction tests cover how a compacted session's calls are tagged and its reconstruction counted, and
+the --context-window tests cover the trial's providers.toml."""
+import importlib.machinery, importlib.util, json, os, sys, tempfile, unittest
 
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +29,7 @@ def patch(*headers):
 
 LEDGER = ".superpowers/sdd/p/progress.md"
 BRIEF = ".superpowers/sdd/p/brief.md"
+PLAN = "/w/docs/superpowers/plans/2026-10-06-shop-helpers.md"
 CASES = [
     # File tools and patches: classified by the files they change.
     (call("edit_file", file_path=LEDGER), ("write", ["ledger"])),
@@ -100,6 +103,19 @@ CASES = [
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),
+    # Read-backs, labeled by the surface they read.
+    (call("memory_read", scope="project", file_path="MEMORY.md"), ("read", ["memory"])),
+    (call("memory_search", scope="personal", pattern="x"), ("read", ["memory"])),
+    (call("notes_read"), ("read", ["whiteboard"])),
+    (call("read_transcript", transcript_ref="artifact:x"), ("read", ["transcript"])),
+    (call("find_session_transcripts", query="final review"), ("read", ["transcript"])),
+    (call("job_status", target="dlg_1"), ("read", ["jobs"])),
+    (call("job_list", type=["delegate"]), ("read", ["jobs"])),
+    (call("read_file", file_path=f"/w/{BRIEF}"), ("read", ["plan-artifacts"])),
+    (call("read_file", file_path=PLAN), ("read", ["plan"])),
+    (shell(f"sed -n '1,40p' {PLAN}"), ("read", ["plan"])),
+    (call("read_file", file_path="/w/docs/plans.md"), ("work", [])),
+    (call("edit_file", file_path=PLAN), ("work", [])),
 ]
 
 
@@ -108,6 +124,73 @@ class ClassifyTest(unittest.TestCase):
         for tool_call, want in CASES:
             with self.subTest(tool=tool_call["tool"], args=tool_call["args"][:80]):
                 self.assertEqual(bookkeeping.classify(tool_call), want)
+
+
+class ContextWindowConfigTest(unittest.TestCase):
+    """memory-lab run --context-window: the trial's providers.toml is the user's plus one override row."""
+
+    def config(self, user_toml):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        path = os.path.join(root.name, "providers.toml")
+        with open(path, "w") as f:
+            f.write(user_toml)
+        old = os.environ.get("EVENER_PROVIDERS_CONFIG")
+        os.environ["EVENER_PROVIDERS_CONFIG"] = path
+        self.addCleanup(lambda: os.environ.pop("EVENER_PROVIDERS_CONFIG") if old is None
+                        else os.environ.__setitem__("EVENER_PROVIDERS_CONFIG", old))
+        return bookkeeping.lab.context_window_config("lunar/flash-bg.1", 44000)
+
+    def test_adds_a_row_after_the_users_own_config(self):
+        import tomllib
+        text = self.config('default = "lunar"\n[providers]\n  [providers.lunar]\n    base = "openai"\n')
+        got = tomllib.loads(text)
+        self.assertEqual(got["default"], "lunar")
+        self.assertEqual(got["providers"]["lunar"]["base"], "openai")
+        self.assertEqual(got["providers"]["lunar"]["models"]["flash-bg.1"], {"context_window": 44000})
+
+    def test_refuses_a_config_that_already_has_the_models_row(self):
+        with self.assertRaises(SystemExit):
+            self.config('[providers.lunar.models."flash-bg.1"]\ncontext_window = 9\n')
+
+
+def event(kind, **data):
+    return json.dumps({"kind": kind, "session_id": "root", "data": data})
+
+
+class CompactionTest(unittest.TestCase):
+    def test_parse_events_tags_calls_with_compactions_and_output(self):
+        lines = [event("SESSION_START", context_window_size=40000),
+                 event("TOOL_CALL_START", tool_name="read_file", call_id="a", arguments_json="{}"),
+                 event("TOOL_CALL_END", tool_name="read_file", call_id="a", output="x" * 400),
+                 # One fold: a checkpoint followed at once by summarize is one compaction.
+                 event("CONTEXT_COMPACTION", layer="observation_mask"),
+                 event("CONTEXT_COMPACTION", layer="checkpoint"),
+                 event("CONTEXT_COMPACTION", layer="summarize"),
+                 event("TOOL_CALL_START", tool_name="notes_read", call_id="b", arguments_json="{}"),
+                 # Masking alone drops no history: not a compaction.
+                 event("CONTEXT_COMPACTION", layer="observation_mask"),
+                 event("TOOL_CALL_START", tool_name="task_list", call_id="c", arguments_json="{}"),
+                 event("CONTEXT_COMPACTION", layer="checkpoint")]
+        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+        self.addCleanup(os.remove, f.name)
+        calls, _, _, _ = bookkeeping.lab.parse_events(f.name)
+        self.assertEqual([(c["compactions_before"], c["output_chars"]) for c in calls], [(0, 400), (1, 0), (1, 0)])
+        self.assertEqual(bookkeeping.lab.context_record(f.name),
+                         (40000, [["observation_mask", "checkpoint", "summarize"], ["checkpoint"]]))
+
+    def test_reconstruction_counts_reads_in_the_window_after_each_compaction(self):
+        def at(c, compactions, chars=0):
+            return dict(c, compactions_before=compactions, output_chars=chars)
+        work = shell("go test ./...")
+        calls = ([at(call("notes_read"), 0, 80)] +  # before any compaction: not counted
+                 [at(call("notes_read"), 1, 400), at(call("read_file", file_path=PLAN), 1, 4000)] +
+                 [at(work, 1)] * 8 +
+                 [at(call("task_list"), 1, 40)] +  # the 11th call after the compaction: outside the window
+                 [at(call("read_file", file_path=f"/w/{LEDGER}"), 2, 800)])
+        got = {s: v for s, v in bookkeeping.reconstruction(calls).items() if v[0]}
+        self.assertEqual(got, {"whiteboard": [1, 100], "plan": [1, 1000], "ledger": [1, 200]})
 
 
 if __name__ == "__main__":
