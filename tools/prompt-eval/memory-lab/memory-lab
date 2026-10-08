@@ -99,6 +99,7 @@ def write_run_providers(text):
     base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
                         "memory-lab", "providers")
     os.makedirs(base, mode=0o700, exist_ok=True)
+    os.chmod(base, 0o700)  # makedirs leaves a dir that already existed as it was
     path = os.path.join(tempfile.mkdtemp(dir=base), "providers.toml")  # mkdtemp makes the dir 0700
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
         f.write(text)
