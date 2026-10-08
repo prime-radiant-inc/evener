@@ -220,19 +220,27 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
-		if n, ok := m["notes"].(string); ok {
+		if n, ok := m["notes"].(string); ok && !isPlaceholderNote(n) {
 			u.Notes = n
 		}
-		if depsRaw, has := m["depends_on"]; has {
+		// Some models send an empty or null depends_on on every update as a
+		// placeholder, so neither changes anything; only [0] clears.
+		if depsRaw := m["depends_on"]; depsRaw != nil {
 			arr, ok := depsRaw.([]any)
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
 			}
-			depIDs, err := decodeIDList(arr)
-			if err != nil {
-				return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+			switch {
+			case len(arr) == 0:
+			case len(arr) == 1 && arr[0] == float64(clearDependsOnID):
+				u.DependsOn = &[]int{}
+			default:
+				depIDs, err := decodeIDList(arr)
+				if err != nil {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+				}
+				u.DependsOn = &depIDs
 			}
-			u.DependsOn = &depIDs
 		}
 		if re, ok := m["reasoning_effort"].(string); ok {
 			u.ReasoningEffort, err = validateTaskEffort(re)
@@ -311,6 +319,10 @@ func validateTaskListArgs(args map[string]any) error {
 	return nil
 }
 
+// clearDependsOnID, alone in an update's depends_on, clears the task's
+// dependencies. Task IDs start at 1, so it never names a real task.
+const clearDependsOnID = 0
+
 // decodeIDList converts a JSON array of numbers into []int.
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
@@ -319,9 +331,19 @@ func decodeIDList(raw []any) ([]int, error) {
 		if !ok {
 			return nil, errors.New("each element must be an integer task ID")
 		}
+		if int(v) == clearDependsOnID {
+			return nil, errors.New("0 is not a task ID; depends_on: [0] on its own clears an update's dependencies")
+		}
 		ids = append(ids, int(v))
 	}
 	return ids, nil
+}
+
+// isPlaceholderNote reports whether notes text carries nothing: empty, or the
+// string "null" that some models send for every optional field.
+func isPlaceholderNote(notes string) bool {
+	trimmed := strings.TrimSpace(notes)
+	return trimmed == "" || strings.EqualFold(trimmed, "null")
 }
 
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {

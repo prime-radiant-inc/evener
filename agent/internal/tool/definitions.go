@@ -698,8 +698,10 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
-		// violation) or "depends_on": [] (which clears deps) on every update
-		// item. Opting out keeps optional fields genuinely omittable.
+		// violation) or "depends_on": [] on every update item. Opting out keeps
+		// optional fields genuinely omittable; decodeTaskArgs still reads an
+		// empty or null depends_on as no change, since some models send them
+		// anyway.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -740,9 +742,9 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
 							"notes":  map[string]any{"type": "string", "description": "Only when something happened that a later step needs: a failure and why, a decision, a surprise. Leave it out when you only change status. Appended to the task's notes log."},
 							"depends_on": map[string]any{
-								"type":        "array",
+								"type":        []string{"array", "null"},
 								"items":       map[string]any{"type": "integer"},
-								"description": "Set dependencies. [] clears them. Omit to leave unchanged.",
+								"description": "Replace the dependencies with these task IDs. [0] clears them. Omit to leave unchanged.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
