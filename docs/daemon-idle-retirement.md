@@ -125,9 +125,11 @@ Controls:
   check, and works even when automatic retirement is disabled (`0s`). It is safe
   at zero. If the daemon refuses, the UI shows the *fresh* blockers from that
   attempt and the daemon keeps running. One exception: when the session namer
-  (which names a new session in the background) is the only work, the daemon
-  waits for it to finish, up to its 15-second timeout, and then retires; a
-  namer still running after that refuses the retire as above.
+  (which names a new session in the background) is the only work in flight,
+  the daemon waits for it to finish, up to its 15-second timeout, and then
+  retires; a namer still running after that refuses the retire as above. The
+  wait looks only at work in flight: an open question or an active goal beside
+  the namer is reported once the namer settles, not at once.
 - **Force stop** is the explicit destructive operation. It uses the existing
   verified-identity path, requires a confirmation naming the session and
   process and warning that work and watches may be interrupted, and preserves

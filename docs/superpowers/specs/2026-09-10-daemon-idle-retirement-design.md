@@ -154,8 +154,9 @@ inactivity interval is metadata on a resident process, not a new session state.
    are settled or represented by an explicit blocker.
 2. Expiry or manual retirement attempts an exclusive claim. If any work or
    obligation is present, remain resident and return the blockers. One
-   exception: when a session namer is the only work, a manual retirement first
-   waits for it to settle, up to the namer's own timeout, then claims (#3921).
+   exception: when a session namer is the only admitted work (lease), a manual
+   retirement first waits for it to settle, up to the namer's own timeout,
+   then claims (#3921).
 3. With new mutation admission fenced, recheck the complete predicate against
    the same current-root identity. Enter preparing, perform required persistence
    and reconstruction checks, and prepare the non-terminal release.

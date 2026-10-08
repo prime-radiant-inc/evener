@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -190,5 +192,60 @@ func TestManualRetireCancelledWhileWaitingDoesNotClaim(t *testing.T) {
 	}
 	if got.claim != nil || !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("cancelled manual retire = claim %v, %v; want no claim and context.Canceled", got.claim, got.err)
+	}
+}
+
+// Two namers can overlap (the initial-prompt one and a compaction one): the
+// retire waits for both, still waiting after the first settles.
+func TestManualRetireWaitsForEveryNamer(t *testing.T) {
+	t.Parallel()
+	root, c, clk := fakeClockRetirementRoot(t)
+	var calls atomic.Int32
+	firstIn, secondIn := make(chan struct{}), make(chan struct{})
+	firstGate, secondGate := make(chan struct{}), make(chan struct{})
+	releaseFirst := sync.OnceFunc(func() { close(firstGate) })
+	releaseSecond := sync.OnceFunc(func() { close(secondGate) })
+	t.Cleanup(func() {
+		releaseFirst()
+		releaseSecond()
+		root.sendersWG.Wait()
+	})
+	namer := llm.NewClient()
+	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(firstIn)
+			<-firstGate
+			return llm.Response{Message: llm.Assistant(`{"name":"First Name"}`)}
+		}
+		close(secondIn)
+		<-secondGate
+		return llm.Response{Message: llm.Assistant(`{"name":"Second Name"}`)}
+	}})
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+	root.launchInitialPromptNamer(context.Background(), "the opening prompt")
+	<-firstIn
+	root.launchCompactionNamer(context.Background(), schema.Turn{Kind: schema.TurnSummary, Message: llm.Assistant("a compaction summary")})
+	<-secondIn
+	done := startManualClaim(c)
+	awaitManualClaimWaiting(t, clk, done)
+	releaseFirst()
+	// TRIPWIRE: the first namer settles in microseconds; 30s only fires on a hang.
+	waitForCondition(t, 30*time.Second, "the first namer to settle", func() bool {
+		root.mu.Lock()
+		defer root.mu.Unlock()
+		return root.naming.pending == 1
+	})
+	select {
+	case got := <-done:
+		t.Fatalf("manual retire answered after only the first namer settled: claim %v, %v", got.claim, got.err)
+	default:
+	}
+	releaseSecond()
+	got := <-done
+	if got.err != nil || got.claim == nil {
+		t.Fatalf("manual retire after both namers settled = %+v, %v; want a claim", got.snapshot, got.err)
+	}
+	if err := c.Abort(got.claim, ""); err != nil {
+		t.Fatal(err)
 	}
 }
