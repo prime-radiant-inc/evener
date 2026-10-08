@@ -16,8 +16,8 @@ import {
 	playedHaptics,
 	render,
 	renderedText,
-	unmountMountedTrees,
 	settle,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { creationStore, forgetCreationForHub } from "./creations";

@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText, unmountMountedTrees, settle } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { Group } from "../sheet/Grouped";
 import { HostDetailPage } from "./HostDetailPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
