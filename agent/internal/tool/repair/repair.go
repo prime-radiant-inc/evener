@@ -271,14 +271,45 @@ func schemaAcceptsNull(schema map[string]any) bool {
 			return false
 		}
 	}
+	if negated, present := schema["not"]; present && definitelyAcceptsNull(negated) {
+		return false
+	}
 	return true
 }
 
 // branchAcceptsNull applies schemaAcceptsNull to one combinator branch. A
-// branch that isn't a schema object (a boolean schema) imposes nothing here.
+// boolean schema accepts null exactly when it is true; any other non-object
+// branch imposes nothing here.
 func branchAcceptsNull(branch any) bool {
-	schema, ok := branch.(map[string]any)
-	return !ok || schemaAcceptsNull(schema)
+	switch schema := branch.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		return schemaAcceptsNull(schema)
+	}
+	return true
+}
+
+// definitelyAcceptsNull reports whether a `not` subschema is sure to accept
+// null, so the `not` refuses it. Only true, or an object whose own keywords
+// accept null and that carries no combinator, conditional or reference of its
+// own, is sure; anything else keeps the null for validation to judge.
+func definitelyAcceptsNull(negated any) bool {
+	switch schema := negated.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		for key := range schema {
+			switch {
+			case isRefSegment(key):
+				return false
+			case key == "anyOf", key == "oneOf", key == "allOf", key == "not", key == "if":
+				return false
+			}
+		}
+		return candidateMatchesSchema(nil, schema)
+	}
+	return false
 }
 
 // dropEmptyOptionalsWithin applies dropEmptyOptionals inside a nested object or
