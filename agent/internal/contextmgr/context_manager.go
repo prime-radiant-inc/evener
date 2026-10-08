@@ -1652,17 +1652,24 @@ func checkSummaryReply(reply, instructions string) error {
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
 		if rest, ok := summarySectionHeading(line); ok {
-			if rest != "" {
+			if isSummaryContent(rest) {
 				return nil
 			}
 			inSection = true
 			continue
 		}
-		if inSection && line != "" && line != "[CONTEXT SUMMARY]" && line != "[END SUMMARY]" {
+		if inSection && isSummaryContent(line) {
 			return nil
 		}
 	}
 	return errors.New("summarizer reply has no summary section with content")
+}
+
+// isSummaryContent reports whether trimmed text under or beside a section
+// heading carries content: it is not empty and not one of the summary's own
+// framing markers.
+func isSummaryContent(text string) bool {
+	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the

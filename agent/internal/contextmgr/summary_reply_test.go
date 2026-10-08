@@ -49,6 +49,8 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		// The summary's own framing markers are not content.
 		"end marker only":    "## Progress\n[END SUMMARY]",
 		"framed and empty":   "[CONTEXT SUMMARY]\n## Progress\n[END SUMMARY]",
+		"same-line end":      "## Progress: [END SUMMARY]",
+		"same-line start":    "**Progress:** [CONTEXT SUMMARY]",
 		"other heading only": "## Notes\nFixed the auth bug.",
 	} {
 		t.Run(name, func(t *testing.T) {
