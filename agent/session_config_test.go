@@ -670,7 +670,7 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			return finalResponse("forced summary")
+			return llm.Response{Message: llm.Assistant("## Progress\nforced summary")}
 		},
 	}})
 
@@ -750,7 +750,7 @@ func TestSession_CompactQueuesOneExactTranscriptReminder(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
+		func(req llm.Request) llm.Response { return finalResponse("## Progress\nforced summary") },
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -897,7 +897,7 @@ func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T)
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
+		func(req llm.Request) llm.Response { return finalResponse("## Progress\nforced summary") },
 	}})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {

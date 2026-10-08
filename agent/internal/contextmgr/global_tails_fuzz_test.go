@@ -148,7 +148,7 @@ func gctStrategyTails(t *testing.T, token string) {
 	profile := testOpenAIProfileWithContextWindow(32)
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), Responder: func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("summary " + token)}
+		return llm.Response{Message: llm.Assistant("## Progress\nsummary " + token)}
 	}})
 
 	longHistory := []schema.Turn{

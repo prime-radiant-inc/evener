@@ -41,7 +41,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
 			},
 		},
 	}
@@ -94,7 +94,7 @@ func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
 				if req.Provider != "anthropic" || req.Model != "claude-haiku-4-5-20251001" {
 					t.Fatalf("cheap call = (%q, %q), want (anthropic, claude-haiku-4-5-20251001)", req.Provider, req.Model)
 				}
-				return llm.Response{Message: llm.Assistant("Summary: routed to cheap")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: routed to cheap")}
 			},
 		},
 	}

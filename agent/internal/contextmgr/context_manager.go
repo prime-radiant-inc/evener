@@ -1593,6 +1593,48 @@ Be thorough and structured. Err on the side of including too much rather than to
 
 `
 
+// summarySections are the section names the default summary prompt requires,
+// read from the prompt itself so the reply check and the prompt cannot drift.
+var summarySections = promptSectionNames(defaultSummaryPrefix)
+
+// promptSectionNames returns the names of a prompt's "## " headings, in order.
+func promptSectionNames(prompt string) []string {
+	var names []string
+	for line := range strings.Lines(prompt) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "## "); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// checkSummaryReply rejects a summarization reply that cannot stand in for the
+// history it folds: an empty one, or, under the default prompt, one with none
+// of the required sections. Weak models sometimes answer the prompt in
+// character ("I'll read the plan, then...") instead of summarizing (#3978).
+// One section is enough, so a summary that drops some sections still keeps
+// what it has. Caller instructions replace the sections, so under them only
+// emptiness is checked.
+func checkSummaryReply(reply, instructions string) error {
+	text := strings.TrimSpace(reply)
+	if text == "" {
+		return errors.New("summarizer returned an empty reply")
+	}
+	if instructions != "" {
+		return nil
+	}
+	for line := range strings.Lines(text) {
+		// Accept any heading style: "## Progress", "### progress", "**Progress**".
+		name := strings.Trim(strings.TrimSpace(line), "#* ")
+		for _, section := range summarySections {
+			if strings.EqualFold(name, section) {
+				return nil
+			}
+		}
+	}
+	return errors.New("summarizer reply has none of the summary sections")
+}
+
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
 // mandatory-7-sections block is replaced by the caller's directive.
@@ -1841,6 +1883,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	sumProfile := cm.currentProfile()
 	resp, err := cm.completeSummarization(ctx, sumProfile, prompt)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkSummaryReply(resp.Text(), instructions); err != nil {
 		return nil, err
 	}
 
