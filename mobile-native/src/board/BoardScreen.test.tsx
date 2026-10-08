@@ -3556,6 +3556,9 @@ it("queues a project change behind the held one it answers, even once back onlin
 	await until(() => expect(favorites).toBe(1));
 	act(() => unpin(0));
 	await settle();
+	// The Pin to top is still out: the Unpin waits in the hold behind it.
+	expect(fake.mutations.filter((m) => m.method === "evener/favorite/set")).toHaveLength(1);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(2);
 	answerPin();
 	await until(() =>
 		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
