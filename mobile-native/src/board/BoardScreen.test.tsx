@@ -590,6 +590,14 @@ async function settle() {
 		for (let step = 0; step < 30; step++) await Promise.resolve();
 	});
 }
+/** Waits for wire or store state inside act, so the updates it lets through
+ * stay in act. React renders only when the act scope exits, so `check` must
+ * not read the rendered tree. */
+async function until(check: () => void) {
+	await act(async () => {
+		await vi.waitFor(check);
+	});
+}
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
 	mounted.push(tree);
@@ -3554,19 +3562,17 @@ it("queues a project change behind the held one it answers, even once back onlin
 	expect(sheet.options?.[0]).toBe("Unpin");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await act(async () => vi.waitFor(() => expect(favorites).toBe(1)));
+	await until(() => expect(favorites).toBe(1));
 	act(() => unpin(0));
 	await settle();
-	await act(async () => {
-		answerPin();
-		await vi.waitFor(() =>
-			expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
-				{ kind: "project", id: "evener", favorited: true },
-				{ kind: "project", id: "evener", favorited: false },
-			]),
-		);
-		await vi.waitFor(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
-	});
+	answerPin();
+	await until(() =>
+		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
+			{ kind: "project", id: "evener", favorited: true },
+			{ kind: "project", id: "evener", favorited: false },
+		]),
+	);
+	await until(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
 	act(() => tree.unmount());
 });
 
@@ -3600,12 +3606,10 @@ it("holds a project change while the journal is busy, and sends it once the jour
 	act(() => choose(sheet.options.indexOf("Archive project")));
 	await settle();
 	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
-	await act(async () => {
-		answerFirst();
-		await vi.waitFor(() =>
-			expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
-		);
-	});
+	answerFirst();
+	await until(() =>
+		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
+	);
 	act(() => tree.unmount());
 });
 
@@ -4238,16 +4242,14 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(archives).toBe(1));
 		act(() => menu.act(item, "unarchive"));
 		await settle();
-		await act(async () => {
-			answerArchive();
-			await vi.waitFor(() =>
-				expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
-					{ kind: "session", id: SESSION_ID, archived: true },
-					{ kind: "session", id: SESSION_ID, archived: false },
-				]),
-			);
-			await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
-		});
+		answerArchive();
+		await until(() =>
+			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	/** Holds the first request of `method` until the returned function
@@ -4280,16 +4282,14 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await settle();
 		expect(texts(tree)).toContain("Archive is waiting to send");
 		expect(heldIn(id)).toHaveLength(1);
-		await act(async () => {
-			answerFirst();
-			await vi.waitFor(() =>
-				expect(writes(fake, "evener/archive/set")).toEqual([
-					{ kind: "session", id: SESSION_ID, archived: true },
-					{ kind: "session", id: OTHER_SESSION_ID, archived: true },
-				]),
-			);
-			await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
-		});
+		answerFirst();
+		await until(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+			]),
+		);
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("holds a row's Undo while the journal is busy with another change, and sends it once the journal is free", async () => {
@@ -4304,17 +4304,15 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		pressLabel(tree, "Undo");
 		await settle();
 		expect(heldIn(id)).toHaveLength(1);
-		await act(async () => {
-			answerNext();
-			await vi.waitFor(() =>
-				expect(writes(fake, "evener/archive/set")).toEqual([
-					{ kind: "session", id: SESSION_ID, archived: true },
-					{ kind: "session", id: OTHER_SESSION_ID, archived: true },
-					{ kind: "session", id: SESSION_ID, archived: false },
-				]),
-			);
-			await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
-		});
+		answerNext();
+		await until(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("queues a Shut down behind the held one that is on its way, rather than sending it beside it", async () => {
@@ -4337,10 +4335,8 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		// The first is still out: the second waits in the hold behind it.
 		expect(writes(fake, "thread/shutdown")).toHaveLength(1);
 		expect(heldIn(id)).toHaveLength(2);
-		await act(async () => {
-			answerFirst();
-			await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
-		});
+		answerFirst();
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("offers the row menu's Cancel for a change held after the menu opened", async () => {
