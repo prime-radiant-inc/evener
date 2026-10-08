@@ -295,18 +295,40 @@ def classify(call):
         # task_list takes top-level "add" and "update" arrays; a call with neither only lists. An update
         # carrying notes records progress detail, which a skill's ledger already holds.
         updates = [u for u in a.get("update") or [] if isinstance(u, dict)]
+        if not (a.get("add") or updates):
+            return "read", ["tasks"]
+        changes = [task_update_changes(u) for u in updates]
+        if not all(changes):
+            return "work", []  # evener refuses a call with an update entry that changes nothing
         surfaces = []
-        # Any update field besides id and notes (status, depends_on, reasoning_effort) changes the list.
-        if a.get("add") or any(k not in ("id", "notes") for u in updates for k in u):
+        if a.get("add") or any("tasks" in c for c in changes):
             surfaces.append("tasks")
-        if any(u.get("notes") for u in updates):
+        if any("task-notes" in c for c in changes):
             surfaces.append("task-notes")
-        return ("write", surfaces) if surfaces else ("read", ["tasks"])
+        return "write", surfaces
     if tool in READ_LABELS:
         return "read", [READ_LABELS[tool]]
     if tool == "read_file" and (surfaces := read_surfaces([path])):
         return "read", surfaces
     return "work", []
+
+
+def task_update_changes(update):
+    """The surfaces one task_list update entry writes, judged by value as decodeTaskArgs
+    (agent/session_tools_task.go) does. Placeholders change nothing: status ""; notes "" or "null"
+    (trimmed, any case); depends_on null or []; reasoning_effort "" or "inherit" (trimmed, any case).
+    depends_on [0] clears the dependencies, so it is a change."""
+    changes = set()
+    status, notes, effort = update.get("status"), update.get("notes"), update.get("reasoning_effort")
+    if isinstance(status, str) and status:
+        changes.add("tasks")
+    if update.get("depends_on") not in (None, []):
+        changes.add("tasks")
+    if isinstance(effort, str) and effort.strip().lower() not in ("", "inherit"):
+        changes.add("tasks")
+    if isinstance(notes, str) and notes.strip().lower() not in ("", "null"):
+        changes.add("task-notes")
+    return changes
 
 
 def reconstruction(calls):

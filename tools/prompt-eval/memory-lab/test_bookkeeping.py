@@ -99,8 +99,22 @@ CASES = [
     (call("task_list", update=[{"id": 1, "status": "done", "notes": "commit abc"}]), ("write", ["tasks", "task-notes"])),
     (call("task_list", update=[{"id": 1, "status": "done"}]), ("write", ["tasks"])),
     (call("task_list", update=[{"id": 1, "notes": "flaky test seen"}]), ("write", ["task-notes"])),
-    (call("task_list", update=[{"id": 2, "depends_on": []}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 2, "depends_on": [0]}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 2, "depends_on": [1, 3]}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 2, "reasoning_effort": "high"}]), ("write", ["tasks"])),
+    (call("task_list", add=[{"type": "implement", "description": "x", "prompt": "y"}]), ("write", ["tasks"])),
     (call("task_list"), ("read", ["tasks"])),
+    (call("task_list", update=[]), ("read", ["tasks"])),
+    # Placeholder values change nothing (agent/session_tools_task.go decodeTaskArgs): depends_on [] or null,
+    # reasoning_effort "inherit" or "", notes "" or "null" (trimmed, any case), status "".
+    (call("task_list", update=[{"id": 1, "status": "in_progress", "notes": "null", "depends_on": [],
+                                "reasoning_effort": "inherit"}]), ("write", ["tasks"])),
+    (call("task_list", update=[{"id": 1, "notes": " NULL ", "depends_on": None, "reasoning_effort": " Inherit "}]),
+     ("work", [])),
+    (call("task_list", update=[{"id": 2, "depends_on": []}]), ("work", [])),
+    (call("task_list", update=[{"id": 1, "status": "", "notes": "", "reasoning_effort": ""}]), ("work", [])),
+    # evener refuses the whole call when any update entry changes nothing, so nothing in it is written.
+    (call("task_list", update=[{"id": 1, "status": "done"}, {"id": 2, "depends_on": []}]), ("work", [])),
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),
