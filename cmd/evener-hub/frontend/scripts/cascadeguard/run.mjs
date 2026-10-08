@@ -1216,10 +1216,8 @@ async function reloadAndMobileJourney() {
 }
 
 // The activity sidebar slides in from translateX(320px). A press measured
-// mid-slide lands past its row, at the viewport's right edge (seen at x 1434
-// and 1445 of 1440); since #3897 clips the overhang, nothing scrolls it back.
-// So a press on a sidebar row waits for the slide to finish, as
-// backgroundjobsguard does for the Jobs sidebar.
+// mid-slide misses its row, and the clipped overhang means nothing scrolls it
+// back, so presses on sidebar rows wait for the slide to finish.
 const sidebarEntranceSettled = `(() => {
   const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
   return sidebar && getComputedStyle(sidebar).transform === 'none';
