@@ -56,8 +56,8 @@ describe("railRowsExpr readiness predicate", () => {
 // neighbouring session's row once the rail shifted, and the target's composer
 // never mounted (#3874).
 describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
-  // Each case stubs the hit test on the document itself; dropping the own
-  // property hands later tests back the prototype's.
+  // jsdom has no hit test, so each case stubs elementFromPoint on the
+  // document; dropping that own property leaves later tests without one again.
   afterEach(() => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
