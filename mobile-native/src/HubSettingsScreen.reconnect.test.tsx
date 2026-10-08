@@ -372,7 +372,6 @@ it("says why when the hub's version doesn't match before anything loaded", async
 	await act(async () => {});
 	expect(renderedText(tree)).toContain(INCOMPATIBLE_VERSIONS);
 	expect(renderedText(tree)).not.toContain("Connecting to Work hub");
-	tree.unmount();
 });
 
 it("keeps the last hub information under the status line when the versions stop matching", async () => {
@@ -400,7 +399,6 @@ it("offers no pull to refresh: the screen keeps itself current", async () => {
 	expect(
 		tree.root.findAll((node) => node.props.refreshControl !== undefined || node.props.onRefresh !== undefined),
 	).toEqual([]);
-	tree.unmount();
 });
 
 it("says plainly when the hub's information didn't load, and loads it on Retry", async () => {
@@ -421,5 +419,4 @@ it("says plainly when the hub's information didn't load, and loads it on Retry",
 	await act(async () => retry?.props.onPress());
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
-	tree.unmount();
 });
