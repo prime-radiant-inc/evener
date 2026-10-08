@@ -160,8 +160,12 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	ref := "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	// Its thread history projects into the transcript's index directory
-	// until closed, which must happen before stateDir is removed.
-	t.Cleanup(daemon.Close)
+	// until closed, which must happen before stateDir is removed. The
+	// session closes first, so the history sees everything it records.
+	t.Cleanup(func() {
+		sess.Close()
+		daemon.Close()
+	})
 	prepared, err := daemonserver.PrepareAppIdentityForRef("local", sessionID, ref, sess.TranscriptPath())
 	if err != nil {
 		t.Fatal(err)
