@@ -236,7 +236,7 @@ func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
 	if err := <-readDone; err != nil {
 		t.Fatalf("the read in flight: %v", err)
 	}
-	if err := hx.history.read(func(*transcriptindex.Index) error { return nil }); err == nil {
-		t.Fatal("a read after close succeeded, want it refused")
+	if err := hx.history.read(func(*transcriptindex.Index) error { return nil }); !errors.Is(err, errThreadHistoryClosed) {
+		t.Fatalf("a read after close = %v, want it refused as closed", err)
 	}
 }

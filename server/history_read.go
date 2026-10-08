@@ -87,7 +87,8 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 //
 // A read of a failed thread first tries to recover it by rebuilding
 // (recoverForRead); if that fails the read is appwire.TranscriptHistoryFailed,
-// naming the entry, and pushes nothing.
+// naming the entry, and pushes nothing. A read that starts once the history
+// began closing is refused with errThreadHistoryClosed.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
 	done, err := h.beginRead()
 	if err != nil {

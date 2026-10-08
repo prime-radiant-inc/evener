@@ -70,8 +70,8 @@ var errIncarnationRotated = errors.New("transcript index incarnation changed")
 var errOverrunByOverflow = errors.New("the projection queue overflowed during the rebuild")
 
 // errThreadHistoryClosed refuses a read that starts after its history began
-// closing, as the closed index cache it would reach refuses one.
-var errThreadHistoryClosed = errors.New("transcript history is closed")
+// closing: the thread is no longer served here, as when it is unknown.
+var errThreadHistoryClosed = appwire.SessionUnavailable("thread history is closed")
 
 // threadHistoryConfig is what one thread's history projection needs.
 type threadHistoryConfig struct {
@@ -438,7 +438,8 @@ func (h *threadHistory) retired() bool {
 }
 
 // close publishes every entry recorded so far, then stops the projection
-// goroutine and waits for it. Idempotent.
+// goroutine and waits for it, refuses new reads and waits for those in
+// flight. Idempotent.
 func (h *threadHistory) close() {
 	h.closeOnce.Do(func() {
 		h.mu.Lock()
