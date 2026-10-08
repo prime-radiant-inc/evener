@@ -187,30 +187,51 @@ describe("elementBox measures a moving element once it rests", () => {
     );
     vi.stubGlobal("innerWidth", 1440);
     vi.stubGlobal("innerHeight", 900);
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  test("waits out a slide in from past the right edge", async () => {
-    document.body.innerHTML = '<div id="row">row</div>';
-    const row = document.getElementById("row");
-    row.scrollIntoView = () => {};
-    // The row slides in over four frames, then rests at x 1180.
-    const lefts = [1500, 1400, 1300, 1200, 1180];
-    row.getBoundingClientRect = () => ({
-      x: lefts[Math.min(frames, lefts.length) - 1] ?? lefts[0],
-      y: 160,
-      width: 200,
-      height: 40,
-    });
-    const page = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
-    page.page = {
+    driver.page = {
       send: async (method, params) => {
         expect(method).toBe("Runtime.evaluate");
-        const value = await new Function(`return (${params.expression});`)();
-        return { result: { result: { value } } };
+        return { result: { result: { value: await evaluateExpr(params.expression) } } };
       },
     };
-    const box = await page.elementBox("#row");
-    expect(box).toEqual({ x: 1280, y: 180, w: 200, h: 40 });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    driver.page = undefined;
+  });
+
+  function row(lefts) {
+    document.body.innerHTML = '<div id="row">row</div>';
+    const element = document.getElementById("row");
+    element.scrollIntoView = () => {};
+    element.getBoundingClientRect = () => ({ x: lefts[Math.min(frames, lefts.length - 1)], y: 160, width: 200, height: 40 });
+    return element;
+  }
+
+  test("waits out a slide in from past the right edge", async () => {
+    // The row slides in over four frames, then rests at x 1180.
+    row([1500, 1500, 1400, 1300, 1200, 1180]);
+    expect(await driver.elementBox("#row")).toEqual({ x: 1280, y: 180, w: 200, h: 40 });
+  });
+
+  test("measures the row that replaced one detached mid-wait, never the detached zeros", async () => {
+    const original = row([1500]);
+    // Detached, an element measures all zeros, as Chrome's does.
+    original.getBoundingClientRect = () =>
+      original.isConnected ? { x: 1500, y: 160, width: 200, height: 40 } : { x: 0, y: 0, width: 0, height: 0 };
+    setTimeout(() => {
+      original.remove();
+      row([1180]);
+    }, 0);
+    expect(await driver.elementBox("#row")).toEqual({ x: 1280, y: 180, w: 200, h: 40 });
+  });
+
+  test("takes a hidden page's box as final, since it paints no frames", async () => {
+    vi.stubGlobal("requestAnimationFrame", () => {
+      throw new Error("a hidden page runs no frames");
+    });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    row([1500]);
+    expect(await driver.elementBox("#row")).toEqual({ x: 1600, y: 180, w: 200, h: 40 });
   });
 });

@@ -429,7 +429,7 @@ async function nativePositioningInterruption(input) {
       assert.equal(observation.keyFocus.intended, true, "the unchanged native viewport accepts keyboard focus");
       for (const type of ["keyDown", "keyUp"]) {
         await driver.send("Input.dispatchKeyEvent", { type, key:" ", code:"Space", modifiers:8,
-          windowsVirtualKeyCode:32, nativeVirtualKeyCode:32,
+          windowsVirtualKeyCode:32,
           ...(type === "keyDown" ? { text:" ", unmodifiedText:" " } : {}) });
       }
       observation.key = await wait(`window.__cascadeNativeKeys[${target.eventIndex}]`, "native Shift-Space reaches its real keyboard target");

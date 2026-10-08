@@ -572,7 +572,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
     await this.send("Input.dispatchKeyEvent", {
@@ -580,7 +579,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
   }
@@ -595,11 +593,17 @@ export class Driver {
     return evaluate(
       this.send,
       `new Promise((resolve) => {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return resolve(null);
-        el.scrollIntoView({ block: "center", inline: "center" });
+        const selector = ${JSON.stringify(selector)};
+        const first = document.querySelector(selector);
+        if (!first) return resolve(null);
+        first.scrollIntoView({ block: "center", inline: "center" });
+        // Re-found each frame: a row React replaces mid-wait is detached, and
+        // a detached element measures all zeros, a "resting" (0,0) press.
         const measure = () => {
+          const el = document.querySelector(selector);
+          if (!el || !el.isConnected) return null;
           const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return null;
           return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height };
         };
         let last = measure();
@@ -609,9 +613,9 @@ export class Driver {
         const timer = setTimeout(() => resolve(last), 2000);
         const frame = () => {
           const box = measure();
-          const resting = box.x === last.x && box.y === last.y && box.w === last.w && box.h === last.h;
-          const inside = box.x >= 0 && box.y >= 0 && box.x <= innerWidth && box.y <= innerHeight;
-          last = box;
+          const resting = box !== null && last !== null && box.x === last.x && box.y === last.y && box.w === last.w && box.h === last.h;
+          const inside = box !== null && box.x >= 0 && box.y >= 0 && box.x < innerWidth && box.y < innerHeight;
+          if (box !== null) last = box;
           if (resting && inside) {
             clearTimeout(timer);
             return resolve(box);
@@ -1810,8 +1814,8 @@ async function runInlineEditing(driver) {
   // 229 code must not submit the message or accept a slash completion.
   await driver.focusComposer(ref);
   await driver.send("Input.imeSetComposition", { text: "あ", selectionStart: 1, selectionEnd: 1 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
   await driver.send("Input.insertText", { text: "あ" });
   // Composed straight against the last chip, which is exactly where a token
   // character has to be separated from it.
