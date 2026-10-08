@@ -121,11 +121,16 @@ CASES = [
     (failed(call("task_list", update={})), ("work", [])),
     (failed(call("task_list", add={})), ("work", [])),
     (call("task_list", update=None, add=[]), ("read", ["tasks"])),
+    # A refused task_list call read nothing back either: retired fields, a non-object payload, a failed view.
+    (failed(call("task_list", action="update")), ("work", [])),
+    (failed({"tool": "task_list", "args": "[1, 2]"}), ("work", [])),
+    (failed(call("task_list")), ("work", [])),
     # Any other all-or-nothing write the tool refused wrote nothing either.
     (failed(call("edit_file", file_path=LEDGER)), ("work", [])),
     (failed(call("write_file", file_path=LEDGER)), ("work", [])),
     (failed(call("memory_write", scope="project", file_path="x.md")), ("work", [])),
     (failed(call("memory_edit", scope="project", file_path="x.md")), ("work", [])),
+    (failed(call("memory_delete", scope="project", file_path="x.md")), ("work", [])),
     (failed(call("notes_agent_set", note="x")), ("work", [])),
     # Shell and apply_patch can write before they fail, so a failed one is still judged by its arguments.
     (failed(shell("printf x >> progress.md; false")), ("write", ["ledger"])),
@@ -134,6 +139,7 @@ CASES = [
     (failed(call("memory_read", scope="project", file_path="MEMORY.md")), ("read", ["memory"])),
     # Memory and the whiteboard.
     (call("memory_edit", scope="project", file_path="MEMORY.md"), ("write", ["mem:project"])),
+    (call("memory_delete", scope="personal", file_path="old-log.md"), ("write", ["mem:personal"])),
     (call("notes_agent_set", note="x"), ("write", ["whiteboard"])),
     # Read-backs, labeled by the surface they read.
     (call("memory_read", scope="project", file_path="MEMORY.md"), ("read", ["memory"])),

@@ -271,8 +271,10 @@ def shell_paths(command):
 # Tools whose write is all-or-nothing, so a refused call (its TOOL_CALL_END carried an error) wrote nothing.
 # task_list stages, saves through a temp file and rename, then commits; notes_agent_set rolls back a failed
 # save; write_file and edit_file (and the memory tools built on them) refuse before writing, and under the
-# sandbox write by temp file and rename. Shell commands and apply_patch can write before they fail.
-ALL_OR_NOTHING_WRITERS = {"task_list", "write_file", "edit_file", "memory_write", "memory_edit", "notes_agent_set"}
+# sandbox write by temp file and rename; memory_delete is one unlink in the confined memory root. Shell
+# commands and apply_patch can write before they fail.
+ALL_OR_NOTHING_WRITERS = {"task_list", "write_file", "edit_file", "memory_write", "memory_edit", "memory_delete",
+                          "notes_agent_set"}
 
 
 def classify(call):
@@ -281,7 +283,9 @@ def classify(call):
     write by an all-or-nothing tool wrote nothing, so it is work; a refused read still cost a call and
     counts as a read-back."""
     kind, surfaces = _classify_args(call)
-    if kind == "write" and call.get("failed") and call["tool"] in ALL_OR_NOTHING_WRITERS:
+    # A refused task_list call, a view included, neither wrote nor read anything back.
+    refused_nothing = call["tool"] == "task_list" or (kind == "write" and call["tool"] in ALL_OR_NOTHING_WRITERS)
+    if call.get("failed") and refused_nothing:
         return "work", []
     return kind, surfaces
 
@@ -304,7 +308,7 @@ def _classify_args(call):
             return "write", surfaces
         surfaces = read_surfaces(read)
         return ("read", surfaces) if surfaces else ("work", [])
-    if tool in ("memory_write", "memory_edit"):
+    if tool in ("memory_write", "memory_edit", "memory_delete"):
         return "write", ["mem:" + str(a.get("scope", "?"))]
     if tool == "notes_agent_set":
         return "write", ["whiteboard"]
