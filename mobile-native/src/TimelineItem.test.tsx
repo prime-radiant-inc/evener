@@ -789,12 +789,12 @@ describe("a system event", () => {
 	it("opens a labelled steering notice's text", () => {
 		const reminder = notice({
 			origin: "steering",
-			steeringKind: "task-nudge",
+			steeringKind: "task-inactive",
 			text: "Remember the open task.",
-			label: "Task reminder",
+			label: "Task list idle",
 		});
 		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
-		expect(renderedText(tree)).toContain("Task reminder");
+		expect(renderedText(tree)).toContain("Task list idle");
 		expect(renderedText(tree)).not.toContain("Remember the open task.");
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 		expect(renderedText(tree)).toContain("Remember the open task.");

@@ -3349,7 +3349,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 
 	steering := turn(schema.TurnSteering, llm.User("steering"))
 	steering.SteeringSource = events.SteeringSourceUser
-	steering.SteeringKind = events.SteeringKindTaskNudge
+	steering.SteeringKind = events.SteeringKindTaskInactive
 	steering.GoalContinuation = &schema.GoalContinuationInfo{Text: "goal continuation notice"}
 	steering.ClientMutationID = "client-mutation-1"
 	steering.StableTurnID = "stable-turn-1"

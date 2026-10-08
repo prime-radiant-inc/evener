@@ -4832,7 +4832,6 @@ export const STEERING_KINDS = [
   "no-tool-calls",
   "loop-detected",
   "tasks-done",
-  "task-nudge",
   "task-inactive",
   "note-handoff",
   "goal-objective",

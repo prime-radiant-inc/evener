@@ -244,16 +244,12 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
   expect(container.firstChild).toBeNull();
 });
 
-// task-nudge is a labeled kind (STEERING_KIND_LABELS), NOT a suppressed one -
-// only current-task/task-list are in SUPPRESSED. Before wave-8/this task,
-// classifySteering's cascade suppressed task-nudge outright (a one-time
-// tool-availability nudge, judged not user-meaningful); the brief's
-// SUPPRESSED set narrows that to current-task/task-list only, so a
-// task-nudge steer now renders where it previously rendered nothing. That
-// flip is brief-mandated and correct - this pins the new visible outcome.
-test("a task-nudge kind renders labeled, not suppressed", () => {
-  render(<SteeringItem item={item({ text: "x", steeringKind: "task-nudge" })} turn={turn} live={false} />);
-  expect(screen.getByText("System steered: Task reminder")).toBeTruthy();
+// task-inactive is a labeled kind (STEERING_KIND_LABELS), NOT a suppressed
+// one - only current-task/task-list are in SUPPRESSED, so the other task
+// reminders render with their label.
+test("a task-inactive kind renders labeled, not suppressed", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "task-inactive" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered: Task list idle")).toBeTruthy();
 });
 
 // Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED

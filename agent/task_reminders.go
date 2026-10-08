@@ -150,12 +150,3 @@ func formatTaskCompletionMachineBlock(completion events.TaskCompletionSteeringDa
 	}
 	return taskCompletionMachineBlockStart + string(payload) + taskCompletionMachineBlockEnd
 }
-
-// taskReminderNudge generates the one-time suggestion to use task_list, wrapped
-// as a SYSTEM-REMINDER so all task reminders share a single envelope.
-func taskReminderNudge() string {
-	return "<SYSTEM-REMINDER>\n" +
-		"You have a task_list tool available for organizing multi-step work. " +
-		"Consider creating a task list to track your progress.\n" +
-		"</SYSTEM-REMINDER>"
-}

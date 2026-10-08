@@ -40,6 +40,7 @@ import {
 	swipeRowFully,
 	systemGlass,
 	unmountMountedTrees,
+	until,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -585,14 +586,6 @@ function screen(nav: Navigation) {
 async function settle() {
 	await act(async () => {
 		for (let step = 0; step < 30; step++) await Promise.resolve();
-	});
-}
-/** Waits for wire or store state inside act, so the updates it lets through
- * stay in act. React renders only when the act scope exits, so `check` must
- * not read the rendered tree. */
-async function until(check: () => void) {
-	await act(async () => {
-		await vi.waitFor(check);
 	});
 }
 /** What the Board holds for hub `id`, as it stored it. */
