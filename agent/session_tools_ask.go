@@ -723,8 +723,10 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // result's tool state, so this looks for that state among the input's
 // rounds: the turns sharing the decisive turn's TurnID. A history without
 // turn ids predates end_reason, so only the decisive round is read there.
-// Two narrow cases can still differ from live: a round a recovery reopen
-// reran under the same TurnID, and rounds a mid-input compaction dropped.
+// Three narrow cases can still differ from live: a round a recovery reopen
+// reran under the same TurnID, rounds a mid-input compaction dropped, and a
+// retiring session whose PostToolUse hook context could not be delivered
+// (execTool replaces that result, tool state included).
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 	turnID := history[toolResultsIdx].TurnID
 	for j := toolResultsIdx; j >= 0; j-- {

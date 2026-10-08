@@ -168,6 +168,11 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
 			in("t2", steer, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
 		), SessionIdle},
+		{"another tool's end_reason state", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "done"), func() llm.ContentPart {
+			part := stmToolResult("w1", "job_watch", false)
+			part.ToolResult.ToolState = json.RawMessage(`{"end_reason":"needs_response"}`)
+			return part
+		}())), SessionIdle},
 		{"history without turn ids reads only the decisive round", []schema.Turn{
 			user,
 			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
@@ -189,7 +194,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 func stmCommunicateResult(id, acceptedReason string) llm.ContentPart {
 	part := stmToolResult(id, "communicate", false)
 	if acceptedReason != "" {
-		part.ToolResult.ToolState = json.RawMessage(fmt.Sprintf(`{"end_reason":%q}`, acceptedReason))
+		part.ToolResult.ToolState = json.RawMessage(fmt.Sprintf(`{"communicate_end_reason":%q}`, acceptedReason))
 	}
 	return part
 }

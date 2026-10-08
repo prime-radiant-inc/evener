@@ -1549,9 +1549,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// unanswered ask_user call, or a last input that ended on needs_response,
 	// rests awaiting (deriveRestoredState's own doc comment has the full
 	// walk). NewSession never runs this scan — a fresh session always starts
-	// idle. steeringOrigins() gives the boundary
-	// its durable steering provenance, so a kindless legacy human-note turn
-	// is still read as a note rather than an answering steer.
+	// idle. steeringOrigins() gives the boundary its durable steering
+	// provenance, so a kindless legacy human-note turn is still read as a
+	// note rather than an answering steer.
 	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
 	// and still in the same units s.history uses since escaping never
 	// changes its length) scopes the provenance to this session's own turns

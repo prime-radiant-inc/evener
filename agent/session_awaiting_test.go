@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,37 +282,15 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 	} {
 		t.Run("reason="+tc.reason, func(t *testing.T) {
 			t.Parallel()
-			c := llm.NewClient()
-			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
-			}})
-			dir := t.TempDir()
-			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
-				t.Fatal(err)
-			}
-			id := sess.ID()
-			sess.Close()
-
-			meta, err := schema.LoadSessionMeta(dir, id)
-			if err != nil {
-				t.Fatalf("LoadSessionMeta: %v", err)
-			}
-			c2 := llm.NewClient()
-			c2.Register(&fakeAdapter{name: "openai"})
-			restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-			if err != nil {
-				t.Fatalf("RestoreSessionFromMeta: %v", err)
-			}
-			defer restored.Close()
-			if got := restored.State(); got != tc.want {
-				t.Fatalf("restored state = %q, want %q", got, tc.want)
+			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
+			}, func(ctx context.Context, sess *Session) {
+				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if restored != tc.want {
+				t.Fatalf("restored state = %q, want %q", restored, tc.want)
 			}
 		})
 	}
@@ -379,44 +358,20 @@ func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			c := llm.NewClient()
-			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response {
+			live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
 					return toolCallResponse(
 						communicateCallArgs("c1", map[string]any{"message": "one", "end_reason": tc.first}),
 						communicateCallArgs("c2", map[string]any{"message": "two", "end_reason": tc.second}),
 					)
 				},
-			}})
-			dir := t.TempDir()
-			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
-				t.Fatal(err)
-			}
-			if got := sess.State(); got != tc.want {
-				t.Fatalf("live state = %q, want %q", got, tc.want)
-			}
-			id := sess.ID()
-			sess.Close()
-			meta, err := schema.LoadSessionMeta(dir, id)
-			if err != nil {
-				t.Fatalf("LoadSessionMeta: %v", err)
-			}
-			c2 := llm.NewClient()
-			c2.Register(&fakeAdapter{name: "openai"})
-			restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-			if err != nil {
-				t.Fatalf("RestoreSessionFromMeta: %v", err)
-			}
-			defer restored.Close()
-			if got := restored.State(); got != tc.want {
-				t.Fatalf("restored state = %q, want %q", got, tc.want)
+			}, func(ctx context.Context, sess *Session) {
+				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if live != tc.want || restored != tc.want {
+				t.Fatalf("live %q, restored %q; want both %q", live, restored, tc.want)
 			}
 		})
 	}
@@ -493,6 +448,13 @@ func TestRestore_RepeatedNeedsResponseQuestionRestsAwaiting(t *testing.T) {
 			if _, err := sess.ProcessInput(ctx, in, nil); err != nil {
 				t.Fatal(err)
 			}
+		}
+		// The second, identical call's result carries the breaker's nudge.
+		sess.mu.Lock()
+		last := sess.history[len(sess.history)-1]
+		sess.mu.Unlock()
+		if text, _ := last.Message.Content[0].ToolResult.Content.(string); !strings.Contains(text, "same call") {
+			t.Fatalf("second result = %q, want the repeated-call nudge", text)
 		}
 	})
 	if live != SessionAwaiting || restored != SessionAwaiting {

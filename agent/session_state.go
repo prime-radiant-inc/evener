@@ -593,10 +593,9 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
 // the same value its one caller (RestoreSessionFromMetaWithConfig) already
-// computed for
-// escapeHistoryWithSessionProvenance, in the same units as s.history at this
-// point: a forked child's inherited prefix must not be decided by this
-// session's own journal (steeringOriginBoundary).
+// computed for escapeHistoryWithSessionProvenance, in the same units as
+// s.history at this point: a forked child's inherited prefix must not be
+// decided by this session's own journal (steeringOriginBoundary).
 func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()

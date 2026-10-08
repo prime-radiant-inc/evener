@@ -163,7 +163,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 // communicateEndState is the tool state of the turn-ending communicate call
 // the input accepted.
 type communicateEndState struct {
-	EndReason string `json:"end_reason"`
+	// The key is communicate's own, so no other tool's state can match it.
+	EndReason string `json:"communicate_end_reason"`
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
