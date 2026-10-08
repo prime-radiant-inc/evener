@@ -266,7 +266,7 @@ async function mount(options: Options = {}) {
 		prompt,
 		setReady,
 		text: () => renderedText(tree),
-		dispose: () => (hosts.dispose(), live.dispose(), tree.unmount()),
+		dispose: () => (act(() => tree.unmount()), hosts.dispose(), live.dispose()),
 	};
 }
 
