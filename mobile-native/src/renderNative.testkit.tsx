@@ -681,6 +681,15 @@ export async function settle(): Promise<void> {
 	});
 }
 
+/** Waits for wire or store state inside act, so the updates it lets through
+ * stay in act. React renders only when the act scope exits, so `check` must
+ * not read the rendered tree. */
+export async function until(check: () => void): Promise<void> {
+	await act(async () => {
+		await vi.waitFor(check);
+	});
+}
+
 /** renderHook, in the one shape this package needs: a component that calls
  * `hook()` every render, plus the rerender/unmount the harness drives. */
 export function renderHook<T>(hook: () => T): {
