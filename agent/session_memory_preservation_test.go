@@ -19,7 +19,11 @@ func TestMemoryPreservation(t *testing.T) {
 	t.Parallel()
 	t.Run("interrupted-page-and-uncertain-write", func(t *testing.T) {
 		root := t.TempDir()
-		index := memorySeed(t, root, "personal", "opaque-index-original-201")
+		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-index-original-201")
+		seeded, err := os.ReadFile(index)
+		if err != nil {
+			t.Fatal(err)
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		var writes atomic.Int32
@@ -36,18 +40,18 @@ func TestMemoryPreservation(t *testing.T) {
 				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "page", "content": "opaque-page-202"})
 			},
 			func(llm.Request) llm.Response {
-				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-index-replacement-203"})
+				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "opaque-page-replacement-203"})
 			},
 		))
-		_, err := s.ProcessInput(ctx, "write page then index", nil)
+		_, err = s.ProcessInput(ctx, "write one page then another", nil)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("interrupt error=%v", err)
 		}
 		if writes.Load() != 2 {
 			t.Fatalf("write boundaries=%d", writes.Load())
 		}
-		if got, err := os.ReadFile(index); err != nil || string(got) != "opaque-index-original-201" {
-			t.Fatalf("index=%q err=%v", got, err)
+		if got, err := os.ReadFile(index); err != nil || !bytes.Equal(got, seeded) {
+			t.Fatalf("interrupted page=%q err=%v", got, err)
 		}
 		if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "page"}); res.IsError || !strings.Contains(res.Output, "opaque-page-202") {
 			t.Fatalf("page read=%+v", res)
@@ -68,7 +72,11 @@ func TestMemoryPreservation(t *testing.T) {
 
 	t.Run("shared-missing-denied-error", func(t *testing.T) {
 		root, outside := t.TempDir(), t.TempDir()
-		index := memorySeed(t, root, "personal", "opaque-preserved-205")
+		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-preserved-205")
+		seeded, err := os.ReadFile(index)
+		if err != nil {
+			t.Fatal(err)
+		}
 		target := filepath.Join(outside, "target")
 		if err := os.WriteFile(target, []byte("opaque-denied-206"), 0o600); err != nil {
 			t.Fatal(err)
@@ -100,8 +108,8 @@ func TestMemoryPreservation(t *testing.T) {
 		if got, err := os.ReadFile(target); err != nil || string(got) != "opaque-denied-206" {
 			t.Fatalf("denied target=%q err=%v", got, err)
 		}
-		if got, err := os.ReadFile(index); err != nil || string(got) != "opaque-preserved-205" {
-			t.Fatalf("index=%q err=%v", got, err)
+		if got, err := os.ReadFile(index); err != nil || !bytes.Equal(got, seeded) {
+			t.Fatalf("page=%q err=%v", got, err)
 		}
 		if _, err := os.Stat(filepath.Join(filepath.Dir(index), "absent")); !os.IsNotExist(err) {
 			t.Fatalf("missing file created err=%v", err)
@@ -110,7 +118,7 @@ func TestMemoryPreservation(t *testing.T) {
 
 	t.Run("logical-correction-and-removal", func(t *testing.T) {
 		root, history := t.TempDir(), t.TempDir()
-		index := memorySeed(t, root, "personal", "opaque-wrong-207 [page](topic) [duplicate](duplicate)\nopaque-keep-index-208\n")
+		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-wrong-207 opaque-keep-index-208")
 		wiki := filepath.Dir(index)
 		original := map[string]string{"topic": "opaque-wrong-207\nopaque-keep-topic-209\n", "log.md": "opaque-wrong-207\nopaque-keep-log-210\n", "duplicate": "opaque-wrong-207\n", "unrelated": "opaque-unrelated-211\n"}
 		for name, body := range original {
@@ -118,13 +126,17 @@ func TestMemoryPreservation(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		other := memorySeed(t, root, "projects/fixture-project", "opaque-other-212")
+		other := memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-other-212")
+		otherSeeded, err := os.ReadFile(other)
+		if err != nil {
+			t.Fatal(err)
+		}
 		calls := []struct {
 			name string
 			args map[string]any
 		}{
 			{"memory_search", map[string]any{"scope": "personal", "pattern": "opaque-wrong-207"}},
-			{"memory_edit", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "old_string": "opaque-wrong-207 [page](topic) [duplicate](duplicate)", "new_string": "opaque-correct-213 [page](topic)"}},
+			{"memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}},
 			{"memory_edit", map[string]any{"scope": "personal", "file_path": "topic", "old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}},
 			{"memory_edit", map[string]any{"scope": "personal", "file_path": "log.md", "old_string": "opaque-wrong-207\n", "new_string": ""}},
 			{"memory_delete", map[string]any{"scope": "personal", "file_path": "duplicate"}},
@@ -171,7 +183,7 @@ func TestMemoryPreservation(t *testing.T) {
 		if _, err := s.ProcessInput(context.Background(), "correct fixture fact", nil); err != nil {
 			t.Fatal(err)
 		}
-		for name, want := range map[string]string{"MEMORY.md": "opaque-correct-213 [page](topic)\nopaque-keep-index-208\n", "topic": "opaque-correct-213\nopaque-keep-topic-209\n", "log.md": "opaque-keep-log-210\n", "unrelated": original["unrelated"]} {
+		for name, want := range map[string]string{"fact.md": "---\ndescription: opaque-correct-213 opaque-keep-index-208\nupdated: 2026-10-01\n---\n", "topic": "opaque-correct-213\nopaque-keep-topic-209\n", "log.md": "opaque-keep-log-210\n", "unrelated": original["unrelated"]} {
 			got, err := os.ReadFile(filepath.Join(wiki, name))
 			if err != nil || string(got) != want {
 				t.Fatalf("%s=%q want=%q err=%v", name, got, want, err)
@@ -180,7 +192,7 @@ func TestMemoryPreservation(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(wiki, "duplicate")); !os.IsNotExist(err) {
 			t.Fatalf("duplicate remains err=%v", err)
 		}
-		if got, err := os.ReadFile(other); err != nil || string(got) != "opaque-other-212" {
+		if got, err := os.ReadFile(other); err != nil || !bytes.Equal(got, otherSeeded) {
 			t.Fatalf("other=%q err=%v", got, err)
 		}
 		s.Close()
@@ -197,7 +209,11 @@ func TestMemoryPreservationWorktreeLifetime(t *testing.T) {
 	t.Parallel()
 	workspace, project := memoryGitFixture(t)
 	root, history := t.TempDir(), t.TempDir()
-	paths := []string{memorySeed(t, root, "personal", "opaque-lifetime-215"), memorySeed(t, root, filepath.Join("projects", project.ID), "opaque-lifetime-215")}
+	paths := []string{memorySeedPage(t, root, "personal", "fact.md", "opaque-lifetime-215"), memorySeedPage(t, root, filepath.Join("projects", project.ID), "fact.md", "opaque-lifetime-215")}
+	seeded, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project}))
 	if res := memoryExec(t, s, "manage_worktree", map[string]any{"operation": "create", "name": "memory-lane"}); res.IsError {
 		t.Fatal(res.Output)
@@ -216,7 +232,7 @@ func TestMemoryPreservationWorktreeLifetime(t *testing.T) {
 		t.Fatal("worktree removal rebound project")
 	}
 	for _, scope := range []string{"personal", "project"} {
-		if res := memoryExec(t, s, "memory_read", map[string]any{"scope": scope, "file_path": "MEMORY.md"}); res.IsError || !strings.Contains(res.Output, "opaque-lifetime-215") {
+		if res := memoryExec(t, s, "memory_read", map[string]any{"scope": scope, "file_path": "fact.md"}); res.IsError || !strings.Contains(res.Output, "opaque-lifetime-215") {
 			t.Fatalf("surviving read=%+v", res)
 		}
 	}
@@ -227,7 +243,7 @@ func TestMemoryPreservationWorktreeLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
-		if got, err := os.ReadFile(path); err != nil || string(got) != "opaque-lifetime-215" {
+		if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, seeded) {
 			t.Fatalf("lifetime bytes=%q err=%v", got, err)
 		}
 	}

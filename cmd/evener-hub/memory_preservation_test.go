@@ -59,7 +59,7 @@ func (a *memoryPreservationAdapter) Complete(_ context.Context, req llm.Request)
 	}
 	scope := []string{"personal", "project"}[a.stage]
 	a.stage++
-	raw, _ := json.Marshal(map[string]any{"scope": scope, "file_path": "MEMORY.md", "intent": "Reading surviving fixture bytes"})
+	raw, _ := json.Marshal(map[string]any{"scope": scope, "file_path": "fact.md", "intent": "Reading surviving fixture bytes"})
 	call := llm.ToolCallData{ID: "memory-" + scope, Name: "memory_read", Type: "function", Arguments: raw}
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, nil
 }
@@ -75,7 +75,9 @@ func TestMemoryPreservationHistoryCleanup(t *testing.T) {
 	target, survivor := hubtest.SessionID(t), hubtest.SessionID(t)
 	writeSession(t, stateDir, target, project.CanonicalPath)
 	writeSession(t, stateDir, survivor, project.CanonicalPath)
-	paths := []string{filepath.Join(root, "memory", "personal", "MEMORY.md"), filepath.Join(root, "memory", "projects", project.ID, "MEMORY.md"), filepath.Join(root, "memory", "sessions", target, "MEMORY.md")}
+	// Personal and project memory are pages. Session memory is a directory no
+	// session reads any more; its old index must survive untouched.
+	paths := []string{filepath.Join(root, "memory", "personal", "fact.md"), filepath.Join(root, "memory", "projects", project.ID, "fact.md"), filepath.Join(root, "memory", "sessions", target, "MEMORY.md")}
 	for _, path := range paths {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -146,5 +148,10 @@ func TestMemoryPreservationHistoryCleanup(t *testing.T) {
 	adapter.mu.Unlock()
 	if reads != 2 {
 		t.Fatalf("reopened scoped reads=%d", reads)
+	}
+	for _, path := range paths {
+		if got, err := os.ReadFile(path); err != nil || string(got) != "opaque-surviving-hub-301" {
+			t.Fatalf("reopened session changed %s=%q err=%v", path, got, err)
+		}
 	}
 }
