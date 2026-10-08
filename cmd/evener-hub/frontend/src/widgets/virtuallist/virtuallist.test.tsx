@@ -5,6 +5,7 @@ import type { Virtualizer } from "@tanstack/react-virtual";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { holdReaderFrames } from "../../panes/session/transcript/transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { requireClass } from "../internal/requireClass";
 import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "./index";
@@ -627,32 +628,6 @@ describe("anchorToEnd", () => {
     return { geometry, ...external };
   }
 
-  function holdPositioningFrames() {
-    const pending = new Map<number, FrameRequestCallback>();
-    let nextId = 0;
-    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      const id = ++nextId;
-      pending.set(id, callback);
-      return id;
-    });
-    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
-      pending.delete(id);
-    });
-    return {
-      pending,
-      release() {
-        for (const [id, callback] of [...pending]) {
-          pending.delete(id);
-          callback(performance.now());
-        }
-      },
-      restore() {
-        request.mockRestore();
-        cancel.mockRestore();
-      },
-    };
-  }
-
   test("reader layout observes committed sizer and rejects later unmeasured DOM", async () => {
     const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
     const observed: { layout: ReaderLayout; sizer: number; secondRow: string | undefined }[] = [];
@@ -689,6 +664,7 @@ describe("anchorToEnd", () => {
 
   test("reader layout accepts measured filtered rows and rejects their unobserved expansion", async () => {
     const external = installMeasuredGeometry([500, 0, 500, 0, 500]);
+    const frames = holdReaderFrames();
     let committed: ReaderLayout | undefined;
     try {
       const { root } = renderMeasuredList(true, true, {
@@ -701,6 +677,7 @@ describe("anchorToEnd", () => {
       expect(committed?.isCurrent()).toBe(true);
       await act(async () => committed?.scrollToOffset(100));
       expect(root.scrollTop).toBe(100);
+      await act(async () => frames.release());
       external.geometry.rowHeights[1] = 30;
       expect(committed?.isCurrent()).toBe(false);
       await act(async () => external.notify());
@@ -710,6 +687,7 @@ describe("anchorToEnd", () => {
     } finally {
       cleanup();
       external.restore();
+      frames.restore();
     }
   });
 
@@ -766,6 +744,7 @@ describe("anchorToEnd", () => {
 
   test("reader layout wakes on first equal-estimate observer measurement skipped during user scrolling", async () => {
     const external = installMeasuredGeometry(Array.from({ length: 200 }, () => 96));
+    const frames = holdReaderFrames();
     let release = false;
     try {
       const { root, current } = renderMeasuredList(true, true, {
@@ -787,17 +766,19 @@ describe("anchorToEnd", () => {
       release = true;
       await act(async () => external.notify());
       expect(root.scrollTop).toBe(5011);
+      await act(async () => frames.release());
       expect(current().scrollOffset).toBe(5011);
       expect(current().itemSizeCache.has("row-46")).toBe(false);
     } finally {
       cleanup();
       external.restore();
+      frames.restore();
     }
   });
 
   test("reader cancellation replaces an outstanding actual index reconciliation", async () => {
     const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
-    const frames = holdPositioningFrames();
+    const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
       const { root, current } = renderMeasuredList(true, true, {
@@ -829,7 +810,7 @@ describe("anchorToEnd", () => {
 
   test("reader cancellation drops queued clamped replay without DOM movement or a native scroll event", async () => {
     const external = installMeasuredGeometry([300, 300, 300, 300, 300]);
-    const frames = holdPositioningFrames();
+    const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
       const { root, current } = renderMeasuredList(true, true, {
@@ -842,6 +823,8 @@ describe("anchorToEnd", () => {
         root.scrollTop = 1000;
         fireEvent.scroll(root);
       });
+      // The movement's own scroll event arrives in the next frame.
+      await act(async () => frames.release());
       let scrollEvents = 0;
       root.addEventListener("scroll", () => {
         scrollEvents++;
@@ -872,7 +855,7 @@ describe("anchorToEnd", () => {
     async ({ anchorToEnd }) => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
-      const frames = holdPositioningFrames();
+      const frames = holdReaderFrames();
       let layout: ReaderLayout | undefined;
       try {
         const { root, current } = renderMeasuredList(anchorToEnd, true, {
@@ -915,7 +898,7 @@ describe("anchorToEnd", () => {
   ])("reader $command command releases earlier backward protection", async ({ command, requested, want, wantTop }) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
-    const frames = holdPositioningFrames();
+    const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
       const { root, current, ref } = renderMeasuredList(true, true, {
@@ -939,6 +922,7 @@ describe("anchorToEnd", () => {
         else ref.current?.scrollToIndex(0, { align: "end" });
       });
       expect(root.scrollTop).toBe(requested);
+      await act(async () => frames.release());
       await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
       expect(current().scrollDirection).toBeNull();
       await act(async () => external.notify((target) => target.dataset.index === "0"));
@@ -955,7 +939,7 @@ describe("anchorToEnd", () => {
 
   test("reader observer disposal retires movement and native read-backs with its port", async () => {
     const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
-    const frames = holdPositioningFrames();
+    const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
       const { root, current } = renderMeasuredList(true, true, {
