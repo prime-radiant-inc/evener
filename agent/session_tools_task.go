@@ -262,7 +262,7 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			}
 		}
 		if u.Status == "" && u.Notes == "" && u.DependsOn == nil && u.ReasoningEffort == "" {
-			return nil, nil, fmt.Errorf("update entry for task %d changes nothing; include status, notes, depends_on, or reasoning_effort", u.ID)
+			return nil, nil, fmt.Errorf(`update entry for task %d changes nothing; depends_on of [] or null and notes of "" or "null" are placeholders and are ignored. Include a status, real notes, new depends_on IDs, depends_on: [0] to clear dependencies, or reasoning_effort`, u.ID)
 		}
 		updates = append(updates, u)
 	}
@@ -370,25 +370,25 @@ func isPlaceholderDependsOn(deps any) bool {
 	return deps == nil || (isList && len(list) == 0)
 }
 
-// errPlaceholderOnlyUpdate rejects a call whose every update entry held only
-// placeholders: dropping them would otherwise turn the call into a bare view.
-var errPlaceholderOnlyUpdate = errors.New(`every update entry changed nothing: depends_on of [] or null and notes of "" or "null" are placeholders and were ignored; send a status, real notes, new depends_on IDs, or depends_on: [0] to clear dependencies`)
-
 // normalizeTaskListArgs is task_list's NormalizeArgs. Some models fill every
 // optional update field on every call, so it drops the placeholders (see
-// isPlaceholderDependsOn and isPlaceholderNote), and drops an entry left with
-// only its id, so the rest of the call still applies. Dispatch and the failure
-// breaker's fingerprint both run it, which keeps the placeholder rule in one
-// place.
+// isPlaceholderDependsOn and isPlaceholderNote). An entry left with only a
+// valid id changed nothing: beside other work it is dropped, so the rest of
+// the call still applies. When nothing else is left, the bare entries stay,
+// so decoding rejects the call in the tool, where the failure breaker records
+// it under this normalized form. Dispatch, the fingerprint and decoding all
+// run it, which keeps the placeholder rule in one place. It never fails.
 func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 	rawUpdates, isList := args["update"].([]any)
 	if !isList || len(rawUpdates) == 0 {
 		return args, nil
 	}
+	cleanedUpdates := make([]any, 0, len(rawUpdates))
 	kept := make([]any, 0, len(rawUpdates))
 	for _, raw := range rawUpdates {
 		entry, isObject := raw.(map[string]any)
 		if !isObject {
+			cleanedUpdates = append(cleanedUpdates, raw)
 			kept = append(kept, raw)
 			continue
 		}
@@ -399,36 +399,45 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 		if notes, isString := cleaned["notes"].(string); isString && isPlaceholderNote(notes) {
 			delete(cleaned, "notes")
 		}
-		// Drop the entry only when what is left is a well-formed id; a
+		cleanedUpdates = append(cleanedUpdates, cleaned)
+		// Only an entry left with a well-formed id may be dropped; a
 		// malformed one stays so validation rejects the whole call.
 		if _, validID := taskIDValue(cleaned["id"]); validID && len(cleaned) == 1 && len(entry) > 1 {
 			continue
 		}
 		kept = append(kept, cleaned)
 	}
-	adds, _ := args["add"].([]any)
-	if len(kept) == 0 && len(adds) == 0 {
-		return nil, errPlaceholderOnlyUpdate
-	}
+	// A present add counts as other work unless it is an empty list, so an
+	// add of the wrong type still reaches validation.
+	rawAdd, hasAdd := args["add"]
+	addList, addIsList := rawAdd.([]any)
+	otherWork := len(kept) > 0 || (hasAdd && (!addIsList || len(addList) > 0))
 	normalized := maps.Clone(args)
-	if len(kept) == 0 {
+	switch {
+	case !otherWork:
+		normalized["update"] = cleanedUpdates
+	case len(kept) == 0:
 		delete(normalized, "update")
-	} else {
+	default:
 		normalized["update"] = kept
 	}
 	return normalized, nil
 }
 
-// taskIDValue reads a task id: a positive integer that fits in an int. It
-// takes the number types NormalizeArgs may see: float64 from dispatch's
-// decoder, and int64 or (past int64) json.Number from the failure
-// fingerprint's canonical view.
+// maxTaskID bounds task ids at 2^53, the largest integer float64 holds
+// exactly, so dispatch (float64) and the fingerprint (int64) accept the same
+// ids.
+const maxTaskID = 1 << 53
+
+// taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
+// number types NormalizeArgs may see: float64 from dispatch's decoder, and
+// int64 or (past int64) json.Number from the failure fingerprint's canonical
+// view.
 func taskIDValue(v any) (int, bool) {
 	var id int64
 	switch n := v.(type) {
 	case float64:
-		// float64(math.MaxInt64) rounds up to 2^63, so < excludes it.
-		if n != math.Trunc(n) || n < 1 || n >= float64(math.MaxInt64) {
+		if n != math.Trunc(n) || n < 1 || n > maxTaskID {
 			return 0, false
 		}
 		id = int64(n)
@@ -443,7 +452,7 @@ func taskIDValue(v any) (int, bool) {
 	default:
 		return 0, false
 	}
-	if id < 1 || id > math.MaxInt {
+	if id < 1 || id > maxTaskID {
 		return 0, false
 	}
 	return int(id), true

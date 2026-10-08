@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -118,6 +119,40 @@ func TestTaskTool_AllPlaceholderUpdateRejectedWithExplanation(t *testing.T) {
 	}
 }
 
+// An update made only of placeholders fails in the tool, so the breaker
+// records it under the normalized fingerprint: repeating it with different
+// placeholders still parks the third call.
+func TestTaskTool_RepeatedPlaceholderOnlyUpdateIsParked(t *testing.T) {
+	t.Parallel()
+	h := newDependentTaskHarness(t)
+	for i, entry := range []map[string]any{
+		{"id": 2, "depends_on": []any{}},
+		{"id": 2, "depends_on": nil},
+	} {
+		res := h.update(t, entry)
+		if !res.IsError || strings.HasPrefix(res.FullOutput, parkedMarker) || !strings.Contains(res.FullOutput, "[0]") {
+			t.Fatalf("call %d should fail in the tool and explain [0]: %s", i+1, res.FullOutput)
+		}
+	}
+	if res := h.update(t, map[string]any{"id": 2, "notes": ""}); !strings.HasPrefix(res.FullOutput, parkedMarker) {
+		t.Fatalf("third placeholder-only update should be parked: %s", res.FullOutput)
+	}
+}
+
+// A present add of the wrong type is not treated as absent: its own type
+// error surfaces.
+func TestTaskTool_WrongTypedAddSurfacesBesidePlaceholderUpdate(t *testing.T) {
+	t.Parallel()
+	h := newDependentTaskHarness(t)
+	res := h.call(t, map[string]any{
+		"add":    "oops",
+		"update": []any{map[string]any{"id": 2, "depends_on": []any{}}},
+	})
+	if !res.IsError || !strings.Contains(res.FullOutput, "/add") {
+		t.Fatalf("the add type error should surface: %s", res.FullOutput)
+	}
+}
+
 // Only placeholders fold. [0] clears, add entries have no placeholder
 // contract, and a tool without task_list's normalizer folds nothing.
 func TestTaskTool_NonPlaceholderFieldsKeepTheirFingerprint(t *testing.T) {
@@ -155,7 +190,7 @@ func TestTaskTool_NonPlaceholderFieldsKeepTheirFingerprint(t *testing.T) {
 // add commits.
 func TestTaskTool_PlaceholderEntryWithBadIDRejectsTheCall(t *testing.T) {
 	t.Parallel()
-	for name, id := range map[string]any{"string": "bad", "zero": 0, "negative": -1, "beyond int": 1e20, "fraction": 1.5} {
+	for name, id := range map[string]any{"string": "bad", "zero": 0, "negative": -1, "beyond int": 1e20, "fraction": 1.5, "max int64": int64(math.MaxInt64)} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			h := newDependentTaskHarness(t)
@@ -188,6 +223,12 @@ func TestTaskIDValue(t *testing.T) {
 		{float64(1.5), 0, false},
 		{float64(1e20), 0, false},
 		{int64(0), 0, false},
+		// One bound on every path: ids up to 2^53, exact in float64.
+		{float64(1 << 53), 1 << 53, true},
+		{int64(1 << 53), 1 << 53, true},
+		{float64(1<<53 + 2), 0, false},
+		{int64(1<<53 + 1), 0, false},
+		{int64(math.MaxInt64), 0, false},
 		{json.Number("100000000000000000000"), 0, false},
 		{json.Number("1.5"), 0, false},
 		{"3", 0, false},

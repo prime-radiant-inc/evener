@@ -247,7 +247,7 @@ the window failed, today's tiered escalation otherwise. Underneath it,
 `Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
-name, unparseable arguments, a schema violation, blocking middleware, or the
+name, unparseable arguments, an argument normalizer, a schema violation, blocking middleware, or the
 argument-size guard — never reaches the ledger. The ledger carries **two triggers,
 keyed differently**. The **failure trigger** counts consecutive failures sharing an
 error class, keyed on tool name + a hash of a **normalized** view of the arguments:
