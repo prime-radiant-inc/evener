@@ -9,6 +9,16 @@ func (s *Session) beginRetirementMutation(category string) (func(), error) {
 	return func() {}, nil
 }
 
+// beginNamingRetirementMutation is beginRetirementMutation for a session namer
+// naming this session, which a manual retire waits for rather than being
+// refused over (RetirementController.TryManualClaim).
+func (s *Session) beginNamingRetirementMutation() (func(), error) {
+	if c := s.retirementController.Load(); c != nil {
+		return c.BeginNamingMutation(s.id)
+	}
+	return func() {}, nil
+}
+
 // retirementInputBlockers is the root-only predicate. The full runtime-tree
 // proof is supplied by later retirement tasks; this does not enable retirement.
 // The caller has closed admission, but holds no controller or session lock.

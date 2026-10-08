@@ -1000,8 +1000,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// identity-fenced daemon control RPCs: the current rendezvous entry must
 	// exist and the caller's generation fingerprint must match it, where an
 	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryClaim and the claim's prepare so a thread/clear that
-	// swapped ownership under an uncommitted claim cannot be retired by its
+	// it again between TryManualClaim and the claim's prepare so a thread/clear
+	// that swapped ownership under an uncommitted claim cannot be retired by its
 	// predecessor's stale row.
 	requireExactOwnership := func(generation string) error {
 		entry, ok := rvRegistration.Entry()
@@ -1023,18 +1023,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
-		// TryClaim has not run. It is an observability beat outside every lock
-		// (retirementObserve is nil in production) so a test can interleave a
-		// thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim has not run. It is an observability beat outside every
+		// lock (retirementObserve is nil in production) so a test can interleave
+		// a thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim widens that window: it first waits, up to the namer's
+		// timeout, for a session namer to settle (#3921). The ownership re-check
+		// after the claim covers the wider window the same way.
 		retirementObserve("claim_attempted", getSession().ID())
-		claim, snap, err := retirement.TryClaim(true)
+		claim, snap, err := retirement.TryManualClaim(ctx)
 		if err != nil {
 			return appwire.DaemonRetireResponse{}, err
 		}
 		if claim == nil {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
 		}
-		// The pre-claim check above and TryClaim are not atomic: a thread/clear
+		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
 		// can run to completion between them. It holds its own admission lease
 		// (so TryClaim declines while it is in flight), rewrites rendezvous
 		// ownership to the replacement, swaps the session and re-roots the

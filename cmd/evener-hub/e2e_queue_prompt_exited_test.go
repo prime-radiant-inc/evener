@@ -43,22 +43,16 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	// Hold the background session namer past the opening turn, as a slow
-	// provider does on a loaded runner: its in-flight work is an obligation the
-	// daemon refuses to retire over, which a single retire request used to
-	// ignore and then wait out (#3876). The namer gives up on its own after
-	// agent's sessionNameTimeout (15s), far longer than this scripted turn takes.
-	// The deferred release runs before every t.Cleanup, so a held namer never
+	// provider does on a loaded runner. A user's retire now waits for a namer
+	// that is the only work (#3921; the agent's retirement tests pin that),
+	// but an autosave or other background work can still refuse one, so the
+	// daemon is retired until it accepts once the namer is released. The
+	// deferred release runs before every t.Cleanup, so a held namer never
 	// stalls the session's shutdown cleanup however the test ends; releasing
 	// twice is harmless.
 	releaseNamer := provider.HoldNamer()
 	defer releaseNamer()
 	ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
-	refused := requestDaemonRetire(ctx, t, client, ref)
-	if refused.Accepted || !slices.ContainsFunc(refused.Lifecycle.Blockers, func(blocker appwire.DaemonBlocker) bool {
-		return blocker.Category == "autonomous"
-	}) {
-		t.Fatalf("retire with the session namer in flight: accepted=%t lifecycle=%+v, want refused over an autonomous blocker", refused.Accepted, refused.Lifecycle)
-	}
 	releaseNamer()
 
 	// Exit the daemon.
