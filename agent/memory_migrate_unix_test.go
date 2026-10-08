@@ -95,6 +95,7 @@ func TestMigrateMemoryScopeSkipsAFIFOPage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	// TRIPWIRE: migration of a FIFO page returns in milliseconds; without a bound a regressed FIFO read would hang the whole test binary.
 	case <-time.After(10 * time.Second):
 		t.Fatal("migration blocked on a FIFO page")
 	}
