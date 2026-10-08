@@ -1123,6 +1123,34 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(false);
   });
 
+  // A remounted reader restores its retained place after its rows measure, so
+  // the mount saw only estimates that fit the port. The restore's own landing
+  // grows the content below an offset that advanced from 0; that is the
+  // reader's place, not a correction below an end they were following.
+  test("a retained placement's landing is the reader's place, not content measured in below the end", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 192, clientHeight: 400 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+        initialViewCapture: { anchorId: "i1", anchorOffset: -100, normalizedOffset: 0.08, followingBottom: false },
+      }),
+    );
+
+    act(() => {
+      el.scrollTop = 100;
+      set({ scrollTop: 100, scrollHeight: 1700 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(100);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   // The window round 1's geometry-only classifier left open (roborev, medium, on
   // 448e8a4): a native scroll event can coalesce the reader's own upward delta
   // with a virtualizer correction that EXCEEDS it, so the event's net geometry -
