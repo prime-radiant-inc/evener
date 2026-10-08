@@ -3,10 +3,8 @@ import { expect, it, vi } from "vitest";
 // the module's graph, which timed out a test under parallel load (#4031).
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 
-// Hoisted with the mocks that read them: the static import above evaluates
-// the module before this file's plain declarations would exist.
-const values = vi.hoisted(() => new Map<string, string>());
-const failure = vi.hoisted(() => ({ remove: false }));
+const values = new Map<string, string>();
+const failure = { remove: false };
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => values.get(key) ?? null,
