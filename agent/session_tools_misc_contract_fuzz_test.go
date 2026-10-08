@@ -128,37 +128,50 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 	}
 
 	// A generic completed tool round rests idle and never fabricates an
-	// ask-user hold. An input rests awaiting only when the first turn-ending
-	// communicate it accepted said needs_response, as the live settle reads it.
+	// ask-user hold. An input rests awaiting only when the turn-ending
+	// communicate it accepted said needs_response; that call's result carries
+	// the reason in its tool state. An input is the turns sharing a TurnID.
 	call := func(id, args string) llm.ToolCallData {
 		return llm.ToolCallData{ID: id, Name: "communicate", Arguments: json.RawMessage(args), Type: "function"}
+	}
+	in := func(turnID string, turns ...schema.Turn) []schema.Turn {
+		for i := range turns {
+			turns[i].TurnID = turnID
+		}
+		return turns
 	}
 	const (
 		done          = `{"message":"done","end_turn":true}`
 		needsResponse = `{"message":"which?","end_turn":true,"end_reason":"needs_response"}`
 	)
 	user := schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("go")}
+	steer := schema.Turn{Kind: schema.TurnSteering, Message: llm.User("job finished")}
 	for _, tc := range []struct {
 		name  string
 		turns []schema.Turn
 		want  SessionState
 	}{
-		{"plain reply", []schema.Turn{user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", true))}, SessionIdle},
-		{"waiting on work", []schema.Turn{user, stmAssistantTurn(call("c1", `{"message":"wait","end_turn":true,"end_reason":"waiting_on_work"}`)), stmToolResultsTurn(stmCommunicateResult("c1", true))}, SessionIdle},
-		{"needs response", []schema.Turn{user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", true), stmToolResult("other", "other", false))}, SessionAwaiting},
-		{"needs response that failed", []schema.Turn{user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmToolResult("c1", "communicate", true), stmToolResult("other", "other", false))}, SessionIdle},
-		{"needs response that kept the turn", []schema.Turn{user, stmAssistantTurn(call("c1", `{"message":"which?","end_turn":false,"end_reason":"needs_response"}`)), stmToolResultsTurn(stmCommunicateResult("c1", true))}, SessionIdle},
-		{"needs response that lost the capture", []schema.Turn{user, stmAssistantTurn(call("c1", done), call("c2", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", true), stmCommunicateResult("c2", false))}, SessionIdle},
-		{"needs response a Stop hook carried past", []schema.Turn{
+		{"plain reply", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "done"))), SessionIdle},
+		{"waiting on work", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "waiting_on_work"))), SessionIdle},
+		{"needs response", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"), stmToolResult("other", "other", false))), SessionAwaiting},
+		{"needs response that lost the capture", in("t1", user, stmAssistantTurn(call("c1", done), call("c2", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "done"), stmCommunicateResult("c2", ""))), SessionIdle},
+		{"needs response a Stop hook carried past", in("t1",
 			user,
-			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", true)),
-			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", false)),
-		}, SessionAwaiting},
-		{"needs response in an earlier input", []schema.Turn{
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
+		), SessionAwaiting},
+		{"needs response in an earlier input", append(
+			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
+			in("t2", user, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
+		), SessionIdle},
+		{"needs response before a notification-opened input", append(
+			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
+			in("t2", steer, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
+		), SessionIdle},
+		{"history without turn ids reads only the decisive round", []schema.Turn{
 			user,
-			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", true)),
-			user,
-			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", true)),
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
 		}, SessionIdle},
 	} {
 		if state := deriveRestoredState(tc.turns, 0, nil); state != tc.want {
@@ -170,11 +183,14 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 	}
 }
 
-// stmCommunicateResult is a communicate call's completed result, accepted or
-// losing the terminal capture.
-func stmCommunicateResult(id string, accepted bool) llm.ContentPart {
+// stmCommunicateResult is a communicate call's completed result. The call the
+// input accepted carries its end reason in its tool state; a call that lost
+// the terminal capture (reason "") carries none.
+func stmCommunicateResult(id, acceptedReason string) llm.ContentPart {
 	part := stmToolResult(id, "communicate", false)
-	part.ToolResult.Content = fmt.Sprintf(`{"accepted":%t,"end_turn":true,"inbox":[]}`, accepted)
+	if acceptedReason != "" {
+		part.ToolResult.ToolState = json.RawMessage(fmt.Sprintf(`{"end_reason":%q}`, acceptedReason))
+	}
 	return part
 }
 

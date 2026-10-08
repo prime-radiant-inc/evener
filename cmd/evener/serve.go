@@ -2058,8 +2058,9 @@ func printServeSandboxLine(w io.Writer, line string) {
 // the OS notification, notifications.js Task 11). Mirrors the gate's
 // predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
 // does not imply a pending question: a needs_response rest with no ask
-// pending must NOT be held; async wakes may move it on). EntryUserInput is always let
-// through since it is how the reply resolves a pending ask (spec §5.2).
+// pending must NOT be held; async wakes may move it on). EntryUserInput is
+// always let through since it is how the reply resolves a pending ask (spec
+// §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
 	return kind != agent.EntryUserInput && hasPendingAsk
 }

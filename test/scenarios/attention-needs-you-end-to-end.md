@@ -159,11 +159,12 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
 
 ### B. Interrupt variant — never shows awaiting (browser-free)
 
-5. Spawn a second session with a long-running prompt, in its own hermetic workdir:
+5. Spawn a second session with a long-running prompt that would end on `needs_response`
+   (so only the interrupt keeps it out of `awaiting`), in its own hermetic workdir:
    ```bash
    tmpdir2=$(mktemp -d -t evener-e2e-attn-interrupt-XXXXX)
    SID2=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Run \\\"sleep 60\\\" via the shell tool, then reply DONE.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir2\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Run \\\"sleep 60\\\" via the shell tool, then ask me whether to continue and end your turn with end_reason needs_response.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir2\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn" | jq -r '.session_id')
    # wait for the turn to actually be in flight
    for i in $(seq 1 15); do

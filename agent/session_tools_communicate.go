@@ -149,9 +149,21 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				}
 			}
 			b, _ := json.Marshal(resp)
+			if endTurn && accepted && endReason != "" {
+				// The accepted end reason rides the result's tool state, which
+				// restore reads (endedOnNeedsResponse): the result text can be
+				// truncated or carry a repeated-call nudge.
+				return tool.StateResult{Output: string(b), State: communicateEndState{EndReason: endReason}}, nil
+			}
 			return string(b), nil
 		},
 	})
+}
+
+// communicateEndState is the tool state of the turn-ending communicate call
+// the input accepted.
+type communicateEndState struct {
+	EndReason string `json:"end_reason"`
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this

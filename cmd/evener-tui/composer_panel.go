@@ -301,9 +301,8 @@ func (p composerPanel) View() string {
 	// pending (an unresolved ask_user call in the transcript), independent
 	// of the harness/model chip strip above — NOT merely whenever the
 	// session rests awaiting, since a needs_response turn rests there with
-	// nothing pending. ctrl+q is the ONLY way to
-	// open the question overlay — this chip is discoverability chrome, not
-	// a button.
+	// nothing pending. ctrl+q is the ONLY way to open the question overlay —
+	// this chip is discoverability chrome, not a button.
 	if p.AwaitingQuestion {
 		waitingStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
 		b.WriteString(waitingStyle.Render("◆ question waiting — ctrl+q to answer"))

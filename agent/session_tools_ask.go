@@ -717,54 +717,35 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 
 // endedOnNeedsResponse reports whether the input whose last round's tool
 // results sit at toolResultsIdx ended its turn on needs_response. The live
-// settle reads the first turn-ending communicate call the input accepted
+// settle reads the turn-ending communicate call the input accepted
 // (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
-// input on past it), so this finds that same call: the earliest end_turn=true
-// call, among this input's rounds, whose result says it was accepted. An
-// input is the run of turns sharing the decisive turn's TurnID; a legacy
-// history without turn ids ends the walk at the user input that opened it.
-// Only a root's communicate takes end_reason, so the call is found by its
-// arguments and result rather than by the result tool's name.
+// input on past it), and that call alone records its end reason in its
+// result's tool state, so this looks for that state among the input's
+// rounds: the turns sharing the decisive turn's TurnID. A history without
+// turn ids predates end_reason, so only the decisive round is read there.
+// Two narrow cases can still differ from live: a round a recovery reopen
+// reran under the same TurnID, and rounds a mid-input compaction dropped.
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 	turnID := history[toolResultsIdx].TurnID
-	accepted := map[string]bool{}
-	reason := ""
 	for j := toolResultsIdx; j >= 0; j-- {
 		turn := history[j]
-		if (turnID != "" && turn.TurnID != turnID) || (turnID == "" && turn.Kind == schema.TurnUserInput) {
+		if j != toolResultsIdx && (turnID == "" || turn.TurnID != turnID) {
 			break
 		}
-		switch turn.Kind {
-		case schema.TurnToolResults:
-			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError && communicateAccepted(part.ToolResult.Content) {
-					accepted[part.ToolResult.ToolCallID] = true
-				}
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
 			}
-		case schema.TurnAssistant:
-			for _, call := range assistantToolCalls(turn.Message) {
-				var args struct {
-					EndTurn   bool   `json:"end_turn"`
-					EndReason string `json:"end_reason"`
-				}
-				if accepted[call.ID] && json.Unmarshal(call.Arguments, &args) == nil && args.EndTurn {
-					reason = args.EndReason
-					break
-				}
+			var state communicateEndState
+			if json.Unmarshal(part.ToolResult.ToolState, &state) == nil && state.EndReason == tool.CommunicateEndReasonNeedsResponse {
+				return true
 			}
 		}
 	}
-	return reason == tool.CommunicateEndReasonNeedsResponse
-}
-
-// communicateAccepted reports whether a tool result is a communicate call's
-// response that says the call was accepted.
-func communicateAccepted(content any) bool {
-	text, _ := content.(string)
-	var resp struct {
-		Accepted bool `json:"accepted"`
-	}
-	return json.Unmarshal([]byte(text), &resp) == nil && resp.Accepted
+	return false
 }
 
 // deriveRestoredAskPending rebuilds the pending-ask SET from a restored

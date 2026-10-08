@@ -107,7 +107,7 @@ func fuzzExactState(t *testing.T) {
 
 	needsResponse := []schema.Turn{
 		stmAssistantTurn(llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`), Type: "function"}),
-		stmToolResultsTurn(stmCommunicateResult("c1", true)),
+		stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
 	}
 	restored := &Session{state: SessionIdle, history: needsResponse}
 	restored.recomputeRestoredState(0)

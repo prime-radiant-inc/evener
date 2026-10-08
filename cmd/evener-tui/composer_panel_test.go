@@ -43,8 +43,8 @@ func TestSessionComposerChipStripWidthMatchesWindowSize(t *testing.T) {
 // regression test for the "question waiting" chip outliving the question it
 // announces. A session also rests State=="awaiting" after a turn that ended
 // on needs_response — including the reply that resolves an ask_user
-// question — so AwaitingQuestion must key on
-// pendingAskQuestions (the same transcript scan question_overlay.go's
+// question — so AwaitingQuestion must key on pendingAskQuestions (the same
+// transcript scan question_overlay.go's
 // toggleAskOverlay uses), not on the raw wire state. m.detail.State is pinned
 // to "awaiting" in every case below so the assertions actually discriminate
 // pending-set-keying from state-keying; if AwaitingQuestion keyed on state

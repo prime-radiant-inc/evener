@@ -2202,7 +2202,7 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 		}
 		terminalEvents++
 		if data.Reason != "turn_failed" || data.State != string(SessionAwaiting) || data.Interrupted {
-			t.Fatalf("failed marker session-end = %+v, want turn_failed/Awaiting without interruption", data)
+			t.Fatalf("failed marker session-end = %+v, want turn_failed/awaiting without interruption", data)
 		}
 	}
 	if terminalEvents != 1 {

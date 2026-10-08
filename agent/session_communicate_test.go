@@ -669,7 +669,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 
 	// Parse the JSON to verify inbox is present but empty.
 	var resp2 map[string]any
-	if err := json.Unmarshal(toolResultJSON(res2), &resp2); err != nil {
+	if err := json.Unmarshal([]byte(res2.Output), &resp2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, exists := resp2["inbox"]; !exists {
@@ -1263,7 +1263,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if _, exists := resp["warning"]; exists {
@@ -1280,7 +1280,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		warning, ok := resp["warning"].(string)
@@ -1309,7 +1309,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if _, exists := resp["warning"]; exists {

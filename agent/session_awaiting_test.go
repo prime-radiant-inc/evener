@@ -449,3 +449,74 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 		t.Fatalf("state = %q, want idle while a child runs", got)
 	}
 }
+
+// restoreAfter runs inputs through a fresh session scripted with steps, then
+// restores it, returning the live and restored states.
+func restoreAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(context.Context, *Session)) (live, restored SessionState) {
+	t.Helper()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	dir := t.TempDir()
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	run(ctx, sess)
+	live = sess.State()
+	id := sess.ID()
+	sess.Close()
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai"})
+	again, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer again.Close()
+	return live, again.State()
+}
+
+// A model re-asking the same question makes a byte-identical communicate
+// call, which the repeated-call breaker answers with a nudge appended to its
+// result text. Restore still reads the accepted needs_response.
+func TestRestore_RepeatedNeedsResponseQuestionRestsAwaiting(t *testing.T) {
+	t.Parallel()
+	ask := func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") }
+	live, restored := restoreAfter(t, []func(llm.Request) llm.Response{ask, ask}, func(ctx context.Context, sess *Session) {
+		for _, in := range []string{"q1", "not yet"} {
+			if _, err := sess.ProcessInput(ctx, in, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if live != SessionAwaiting || restored != SessionAwaiting {
+		t.Fatalf("live %q, restored %q; want both awaiting", live, restored)
+	}
+}
+
+// An input opened by a notification wake reads only its own accepted call,
+// never the needs_response of the input before it.
+func TestRestore_NotificationAfterNeedsResponseRestsIdle(t *testing.T) {
+	t.Parallel()
+	live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
+		func(llm.Request) llm.Response { return endReasonResponse("noted the job", "") },
+	}, func(ctx context.Context, sess *Session) {
+		if _, err := sess.ProcessInput(ctx, "q1", nil); err != nil {
+			t.Fatal(err)
+		}
+		sess.enqueueJobNotification(watchNotification("job_wake", "output_match: done"))
+		if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if live != SessionIdle || restored != SessionIdle {
+		t.Fatalf("live %q, restored %q; want both idle", live, restored)
+	}
+}
