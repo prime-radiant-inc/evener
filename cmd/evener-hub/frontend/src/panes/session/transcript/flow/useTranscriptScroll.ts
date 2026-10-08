@@ -1126,14 +1126,14 @@ export function useTranscriptScroll({
   // session switch cannot be that event: the first scroll a newly-opened session
   // gets is its own mount scroll-to-end, which no gesture aimed at the previous
   // transcript is responsible for, and which is the landing this correction
-  // exists to get right. So the per-ref reset below clears them all - the three
+  // exists to get right. So the per-ref reset below clears them all - the
   // pieces of state and the pending clearing frame's handle, whose null is what
   // lets the new session's first gesture schedule a frame of its own - alongside
   // every other piece of per-session state.
-  const gesturePendingRef = useRef(false);
-  const gestureClearFrameRef = useRef<number | null>(null);
-  // Frames the pending marker has left before its clearing frame clears it.
+  // Frames the pending marker has left before its clearing frame clears it; a
+  // marker is pending while this is above zero.
   const gestureFramesLeftRef = useRef(0);
+  const gestureClearFrameRef = useRef<number | null>(null);
   const pointerDraggingRef = useRef(false);
   const middleButtonHeldRef = useRef(false);
   const lastTouchYRef = useRef<number | null>(null);
@@ -1185,15 +1185,14 @@ export function useTranscriptScroll({
         readerGestureRef.current = { beforeOffset: el.scrollTop, admitted: true };
       }
       pendingInitialEndRef.current = null;
-      gesturePendingRef.current = true;
       gestureFramesLeftRef.current = Math.max(gestureFramesLeftRef.current, frames);
       if (gestureClearFrameRef.current !== null) return;
       const clearOnFrame = () => {
         gestureClearFrameRef.current = requestAnimationFrame(() => {
           gestureFramesLeftRef.current -= 1;
           if (gestureFramesLeftRef.current > 0) return clearOnFrame();
+          gestureFramesLeftRef.current = 0;
           gestureClearFrameRef.current = null;
-          gesturePendingRef.current = false;
           readerGestureRef.current = undefined;
         });
       };
@@ -1204,9 +1203,8 @@ export function useTranscriptScroll({
   // Drops a pending marker and its clearing frame, for when no scroll it could
   // explain is still to come: the document went hidden, or the session changed.
   const forgetPendingMarker = useCallback(() => {
-    gesturePendingRef.current = false;
-    readerGestureRef.current = undefined;
     gestureFramesLeftRef.current = 0;
+    readerGestureRef.current = undefined;
     if (gestureClearFrameRef.current !== null) {
       cancelAnimationFrame(gestureClearFrameRef.current);
       gestureClearFrameRef.current = null;
@@ -1667,7 +1665,7 @@ export function useTranscriptScroll({
       // An end request made against the initial sizer can be clamped to zero.
       // Finish that fresh-open default once the real measured sizer commits.
       const retained = retainedPlacements.get(el);
-      if (retained?.logicalRef !== ref && !gesturePendingRef.current) {
+      if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
         scrollToLastRow(listRef, renderedRowCountRef.current);
         const metrics = measure(el);
         el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
@@ -1804,8 +1802,8 @@ export function useTranscriptScroll({
       // boundary alone cannot be trusted to clear it. A held middle button is
       // read rather than consumed - native autoscroll scrolls the port for as
       // long as it is down, so every scroll event it produces is the reader's.
-      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
-      gesturePendingRef.current = false;
+      const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
+      gestureFramesLeftRef.current = 0;
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving
       // backwards: the virtualizer correcting its own estimates, not the reader
@@ -1969,7 +1967,7 @@ export function useTranscriptScroll({
       // consumed: this is not the event a pending gesture caused (content
       // growth fires none), so the marker must survive for the scroll event
       // that the gesture's own movement still delivers.
-      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
+      const gestured = gestureFramesLeftRef.current > 0 || middleButtonHeldRef.current;
       const endLeftView = isEndBelowFold(m);
       // A vetoed correction MUST be retried: the marker can outlive this
       // trigger with no further resize or font event (a stationary
