@@ -393,6 +393,9 @@ test("Jump to live confirms its landing while viewport measurement is pending an
     expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
     await act(async () => screen.getByRole("button", { name: "Jump to live" }).click());
     expect(scene.port().scrollTop).toBe(2800);
+    // The landing's scroll event arrives in the next frame's scroll steps.
+    await act(async () => scene.frames.release());
+    expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
     expect(scene.flow().pillVisible).toBe(false);
     scene.geometry.rowHeights[2] = 1400;
     await act(async () => scene.external.notify());

@@ -573,7 +573,9 @@ test.each([
       geometry.rowHeights = [nextHeight, tailHeight];
       await act(async () => external.notify());
       await waitFor(() => expect(port.scrollTop).toBe(want));
-      expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want });
+      await waitFor(() =>
+        expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
+      );
       expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
         "current",
       );
@@ -631,6 +633,10 @@ test.each([
       geometry.rowHeights[0] = 700;
       await act(async () => external.notify());
       expect(port.scrollTop).toBe(intermediate);
+      // The reflow completes on its landing's scroll event, a frame before the resize.
+      await waitFor(() =>
+        expect(captureTranscriptView("viewport-reading")).toMatchObject({ anchorOffset: -intermediate }),
+      );
       geometry.viewportHeight = 436;
       await act(async () => external.notify((target) => target === port));
       expect(port.scrollTop).toBe(want);
@@ -708,6 +714,10 @@ test.each([
     geometry.entryBoxes[selector].height = 7036.171875;
     await act(async () => external.notify());
     expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
+    // The reflow completes on its landing's scroll event, a frame before the resize.
+    await waitFor(() =>
+      expect(captureTranscriptView("return-viewport-snapshot")?.readingPoint?.viewportHeight).toBe(480),
+    );
     geometry.viewportHeight = 516;
     await act(async () => external.notify((target) => target === port));
     expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
@@ -767,7 +777,12 @@ test("width-only reflow preserves useful content beside a Chat-filtered daemon s
     geometry.rowHeights[0] = 700;
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(225));
-    expect(captureTranscriptView("filtered-reading")).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 });
+    await waitFor(() =>
+      expect(captureTranscriptView("filtered-reading")).toMatchObject({
+        anchorId: "current-entry",
+        anchorOffset: -225,
+      }),
+    );
     expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
       "current",
     );
@@ -930,7 +945,9 @@ test.each(["zero width", "zero viewport", "zero row", "repeated widths"])(
       await act(async () => external.notify());
       const want = scene === "zero width" ? 825 : scene === "repeated widths" ? 450 : 225;
       await waitFor(() => expect(port.scrollTop).toBe(want));
-      expect(captureTranscriptView("recover")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want });
+      await waitFor(() =>
+        expect(captureTranscriptView("recover")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
+      );
       expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
         "current",
       );
@@ -1003,7 +1020,9 @@ test("width-only reflow retains the pre-arm capture when the real read view beco
     await act(async () => external.notify());
     await waitFor(() => expect(returnedPort.scrollTop).toBe(225));
     expect(view.getCapture()).toBe(transferred);
-    expect(captureTranscriptView(view.id)).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 });
+    await waitFor(() =>
+      expect(captureTranscriptView(view.id)).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 }),
+    );
   } finally {
     mounted?.unmount();
     lifetime.dispose();
@@ -1054,7 +1073,9 @@ test("width-only reflow transfers the original point through real display captur
     expect(publishedCapture).toMatchObject({ anchorId: "current-entry", anchorOffset: -900 });
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(225));
-    expect(captureTranscriptView("display-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 });
+    await waitFor(() =>
+      expect(captureTranscriptView("display-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: -225 }),
+    );
   } finally {
     unsubscribe?.();
     mounted?.unmount();
@@ -1090,7 +1111,9 @@ test("width-only reflow applies a real 300px prepend once", async () => {
     mounted.rerender(body({ ...model, turns: [readingRow("older"), ...model.turns] }));
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(750));
-    expect(captureTranscriptView("reflow-prepend")).toMatchObject({ anchorId: "current-entry", anchorOffset: -450 });
+    await waitFor(() =>
+      expect(captureTranscriptView("reflow-prepend")).toMatchObject({ anchorId: "current-entry", anchorOffset: -450 }),
+    );
     expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
       "current",
     );
@@ -1133,11 +1156,13 @@ test("width-only reflow retains original intent through a real clamp and later r
     geometry.rowHeights = [700, 96];
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(225));
-    expect(captureTranscriptView("clamp-reflow")).toMatchObject({
-      anchorId: "current-entry",
-      anchorOffset: -225,
-      followingBottom: false,
-    });
+    await waitFor(() =>
+      expect(captureTranscriptView("clamp-reflow")).toMatchObject({
+        anchorId: "current-entry",
+        anchorOffset: -225,
+        followingBottom: false,
+      }),
+    );
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1173,7 +1198,9 @@ test("width-only reflow mounts its known source after shrink removes it from the
     // The next observer delivery measures newly mounted overscan, including equal estimates.
     await act(async () => external.notify());
     await waitFor(() => expect(port.scrollTop).toBe(0));
-    expect(captureTranscriptView("outside-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+    await waitFor(() =>
+      expect(captureTranscriptView("outside-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 }),
+    );
     expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
       "current",
     );
@@ -1316,10 +1343,12 @@ test.each([
       expect(port.querySelector('[data-view-anchor-id="intent:removed"]')).toBeNull();
       await act(async () => external.notify());
       await waitFor(() => expect(port.scrollTop).toBe(want));
-      expect(captureTranscriptView("removed-reflow")).toMatchObject({
-        anchorId: "earlier-entry",
-        anchorOffset: wantOffset,
-      });
+      await waitFor(() =>
+        expect(captureTranscriptView("removed-reflow")).toMatchObject({
+          anchorId: "earlier-entry",
+          anchorOffset: wantOffset,
+        }),
+      );
       expect(port.querySelector('[data-view-anchor-id="removed"]')).toBeNull();
       expect(port.querySelector('[data-view-anchor-id="earlier-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
         "earlier",
@@ -1370,11 +1399,13 @@ test.each([
       mounted.rerender(body(true));
       await act(async () => external.notify());
       await waitFor(() => expect(port.scrollTop).toBe(want));
-      expect(captureTranscriptView("normalized-reflow")).toMatchObject({
-        anchorId: undefined,
-        anchorOffset: 0,
-        followingBottom,
-      });
+      await waitFor(() =>
+        expect(captureTranscriptView("normalized-reflow")).toMatchObject({
+          anchorId: undefined,
+          anchorOffset: 0,
+          followingBottom,
+        }),
+      );
       expect(port.querySelector('[data-testid="remaining-content"]')?.getBoundingClientRect().top).toBe(wantOffset);
     } finally {
       mounted?.unmount();
