@@ -526,19 +526,15 @@ type delegateSendState struct {
 	EarlierResults []delegateSendState `json:"earlier_results"`
 }
 
-// DelegateSendReplyBody shows what a delegate_send that waited got back:
-// the earlier results its wait carried, oldest first, each headed "earlier
-// reply i of n" (with its status when it didn't complete), then the
-// delegate's reply. It follows appwire-client's delegateSendResponse and
-// delegateSendEarlierResponses: the reply is the raw state's output, else
-// what the tool printed above its footer, unless the reply carried earlier
-// results, whose text is never its own. Unlike them it doesn't validate the
-// raw state's or the footer's fields; the caller only passes a
-// delegate_send's. "" when there is neither.
+// DelegateSendReplyBody shows what a delegate_send that waited got back: the
+// earlier results its wait carried, oldest first, then the delegate's reply.
+// It follows appwire-client's delegateSendResponse and
+// delegateSendEarlierResponses: the reply is the raw state's output, else what
+// the tool printed above its footer, unless the reply carried earlier results,
+// whose text is never its own.
 func DelegateSendReplyBody(raw, output string, width int) string {
 	var state delegateSendState
-	decoded := raw != "" && json.Unmarshal([]byte(raw), &state) == nil
-	if !decoded {
+	if json.Unmarshal([]byte(raw), &state) != nil {
 		// A failed decode can leave the struct partly filled.
 		state = delegateSendState{}
 	}
@@ -555,7 +551,7 @@ func DelegateSendReplyBody(raw, output string, width int) string {
 		blocks = append(blocks, heading.Render(label), text.Render(body))
 	}
 	reply := strings.TrimSpace(state.Output)
-	if reply == "" && (!decoded || len(state.EarlierResults) == 0) {
+	if reply == "" && len(state.EarlierResults) == 0 {
 		reply = delegateSendPrintedReply(output)
 	}
 	if reply != "" {
