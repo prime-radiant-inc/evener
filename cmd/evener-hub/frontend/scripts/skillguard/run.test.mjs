@@ -27,6 +27,7 @@ function renderRail(refs) {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  Reflect.deleteProperty(document, "elementFromPoint");
 });
 
 describe("railRowsExpr readiness predicate", () => {
@@ -99,9 +100,6 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
 // focused), but is found, scrolled to and hit-tested in the turn that returns
 // the point, never measured a turn earlier (#4071).
 describe("slashRowPointExpr hit-tests the skill's own row", () => {
-  afterEach(() => {
-    Reflect.deleteProperty(document, "elementFromPoint");
-  });
   function renderMenu() {
     document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button><button><span>/review</span></button></div>`;
     for (const button of document.querySelectorAll("button")) button.scrollIntoView = () => {};
@@ -118,13 +116,15 @@ describe("slashRowPointExpr hit-tests the skill's own row", () => {
     document.elementFromPoint = () => document.querySelector("button span");
     expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
   });
+
+  test("reports not ready while the row is absent", () => {
+    document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button></div>`;
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
+  });
 });
 
 // A tile's remove button is clicked in the turn it is found and hit-tested.
 describe("removeAttachmentExpr presses the first tile's remove button in one turn", () => {
-  afterEach(() => {
-    Reflect.deleteProperty(document, "elementFromPoint");
-  });
   function renderTiles() {
     document.body.innerHTML = `<div><div data-pane-scaffold="session:a"></div>${["one.png", "two.png"]
       .map((name) => `<div data-testid="attachment-tile"><button aria-label="Remove ${name}"><b>x</b></button></div>`)
