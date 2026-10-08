@@ -1,7 +1,7 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, settle } from "../renderNative.testkit";
 import { AccessPicker } from "./AccessPicker";
 import { sheetContext, TestSheet } from "./newSessionTestUtils";
 
@@ -14,11 +14,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 /** Access for paradise-park's evener, whose hub default is `defaults`. */
 async function mount(defaults: Record<string, unknown>, launchOverrides: Record<string, unknown> = {}, refuse = false) {
