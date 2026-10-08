@@ -1,4 +1,4 @@
-import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChanged, installActivityFixture } from "./sessionActivityTestUtils";
 // The Activity list (spec 9): a coordinator's subagents and shell jobs, read
 // through typed activity reads, with live work and independent quiet histories,
 // the strip, the chips, search, and each row's why and last line.
@@ -151,17 +151,7 @@ async function settle() {
 
 // The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	act(() =>
-		hubClient.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: "coord",
-				sessionId: "coord",
-				ref: "local:coord",
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => hubClient.emitNotification(activityChanged({ ref: "local:coord", threadId: "coord" })));
 	await settle();
 }
 
