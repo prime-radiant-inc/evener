@@ -138,6 +138,21 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = filled
 	}
+	// The tool's own normalizer runs before the schema gate, in the same
+	// place dispatch runs it, so values it removes (task_list placeholders)
+	// are gone before validation or generic repair can judge them. Dispatch
+	// runs it again; normalizers are idempotent. A normalizer error is a
+	// validation refusal, as at dispatch. read_transcript is the exception:
+	// preparation normalizes it above and after repair, recording each change,
+	// and its registered normalizer exists for the registry gate alone.
+	if t.NormalizeArgs != nil && t.Definition.Name != "read_transcript" {
+		normalized, err := t.NormalizeArgs(args)
+		if err != nil {
+			res.PrevalErr = err.Error()
+			return res
+		}
+		args = normalized
+	}
 	if t.PreValidate != nil {
 		if err := t.PreValidate(args); err != nil {
 			res.PrevalErr = err.Error()

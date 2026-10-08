@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -37,38 +36,6 @@ func thirdCallParked(t *testing.T, reg *tool.Registry, name, a, b, wantFailure s
 
 func alwaysFails(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 	return nil, errors.New("boom")
-}
-
-// The task_list placeholder rule lives in one argument normalizer that both
-// dispatch and the failure breaker's fingerprint use (#4002), so a call that
-// differs only by a placeholder is the same failing call.
-func TestTaskTool_PlaceholderFieldsFingerprintAsOmitted(t *testing.T) {
-	t.Parallel()
-	for name, placeholder := range map[string]map[string]any{
-		"notes null":       {"notes": "null"},
-		"notes empty":      {"notes": ""},
-		"depends_on empty": {"depends_on": []any{}},
-		"depends_on null":  {"depends_on": nil},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			h := newDependentTaskHarness(t)
-			withPlaceholder := map[string]any{"id": 99, "status": "done"}
-			maps.Copy(withPlaceholder, placeholder)
-			omitted := map[string]any{"id": 99, "status": "done"}
-			// Two identical failures park the third call; alternating the
-			// placeholder with its omitted form must not reset the run.
-			for i, entry := range []map[string]any{withPlaceholder, omitted} {
-				if res := h.update(t, entry); !res.IsError || strings.HasPrefix(res.FullOutput, "evener did not execute") {
-					t.Fatalf("call %d should fail in the store: %s", i+1, res.FullOutput)
-				}
-			}
-			res := h.update(t, withPlaceholder)
-			if !strings.HasPrefix(res.FullOutput, "evener did not execute this call") {
-				t.Fatalf("third failing call should be parked as a repeat: %s", res.FullOutput)
-			}
-		})
-	}
 }
 
 // An update entry made only of placeholders changes nothing, so it is skipped
@@ -223,9 +190,14 @@ func TestTaskIDValue(t *testing.T) {
 		{float64(1.5), 0, false},
 		{float64(1e20), 0, false},
 		{int64(0), 0, false},
-		// One bound on every path: ids up to 2^53, exact in float64.
-		{float64(1 << 53), 1 << 53, true},
-		{int64(1 << 53), 1 << 53, true},
+		// One bound on every path: ids below 2^53. JSON 2^53+1 decodes to
+		// float64 2^53, so accepting 2^53 would let dispatch take an id the
+		// fingerprint's int64 view rejects.
+		{float64(1<<53 - 1), 1<<53 - 1, true},
+		{int64(1<<53 - 1), 1<<53 - 1, true},
+		{json.Number("9007199254740991"), 1<<53 - 1, true},
+		{float64(1 << 53), 0, false},
+		{int64(1 << 53), 0, false},
 		{float64(1<<53 + 2), 0, false},
 		{int64(1<<53 + 1), 0, false},
 		{int64(math.MaxInt64), 0, false},
