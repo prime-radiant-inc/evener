@@ -51,19 +51,19 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
-	// heldCommit acknowledges, before commit, the held earlier result the
-	// reply carries (result.Earlier).
-	heldCommit *delegateToolResultCommit
+	// earlierCommits acknowledge, in order and before commit, the earlier
+	// results the reply carries (result.Earlier).
+	earlierCommits []*delegateToolResultCommit
 }
 
 // inlineOutcome is the send's reply for a resolved inline wait: result, which
-// already carries the newest result, plus the held earlier result the wait
-// collected with its commit (#3906).
+// already carries the newest result, plus the earlier results the wait
+// collected, oldest first, with their commits (#3906, #3951).
 func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
 	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
-	if earlier := resolution.earlier; earlier != nil {
-		outcome.result.Earlier = []delegatestore.TerminalPacket{earlier.packet}
-		outcome.heldCommit = earlier.commit
+	for _, earlier := range resolution.earlier {
+		outcome.result.Earlier = append(outcome.result.Earlier, earlier.packet)
+		outcome.earlierCommits = append(outcome.earlierCommits, earlier.commit)
 	}
 	return outcome
 }

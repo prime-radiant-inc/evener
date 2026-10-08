@@ -250,7 +250,7 @@ func TestFailureFingerprint_KeyOrderWhitespaceAndIntentAreEquivalent(t *testing.
 // A value that looks like a default is presence, not omission. Fields are
 // dropped by name only, so each of these keeps its own fingerprint rather than
 // folding into the omitted form. read_transcript's offset_bytes=0 selects the
-// retained-page operation and task_list's depends_on: [] clears dependencies; a
+// retained-page operation and task_list's depends_on: [0] clears dependencies; a
 // provider-materialized default is a real argument too.
 func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	base := fp("read_transcript", `{"transcript_ref":"job:j1"}`)
@@ -272,6 +272,31 @@ func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	// Empty and absent arguments are the same call.
 	if fp("read_transcript", ``) != fp("read_transcript", `{}`) {
 		t.Errorf("empty and {} must fingerprint the same")
+	}
+}
+
+// task_list's update contract reads an empty or null depends_on as no change,
+// so those placeholders are the same call as leaving it out; [0] clears and
+// keeps its own fingerprint, as does a placeholder on add or outside task_list.
+func TestFailureFingerprint_TaskListPlaceholderDependsOnIsOmitted(t *testing.T) {
+	omitted := fp("task_list", `{"update":[{"id":2,"status":"done"}]}`)
+	for _, args := range []string{
+		`{"update":[{"id":2,"status":"done","depends_on":[]}]}`,
+		`{"update":[{"id":2,"status":"done","depends_on":null}]}`,
+	} {
+		if got := fp("task_list", args); got != omitted {
+			t.Errorf("fingerprint(%s) = %q, want the omitted form %q", args, got, omitted)
+		}
+	}
+	if fp("task_list", `{"update":[{"id":2,"status":"done","depends_on":[0]}]}`) == omitted {
+		t.Error("depends_on: [0] clears dependencies and must not fingerprint as omitted")
+	}
+	addOmitted := fp("task_list", `{"add":[{"type":"fix","description":"d","prompt":"p"}]}`)
+	if fp("task_list", `{"add":[{"type":"fix","description":"d","prompt":"p","depends_on":null}]}`) == addOmitted {
+		t.Error("add's depends_on contract is unchanged; a null there must keep its own fingerprint")
+	}
+	if fp("other_tool", `{"update":[{"id":2,"depends_on":[]}]}`) == fp("other_tool", `{"update":[{"id":2}]}`) {
+		t.Error("only task_list's contract folds a placeholder depends_on")
 	}
 }
 

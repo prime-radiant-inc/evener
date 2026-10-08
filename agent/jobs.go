@@ -2329,11 +2329,14 @@ func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fro
 	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
 }
 
-// grepOutputFile greps a closed job's visible output, refusing it before any
+// grepOutputFile greps a closed job's visible output through one opened
+// regular file (reopened once on a concurrent change), refusing it before any
 // scanning when its metadata total disagrees with rec.
 func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstore.JobRecord) ([]jobstore.Match, error) {
-	return jobstore.GrepOutputFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
-		return checkOutputTotalForRecord(rec, total)
+	return readOpenedJobOutput(path, func(f *os.File) ([]jobstore.Match, error) {
+		return jobstore.GrepOutputFileLimitFromFile(path, f, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
+			return checkOutputTotalForRecord(rec, total)
+		})
 	})
 }
 
