@@ -373,7 +373,7 @@ func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
 	sess := newSession(t, withAdapter(f))

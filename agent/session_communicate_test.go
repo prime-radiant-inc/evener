@@ -492,7 +492,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},
@@ -539,7 +539,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},

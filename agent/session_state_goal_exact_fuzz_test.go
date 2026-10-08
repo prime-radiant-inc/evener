@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -104,12 +105,16 @@ func fuzzExactState(t *testing.T) {
 	boundary := &Session{state: SessionProcessing, events: make(chan events.SessionEvent, 4), clock: agenttest.NewFakeClock()}
 	boundary.finishProcessingAtBoundary(context.WithValue(context.Background(), pendingWatchSendDrainFaultKey{}, errors.New("drain")), SessionIdle)
 
-	restored := &Session{state: SessionIdle, history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))}}
+	needsResponse := []schema.Turn{
+		stmAssistantTurn(llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`), Type: "function"}),
+		stmToolResultsTurn(stmToolResult("c1", "communicate", false)),
+	}
+	restored := &Session{state: SessionIdle, history: needsResponse}
 	restored.recomputeRestoredState(0)
 	if restored.state != SessionAwaiting {
 		t.Fatalf("restored state = %q", restored.state)
 	}
-	restored = &Session{state: SessionIdle, history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))}}
+	restored = &Session{state: SessionIdle, history: needsResponse}
 	restored.enqueueJobNotification(jobNotification{JobID: "pending"})
 	restored.recomputeRestoredState(0)
 	if restored.state != SessionIdle {

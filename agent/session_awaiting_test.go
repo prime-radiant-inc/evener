@@ -78,40 +78,67 @@ func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
 	}
 }
 
-func TestProcessInput_CleanCompletionArmsAwaiting(t *testing.T) {
+// endReasonResponse is a turn-ending communicate call that states reason
+// (none when reason is empty).
+func endReasonResponse(message, reason string) llm.Response {
+	args := map[string]any{"message": message}
+	if reason != "" {
+		args["end_reason"] = reason
+	}
+	return toolCallResponse(communicateCallArgs("communicate_test_call", args))
+}
+
+// A clean completion rests by the reason its communicate gave: awaiting only
+// when the agent needs a response, idle for a plain reply and for a wait on
+// work. The SessionEnd event carries the same state.
+func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
-	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	eventsPtr, mu, doneCh := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after clean completion = %q, want %q", got, SessionAwaiting)
-	}
-	sess.Close()
-	<-doneCh
-	mu.Lock()
-	defer mu.Unlock()
-	for _, ev := range *eventsPtr {
-		if ev.Kind == events.EventSessionEnd {
-			d, ok := ev.Data.(events.SessionEndData)
-			if !ok {
-				t.Fatal("SessionEnd data type")
+	for _, tc := range []struct {
+		reason string
+		want   SessionState
+	}{
+		{reason: "", want: SessionIdle},
+		{reason: "done", want: SessionIdle},
+		{reason: "waiting_on_work", want: SessionIdle},
+		{reason: "needs_response", want: SessionAwaiting},
+	} {
+		t.Run("reason="+tc.reason, func(t *testing.T) {
+			t.Parallel()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return endReasonResponse("done", tc.reason) },
+			}})
+			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+			if err != nil {
+				t.Fatal(err)
 			}
-			if d.Reason == "input_complete" && d.State != string(SessionAwaiting) {
-				t.Fatalf("SessionEnd.State = %q, want %q", d.State, SessionAwaiting)
+			eventsPtr, mu, doneCh := collectEvents(sess)
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+				t.Fatal(err)
 			}
-		}
+			if got := sess.State(); got != tc.want {
+				t.Fatalf("state after clean completion = %q, want %q", got, tc.want)
+			}
+			sess.Close()
+			<-doneCh
+			mu.Lock()
+			defer mu.Unlock()
+			ended := false
+			for _, ev := range *eventsPtr {
+				if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason == "input_complete" {
+					ended = true
+					if d.State != string(tc.want) {
+						t.Fatalf("SessionEnd.State = %q, want %q", d.State, tc.want)
+					}
+				}
+			}
+			if !ended {
+				t.Fatal("no input_complete SessionEnd")
+			}
+		})
 	}
 }
 
@@ -142,8 +169,8 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("one") },
-		func(req llm.Request) llm.Response { return finalResponse("two") },
+		func(req llm.Request) llm.Response { return endReasonResponse("one", "needs_response") },
+		func(req llm.Request) llm.Response { return endReasonResponse("two", "needs_response") },
 	}})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
@@ -217,7 +244,7 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("done") },
+		func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") },
 	}})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
@@ -239,47 +266,53 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	}
 }
 
-// TestRestore_AgentLastTurnResumesAwaiting pins the resume-recompute contract
-// (spec v5, round-3 A2): a restored session whose persisted transcript ends
-// with the agent having moved last resumes `awaiting`, not `idle`. Queues and
-// notification buffers are never persisted and goals are deliberately not
-// re-kicked on restore ("loaded but idle"), so without this recompute a
-// restored mid-goal or post-reply session would silently read idle even
-// though the ball is in the user's court.
-func TestRestore_AgentLastTurnResumesAwaiting(t *testing.T) {
+// A restored session rests by the reason its last communicate gave, exactly
+// as the live settle did: awaiting only when the agent needs a response.
+func TestRestore_RestsByEndReason(t *testing.T) {
 	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("answer") },
-	}})
-	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
-		t.Fatal(err)
-	}
-	id := sess.ID()
-	sess.Close()
+	for _, tc := range []struct {
+		reason string
+		want   SessionState
+	}{
+		{reason: "", want: SessionIdle},
+		{reason: "waiting_on_work", want: SessionIdle},
+		{reason: "needs_response", want: SessionAwaiting},
+	} {
+		t.Run("reason="+tc.reason, func(t *testing.T) {
+			t.Parallel()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
+			}})
+			dir := t.TempDir()
+			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
+				t.Fatal(err)
+			}
+			id := sess.ID()
+			sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, id)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-
-	c2 := llm.NewClient()
-	c2.Register(&fakeAdapter{name: "openai"})
-	restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored agent-last session state = %q, want awaiting", got)
+			meta, err := schema.LoadSessionMeta(dir, id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			c2 := llm.NewClient()
+			c2.Register(&fakeAdapter{name: "openai"})
+			restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMeta: %v", err)
+			}
+			defer restored.Close()
+			if got := restored.State(); got != tc.want {
+				t.Fatalf("restored state = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -135,7 +135,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 						capturedOutput = json.RawMessage(`null`)
 					}
 				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
 			}
 
 			resp := map[string]any{

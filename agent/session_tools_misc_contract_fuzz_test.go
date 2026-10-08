@@ -127,17 +127,32 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		t.Fatalf("error-only ask round created pending state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 
-	// A generic completed tool round rests awaiting but never fabricates an
-	// ask-user hold.
-	generic := []schema.Turn{
-		stmAssistantTurn(llm.ToolCallData{ID: "communicate", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","end_turn":true}`), Type: "function"}),
-		stmToolResultsTurn(stmToolResult("communicate", "communicate", false)),
+	// A generic completed tool round rests idle and never fabricates an
+	// ask-user hold; one that ended on needs_response rests awaiting, but only
+	// when that communicate call completed.
+	endedOn := func(args string, isError bool) []schema.Turn {
+		return []schema.Turn{
+			stmAssistantTurn(llm.ToolCallData{ID: "communicate", Name: "communicate", Arguments: json.RawMessage(args), Type: "function"}),
+			stmToolResultsTurn(stmToolResult("communicate", "communicate", isError), stmToolResult("other", "other", false)),
+		}
 	}
-	if state := deriveRestoredState(generic, 0, nil); state != SessionAwaiting {
-		t.Fatalf("generic completed round restored as %q, want %q", state, SessionAwaiting)
-	}
-	if pending, isAskRound := deriveRestoredAskPending(generic, 0, nil); isAskRound || len(pending) != 0 {
-		t.Fatalf("generic completion created ask state: pending=%#v isAskRound=%v", pending, isAskRound)
+	for _, tc := range []struct {
+		name  string
+		turns []schema.Turn
+		want  SessionState
+	}{
+		{"plain reply", endedOn(`{"message":"done","end_turn":true}`, false), SessionIdle},
+		{"waiting on work", endedOn(`{"message":"done","end_turn":true,"end_reason":"waiting_on_work"}`, false), SessionIdle},
+		{"needs response", endedOn(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`, false), SessionAwaiting},
+		{"needs response that failed", endedOn(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`, true), SessionIdle},
+		{"needs response that kept the turn", endedOn(`{"message":"which?","end_turn":false,"end_reason":"needs_response"}`, false), SessionIdle},
+	} {
+		if state := deriveRestoredState(tc.turns, 0, nil); state != tc.want {
+			t.Fatalf("%s: restored as %q, want %q", tc.name, state, tc.want)
+		}
+		if pending, isAskRound := deriveRestoredAskPending(tc.turns, 0, nil); isAskRound || len(pending) != 0 {
+			t.Fatalf("%s: created ask state: pending=%#v isAskRound=%v", tc.name, pending, isAskRound)
+		}
 	}
 }
 
