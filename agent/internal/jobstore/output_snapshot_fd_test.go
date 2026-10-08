@@ -265,9 +265,9 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppend(t *testing.T) {
 func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.T) {
 	for _, api := range []string{"snapshot", "window", "page"} {
 		t.Run(api, func(t *testing.T) {
-			read := func(noFault bool) (int, error) {
+			read := func(fault bool) (int, error) {
 				path, f := newOutputSnapshotFile(t, 1024, "stable\n")
-				fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path, noFault: noFault}
+				fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path, fault: fault}
 				var err error
 				switch api {
 				case "snapshot":
@@ -282,10 +282,10 @@ func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.
 			// The precondition: without the fault, the attempt's change is the
 			// read's result, and the second metadata open is the observation
 			// after the attempt.
-			if opens, err := read(true); !errors.Is(err, errOutputChanged) || opens != 2 {
+			if opens, err := read(false); !errors.Is(err, errOutputChanged) || opens != 2 {
 				t.Fatalf("unfaulted read = %v after %d metadata opens, want errOutputChanged after 2", err, opens)
 			}
-			if _, err := read(false); !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
+			if _, err := read(true); !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
 				t.Fatalf("error = %v, want original post-read observation error", err)
 			}
 		})
@@ -399,12 +399,12 @@ var errFDPostReadObservation = errors.New("fd snapshot test: post-read observati
 // fdPostReadObservationFaultFS makes a descriptor read's attempt see a real
 // change. During the observation before the attempt it renames a new file
 // over the path, so the attempt's generation check returns errOutputChanged
-// without reading metadata. Unless noFault is set, it then fails the next
+// without reading metadata. When fault is set, it then fails the next
 // metadata open, which is the observation after the attempt.
 type fdPostReadObservationFaultFS struct {
 	afero.Fs
 	path      string
-	noFault   bool
+	fault     bool
 	metaOpens int
 }
 
@@ -421,7 +421,7 @@ func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
 				return nil, err
 			}
 		case 2:
-			if !fs.noFault {
+			if fs.fault {
 				return nil, errFDPostReadObservation
 			}
 		}
