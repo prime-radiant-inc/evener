@@ -1,0 +1,21 @@
+/* compact_context's expanded body: one labeled block per request field.
+   Labels use the meta-table idiom (sentence-case caption-size sans in
+   --ink-mid), not eyebrows - "Note to self" is three words and the eyebrow
+   recipe caps at two (design-system.md section 6). */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+
+.label {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+/* Skill names are machine identifiers (design-system.md section 1:
+   JetBrains Mono for code, commands, paths and machine identifiers). */
+.skills {
+  font-family: var(--font-mono);
+}

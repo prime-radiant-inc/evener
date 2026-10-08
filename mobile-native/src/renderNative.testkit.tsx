@@ -681,6 +681,17 @@ export async function settle(): Promise<void> {
 	});
 }
 
+/** Waits for `check` inside one act scope, so the updates it lets through
+ * stay in act. Default-priority renders flush only when the scope exits, so
+ * `check` should read wire or store state; sync-priority renders (a
+ * useSyncExternalStore store's update) do land while it waits. To wait on
+ * the rendered tree, poll so act exits between checks instead. */
+export async function until(check: () => void): Promise<void> {
+	await act(async () => {
+		await vi.waitFor(check);
+	});
+}
+
 /** renderHook, in the one shape this package needs: a component that calls
  * `hook()` every render, plus the rerender/unmount the harness drives. */
 export function renderHook<T>(hook: () => T): {

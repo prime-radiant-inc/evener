@@ -1,7 +1,7 @@
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { organizationJournal } from "../nativeOrganization";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, until } from "../renderNative.testkit";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import { useBoardOrganization } from "./useBoardOrganization";
 
@@ -25,11 +25,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connectio
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => harness.focused }));
 
 const hub = { id: "hub-1", name: "Work hub" };
-async function until(check: () => void) {
-	await act(async () => {
-		await vi.waitFor(check);
-	});
-}
 beforeEach(() => {
 	harness.values.clear();
 	harness.focused = true;

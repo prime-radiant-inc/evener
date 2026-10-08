@@ -237,6 +237,13 @@ export function VirtualList({
       }
     : {};
 
+  // A measured list keeps the reader's place across row measurements (the
+  // size-change rule below, and completing scroll writes the browser clamped)
+  // while following the end, and always for a reader (onLayout): TranscriptBody
+  // turns anchorToEnd off while a retained placement is pending. onLayout also
+  // feeds the rule's movement record, which outlives the core's scroll
+  // direction (reset 150ms after the last scroll).
+  const keepsPlaceOnMeasure = dynamic && (anchorToEnd || onLayout !== undefined);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count,
     getScrollElement: () => scrollRef.current,
@@ -248,7 +255,7 @@ export function VirtualList({
     ...(anchorToEnd
       ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
       : {}),
-    ...(dynamic && anchorToEnd
+    ...(keepsPlaceOnMeasure
       ? {
           scrollToFn: (offset, options, instance) => {
             elementScroll(offset, options, instance);
@@ -323,19 +330,15 @@ export function VirtualList({
   // Width changes can remeasure cached rows during a backward gesture.
   // Anchor rows fully above the viewport while retaining the upstream
   // protection against adjustment within a partially visible backward row.
-  // A reader keeps this rule while anchorToEnd is off: onLayout is what feeds
-  // its movement record, which outlives the core's scroll direction (reset
-  // 150ms after the last scroll event).
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
-    dynamic && (anchorToEnd || onLayout)
-      ? (item, _delta, instance) => {
-          // The intended offset includes earlier adjustments in this batch,
-          // even before the DOM sizer grows enough to accept those writes.
-          const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
-          const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
-          return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
-        }
-      : undefined;
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = keepsPlaceOnMeasure
+    ? (item, _delta, instance) => {
+        // The intended offset includes earlier adjustments in this batch,
+        // even before the DOM sizer grows enough to accept those writes.
+        const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
+        const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
+        return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
+      }
+    : undefined;
 
   useImperativeHandle(
     ref,

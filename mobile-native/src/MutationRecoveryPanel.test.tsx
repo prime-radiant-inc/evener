@@ -24,7 +24,7 @@ import {
 	type RecoveryPanelSurface,
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
-import { render, renderedText, renderHook } from "./renderNative.testkit";
+import { render, renderedText, renderHook, settle } from "./renderNative.testkit";
 import type { NativeMutationRecoveryRuntime } from "./useNativeMutationRecovery";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
@@ -195,12 +195,6 @@ function fakeRuntime(overrides: Partial<NativeMutationRecoveryRuntime> = {}): Na
 	};
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 it("counts no rows while the snapshot is empty and counts them when rows arrive", async () => {
 	const targetKey = JSON.stringify(["hub-a", "ref-a"]);
 	let rows: MutationRecoveryRecord<MutationAttachmentRef>[] = [];
@@ -215,12 +209,12 @@ it("counts no rows while the snapshot is empty and counts them when rows arrive"
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	expect(recoveryRowCount(result.current)).toBe(0);
 
 	rows = [recovery(targetKey, "row-1", 1, "rejected")];
 	act(() => result.current.retry());
-	await flush();
+	await settle();
 	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
@@ -238,7 +232,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 			acquire,
 		}),
 	);
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeInstanceOf(Error);
 	expect(result.current.failed).toBe(true);
@@ -247,7 +241,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 
 	mode = "ok";
 	act(() => result.current.retry());
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
@@ -268,13 +262,13 @@ it("surfaces a rejected discard instead of leaving an unhandled rejection", asyn
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeInstanceOf(Error);
 	expect(recoveryFailureMessage(result.current.error)).toBe("discard failed");
@@ -290,13 +284,13 @@ it("leaves no failure after a successful discard", async () => {
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeNull();
 });
@@ -329,14 +323,14 @@ it("refreshes a failed read on retry", async () => {
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 	expect(result.current.failed).toBe(true);
 	expect(recoveryRowCount(result.current)).toBe(0);
 
 	failing = false;
 	act(() => result.current.retry());
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeNull();
 	expect(recoveryRowCount(result.current)).toBe(1);
@@ -408,15 +402,15 @@ it("clears a stale acquisition failure when a later acquisition succeeds", async
 			acquire,
 		}),
 	);
-	await flush();
+	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 
 	connected = false;
 	rerender();
-	await flush();
+	await settle();
 	connected = true;
 	rerender();
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeNull();
 	expect(recoveryRowCount(result.current)).toBe(1);
@@ -438,19 +432,19 @@ it("clears an in-scope discard failure after a later successful discard", async 
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 
 	fail = false;
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 	expect(result.current.error).toBeNull();
 });
 
@@ -470,18 +464,18 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 
 	hubId = "hub-b";
 	targetRef = "ref-b";
 	rerender();
-	await flush();
+	await settle();
 
 	expect(result.current.error).toBeNull();
 	expect(recoveryRowCount(result.current)).toBe(1);
@@ -519,17 +513,17 @@ it("does not resurface a stale acquisition failure after a target round-trip", a
 			acquire,
 		}),
 	);
-	await flush();
+	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 
 	targetRef = "ref-b";
 	rerender();
-	await flush();
+	await settle();
 	expect(result.current.error).toBeNull();
 
 	targetRef = "ref-a";
 	rerender();
-	await flush();
+	await settle();
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
 });
@@ -554,7 +548,7 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 			acquire: () => runtime,
 		}),
 	);
-	await flush();
+	await settle();
 	const row = projectNativeMutationRecovery(result.current.targetKey, result.current.snapshot)[0];
 	act(() => {
 		result.current.discard(row);
@@ -562,14 +556,14 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 	act(() => {
 		result.current.discard(row);
 	});
-	await flush();
+	await settle();
 	expect(result.current.error).toBeNull();
 
 	await act(async () => {
 		rejectFirst(new Error("stale discard failed"));
 		await Promise.resolve();
 	});
-	await flush();
+	await settle();
 	expect(result.current.error).toBeNull();
 });
 

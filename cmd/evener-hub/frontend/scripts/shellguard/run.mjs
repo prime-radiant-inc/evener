@@ -574,8 +574,7 @@ export async function clickControl(send, selector) {
 
 async function pressKey(send, key, code, keyCode, modifiers = 0) {
   for (const type of ["keyDown", "keyUp"]) {
-    await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode, modifiers,
+    await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode, modifiers,
       ...(type === "keyDown" && key === "Enter" && modifiers === 0 ? { text: "\r" } : {}) });
   }
 }
