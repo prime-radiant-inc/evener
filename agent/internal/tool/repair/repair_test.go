@@ -225,3 +225,41 @@ func TestRepairArgs_Order_AliasBeforeDrop(t *testing.T) {
 		}
 	}
 }
+
+func emptyEnumParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode":     map[string]any{"type": "string", "enum": []any{"fast", "slow"}},
+			"kind":     map[string]any{"type": "string", "enum": []string{"a", "b"}},
+			"blankok":  map[string]any{"type": "string", "enum": []any{"", "x"}},
+			"nullok":   map[string]any{"type": []any{"string", "null"}, "enum": []any{"x", nil}},
+			"freeform": map[string]any{"type": "string"},
+		},
+		"required": []any{"kind"},
+	}
+}
+
+func TestRepairArgs_EmptyOptionalEnumIsAbsent(t *testing.T) {
+	for _, value := range []any{"", nil} {
+		out, changes := RepairArgs(emptyEnumParams(), map[string]any{"kind": "a", "mode": value})
+		if !reflect.DeepEqual(out, map[string]any{"kind": "a"}) {
+			t.Fatalf("mode=%#v: got %v", value, out)
+		}
+		if len(changes) != 1 || changes[0].Kind != ChangeNormalizeDefault || changes[0].Field != "mode" {
+			t.Fatalf("mode=%#v: changes = %+v", value, changes)
+		}
+	}
+}
+
+func TestRepairArgs_EmptyEnumKeptWhenRequiredOrAllowedOrNotEnum(t *testing.T) {
+	args := map[string]any{"kind": "", "blankok": "", "nullok": nil, "freeform": nil}
+	out, changes := RepairArgs(emptyEnumParams(), args)
+	if !reflect.DeepEqual(out, args) {
+		t.Fatalf("got %v, want unchanged %v", out, args)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected no changes, got %+v", changes)
+	}
+}

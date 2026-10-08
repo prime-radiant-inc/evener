@@ -1,12 +1,14 @@
 // Package repair heals off-distribution LLM tool calls: it renames aliased
-// parameters, coerces mistyped scalars, drops hallucinated keys, and fixes
-// broken JSON escapes. It is a pure, standard-library-only leaf package; the
-// caller supplies a tool's JSON-Schema parameter object and the parsed args.
+// parameters, coerces mistyped scalars, drops optional enum arguments sent as
+// "" or null, drops hallucinated keys, and fixes broken JSON escapes. It is a
+// pure, standard-library-only leaf package; the caller supplies a tool's
+// JSON-Schema parameter object and the parsed args.
 package repair
 
 import (
 	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -50,7 +52,8 @@ var aliasTable = map[string]string{
 }
 
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
-// It applies, in order, aliasing, coercion (Task 2), and drop-unknown (Task 3).
+// It applies, in order, aliasing, coercion, dropping empty optional enums, and
+// drop-unknown.
 // It never mutates its input; it returns a fresh map plus the changes made.
 func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
 	out := make(map[string]any, len(args))
@@ -58,6 +61,7 @@ func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
 	changes = append(changes, applyCoercions(params, out)...)
+	changes = append(changes, dropEmptyOptionalEnums(params, out)...)
 	changes = append(changes, dropUnknown(params, out)...)
 	return out, changes
 }
@@ -197,6 +201,31 @@ func nullableUnionNonNullType(v any) string {
 		return first
 	}
 	return ""
+}
+
+// dropEmptyOptionalEnums removes an optional enum argument sent as "" or null,
+// which models often send for a field they mean to leave out, so the
+// parameter's documented default applies. A required argument, or an enum
+// that lists the empty value itself, keeps the value for validation to judge.
+func dropEmptyOptionalEnums(params, args map[string]any) []Change {
+	props := schemaProps(params)
+	required := asStringSlice(params["required"])
+	var changes []Change
+	for key, raw := range args {
+		if raw != nil && raw != "" {
+			continue
+		}
+		p, ok := props[key].(map[string]any)
+		if !ok || slices.Contains(required, key) {
+			continue
+		}
+		if !hasListEntries(p["enum"]) || listHasValue(p["enum"], raw) {
+			continue
+		}
+		delete(args, key)
+		changes = append(changes, Change{Kind: ChangeNormalizeDefault, Field: key, Detail: "dropped empty optional " + key})
+	}
+	return changes
 }
 
 // dropUnknown removes keys matching no declared property, but only when the
