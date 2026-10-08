@@ -1163,11 +1163,10 @@ function currentDispatchClient(
   // pending for it - that read sits on the same wedge, so waiting for it
   // cannot produce ordering facts anyway.
   const storageBlocked = targetRef !== undefined && state.mutationReconciliationStorageBlocked.has(targetRef);
-  const storageBlockedAdmissible = storageBlocked && options?.storageBlockedAdmissible === true;
+  const storageBlockedWaived = storageBlocked && options?.storageBlockedAdmissible === true;
   if (
     targetRef &&
-    ((storageBlocked && !storageBlockedAdmissible) ||
-      (pendingMutationReconciliations.has(targetRef) && !storageBlockedAdmissible) ||
+    (((storageBlocked || pendingMutationReconciliations.has(targetRef)) && !storageBlockedWaived) ||
       // A Force stop this page started is its own fence for its whole drain
       // window: the hub holds Stopping > 0 and refuses EVERY method there,
       // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
@@ -1358,14 +1357,15 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
     if (pendingMutationReconciliations.has(targetRef)) continue;
+    const refState = threadsStore.getState();
     if (
       dispatchableMutationRefs.has(targetRef) &&
-      !threadsStore.getState().mutationReconciliationFailures.has(targetRef) &&
+      !refState.mutationReconciliationFailures.has(targetRef) &&
       // A storage-blocked ref must fall through to handleReady's reconcile
       // retry, not take the authority refresh: that refresh's outbox read
       // would wedge on the same storage, and only a successful reconcile
       // clears the storage-blocked fence.
-      !threadsStore.getState().mutationReconciliationStorageBlocked.has(targetRef)
+      !refState.mutationReconciliationStorageBlocked.has(targetRef)
     ) {
       // Another tab can block a shared record after this tab's snapshot.
       // Cached authority cannot settle that newly uncertain send.
@@ -3772,6 +3772,11 @@ async function publishAndReconcileThreadHydration(
         pending.client === wiredClient
       ) {
         threadsStore.setState((state) => {
+          // Returning the same reference skips the merge and the listener
+          // pass (zustand/vanilla drops identical states), and a healthy ref
+          // settles neither fence on most reconciles.
+          if (!state.mutationReconciliationFailures.has(ref) && !state.mutationReconciliationStorageBlocked.has(ref))
+            return state;
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           mutationReconciliationFailures.delete(ref);
           const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
