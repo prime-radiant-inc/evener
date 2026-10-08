@@ -610,8 +610,15 @@ export class Driver {
         // A hidden page (behind a child window) paints no frames, so nothing
         // there moves: its box is final. The timer bounds every other wait.
         if (document.visibilityState === "hidden") return resolve(last);
-        const timer = setTimeout(() => resolve(last), 2000);
+        // Once the bound resolves, the frames stop too, or a row that never
+        // rests keeps the page measuring every frame for good.
+        let done = false;
+        const timer = setTimeout(() => {
+          done = true;
+          resolve(last);
+        }, 2000);
         const frame = () => {
+          if (done) return;
           const box = measure();
           const resting = box !== null && last !== null && box.x === last.x && box.y === last.y && box.w === last.w && box.h === last.h;
           const inside = box !== null && box.x >= 0 && box.y >= 0 && box.x < innerWidth && box.y < innerHeight;

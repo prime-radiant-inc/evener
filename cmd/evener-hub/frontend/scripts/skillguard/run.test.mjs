@@ -226,6 +226,30 @@ describe("elementBox measures a moving element once it rests", () => {
     expect(await driver.elementBox("#row")).toEqual({ x: 1280, y: 180, w: 200, h: 40 });
   });
 
+  test("stops measuring once the bound gives up on a row that never rests", async () => {
+    vi.useFakeTimers();
+    // Frames at a 60Hz pace, so the fake clock reaches the bound.
+    vi.stubGlobal("requestAnimationFrame", (callback) =>
+      setTimeout(() => {
+        frames += 1;
+        callback();
+      }, 16),
+    );
+    try {
+      const element = row([0]);
+      // Moving every frame, so it never rests and only the bound ends the wait.
+      element.getBoundingClientRect = () => ({ x: 100 + frames, y: 160, width: 200, height: 40 });
+      const box = driver.elementBox("#row");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await box).not.toBeNull();
+      const framesAtBound = frames;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames).toBeLessThanOrEqual(framesAtBound + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("takes a hidden page's box as final, since it paints no frames", async () => {
     vi.stubGlobal("requestAnimationFrame", () => {
       throw new Error("a hidden page runs no frames");
