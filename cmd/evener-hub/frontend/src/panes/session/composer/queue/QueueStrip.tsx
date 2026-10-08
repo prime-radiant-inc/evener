@@ -200,6 +200,7 @@ export function QueueStrip({
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
+  const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     // A queue-method row Stop canceled (or one whose delivery turned unknown)
     // is a durable row below, not a bare pending one - the same slot rule the
@@ -639,7 +640,13 @@ export function QueueStrip({
                       // the explicit Resume action restores it; without the
                       // obligation term an idle fenced row would offer a Retry
                       // that always fails.
-                      retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated)
+                      retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated) ||
+                      // A storage-blocked ref refuses the press too - but its
+                      // press would first hang on the wedged storage read
+                      // before failing, so mirror the refusal here and let the
+                      // button return when discovery's reconcile retry clears
+                      // the state.
+                      reconciliationStorageBlocked
                     }
                     onClick={() => void handleRetry(record)}
                   >
