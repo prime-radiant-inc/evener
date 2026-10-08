@@ -31,6 +31,7 @@ import {
 	type TestRendererOptions,
 } from "react-test-renderer";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
+import { setTimeout as wait } from "node:timers/promises";
 import { expect, onTestFinished, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
@@ -694,11 +695,30 @@ export async function settle(): Promise<void> {
  * stay in act. Default-priority renders flush only when the scope exits, so
  * `check` should read wire or store state; sync-priority renders (a
  * useSyncExternalStore store's update) do land while it waits. To wait on
- * the rendered tree, poll so act exits between checks instead. */
+ * the rendered tree, use untilRendered, which exits act between checks. */
 export async function until(check: () => void): Promise<void> {
 	await act(async () => {
 		await vi.waitFor(check);
 	});
+}
+
+/** Waits for `check` against the rendered tree or a hook's rendered result:
+ * it lets real time pass inside act a millisecond at a time and checks
+ * between those scopes, after each one has flushed its renders, for up to
+ * three seconds. */
+export async function untilRendered(check: () => void): Promise<void> {
+	const deadline = performance.now() + 3000;
+	for (;;) {
+		try {
+			await act(async () => {
+				await wait(1);
+			});
+			check();
+			return;
+		} catch (error) {
+			if (performance.now() > deadline) throw error;
+		}
+	}
 }
 
 /** renderHook, in the one shape this package needs: a component that calls

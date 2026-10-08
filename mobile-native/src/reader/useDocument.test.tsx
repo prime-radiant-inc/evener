@@ -1,11 +1,10 @@
 import { once } from "node:events";
 import { createServer, request as httpRequest, type Server } from "node:http";
-import { setTimeout as wait } from "node:timers/promises";
 
 import { StrictMode, useEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { render, renderHook, settle, unmountMountedTrees } from "../renderNative.testkit";
+import { render, renderHook, settle, unmountMountedTrees, untilRendered } from "../renderNative.testkit";
 import { useDocument } from "./useDocument";
 
 const harness = vi.hoisted(() => ({
@@ -109,7 +108,7 @@ it("reads useful bytes and Reload after actual StrictMode effect replay", async 
 	);
 	try {
 		expect(effects).toEqual(["setup", "cleanup", "setup"]);
-		await until(() =>
+		await untilRendered(() =>
 			expect(value.document).toMatchObject({
 				kind: "markdown",
 				title: "Useful replay",
@@ -118,7 +117,7 @@ it("reads useful bytes and Reload after actual StrictMode effect replay", async 
 		);
 		expect(fetchSpy).toHaveBeenCalledOnce();
 		act(() => value.reload());
-		await until(() =>
+		await untilRendered(() =>
 			expect(value.document).toMatchObject({ title: "Useful Reload", text: "# Useful Reload\n\nReloaded bytes." }),
 		);
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -153,14 +152,14 @@ it("coalesces pending StrictMode Reload and retires late HTTP completion on clea
 		</StrictMode>,
 	);
 	try {
-		await until(() => expect(releases).toHaveLength(1));
+		await untilRendered(() => expect(releases).toHaveLength(1));
 		act(() => {
 			value.reload();
 			value.reload();
 		});
 		expect(fetchSpy).toHaveBeenCalledOnce();
 		await act(async () => releases[0]?.(new Response("# Obsolete pending bytes")));
-		await until(() => expect(releases).toHaveLength(2));
+		await untilRendered(() => expect(releases).toHaveLength(2));
 		expect(seen.every((document) => document === null)).toBe(true);
 		act(() => tree.unmount());
 		const renders = seen.length;
@@ -312,21 +311,6 @@ it("reads again when the connection comes back and when the app returns to the f
 	expect(harness.appState).toEqual([]);
 });
 
-// Real I/O settles by an observable result, not a fixed number of microtasks.
-async function until(check: () => void) {
-	const deadline = performance.now() + 3000;
-	for (;;) {
-		try {
-			await act(async () => {
-				await wait(1);
-			});
-			check();
-			return;
-		} catch (error) {
-			if (performance.now() > deadline) throw error;
-		}
-	}
-}
 async function listen(server: Server) {
 	server.listen(0, "127.0.0.1");
 	await once(server, "listening");
@@ -378,9 +362,9 @@ it("recovers real owning HTTP 503 bytes at 1, 2, 4, 8, 15, 15 seconds while the 
 	const scheduled = vi.spyOn(globalThis, "setTimeout");
 	const hook = mount();
 	try {
-		await until(() => expect(hook.result.current.document?.kind).toBe("failed"));
+		await untilRendered(() => expect(hook.result.current.document?.kind).toBe("failed"));
 		for (const [index, delay] of [1000, 2000, 4000, 8000, 15000, 15000].entries()) {
-			await until(() =>
+			await untilRendered(() =>
 				expect(
 					scheduled.mock.calls.filter((call) => [1000, 2000, 4000, 8000, 15000].includes(Number(call[1]))),
 				).toHaveLength(index + 1),
@@ -393,8 +377,8 @@ it("recovers real owning HTTP 503 bytes at 1, 2, 4, 8, 15, 15 seconds while the 
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(1);
 			});
-			await until(() => expect(requests).toHaveLength(index + 2));
-			await until(() => {
+			await untilRendered(() => expect(requests).toHaveLength(index + 2));
+			await untilRendered(() => {
 				expect(hook.result.current.document).not.toBe(previous);
 				expect(hook.result.current.document?.kind).toBe(index === 5 ? "markdown" : "failed");
 			});
@@ -427,7 +411,7 @@ it.each(["hidden", "background", "other-profile", "unmounted"])("cancels paced r
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	let inFront = true;
 	const hook = renderHook(() => useDocument("studio", "local:fix", reference, inFront));
-	await until(() => expect(hook.result.current.document?.kind).toBe("failed"));
+	await untilRendered(() => expect(hook.result.current.document?.kind).toBe("failed"));
 	expect(vi.getTimerCount()).toBe(1);
 	if (reason === "unmounted") hook.unmount();
 	else if (reason === "background")
@@ -456,7 +440,7 @@ it("retires deferred old target and origin reads, and never retains healthy byte
 		seen.push(value.document);
 		return value;
 	});
-	await until(() => expect(hook.result.current.document).toMatchObject({ title: "Plan" }));
+	await untilRendered(() => expect(hook.result.current.document).toMatchObject({ title: "Plan" }));
 	let release!: (value: Response) => void;
 	fetchSpy.mockImplementationOnce(
 		() =>
@@ -465,17 +449,17 @@ it("retires deferred old target and origin reads, and never retains healthy byte
 			}),
 	);
 	act(() => hook.result.current.reload());
-	await until(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+	await untilRendered(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
 	target = { path: "docs/plan.md", cwd: "/work/b", readTarget: "/work/b/docs/plan.md", provenance: "relative" };
 	seen.length = 0;
 	hook.rerender();
 	expect(seen[0]).toBeNull();
 	answers = [{ status: 503, body: "B offline" }];
 	release(new Response("# Obsolete A"));
-	await until(() => expect(hook.result.current.document?.kind).toBe("failed"));
+	await untilRendered(() => expect(hook.result.current.document?.kind).toBe("failed"));
 	expect(fetchSpy.mock.calls[2]?.[0]).toContain("path=%2Fwork%2Fb%2Fdocs%2Fplan.md");
 	act(() => hook.result.current.reload());
-	await until(() => expect(hook.result.current.document).toMatchObject({ title: "Plan" }));
+	await untilRendered(() => expect(hook.result.current.document).toMatchObject({ title: "Plan" }));
 	fetchSpy.mockImplementationOnce(
 		() =>
 			new Promise<Response>((resolve) => {
@@ -484,14 +468,14 @@ it("retires deferred old target and origin reads, and never retains healthy byte
 	);
 	const calls = fetchSpy.mock.calls.length;
 	act(() => hook.result.current.reload());
-	await until(() => expect(fetchSpy).toHaveBeenCalledTimes(calls + 1));
+	await untilRendered(() => expect(fetchSpy).toHaveBeenCalledTimes(calls + 1));
 	harness.origin = "https://replacement.test";
 	answers = [{ status: 503, body: "replacement offline" }];
 	seen.length = 0;
 	hook.rerender();
 	expect(seen[0]).toBeNull();
 	release(new Response("# Retired old origin"));
-	await until(() => expect(hook.result.current.document?.kind).toBe("failed"));
+	await untilRendered(() => expect(hook.result.current.document?.kind).toBe("failed"));
 	expect(fetchSpy.mock.calls.at(-1)).toEqual([
 		"https://replacement.test/doc/file?format=raw&session=local%3Afix&path=%2Fwork%2Fb%2Fdocs%2Fplan.md",
 		{ headers: { Authorization: "Bearer secret" } },

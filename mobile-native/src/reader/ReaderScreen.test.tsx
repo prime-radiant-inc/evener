@@ -5,7 +5,6 @@ import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as wait } from "node:timers/promises";
 import type { ServerResponse } from "node:http";
 import type { NativeStackHeaderItem, NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
@@ -25,6 +24,7 @@ import {
 	settle,
 	settleMicrotasks,
 	unmountMountedTrees,
+	untilRendered,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -868,21 +868,6 @@ it("never offers Retry, Refresh, Reconnect or a Next capsule", async () => {
 	expect(text).toContain("settle.md couldn't be loaded right now.");
 });
 
-async function until(check: () => void) {
-	const deadline = performance.now() + 3000;
-	for (;;) {
-		try {
-			await act(async () => {
-				await wait(1);
-			});
-			check();
-			return;
-		} catch (error) {
-			if (performance.now() > deadline) throw error;
-		}
-	}
-}
-
 it.each(["relative", "absolute"] as const)(
 	"replaces %s cwd through the same real SessionLink, clears on the first render and rejects retired bytes",
 	async (provenance) => {
@@ -918,9 +903,9 @@ it.each(["relative", "absolute"] as const)(
 		const reference = { path: "docs/cwd.md", cwd: "/work/a", readTarget: "/work/a/docs/cwd.md", provenance };
 		const { tree, navigation } = await mount(reference.path, { reference });
 		try {
-			await until(() => expect(harness.markdowns).toContain("Useful A."));
+			await untilRendered(() => expect(harness.markdowns).toContain("Useful A."));
 			act(() => menuAction(navigation, "Reload").onPress());
-			await until(() => expect(retired).toBeDefined());
+			await untilRendered(() => expect(retired).toBeDefined());
 			expect(harness.markdowns).toContain("Useful A.");
 			// Unrelated publication cannot replace this Reader or start another lease.
 			act(() =>
@@ -944,21 +929,21 @@ it.each(["relative", "absolute"] as const)(
 				readTarget: provenance === "relative" ? "/work/b/docs/cwd.md" : "/work/a/docs/cwd.md",
 				provenance,
 			};
-			await until(() => expect(navigation.setParams).toHaveBeenLastCalledWith({ reference: expected }));
+			await untilRendered(() => expect(navigation.setParams).toHaveBeenLastCalledWith({ reference: expected }));
 			expect(harness.markdowns).not.toContain("Useful A.");
 			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
 			retired?.writeHead(200, { "Content-Type": "text/plain" });
 			retired?.end("# Retired completion\n\nObsolete bytes.");
-			await until(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
 			expect(harness.markdowns).not.toContain("Obsolete bytes.");
 			expect(requests).toEqual(["/work/a/docs/cwd.md", "/work/a/docs/cwd.md", expected.readTarget]);
 			act(() => menuAction(navigation, "Reload").onPress());
-			await until(() => expect(harness.markdowns).toContain("Useful B."));
+			await untilRendered(() => expect(harness.markdowns).toContain("Useful B."));
 			expect(requests.at(-1)).toBe(expected.readTarget);
 			refreshFails = true;
 			act(() => menuAction(navigation, "Reload").onPress());
-			await until(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
 			expect(
 				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
 			).toContain("Useful B.");
@@ -983,10 +968,10 @@ it.each(["relative", "absolute"] as const)(
 it("settles actual native Image attempts, retries untyped errors, retains healthy refreshes and ignores retired callbacks", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const { tree, navigation } = await mount("out/chart.png", {}, settleMicrotasks);
-	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
 	const first = tree.root.findByType("Image" as never).props;
 	act(() => first.onError({ nativeEvent: { error: "untyped native failure" } }));
-	await until(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
 	expect(vi.getTimerCount()).toBe(1);
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(999);
@@ -995,13 +980,13 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(1);
 	});
-	await until(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(first.source.uri));
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(first.source.uri));
 	const second = tree.root.findByType("Image" as never).props;
 	act(() => first.onLoad({ nativeEvent: { source: { width: 9, height: 1 } } }));
 	act(() => first.onError({ nativeEvent: { error: "late failure" } }));
 	expect(vi.getTimerCount()).toBe(0);
 	act(() => second.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
-	await until(() => expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2));
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2));
 	expect(renderedText(tree)).not.toContain("couldn't be loaded");
 	act(() => second.onError({ nativeEvent: { error: "duplicate after success" } }));
 	expect(renderedText(tree)).not.toContain("couldn't be loaded");
@@ -1009,14 +994,14 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 		menuAction(navigation, "Reload").onPress();
 		menuAction(navigation, "Reload").onPress();
 	});
-	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(2));
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(2));
 	const images = tree.root.findAllByType("Image" as never);
 	expect(images[0]?.props.source.uri).toBe(second.source.uri);
 	expect(images[0]?.props.style.aspectRatio).toBe(2);
 	const pending = images[1]?.props;
 	expect(pending.style.opacity).toBe(0);
 	act(() => pending.onError({ nativeEvent: { error: "refresh failed" } }));
-	await until(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
 	expect(tree.root.findAllByType("Image" as never)[0]?.props.source.uri).toBe(second.source.uri);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
@@ -1036,7 +1021,7 @@ it.each([
 ] as const)("never promotes a pending retired image after %s, with late %s first", async (reason, firstEvent) => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const { tree, rerender } = await mount("out/chart.png", {}, async () => {});
-	await until(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
 	const old = tree.root.findByType("Image" as never).props;
 	if (reason === "hidden") {
 		stack.state.index = 1;
@@ -1070,7 +1055,7 @@ it.each([
 			for (const listener of [...harness.appState]) listener("active");
 		});
 	}
-	await until(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(old.source.uri));
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(old.source.uri));
 	const fresh = tree.root.findByType("Image" as never).props;
 	expect(fresh.style.aspectRatio).toBe(4 / 3);
 	act(() => {
