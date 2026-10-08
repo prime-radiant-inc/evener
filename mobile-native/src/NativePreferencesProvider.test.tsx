@@ -1,11 +1,10 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { DRAFT_RESTORE_FAILED_MESSAGE } from "@evener/appwire-client";
 import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { render, unmountMountedTrees } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -118,10 +117,7 @@ function mountProvider() {
 		return null;
 	}
 	const app = () => createElement(NativePreferencesProvider, null, createElement(Probe));
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(app());
-	});
+	const tree = render(app());
 	return {
 		get current() {
 			return current;
@@ -152,6 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	harness.storage.throwOnGet = false;
 });
 

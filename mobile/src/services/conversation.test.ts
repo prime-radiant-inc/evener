@@ -32,7 +32,6 @@ import type {
 	TurnInterruptResponse,
 	TurnQueueResponse,
 	TurnStartResponse,
-	TurnSteerResponse,
 } from "@evener/appwire-client";
 import * as projectModule from "../../../mobile-native/src/projectedRows";
 import type { createActivityService } from "./activity";
@@ -105,7 +104,7 @@ function makeReadResponse(thread: Thread, olderCursor?: string): ThreadReadRespo
 }
 
 function makeReceipt(
-	kind: "send" | "steer" | "queue" | "interrupt" = "send",
+	kind: "send" | "queue" | "interrupt" = "send",
 	over: Partial<MutationReceipt> = {},
 ): MutationReceipt {
 	const receipt: MutationReceipt = {
@@ -114,7 +113,7 @@ function makeReceipt(
 		threadId: "thread-1",
 		projectionState: kind === "interrupt" ? "reflected" : "pending",
 	};
-	if (kind === "send" || kind === "steer" || kind === "interrupt") receipt.turnId = "turn-1";
+	if (kind === "send" || kind === "interrupt") receipt.turnId = "turn-1";
 	if (kind === "queue") receipt.queueEntryIds = ["queue-1"];
 	return { ...receipt, ...over };
 }
@@ -747,20 +746,6 @@ describe("ConversationService", () => {
 			expect(startParams.clientMutationId).toBe("cmid-1");
 		});
 
-		it("steer calls turn/steer", async () => {
-			const { client, service } = setup();
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
-			await service.open("ref-1");
-			const receipt = await service.steer(textInput("steer this"));
-			expect(receipt.clientMutationId).toBe("cmid-1");
-			const call = client.calls.find((c) => c.method === "turn/steer");
-			expect(call?.params).toMatchObject({
-				ref: "ref-1",
-				input: [{ type: "text", text: "steer this" }],
-				expectedInstanceId: "thread-1",
-			});
-		});
-
 		it("queue calls turn/queue", async () => {
 			const { client, service } = setup();
 			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
@@ -830,13 +815,8 @@ describe("ConversationService", () => {
 			}
 		});
 
-		it("enforces exact steer, queue, and interrupt receipt fields", async () => {
+		it("enforces exact queue and interrupt receipt fields", async () => {
 			const cases = [
-				{
-					method: "turn/steer" as const,
-					invoke: (service: LiveConversationService) => service.steer(textInput("steer")),
-					invalid: { receipt: makeReceipt("interrupt") },
-				},
 				{
 					method: "turn/queue" as const,
 					invoke: (service: LiveConversationService) => service.queue(textInput("queue")),
@@ -1142,14 +1122,14 @@ describe("ConversationService", () => {
 				thread: makeThread({
 					evener: {
 						ref: "ref-1",
-						capabilities: { ...ALL_TRUE_CAPS, steer: false },
+						capabilities: { ...ALL_TRUE_CAPS, queue: false },
 						queue: { revision: 0 },
 					},
 				}),
 			});
 			await service.open("ref-1");
 			service.subscribeNotifications(() => {});
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
+			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
 			const emit = (ref: string, threadId: string, caps: ThreadCapabilities) =>
 				client.emitNotification({
 					method: "thread/status/changed",
@@ -1162,11 +1142,11 @@ describe("ConversationService", () => {
 				});
 			emit("other-ref", "thread-1", ALL_TRUE_CAPS);
 			emit("ref-1", "other-thread", ALL_TRUE_CAPS);
-			await expect(service.steer([{ type: "text", text: "direction" }])).rejects.toThrow();
-			expect(client.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+			await expect(service.queue([{ type: "text", text: "direction" }])).rejects.toThrow();
+			expect(client.calls.filter((c) => c.method === "turn/queue")).toHaveLength(0);
 			emit("ref-1", "thread-1", { ...ALL_TRUE_CAPS, send: false });
-			await service.steer([{ type: "text", text: "direction" }]);
-			expect(client.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
+			await service.queue([{ type: "text", text: "direction" }]);
+			expect(client.calls.filter((c) => c.method === "turn/queue")).toHaveLength(1);
 			await expect(service.send([{ type: "text", text: "wrong mode" }])).rejects.toThrow();
 		});
 	});
@@ -1193,21 +1173,6 @@ describe("ConversationService", () => {
 			await expect(service.send(textInput("hello"))).rejects.toThrow();
 			const call = client.calls.find((c) => c.method === "turn/start");
 			expect(call).toBeUndefined();
-		});
-
-		it("steer throws when capabilities.steer is false", async () => {
-			const thread = makeThread({
-				evener: {
-					ref: "ref-1",
-					capabilities: { ...ALL_TRUE_CAPS, steer: false },
-					queue: { revision: 0 },
-				},
-			});
-			const { client, service } = setup({ thread });
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
-			await service.open("ref-1");
-			await expect(service.steer(textInput("steer"))).rejects.toThrow();
-			expect(client.calls.find((c) => c.method === "turn/steer")).toBeUndefined();
 		});
 
 		it("queue throws when capabilities.queue is false", async () => {
@@ -1634,7 +1599,6 @@ describe("ConversationService", () => {
 			// Must also have all base ConversationService methods
 			expect(typeof service.open).toBe("function");
 			expect(typeof service.send).toBe("function");
-			expect(typeof service.steer).toBe("function");
 			expect(typeof service.queue).toBe("function");
 			expect(typeof service.interrupt).toBe("function");
 			expect(typeof service.loadOlder).toBe("function");
@@ -2214,7 +2178,6 @@ describe("ConversationService", () => {
 						receipt: makeReceipt(),
 					}) as TurnStartResponse,
 			);
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
 			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
 			client.on("turn/interrupt", () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse);
 			client.on("thread/compact/start", () => EMPTY_RESPONSE);
@@ -2235,8 +2198,6 @@ describe("ConversationService", () => {
 			// Gated ops (requireCap + requireRef) — all must throw before wire.
 			await expect(service.send(textInput("hello"))).rejects.toThrow();
 			expect(client.calls.find((c) => c.method === "turn/start")).toBeUndefined();
-			await expect(service.steer(textInput("s"))).rejects.toThrow();
-			expect(client.calls.find((c) => c.method === "turn/steer")).toBeUndefined();
 			await expect(service.queue(textInput("q"))).rejects.toThrow();
 			expect(client.calls.find((c) => c.method === "turn/queue")).toBeUndefined();
 			await expect(service.interrupt()).rejects.toThrow();
@@ -2563,21 +2524,21 @@ describe("observed queue guards", () => {
 	it("ignores an additive receipt key the decoder does not know", async () => {
 		const { client, service } = setup();
 		client.on(
-			"turn/steer",
+			"turn/interrupt",
 			() =>
 				({
-					receipt: makeReceipt("steer", {
+					receipt: makeReceipt("interrupt", {
 						futureAdditiveField: "ignored",
 					} as Partial<MutationReceipt>),
-				}) as TurnSteerResponse,
+				}) as TurnInterruptResponse,
 		);
 		await service.open("ref-1");
-		const receipt = await service.steer(textInput("steer this"));
+		const receipt = await service.interrupt();
 		expect(receipt).toMatchObject({
 			clientMutationId: "cmid-1",
 			disposition: "applied",
 			threadId: "thread-1",
-			projectionState: "pending",
+			projectionState: "reflected",
 			turnId: "turn-1",
 		});
 		expect(receipt).not.toHaveProperty("futureAdditiveField");
@@ -2601,10 +2562,10 @@ describe("observed queue guards", () => {
 	});
 	it("still rejects a receipt missing a key the decoder requires", async () => {
 		const { client, service } = setup();
-		const { threadId: _omitted, ...withoutThreadId } = makeReceipt("steer");
-		client.on("turn/steer", () => ({ receipt: withoutThreadId }) as unknown as TurnSteerResponse);
+		const { threadId: _omitted, ...withoutThreadId } = makeReceipt("interrupt");
+		client.on("turn/interrupt", () => ({ receipt: withoutThreadId }) as unknown as TurnInterruptResponse);
 		await service.open("ref-1");
-		await expect(service.steer(textInput("steer this"))).rejects.toThrow(/ConversationService/);
+		await expect(service.interrupt()).rejects.toThrow(/ConversationService/);
 	});
 	it("still rejects a known receipt key on a mutation kind that does not expect it", async () => {
 		const { client, service } = setup();
