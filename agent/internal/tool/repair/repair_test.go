@@ -396,3 +396,39 @@ func TestRepairArgs_NullOptionalIsAbsent(t *testing.T) {
 		})
 	}
 }
+
+// A property defined through a combinator accepts null only as its branches
+// say: anyOf and oneOf when some branch does, allOf when every branch does.
+func TestRepairArgs_NullOnApplicatorPropertyFollowsItsBranches(t *testing.T) {
+	str := map[string]any{"type": "string"}
+	num := map[string]any{"type": "integer"}
+	null := map[string]any{"type": "null"}
+	for _, tc := range []struct {
+		name     string
+		schema   map[string]any
+		wantKept bool
+	}{
+		{name: "anyOf without null", schema: map[string]any{"anyOf": []any{str, num}}},
+		{name: "anyOf optional shape", schema: map[string]any{"anyOf": []any{str, null}}, wantKept: true},
+		{name: "oneOf without null", schema: map[string]any{"oneOf": []any{str, num}}},
+		{name: "oneOf with null", schema: map[string]any{"oneOf": []any{null, str}}, wantKept: true},
+		{name: "allOf with a branch refusing null", schema: map[string]any{"allOf": []any{map[string]any{"type": []any{"string", "null"}}, str}}},
+		{name: "allOf every branch accepting null", schema: map[string]any{"allOf": []any{map[string]any{"type": []any{"string", "null"}}, map[string]any{"maxLength": 3}}}, wantKept: true},
+		{name: "nested anyOf without null", schema: map[string]any{"anyOf": []any{map[string]any{"anyOf": []any{str, num}}, num}}},
+		{name: "unresolved ref", schema: map[string]any{"$ref": "#/$defs/name"}, wantKept: true},
+		{name: "anyOf with a false branch", schema: map[string]any{"anyOf": []any{str, false}}},
+		{name: "anyOf null beside a false branch", schema: map[string]any{"anyOf": []any{null, false}}, wantKept: true},
+		{name: "allOf with a true branch", schema: map[string]any{"allOf": []any{true, str}}},
+		{name: "not null", schema: map[string]any{"not": null}},
+		{name: "not string", schema: map[string]any{"not": str}, wantKept: true},
+		{name: "not an anyOf", schema: map[string]any{"not": map[string]any{"anyOf": []any{null, str}}}, wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{"type": "object", "properties": map[string]any{"v": tc.schema}}
+			out, _ := RepairArgs(params, map[string]any{"v": nil})
+			if _, kept := out["v"]; kept != tc.wantKept {
+				t.Fatalf("null kept = %t, want %t; out=%v", kept, tc.wantKept, out)
+			}
+		})
+	}
+}
