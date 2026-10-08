@@ -280,9 +280,10 @@ summarization failed" warning and the checkpoint stands. Not a summary means
 empty, or, under the default prompt, holding no section with content: a
 heading (`#` markup or `**bold**`) naming one of the prompt's `##` sections,
 with text after the name on its line (`## Progress: fixed it`) or on a later
-line other than another section heading or the `[CONTEXT SUMMARY]` and
-`[END SUMMARY]` markers. Subheadings and bold labels inside a section are
-content. Weak models sometimes
+line other than another section heading. The `[CONTEXT SUMMARY]` and
+`[END SUMMARY]` markers never count as content, whether on the heading's line
+or below it.
+Subheadings and bold labels inside a section are content. Weak models sometimes
 answer in character ("I'll read the plan, then...") instead of summarizing.
 Under caller instructions, which replace the sections, only an empty reply is
 rejected.
