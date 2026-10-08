@@ -205,7 +205,8 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 
 // checkOutputSizeUnchanged reports a read's file as changed when it no longer
 // holds the retainedBytes its metadata was validated against. A size check is
-// enough: an append changes the descriptor's size, a compaction renames a new
+// enough, so a read skips a second validation, which would hash the whole
+// retained file again: an append changes the descriptor's size, a compaction renames a new
 // file over the path (checkOutputFileGeneration), and no writer rewrites in
 // place.
 func checkOutputSizeUnchanged(f *os.File, retainedBytes int64) error {
