@@ -3,6 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // the loaded snapshot's turn end, and through the fleet's row for it when a
 // turn ends while you watch (Jesse's ruling, 2026-09-29).
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
+import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
@@ -27,7 +28,9 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** Runs enough microtask rounds for the hub's answer to a mark, and the
  * bookkeeping it settles, to finish. */
 async function settle() {
-	for (let step = 0; step < 30; step++) await Promise.resolve();
+	await act(async () => {
+		for (let step = 0; step < 30; step++) await Promise.resolve();
+	});
 }
 
 let hubCount = 0;
@@ -129,7 +132,7 @@ it("sends a mark once across rerenders with the same row and snapshot", async ()
 	hook.rerender();
 	await settle();
 	// The hub's rows show the mark landed, so nothing is pending any more.
-	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	act(() => hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]));
 	hook.rerender();
 	hook.rerender();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
@@ -142,7 +145,7 @@ it("leaves an unread another device marked at the turn end it already marked", a
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
 	await settle();
-	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	act(() => hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]));
 	// Mark as unread elsewhere: the hub reads unseen at the same turn end.
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
@@ -228,7 +231,7 @@ it("marks a row again at the same turn end on a new visit to the front", async (
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
 	await settle();
-	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	act(() => hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]));
 	view.inFront = false;
 	hook.rerender();
 	// Mark as unread elsewhere while another screen is in front.
@@ -320,7 +323,7 @@ it("doesn't mark the fleet row again for a turn end the snapshot already marked 
 	await settle();
 	expect(sent).toHaveLength(1);
 	// The hub took the mark, and its row caught up.
-	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	act(() => hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]));
 	// Another device then marks it unread, and only now does the fleet row arrive.
 	view.row = fleetRow({ turn_ended_at: iso(T), unseen: true });
 	hook.rerender();
