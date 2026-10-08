@@ -169,3 +169,48 @@ describe("skillguard Chrome profile fits the singleton socket budget", () => {
     }
   });
 });
+
+// A press is measured on an element at rest inside the viewport: an element
+// still moving (the activity sidebar sliding in from translateX, #3897)
+// measured mid-move gives a center past the viewport edge, and the press
+// misses (cascadeguard's "selected column at level 1"). elementBox re-measures
+// each frame until two frames agree and the center is on screen.
+describe("elementBox measures a moving element once it rests", () => {
+  let frames;
+  beforeEach(() => {
+    frames = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback) =>
+      setTimeout(() => {
+        frames += 1;
+        callback();
+      }, 0),
+    );
+    vi.stubGlobal("innerWidth", 1440);
+    vi.stubGlobal("innerHeight", 900);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("waits out a slide in from past the right edge", async () => {
+    document.body.innerHTML = '<div id="row">row</div>';
+    const row = document.getElementById("row");
+    row.scrollIntoView = () => {};
+    // The row slides in over four frames, then rests at x 1180.
+    const lefts = [1500, 1400, 1300, 1200, 1180];
+    row.getBoundingClientRect = () => ({
+      x: lefts[Math.min(frames, lefts.length) - 1] ?? lefts[0],
+      y: 160,
+      width: 200,
+      height: 40,
+    });
+    const page = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    page.page = {
+      send: async (method, params) => {
+        expect(method).toBe("Runtime.evaluate");
+        const value = await new Function(`return (${params.expression});`)();
+        return { result: { result: { value } } };
+      },
+    };
+    const box = await page.elementBox("#row");
+    expect(box).toEqual({ x: 1280, y: 180, w: 200, h: 40 });
+  });
+});

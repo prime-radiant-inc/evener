@@ -585,16 +585,41 @@ export class Driver {
     });
   }
 
+  // elementBox measures an element's center for a press. It measures once the
+  // element has come to rest with its center inside the viewport: an element
+  // still moving (a sidebar sliding in from translateX, #3897) measures where
+  // it is mid-move, and a press there lands past it or off the page. The wait
+  // is bounded (a page that paints no frames ends it too); past it the last
+  // measurement stands.
   async elementBox(selector) {
     return evaluate(
       this.send,
-      `(() => {
+      `new Promise((resolve) => {
         const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return null;
+        if (!el) return resolve(null);
         el.scrollIntoView({ block: "center", inline: "center" });
-        const r = el.getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height };
-      })()`,
+        const measure = () => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height };
+        };
+        let last = measure();
+        // A hidden page (behind a child window) paints no frames, so nothing
+        // there moves: its box is final. The timer bounds every other wait.
+        if (document.visibilityState === "hidden") return resolve(last);
+        const timer = setTimeout(() => resolve(last), 2000);
+        const frame = () => {
+          const box = measure();
+          const resting = box.x === last.x && box.y === last.y && box.w === last.w && box.h === last.h;
+          const inside = box.x >= 0 && box.y >= 0 && box.x <= innerWidth && box.y <= innerHeight;
+          last = box;
+          if (resting && inside) {
+            clearTimeout(timer);
+            return resolve(box);
+          }
+          requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      })`,
     );
   }
 

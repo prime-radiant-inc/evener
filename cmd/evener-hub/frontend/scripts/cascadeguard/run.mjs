@@ -555,7 +555,11 @@ async function returnToSource() {
 
 async function key(key, keyCode) {
   for (const type of ["keyDown", "keyUp"]) {
-    await driver.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode,
+    // No nativeVirtualKeyCode: that is the platform's own key number (27 is
+    // X11's "r" and a different key on macOS, where this press opened
+    // chrome://settings/help in front of the page, hiding it and pausing its
+    // animations). The DOM reads key, code and the Windows keyCode.
+    await driver.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: keyCode,
       ...(key === "Enter" && type === "keyDown" ? { text: "\r", unmodifiedText: "\r" } : {}) });
   }
 }
