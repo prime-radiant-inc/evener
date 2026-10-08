@@ -32,8 +32,8 @@ import {
   transcriptAnchorEntriesForRows,
   transcriptRunDisclosureIdsForRows,
 } from "./TranscriptBody";
-import { holdReaderFrames, mountReaderScene, readerTouch, readerWireTurns } from "./transcriptReaderTestUtils";
-import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
+import { mountReaderScene, readerTouch, readerWireTurns } from "./transcriptReaderTestUtils";
+import { holdReaderFrames, installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcriptReadView";
 import { resetTranscriptPagingForTests } from "./useTranscript";
 

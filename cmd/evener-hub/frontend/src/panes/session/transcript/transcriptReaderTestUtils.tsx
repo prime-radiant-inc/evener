@@ -12,37 +12,8 @@ import { type CapturedTranscriptView, captureTranscriptView } from "./flow/trans
 import { useTranscriptScroll, useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./flow/useTranscriptScrollKeys";
 import { TranscriptBody } from "./TranscriptBody";
-import { installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
+import { holdReaderFrames, installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcriptReadView";
-
-/** Holds browser scheduling, never the virtualizer's request or direction fields. */
-export function holdReaderFrames() {
-  const request = window.requestAnimationFrame;
-  const cancel = window.cancelAnimationFrame;
-  const pending = new Map<number, FrameRequestCallback>();
-  let nextId = 0;
-  window.requestAnimationFrame = (callback) => {
-    const id = ++nextId;
-    pending.set(id, callback);
-    return id;
-  };
-  window.cancelAnimationFrame = (id) => {
-    pending.delete(id);
-  };
-  return {
-    pending,
-    release() {
-      for (const [id, callback] of [...pending]) {
-        pending.delete(id);
-        callback(performance.now());
-      }
-    },
-    restore() {
-      window.requestAnimationFrame = request;
-      window.cancelAnimationFrame = cancel;
-    },
-  };
-}
 
 /** A real retained reader, shared gesture hook and focused key dispatcher. */
 export function mountReaderScene(

@@ -5,8 +5,10 @@ import type { Virtualizer } from "@tanstack/react-virtual";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { holdReaderFrames } from "../../panes/session/transcript/transcriptReaderTestUtils";
-import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
+import {
+  holdReaderFrames,
+  installTranscriptGeometry,
+} from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { requireClass } from "../internal/requireClass";
 import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "./index";
 import rawStyles from "./virtuallist.module.css";
