@@ -238,11 +238,11 @@ export function VirtualList({
     : {};
 
   // A measured list keeps the reader's place across row measurements (the
-  // size-change rule below, and completing the scroll writes it clamps) while
-  // it follows the end, and for a reader (onLayout) whatever anchorToEnd says:
-  // TranscriptBody turns anchorToEnd off while a retained placement is
-  // pending, and onLayout is what feeds the rule's movement record, which
-  // outlives the core's scroll direction (reset 150ms after the last scroll).
+  // size-change rule below, and completing scroll writes the browser clamped)
+  // while following the end, and always for a reader (onLayout): TranscriptBody
+  // turns anchorToEnd off while a retained placement is pending. onLayout also
+  // feeds the rule's movement record, which outlives the core's scroll
+  // direction (reset 150ms after the last scroll).
   const keepsPlaceOnMeasure = dynamic && (anchorToEnd || onLayout !== undefined);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count,
