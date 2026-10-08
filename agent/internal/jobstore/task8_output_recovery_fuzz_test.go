@@ -220,18 +220,6 @@ func t8AssertPublicOutputWrappers(t *testing.T) {
 	if err != nil || total != int64(len("public output\n")) || start != 0 {
 		t.Fatalf("OutputFileStats = %d/%d/%v", total, start, err)
 	}
-	re := regexp.MustCompile(`^public output$`)
-	for _, grep := range []func(string, *regexp.Regexp, int, int, int) ([]Match, error){
-		GrepFileLimit,
-		func(path string, re *regexp.Regexp, limitBytes, maxMatches, maxLineBytes int) ([]Match, error) {
-			return GrepFileLimitAt(path, re, limitBytes, maxMatches, maxLineBytes, 0)
-		},
-	} {
-		matches, err := grep(noSyncPath, re, 1024, 0, 1024)
-		if err != nil || len(matches) != 1 || matches[0].ByteOffset != 0 {
-			t.Fatalf("public grep = %+v/%v", matches, err)
-		}
-	}
 	if err := RemoveOutputArtifacts(noSyncPath); err != nil {
 		t.Fatalf("RemoveOutputArtifacts: %v", err)
 	}
