@@ -160,3 +160,27 @@ func TestManualRetireDoesNotWaitForTheNamerBesideOtherWork(t *testing.T) {
 		t.Fatal("manual retire waited for the namer while a turn held the process")
 	}
 }
+
+// Other work that starts while the retire waits on the namer ends the wait:
+// the retire is refused then, not after the namer settles.
+func TestManualRetireStopsWaitingWhenOtherWorkStarts(t *testing.T) {
+	t.Parallel()
+	root, c, clk, _ := blockedNamerSession(t)
+	done := startManualClaim(c)
+	awaitManualClaimWaiting(t, clk, done)
+	release, err := root.beginRetirementMutation("turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	select {
+	case got := <-done:
+		if got.err != nil || got.claim != nil {
+			t.Fatalf("manual retire after a turn began = claim %v, %v; want a refusal", got.claim, got.err)
+		}
+	// TRIPWIRE: the new lease wakes the wait at once; 30s only fires if the
+	// retire kept waiting on the fake clock for the namer.
+	case <-time.After(30 * time.Second):
+		t.Fatal("manual retire kept waiting for the namer after a turn began")
+	}
+}

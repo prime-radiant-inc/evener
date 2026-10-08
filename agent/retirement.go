@@ -72,10 +72,11 @@ type RetirementController struct {
 	evidenceGate func()
 	// naming holds the active leases that are a session namer naming its
 	// session: work that settles on its own within sessionNameTimeout, which
-	// a manual retire waits for (TryManualClaim). namingSettled is closed,
-	// and replaced, each time one of them releases.
-	naming        map[uint64]struct{}
-	namingSettled chan struct{}
+	// a manual retire waits for (TryManualClaim). namingWake is closed, and
+	// replaced, whenever the leases change while one of them is held, so a
+	// waiting retire re-checks.
+	naming     map[uint64]struct{}
+	namingWake chan struct{}
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -103,7 +104,7 @@ func NewRetirementController(timeout time.Duration, clk RetirementClock) (*Retir
 	}
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
-		naming: make(map[uint64]struct{}), namingSettled: make(chan struct{}),
+		naming: make(map[uint64]struct{}), namingWake: make(chan struct{}),
 		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
 	}, nil
 }
@@ -178,6 +179,7 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 	if naming {
 		c.naming[lease] = struct{}{}
 	}
+	c.wakeNamingWaitersLocked()
 	c.eligibleSince = time.Time{}
 	c.mu.Unlock()
 	c.Changed()
@@ -185,11 +187,13 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
+			_, naming := c.naming[lease]
 			delete(c.active, lease)
-			if _, ok := c.naming[lease]; ok {
-				delete(c.naming, lease)
-				close(c.namingSettled)
-				c.namingSettled = make(chan struct{})
+			delete(c.naming, lease)
+			if naming {
+				c.closeNamingWakeLocked()
+			} else {
+				c.wakeNamingWaitersLocked()
 			}
 			c.mu.Unlock()
 			c.Changed()
@@ -225,16 +229,29 @@ func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Durat
 			c.mu.Unlock()
 			return
 		}
-		settled := c.namingSettled
+		wake := c.namingWake
 		c.mu.Unlock()
 		select {
-		case <-settled:
+		case <-wake:
 		case <-timer.C():
 			return
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// wakeNamingWaitersLocked wakes a retire waiting on naming leases, if any
+// are held, so it re-checks after another lease changed. Callers hold c.mu.
+func (c *RetirementController) wakeNamingWaitersLocked() {
+	if len(c.naming) != 0 {
+		c.closeNamingWakeLocked()
+	}
+}
+
+func (c *RetirementController) closeNamingWakeLocked() {
+	close(c.namingWake)
+	c.namingWake = make(chan struct{})
 }
 
 // onlyNamingLocked reports whether the resident process is held by naming
