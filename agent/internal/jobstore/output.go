@@ -712,9 +712,12 @@ func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, lim
 	if err != nil {
 		return nil, err
 	}
-	return grepFileLimitAtOpen(path, re, limitBytes, maxMatches, maxLineBytes, view.visibleStart, func(string) (io.ReadCloser, error) {
-		return io.NopCloser(f), nil
-	})
+	matches, err := grepReaderLimit(bufio.NewReaderSize(f, 64*1024), re, limitBytes, maxMatches, maxLineBytes)
+	if err != nil {
+		return nil, err
+	}
+	shiftMatches(matches, view.visibleStart)
+	return matches, nil
 }
 
 // readOpenOutputFileView reads the view of the open output file f, lets
