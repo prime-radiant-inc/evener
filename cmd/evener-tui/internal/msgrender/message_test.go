@@ -513,9 +513,7 @@ func TestRenderToolCallDelegateSendShowsAPaddedEarlierStatus(t *testing.T) {
 	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
 		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":" completed ","output":"FIRST"}]}`
 	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
-	if !strings.Contains(got, "earlier reply 1 of 1 ·  completed") {
-		t.Fatalf("render = %q, want the padded status shown as written", got)
-	}
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1 ·  completed", "FIRST")
 	blank := strings.Replace(raw, `" completed "`, `"   "`, 1)
 	got = ansi.Strip(RenderToolCall(delegateSendToolCall(blank, ""), 100, false))
 	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "FIRST")
