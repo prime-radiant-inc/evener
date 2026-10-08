@@ -3,6 +3,9 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { DocumentMemory } from "../reader/documentMemory";
+// Imported at file scope, so the Reader's graph is transformed at collection
+// time, outside the timeout of the test that opens a real Reader.
+import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
 // reads go through the real BoardController to a fake hub that answers by
@@ -40,6 +43,7 @@ import {
 	swipeRowFully,
 	systemGlass,
 	unmountMountedTrees,
+	until,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -585,14 +589,6 @@ function screen(nav: Navigation) {
 async function settle() {
 	await act(async () => {
 		for (let step = 0; step < 30; step++) await Promise.resolve();
-	});
-}
-/** Waits for wire or store state inside act, so the updates it lets through
- * stay in act. React renders only when the act scope exits, so `check` must
- * not read the rendered tree. */
-async function until(check: () => void) {
-	await act(async () => {
-		await vi.waitFor(check);
 	});
 }
 /** What the Board holds for hub `id`, as it stored it. */
@@ -5447,7 +5443,6 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 // The Board's Continue reading row (spec 7.1, ruling 20).
 it("opens the complete literal reference left by a real Reader after a memory restart", async () => {
 	vi.useRealTimers();
-	const { ReaderScreen } = await import("../reader/ReaderScreen");
 	const id = hubId();
 	const disk = {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,

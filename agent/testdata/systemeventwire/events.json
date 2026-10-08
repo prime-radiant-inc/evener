@@ -295,18 +295,6 @@
       }
     },
     {
-      "case": "steer-task-nudge",
-      "note": "The one-time task_list suggestion (taskReminderNudge).",
-      "item": {
-        "type": "steering",
-        "id": "item_steering_1",
-        "turnId": "turn_1",
-        "text": "\u003cSYSTEM-REMINDER\u003e\nYou have a task_list tool available for organizing multi-step work. Consider creating a task list to track your progress.\n\u003c/SYSTEM-REMINDER\u003e",
-        "status": "completed",
-        "steeringKind": "task-nudge"
-      }
-    },
-    {
       "case": "steer-note-handoff",
       "note": "The agent's note to itself, carried across a compaction (renderNoteHandoff).",
       "item": {

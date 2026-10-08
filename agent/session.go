@@ -940,7 +940,6 @@ type Session struct {
 	// task reminder tracking
 	taskToolLastRound int  // totalRounds value at last task_list tool call
 	taskToolEverUsed  bool // whether task_list has ever been called
-	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool). The transient round request is the

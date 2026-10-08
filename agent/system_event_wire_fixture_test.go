@@ -184,11 +184,6 @@ func TestSystemEventWireFixtures(t *testing.T) {
 			Item: steer(t, "steer-task-list", events.SteeringKindTaskList, "<SYSTEM-REMINDER>\nTasks:\n- #3 Fix race (in progress)\n</SYSTEM-REMINDER>"),
 		},
 		{
-			Case: "steer-task-nudge",
-			Note: "The one-time task_list suggestion (taskReminderNudge).",
-			Item: steer(t, "steer-task-nudge", events.SteeringKindTaskNudge, taskReminderNudge()),
-		},
-		{
 			Case: "steer-note-handoff",
 			Note: "The agent's note to itself, carried across a compaction (renderNoteHandoff).",
 			Item: steer(t, "steer-note-handoff", events.SteeringKindNoteHandoff, renderNoteHandoff("Next: run the race detector on tree.go.")),

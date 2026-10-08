@@ -1,4 +1,4 @@
-import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChanged, installActivityFixture } from "./sessionActivityTestUtils";
 // The Activity list (spec 9): a coordinator's subagents and shell jobs, read
 // through typed activity reads, with live work and independent quiet histories,
 // the strip, the chips, search, and each row's why and last line.
@@ -9,7 +9,7 @@ import type { ReactElement } from "react";
 import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, screenConnection, settle } from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -142,26 +142,9 @@ beforeEach(() => {
 	navigation = { navigate: vi.fn(), push: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
 });
 
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 // The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	act(() =>
-		hubClient.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: "coord",
-				sessionId: "coord",
-				ref: "local:coord",
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => hubClient.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 }
 
@@ -483,7 +466,7 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 it("turns a silent subagent's row Quiet on its own", async () => {
 	// On fake timers, so the first read can take as long as it takes without
 	// crossing the threshold before the list shows the row. It flushes the
-	// read itself: the file's settle() waits on a setTimeout that never fires
+	// read itself: settle() waits on a setTimeout that never fires
 	// while setTimeout is faked.
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	try {

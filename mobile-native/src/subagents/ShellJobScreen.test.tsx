@@ -1,4 +1,4 @@
-import { activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChanged, activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
 // A shell job's detail (Jesse's ruling on shell jobs, PR 2): the job as its
 // coordinator's tree carries it (command, how it's doing, who started it),
 // and its output's tail from evener/jobs/output, read again whenever the job
@@ -10,7 +10,7 @@ import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPe
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { render, renderedText, screenConnection, settle } from "../renderNative.testkit";
 import { forgetSubagentTrees } from "./subagentTree";
 import { ShellJobScreen } from "./ShellJobScreen";
 import { JOB_OUTPUT_REREAD_MS } from "./useShellJobOutput";
@@ -116,13 +116,6 @@ beforeEach(() => {
 	navigation = { setOptions: vi.fn((next) => options.push(next)), options };
 });
 
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 async function mount(over: { ownerRef?: string } = {}) {
 	const params = {
 		hubId: "hub-1",
@@ -143,17 +136,7 @@ async function mount(over: { ownerRef?: string } = {}) {
 // at once.
 async function treeChanges(next: { revision: number; root: unknown }) {
 	tree = next;
-	act(() =>
-		client.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: "coord",
-				sessionId: "coord",
-				ref: "local:coord",
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => client.emitNotification(activityChanged(COORDINATOR)));
 	await settle();
 }
 
