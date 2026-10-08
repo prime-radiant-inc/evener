@@ -1,6 +1,7 @@
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { activityChanged, activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -31,6 +32,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settle,
 	systemGlass,
 	textOf,
 	unmountMountedTrees,
@@ -221,16 +223,6 @@ const navigation = {
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
-
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
 
 async function advanceFakeTimers(ms: number) {
 	await act(async () => {
@@ -555,7 +547,7 @@ async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
 	act(() => input.props.onChangeText(text));
-	await flush();
+	await settle();
 }
 
 async function press(tree: ReactTestRenderer, label: string) {
@@ -3831,7 +3823,7 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
 		expect(host?.session.capabilities).toMatchObject({ send: true });
 		act(() => host?.choose("/goal"));
-		await flush();
+		await settle();
 		expect(field(tree)?.props.value).toBe("/goal hello");
 	});
 });
@@ -5035,7 +5027,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	it("reads the coordinator's tree again when this subagent's status changes", async () => {
 		const { hub } = await mountSubagent(subagent(true));
 		const before = jobReads(hub);
-		act(() => hub.notify(activityChanged({ ...COORDINATOR, sessionId: "fix" })));
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
@@ -5298,7 +5290,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
 			2,
 		);
-		act(() => hub.notify(activityChanged({ ...COORDINATOR, sessionId: "fix" })));
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");

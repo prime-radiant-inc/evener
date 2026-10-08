@@ -1,5 +1,6 @@
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { findEntityView } from "@evener/appwire-client";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -143,12 +144,7 @@ test("transcript retains its shared collection demand after tab disposal and pub
   client.on("evener/thread/jobs/list", () => {
     throw new Error("temporary source");
   });
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref: SESSION_REF, threadId: "owner" }, ["jobs"])));
   await waitFor(() =>
     expect(findEntityView(transcript.result.current, "job", "job_raw", SESSION_REF)).toMatchObject({
       stale: true,
@@ -161,12 +157,7 @@ test("transcript retains its shared collection demand after tab disposal and pub
     jobs: [activityJob({ ownerRef: SESSION_REF })],
     page: { complete: true, issues: [] },
   }));
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref: SESSION_REF, threadId: "owner" }, ["jobs"])));
   await waitFor(() =>
     expect(findEntityView(transcript.result.current, "job", "job_raw", SESSION_REF)).toMatchObject({
       stale: false,
@@ -176,11 +167,6 @@ test("transcript retains its shared collection demand after tab disposal and pub
   transcript.unmount();
   expect(sessionActivitySnapshot(client, SESSION_REF, "session")).toBeNull();
   const calls = client.calls.length;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref: SESSION_REF, threadId: "owner" }, ["jobs"])));
   expect(client.calls).toHaveLength(calls);
 });

@@ -69,7 +69,7 @@ func reloadSummaryResponder(marker string, calls *atomic.Int32) func(llm.Request
 		if calls != nil {
 			calls.Add(1)
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n" + marker + "\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\n" + marker + "\n[END SUMMARY]")}
 	}
 }
 

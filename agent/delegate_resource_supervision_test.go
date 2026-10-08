@@ -3405,63 +3405,76 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 	// in-process adapter, so quiescence is reached in milliseconds; this bound
 	// only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, desc, func() bool {
-		sub.mu.Lock()
-		sess := sub.sess
-		closed := sub.closed
-		sub.mu.Unlock()
-		// Dispatching an armed attention hands the work along a chain of
-		// states, and no single one of them covers the whole chain: an arm
-		// awaiting retry, attention pending with no reservation yet, a
-		// reservation that has consumed the pending id but not yet committed,
-		// an open generation whose run goroutine has not started, and finally
-		// the child's own run flags. Each stage is entered before its
-		// predecessor is left, so reading them in dispatch order means work
-		// that races past one read is caught by a later one.
-		if sess != nil && !closed {
-			if sess.hasPendingDelegateAttentionArmRetry() {
-				why = "attention arm retry pending"
-				return false
-			}
-			if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
-				why = fmt.Sprintf("pending attention %v (err %v)", pending, err)
-				return false
-			}
-			if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
-				if controller.reservedAttentionID(sess) != "" {
-					why = "attention reserved"
-					return false
-				}
-				controller.mu.Lock()
-				aggregate := controller.durable[delegateID]
-				runOpen := aggregate != nil && aggregate.CurrentRunOpen
-				// A finished generation whose finalize tail hasn't reported
-				// quiescence still holds the delegate: it takes no start yet.
-				live := controller.live[delegateID]
-				finalizing := live != nil && live.finalizing != nil
-				controller.mu.Unlock()
-				if runOpen || finalizing {
-					why = fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
-					return false
-				}
-			}
-		}
-		sub.mu.Lock()
-		done := sub.done
-		live := sub.running || sub.driving || sub.finalizing
-		sub.mu.Unlock()
-		if live || done == nil {
-			why = fmt.Sprintf("child live=%t completion channel=%t", live, done != nil)
-			return false
-		}
-		why = "completion channel open"
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
+		why = stableSupervisionRefusal(sub)
+		return why == ""
 	})
 	quiesced = true
+}
+
+// stableSupervisionRefusal is the first stage of stable child supervision
+// still holding sub, as waitForStableSupervisionRun reads them, or "" once
+// all are quiet.
+func stableSupervisionRefusal(sub *subagent) string {
+	sub.mu.Lock()
+	sess := sub.sess
+	closed := sub.closed
+	sub.mu.Unlock()
+	// Dispatching an armed attention hands the work along a chain of
+	// states, and no single one of them covers the whole chain: an arm
+	// awaiting retry, attention pending with no reservation yet, a
+	// reservation that has consumed the pending id but not yet committed,
+	// an open generation whose run goroutine has not started, and finally
+	// the child's own run flags. Each stage is entered before its
+	// predecessor is left, so reading them in dispatch order means work
+	// that races past one read is caught by a later one.
+	if sess != nil && !closed {
+		if sess.hasPendingDelegateAttentionArmRetry() {
+			return "attention arm retry pending"
+		}
+		if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+			return fmt.Sprintf("pending attention %v (err %v)", pending, err)
+		}
+		if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
+			if controller.reservedAttentionID(sess) != "" {
+				return "attention reserved"
+			}
+			controller.mu.Lock()
+			aggregate := controller.durable[delegateID]
+			runOpen := aggregate != nil && aggregate.CurrentRunOpen
+			// A finished generation whose finalize tail hasn't reported
+			// quiescence still holds the delegate: it takes no start yet.
+			live := controller.live[delegateID]
+			finalizing := live != nil && live.finalizing != nil
+			controller.mu.Unlock()
+			if runOpen || finalizing {
+				return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
+			}
+		}
+	}
+	sub.mu.Lock()
+	done := sub.done
+	live := sub.running || sub.driving || sub.finalizing
+	sub.mu.Unlock()
+	if live || done == nil {
+		return fmt.Sprintf("child live=%t completion channel=%t", live, done != nil)
+	}
+	select {
+	case <-done:
+	default:
+		return "completion channel open"
+	}
+	if sess != nil {
+		// The session namer is the last stage: a run launches it and it
+		// can outlive the run, taking the session lock to name and save
+		// the session.
+		sess.mu.Lock()
+		naming := sess.naming.pending
+		sess.mu.Unlock()
+		if naming != 0 {
+			return fmt.Sprintf("%d session namer runs pending", naming)
+		}
+	}
+	return ""
 }
 
 // stableSupervisionState renders the controller, root and child state a
@@ -4049,4 +4062,43 @@ func pendingQuietAttention(t *testing.T, root *Session) []string {
 		t.Fatalf("read quiet attention: %v", err)
 	}
 	return append([]string(nil), fold.order...)
+}
+
+// The child's initial-prompt session namer runs detached and can outlive the
+// run, taking the session lock to name and save the session. Quiescence
+// waits for it, so a test reading the child's meta, name or lock-guarded
+// state right after the wait doesn't race it (#4009).
+func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	released, releaseNamer := context.WithCancel(context.Background())
+	fixture.client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
+		<-released.Done()
+		return llm.Response{Provider: testSessionNamerProvider, Model: request.Model, Message: llm.Assistant(`{"name":"Slow Name"}`)}
+	}})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	// Registered after the root's Close cleanup so it runs first: a failure
+	// before the namer is released must not leave it blocked for Close to
+	// wait out.
+	t.Cleanup(releaseNamer)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	// With every earlier stage quiet, the blocked namer alone must still hold
+	// the child; only then is it released.
+	const namerPending = "1 session namer runs pending"
+	// TRIPWIRE: the scripted warm run settles in milliseconds; 30s only fires
+	// if the namer never becomes the one refusal left.
+	waitForCondition(t, 30*time.Second, "the blocked namer to be the only refusal left", func() bool {
+		return stableSupervisionRefusal(sub) == namerPending
+	})
+	releaseNamer()
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	sub.sess.mu.Lock()
+	pending, name := sub.sess.naming.pending, sub.sess.naming.value
+	sub.sess.mu.Unlock()
+	if pending != 0 || name != "Slow Name" {
+		t.Fatalf("quiescence returned with %d child namer runs pending and name %q, want none pending and the slow namer's name", pending, name)
+	}
 }

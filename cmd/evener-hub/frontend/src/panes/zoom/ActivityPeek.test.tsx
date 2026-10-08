@@ -1,5 +1,6 @@
 import type { SessionActivityContext, SessionActivitySummary, ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -306,15 +307,11 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
     page: { complete: true, issues: [] },
   }));
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: {
-        ref: "grandchild",
-        threadId: "wire-grandchild",
-        sessionId: "session-grandchild",
-        resources: ["delegates"],
-      },
-    }),
+    client.emitNotification(
+      activityChangedNotification({ ref: "grandchild", threadId: "wire-grandchild", sessionId: "session-grandchild" }, [
+        "delegates",
+      ]),
+    ),
   );
   await within(screen.getByTestId("activity-sidebar")).findByRole("button", { name: /Fresh sidebar row/ });
   expect(reads()).toBe(2);
@@ -326,15 +323,11 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
   );
   const before = reads();
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: {
-        ref: "grandchild",
-        threadId: "wire-grandchild",
-        sessionId: "session-grandchild",
-        resources: ["delegates"],
-      },
-    }),
+    client.emitNotification(
+      activityChangedNotification({ ref: "grandchild", threadId: "wire-grandchild", sessionId: "session-grandchild" }, [
+        "delegates",
+      ]),
+    ),
   );
   await act(async () => Promise.resolve());
   expect(reads()).toBe(before);

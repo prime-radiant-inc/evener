@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -513,4 +514,128 @@ func jsonBody(_ ToolArgs, output string, width int) string {
 // command output is legitimate.
 func notesTextBody(args ToolArgs, output string, width int) string {
 	return jsonBody(args, tuitext.StripControls(output), width)
+}
+
+// DelegateSendReplyBody shows what a delegate_send that waited got back: the
+// earlier results its wait carried, oldest first, then the delegate's reply.
+// It follows appwire-client's delegateSendResponse and
+// delegateSendEarlierResponses over the raw state agent's
+// marshalDelegateSendResult writes: the reply is the raw state's output, else
+// what the tool printed above its footer, unless the reply carried earlier
+// results, whose text is never its own; an earlier entry that isn't an object
+// is dropped on its own. A raw state that isn't a delegate_send result reads
+// as none.
+func DelegateSendReplyBody(raw, output string, width int) string {
+	var state map[string]any
+	if json.Unmarshal([]byte(raw), &state) != nil || !isDelegateSendResult(state) {
+		state = nil
+	}
+	earlier, _ := state["earlier_results"].([]any)
+	th := tuitheme.ActiveTheme()
+	heading := lipgloss.NewStyle().Foreground(th.TextDim)
+	text := lipgloss.NewStyle().Width(max(width, 1))
+	var entries []map[string]any
+	for _, entry := range earlier {
+		if object, ok := entry.(map[string]any); ok {
+			entries = append(entries, object)
+		}
+	}
+	var blocks []string
+	for i, entry := range entries {
+		label := fmt.Sprintf("earlier reply %d of %d", i+1, len(entries))
+		if status := strings.TrimSpace(jsonString(entry, "status")); status != "" && status != "completed" {
+			label += " · " + status
+		}
+		body := envvars.FirstNonEmpty(jsonString(entry, "output"), jsonString(entry, "reason"), "(no reply)")
+		blocks = append(blocks, heading.Render(label), text.Render(body))
+	}
+	reply := jsonString(state, "output")
+	if strings.TrimSpace(reply) == "" && len(earlier) == 0 {
+		reply = delegateSendPrintedReply(output)
+	}
+	if strings.TrimSpace(reply) != "" {
+		blocks = append(blocks, heading.Render("reply"), text.Render(strings.TrimRight(reply, "\n")))
+	}
+	return strings.Join(blocks, "\n")
+}
+
+// isDelegateSendResult reports whether state is a delegate_send's raw state,
+// as appwire-client's isDelegateSendResult decides: a non-blank action, a
+// boolean running_in_background, and its optional text fields absent or
+// strings.
+func isDelegateSendResult(state map[string]any) bool {
+	action, _ := state["action"].(string)
+	if strings.TrimSpace(action) == "" {
+		return false
+	}
+	if _, ok := state["running_in_background"].(bool); !ok {
+		return false
+	}
+	for _, key := range []string{"delegate_id", "output", "transcript_ref", "wait_ignored_reason"} {
+		if value, present := state[key]; present {
+			if _, ok := value.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// jsonString is object[key] when it is a string, else "".
+func jsonString(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+	return value
+}
+
+// delegateSendPrintedReply is what a delegate_send printed above its footer:
+// all of it when its last "[delegate_id …]" line isn't a valid footer.
+func delegateSendPrintedReply(output string) string {
+	lines := strings.Split(strings.TrimRight(output, " \t\n"), "\n")
+	for i, line := range slices.Backward(lines) {
+		if strings.HasPrefix(line, "[delegate_id ") && strings.HasSuffix(line, "]") {
+			if isDelegateSendFooter(line) {
+				return strings.Join(lines[:i], "\n")
+			}
+			break
+		}
+	}
+	return output
+}
+
+// knownDelegateSendStatuses are the status fields a delegate_send footer
+// carries, as appwire-client's KNOWN_DELEGATE_SEND_STATUSES lists them.
+var knownDelegateSendStatuses = map[string]bool{
+	"running": true, "completed": true, "failed": true, "exhausted": true,
+	"cancelled": true, "stopped": true, "delivered": true, "not_delivered": true,
+}
+
+// isDelegateSendFooter reports whether line is a delegate_send footer as
+// appwire-client's delegateSendFooter reads one: "[delegate_id <id> ·
+// <action>", then optionally, in order, "started_job_id <id>", a known
+// status, "running in background", "watching" and "wait ignored: <why>",
+// and nothing else.
+func isDelegateSendFooter(line string) bool {
+	fields := strings.Split(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"), " · ")
+	if len(fields) < 2 || strings.TrimSpace(strings.TrimPrefix(fields[0], "delegate_id ")) == "" || strings.TrimSpace(fields[1]) == "" {
+		return false
+	}
+	rest := fields[2:]
+	optional := func(match func(string) bool) bool {
+		if len(rest) > 0 && match(rest[0]) {
+			rest = rest[1:]
+			return true
+		}
+		return false
+	}
+	nonblankAfter := func(prefix string) func(string) bool {
+		return func(field string) bool {
+			return strings.HasPrefix(field, prefix) && strings.TrimSpace(strings.TrimPrefix(field, prefix)) != ""
+		}
+	}
+	optional(nonblankAfter("started_job_id "))
+	optional(func(field string) bool { return knownDelegateSendStatuses[field] })
+	optional(func(field string) bool { return field == "running in background" })
+	optional(func(field string) bool { return field == "watching" })
+	optional(nonblankAfter("wait ignored: "))
+	return len(rest) == 0
 }

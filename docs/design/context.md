@@ -273,6 +273,20 @@ bound summarization input across model context windows.
 
 The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
 
+A reply that is not a summary counts as a summarizer failure. A configured
+cheap model's rejected reply falls through to the active model, as a failed
+cheap call does. If that reply is rejected too, the layer emits the "LLM
+summarization failed" warning and the checkpoint stands. Not a summary means
+empty, or, under the default prompt, holding no section with content: a
+heading (`#` markup or `**bold**`) naming one of the prompt's `##` sections,
+with text after the name on its line (`## Progress: fixed it`) or on a later
+line other than another section heading or the `[CONTEXT SUMMARY]` and
+`[END SUMMARY]` markers. Subheadings and bold labels inside a section are
+content. Weak models sometimes
+answer in character ("I'll read the plan, then...") instead of summarizing.
+Under caller instructions, which replace the sections, only an empty reply is
+rejected.
+
 ## ForceCompact
 
 `Manager.ForceCompact(ctx, history, instructions, emitFn) bool` runs both compaction

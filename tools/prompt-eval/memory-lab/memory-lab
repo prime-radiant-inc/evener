@@ -334,13 +334,13 @@ def root_events(path):
 def parse_events(path):
     """Returns (tool calls, whether the round cap was hit, communicate messages, reasoning summary text),
     for the root session. Each call is {"tool", "args", "compactions_before": compactions (see Folds)
-    before it, "output_chars"}."""
+    before it, "output_chars", "failed": whether its TOOL_CALL_END carried an error}."""
     calls, limit, messages, reasoning = [], False, [], []
     by_id, folds = {}, Folds()
     for kind, data in root_events(path):
         if kind == "TOOL_CALL_START":
             calls.append({"tool": data.get("tool_name", ""), "args": data.get("arguments_json", ""),
-                          "compactions_before": len(folds.compactions()), "output_chars": 0})
+                          "compactions_before": len(folds.compactions()), "output_chars": 0, "failed": False})
             if data.get("call_id") is not None:
                 by_id[data["call_id"]] = calls[-1]
             folds.tool_call()
@@ -348,6 +348,7 @@ def parse_events(path):
         elif kind == "TOOL_CALL_END" and data.get("call_id") is not None and data["call_id"] in by_id:
             output = data["output"] if data.get("output") is not None else data.get("error") or ""
             by_id[data["call_id"]]["output_chars"] = len(str(output))
+            by_id[data["call_id"]]["failed"] = bool(data.get("error"))
         elif kind == "CONTEXT_COMPACTION":
             folds.layer(data.get("layer", ""))
         elif kind == "REASONING_SUMMARY_DELTA":

@@ -21,7 +21,7 @@ func TestFoldCopiesRecordTheOrdinalOfTheirOriginal(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12)
 

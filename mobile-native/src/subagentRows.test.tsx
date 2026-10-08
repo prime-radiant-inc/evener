@@ -1,4 +1,4 @@
-import { activityChanged, installActivityFixture } from "./subagents/sessionActivityTestUtils";
+import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // Subagent rows in the transcript (spec 8.2 "Subagent", 9), driven from the
 // coordinator's tool calls as history carries them (agent/testdata/
 // subagentwire) through the same pipeline ConversationScreen runs, at every
@@ -14,7 +14,7 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import {
 	subagentCallItems,
 	subagentOutcomesResponse,
@@ -526,7 +526,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 		reply = next;
 		await act(async () => {
-			client.emitNotification(activityChanged(COORDINATOR, ["delegates"]));
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 			await vi.runOnlyPendingTimersAsync();
 		});
 		expect(renderedText(screen)).toContain("Second run report.");
@@ -630,7 +630,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).toContain("Finished");
 		answer = recorded;
 		await act(async () => {
-			client.emitNotification(activityChanged(COORDINATOR, ["delegates"]));
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 		});
 		expect(jobsLists(client)).toHaveLength(2);
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");

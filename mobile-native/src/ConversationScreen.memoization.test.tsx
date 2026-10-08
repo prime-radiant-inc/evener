@@ -15,7 +15,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { keyboard, render, renderedText, screenConnection, unmountMountedTrees } from "./renderNative.testkit";
+import { keyboard, render, renderedText, screenConnection, settle, unmountMountedTrees } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { TimelineItem } from "./TimelineItem";
 
@@ -158,16 +158,6 @@ const navigation = {
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
-
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
 
 const CAPABILITIES = {
 	send: true,

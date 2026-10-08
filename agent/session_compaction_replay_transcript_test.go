@@ -82,7 +82,7 @@ func TestCompactionReplay_RealRoundWritesReplayTailAndResumes(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	forceRealRoundSummaryFold(t, s, 0.5, 0.85)
 
@@ -195,7 +195,7 @@ func TestCompactionReplay_RealRoundMarkerLessFoldWritesNoReplayTail(t *testing.T
 			return nil
 		},
 		Responder: func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	}
 	client := llm.NewClient()

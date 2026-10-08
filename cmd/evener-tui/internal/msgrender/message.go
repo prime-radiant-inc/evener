@@ -324,6 +324,11 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	bodyFromRenderer := false
 	if (tc.Name == "delegate" || tc.Name == "delegate_send") && tc.Subagent != nil {
 		body := SubagentRunBody(*tc.Subagent, width-th.IndentToolBody)
+		if tc.Name == "delegate_send" && body != "" {
+			if reply := DelegateSendReplyBody(tc.Raw, tc.Output, width-th.IndentToolBody); reply != "" {
+				body += "\n" + reply
+			}
+		}
 		if body != "" {
 			if tc.Error != "" {
 				errStyle := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting)
