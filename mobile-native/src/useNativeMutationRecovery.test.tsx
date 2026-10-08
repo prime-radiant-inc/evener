@@ -172,8 +172,8 @@ test("discards a row durably through the real runtime and follows its own projec
 	expect(await hook.result.current.discard(row.clientMutationId)).toBe(false);
 	expect(await hook.result.current.discard(otherRow.clientMutationId)).toBe(false);
 	expect(await runtime.storage.listRecovery(OTHER_TARGET)).toHaveLength(1);
-	// A discard that removes nothing still publishes a storage change, and the
-	// hook's re-read lands after it: let it land before the test ends.
+	// The zero-row discards above still publish storage changes, and the
+	// hook's last re-read lands after them: let it land before the test ends.
 	await settle();
 });
 
