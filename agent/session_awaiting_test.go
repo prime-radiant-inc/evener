@@ -3,14 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/internal/tool"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
