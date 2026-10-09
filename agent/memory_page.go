@@ -71,33 +71,32 @@ func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
 	return match, true
 }
 
-// canonicalMemoryPageName is base, one path segment, as its directory, whose
-// entries are names, lists it: the matchMemoryNameCase match, else base.
-func canonicalMemoryPageName(base string, names []string) string {
-	if match, ok := matchMemoryNameCase(base, slices.Values(names)); ok {
-		return match
-	}
-	return base
-}
-
 // listedMemoryPagePath is the slash path the scope lists the file at rel
 // under, which on a case-insensitive filesystem can differ from rel's case:
-// rel with each segment in its directory's case. A segment whose directory
-// can't be listed, such as one a write is about to create, stays as it is.
+// rel with each segment in its directory's case (matchMemoryNameCase). From
+// the first directory that can't be listed, such as one a write is about to
+// create, the rest of rel stays as it is.
 func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
-	var listed []string
-	for segment := range strings.SplitSeq(rel, "/") {
-		dir := filepath.Join(env.WorkingDirectory(), filepath.FromSlash(path.Join(listed...)))
-		if entries, err := env.ListDirectory(dir, 1); err == nil {
-			names := make([]string, 0, len(entries))
-			for _, entry := range entries {
-				names = append(names, entry.Name)
-			}
-			segment = canonicalMemoryPageName(segment, names)
+	listed := ""
+	segments := strings.Split(rel, "/")
+	for i, segment := range segments {
+		entries, err := env.ListDirectory(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)), 1)
+		if err != nil {
+			return path.Join(append([]string{listed}, segments[i:]...)...)
 		}
-		listed = append(listed, segment)
+		names := func(yield func(string) bool) {
+			for _, entry := range entries {
+				if !yield(entry.Name) {
+					return
+				}
+			}
+		}
+		if match, ok := matchMemoryNameCase(segment, names); ok {
+			segment = match
+		}
+		listed = path.Join(listed, segment)
 	}
-	return path.Join(listed...)
+	return listed
 }
 
 // splitMemoryFrontmatter splits text into its frontmatter block and body

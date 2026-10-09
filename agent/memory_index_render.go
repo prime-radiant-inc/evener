@@ -61,12 +61,13 @@ func memoryIndexLineFor(line, rel string) bool {
 	if !ok {
 		return false
 	}
+	link := "](" + rel + ") — "
 	for i := 0; i < len(title); i++ {
 		switch {
 		case title[i] == '\\':
 			i++
 		case strings.HasPrefix(title[i:], "]("):
-			return strings.HasPrefix(title[i+len("]("):], rel+") — ")
+			return strings.HasPrefix(title[i:], link)
 		}
 	}
 	return false

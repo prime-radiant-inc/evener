@@ -180,23 +180,3 @@ func TestMemoryIndexLineFor(t *testing.T) {
 		}
 	}
 }
-
-// A written page's path takes the case the scope lists it under, so a write
-// to Fact.md on a case-insensitive filesystem patches fact.md's line.
-func TestCanonicalMemoryPageName(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		base  string
-		names []string
-		want  string
-	}{
-		{"Fact.md", []string{"fact.md", "other.md"}, "fact.md"},
-		{"fact.md", []string{"fact.md", "Fact.md"}, "fact.md"},
-		{"Fact.md", []string{"fact.md", "FACT.md"}, "Fact.md"},
-		{"new.md", []string{"other.md"}, "new.md"},
-	} {
-		if got := canonicalMemoryPageName(tc.base, tc.names); got != tc.want {
-			t.Fatalf("%s in %v: got %q, want %q", tc.base, tc.names, got, tc.want)
-		}
-	}
-}
