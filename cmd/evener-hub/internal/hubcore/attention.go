@@ -161,11 +161,8 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 	}
 	for id, prev := range w.prev {
 		if _, still := cur[id]; !still {
-			gone := prev
-			gone.Level = "idle"
-			gone.AskPending = false
-			gone.ApprovalPending = false
-			gone.NeedsResponse = false
+			// Built from the labels only, so every pending flag clears.
+			gone := appwire.AttentionEntry{ID: prev.ID, Title: prev.Title, Project: prev.Project, Level: "idle"}
 			changed = append(changed, appwire.AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}
