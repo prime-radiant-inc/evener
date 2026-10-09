@@ -116,7 +116,7 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
   the two disagree.
 - **State vocabulary**: the normalized-state model (`hubapi/attention.go`)
   defines both `idle` (display word "Idle") and `awaiting` (display word
-  "Your move") as distinct terminal states for a still-live session. `idle`
+  "Needs you") as distinct terminal states for a still-live session. `idle`
   is the common case: per `agent/session_tool_round.go`'s
   `deliverIfCommunicated`, a completed turn with no question/ask pending
   lands on `SessionIdle`, and `cmd/evener-hub/internal/hubcore/tree.go`'s

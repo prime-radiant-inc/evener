@@ -166,7 +166,7 @@ func (m hubModel) sessionTurnActionState() bool {
 }
 
 // sessionTurnRunning reports a genuinely in-flight turn (the composer should
-// offer Stop/steer/queue). A rested "awaiting" session — re-armed "your move"
+// offer Stop/steer/queue). A rested "awaiting" session ("Needs you")
 // with nothing running — is NOT running: it drops to plain Send. This is
 // narrower than sessionTurnActionState (which stays true for awaiting so the
 // status line's "busy" affordances and the !processing send-gating are
