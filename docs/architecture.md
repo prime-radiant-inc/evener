@@ -245,7 +245,13 @@ with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn
 autonomous work (a working child, a pending delegate report, a pending notification, queued
 input, a goal kick) will move the session first; a finished child's warm runtime does not
 count. The settle reads the first turn-ending call the input accepted, and restore derives the
-same state from the transcript.
+same state from the transcript. A pending question rests awaiting at the settle. A
+`needs_response` rest first waits a 5-second quiet period, resting idle, so a session that ends
+a turn and starts the next one at once never flickers to awaiting. When the period passes, the
+timer checks everything the settle checked again: a new turn or settle, a close, queued input,
+runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
+announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
+the session has closed.
 
 ### The repeated-call breaker
 

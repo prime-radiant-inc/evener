@@ -375,7 +375,7 @@ func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
-	sess := newSession(t, withAdapter(f))
+	sess := newSession(t, withAdapter(f), withImmediateRest())
 
 	var kicked []string
 	sess.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })

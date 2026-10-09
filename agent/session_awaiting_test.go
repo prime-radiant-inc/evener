@@ -111,7 +111,7 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response { return endReasonResponse("done", tc.reason) },
 			}})
-			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,7 +175,7 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 		func(req llm.Request) llm.Response { return endReasonResponse("one", "needs_response") },
 		func(req llm.Request) llm.Response { return endReasonResponse("two", "needs_response") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestAutonomyInFlight_CountsChildInFinalizeTail(t *testing.T) {
 // from resting awaiting after a needs_response turn (#4093).
 func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }), withImmediateRest())
 	child := newTestSessionForState(t)
 	sess.subagents.track(&subagent{id: child.ID(), sess: child})
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -315,7 +315,7 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
 	}})
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func restoreAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: steps})
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}

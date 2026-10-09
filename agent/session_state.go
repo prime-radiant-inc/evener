@@ -623,30 +623,94 @@ func (s *Session) recomputeRestoredState(divergenceTurn int) {
 // the session waits on its human partner: a question is pending, or the turn
 // ended on a communicate that said needs_response and settleTerminalState
 // finds nothing autonomous in flight. A plain reply (done) and a wait on
-// work (waiting_on_work) rest idle. It runs after
-// settleGoalOnIdle (so the goal kick is known) and before the EventSessionEnd
-// emit (so the emitted State carries the upgrade). The upgrade respects the
-// same closed-guard as finishProcessingAtBoundary and only ever upgrades from
-// SessionIdle, so interrupt/failure paths (which never reach the settle) and
-// closed sessions are untouched.
+// work (waiting_on_work) rest idle. It runs after settleGoalOnIdle (so the
+// goal kick is known) and before the EventSessionEnd emit. A pending question
+// upgrades at once, so the emitted State carries it; a needs_response rest
+// upgrades after its quiet period and announces itself with
+// EventStatusSettled. The upgrade respects the same closed-guard as
+// finishProcessingAtBoundary and only ever upgrades from SessionIdle, and a
+// turn starting since the settle cancels a pending one (restGeneration).
 func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+	s.mu.Lock()
+	s.restGeneration++
+	generation := s.restGeneration
+	s.mu.Unlock()
+	if s.askPendingCount() > 0 {
+		// Only the answer resolves a pending question; queued input waits
+		// behind it, so nothing else is read here.
+		s.mu.Lock()
+		if s.restStillPendingLocked(generation) {
+			s.state = SessionAwaiting
+		}
+		s.mu.Unlock()
+		return
+	}
+	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
+		return
+	}
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	target := SessionAwaiting
-	if s.askPendingCount() == 0 {
-		if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
-			return
-		}
-		target = settleTerminalState(hadOutput, goalKicked,
-			s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.autonomyInFlight())
-	}
-	if target != SessionAwaiting {
+	moves := func() bool { return s.QueueDepth() > 0 || s.hasRunnableUserSteering() }
+	if settleTerminalState(hadOutput, goalKicked, moves(), s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
-	s.mu.Lock()
-	if s.state == SessionIdle && !s.closingOrClosedLocked() {
-		s.state = SessionAwaiting
+	// A needs_response rest waits out a quiet period first, so a session that
+	// ends a turn and starts the next one at once never flickers to awaiting.
+	// The timer re-checks everything the settle checked: a newer settle, a new
+	// turn, a close, or work that arrived in the meantime leaves it idle.
+	delay := needsResponseQuietPeriodDefault
+	if override := s.cfg.testOnly.needsResponseQuietPeriod; override != nil {
+		delay = *override
 	}
-	s.mu.Unlock()
+	if delay <= 0 {
+		// Nothing moved since the checks above, and the input's SESSION_END,
+		// emitted right after this settle, carries the state.
+		s.restAwaiting(generation)
+		return
+	}
+	s.sclock().AfterFunc(delay, func() {
+		// The cheap checks first, so a timer outliving its session or turn
+		// reads no work state.
+		if !s.restStillPending(generation) || moves() || s.autonomyInFlight() {
+			return
+		}
+		if s.restAwaiting(generation) {
+			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
+		}
+	})
 }
+
+// restStillPending reports whether the rest numbered generation can still
+// arm: no turn started and no settle ran since, and the session is idle and
+// open.
+func (s *Session) restStillPending(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restStillPendingLocked(generation)
+}
+
+func (s *Session) restStillPendingLocked(generation uint64) bool {
+	return s.restGeneration == generation && s.state == SessionIdle && !s.closingOrClosedLocked()
+}
+
+// restAwaiting moves the session to awaiting if the rest numbered generation
+// can still arm, and reports whether it did. Queued input and runnable user
+// steering are read again under the same hold as the transition, since
+// neither starts a turn the moment it arrives. Steering a Stop parked is not
+// runnable, as in hasRunnableUserSteering; the held flag lives in the client
+// mutation store, so it is read before s.mu.
+func (s *Session) restAwaiting(generation uint64) bool {
+	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || (!steeringHeld && s.hasPendingUserSteeringLocked()) {
+		return false
+	}
+	s.state = SessionAwaiting
+	return true
+}
+
+// needsResponseQuietPeriodDefault is how long a turn that ended on
+// needs_response rests idle before it rests awaiting.
+const needsResponseQuietPeriodDefault = 5 * time.Second

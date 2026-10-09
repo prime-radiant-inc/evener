@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -39,9 +40,29 @@ type sessionOpts struct {
 	cfg             SessionConfig
 	cfgSet          bool
 	skipGitSnapshot bool
+	immediateRest   bool
+	clock           clock.Clock
 }
 
 type sessionOpt func(*sessionOpts)
+
+// withImmediateRest drops the needs_response quiet period, so a turn that
+// ended on needs_response rests awaiting at the settle itself.
+func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateRest = true } }
+
+// immediateRestConfig is testConfig with the needs_response quiet period
+// dropped, for tests that build a SessionConfig literal.
+func immediateRestConfig() testConfig {
+	var tc testConfig
+	dropQuietPeriod(&tc)
+	return tc
+}
+
+// dropQuietPeriod zeroes the needs_response quiet period in tc.
+func dropQuietPeriod(tc *testConfig) { tc.needsResponseQuietPeriod = new(time.Duration) }
+
+// withClock runs the session on c, keeping newSession's default config.
+func withClock(c clock.Clock) sessionOpt { return func(o *sessionOpts) { o.clock = c } }
 
 // withClient supplies a client whose main provider adapters are already
 // configured. The builder may still add its dedicated session-namer adapter.
@@ -117,6 +138,12 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	}
 	if o.skipGitSnapshot {
 		cfg.testOnly.skipGitSnapshot = true
+	}
+	if o.immediateRest {
+		dropQuietPeriod(&cfg.testOnly)
+	}
+	if o.clock != nil {
+		cfg.clock = o.clock
 	}
 	sess, err := NewSession(o.client, profile, execenv.NewLocalExecutionEnvironment(o.dir), cfg)
 	if err != nil {
