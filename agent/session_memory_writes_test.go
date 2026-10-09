@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,7 +166,9 @@ func TestMemoryStampSkipsAnUnchangedPage(t *testing.T) {
 
 // memory_search never reports the physical hand-written root index that a
 // session without memory_write leaves unmigrated: memory_read renders the
-// generated index under that name instead.
+// generated index under that name instead. Files whose names merely start
+// like the index's are still searched, and the index never uses up a
+// search's result cap.
 func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
@@ -174,51 +178,40 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"MEMORY.md":          "- [p](p.md) — opaque-needle\n",
-		"p.md":               "---\ndescription: d\n---\nopaque-needle\n",
-		"sub/MEMORY.md":      "opaque-needle\n",
-		"memory.md-notes.md": "opaque-needle\n",
+		"MEMORY.md":            "- [p](p.md) — opaque-needle\n",
+		"MEMORY.md-1-notes.md": "opaque-needle\n",
+		"memory.md-notes.md":   "opaque-needle\n",
+		"p.md":                 "---\ndescription: d\n---\nopaque-needle\n",
+		"sub/MEMORY.md":        "opaque-needle\n",
 	} {
 		if err := os.WriteFile(filepath.Join(scope, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, mode := range []string{"content", "files_with_matches", "count"} {
-		res := memoryExec(t, s, "memory_search", map[string]any{"scope": "personal", "pattern": "opaque-needle", "output_mode": mode, "context_lines": 1})
+	search := func(extra map[string]any) string {
+		t.Helper()
+		args := map[string]any{"scope": "personal", "pattern": "opaque-needle"}
+		maps.Copy(args, extra)
+		res := memoryExec(t, s, "memory_search", args)
 		if res.IsError {
-			t.Fatalf("%s: %+v", mode, res)
+			t.Fatalf("%v: %+v", extra, res)
 		}
-		for line := range strings.Lines(res.Output) {
-			if strings.HasPrefix(strings.ToLower(line), "memory.md:") || strings.HasPrefix(strings.ToLower(line), "memory.md-1") || strings.TrimSpace(line) == "MEMORY.md" {
-				t.Fatalf("%s: root index reported: %q", mode, res.Output)
-			}
-		}
-		for _, want := range []string{"p.md", filepath.Join("sub", "MEMORY.md"), "memory.md-notes.md"} {
-			if !strings.Contains(res.Output, want) {
-				t.Fatalf("%s: %s missing from %q", mode, want, res.Output)
-			}
-		}
+		return res.Output
 	}
-	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "personal", "path": "MEMORY.md", "pattern": "opaque-needle"}); res.IsError || res.Output != "" {
-		t.Fatalf("search of the root index itself: %+v", res)
+	files := []string{"MEMORY.md-1-notes.md", "memory.md-notes.md", "p.md", filepath.Join("sub", "MEMORY.md")}
+	if got := strings.Split(search(map[string]any{"output_mode": "files_with_matches"}), "\n"); !slices.Equal(got, files) {
+		t.Fatalf("files: got %q, want %q", got, files)
 	}
-}
-
-// Dropping the root index's lines from a search leaves no "--" group
-// separator leading, trailing or doubled, and keeps every other file's
-// lines, including names that start like the index's.
-func TestWithoutLegacyIndexLines(t *testing.T) {
-	t.Parallel()
-	for out, want := range map[string]string{
-		"MEMORY.md:1:x\nMEMORY.md-2-\n--\na.md:1:x":                "a.md:1:x",
-		"a.md:1:x\n--\nmemory.md-4-y\nmemory.md:5:x\n--\nb.md:2:x": "a.md:1:x\n--\nb.md:2:x",
-		"a.md:1:x\n--\nMemory.md:9:x":                              "a.md:1:x",
-		"MEMORY.md\nMEMORY.md-notes.md\nsub/MEMORY.md":             "MEMORY.md-notes.md\nsub/MEMORY.md",
-		"MEMORY.md:3\np.md:1":                                      "p.md:1",
-		"":                                                         "",
-	} {
-		if got := withoutLegacyIndexLines(out); got != want {
-			t.Fatalf("%q: got %q, want %q", out, got, want)
-		}
+	if got := search(map[string]any{"output_mode": "count"}); got != strings.Join(files, ":1\n")+":1" {
+		t.Fatalf("count: %q", got)
+	}
+	if got := search(map[string]any{"output_mode": "content", "context_lines": 1}); strings.Contains(got, "[p](p.md)") {
+		t.Fatalf("content: root index reported: %q", got)
+	}
+	if got := search(map[string]any{"output_mode": "files_with_matches", "max_results": float64(1)}); got != files[0] {
+		t.Fatalf("capped: got %q, want %q", got, files[0])
+	}
+	if got := search(map[string]any{"path": "MEMORY.md"}); got != "" {
+		t.Fatalf("search of the root index itself: %q", got)
 	}
 }

@@ -179,6 +179,16 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 // per-file matching/formatting is shared with the off path via grepAccum, so
 // output semantics are identical.
 func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+	ctxLines := 0
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		ctxLines = contextLines[0]
+	}
+	return s.grepNativeSkipping(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+}
+
+// grepNativeSkipping is grepNative, never searching a file skip names (see
+// LocalExecutionEnvironment.GrepSkipping).
+func (s *sandboxFS) grepNativeSkipping(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -189,10 +199,6 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	ctxLines := 0
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
-	}
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
@@ -263,6 +269,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 		}
 		if ignores.matches(rel, false) {
 			excludedByIgnore++
+			return nil
+		}
+		if skip != nil && skip(rel) {
 			return nil
 		}
 		if len(globFilters) > 0 {

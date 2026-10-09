@@ -8,7 +8,6 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -240,41 +239,10 @@ func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnviron
 	})
 }
 
-// legacyIndexSearchLine matches a line a search of the scope root reports
-// from the root's hand-written MEMORY.md, in any letter case: a match
-// "MEMORY.md:N:text", a context line "MEMORY.md-N-text", a count
-// "MEMORY.md:N" or the bare name.
-var legacyIndexSearchLine = regexp.MustCompile(`(?i)^` + regexp.QuoteMeta(memoryIndexFile) + `(?::\d+(?::|$)|-\d+-|$)`)
-
-// withoutLegacyIndexLines is a search of the scope root's output without the
-// hand-written MEMORY.md's lines, and without a "--" group separator left
-// leading, trailing or doubled by dropping them.
-func withoutLegacyIndexLines(out string) string {
-	var kept []string
-	// A separator is written only ahead of the next kept line, and only once
-	// a line has been kept, so none is left leading, trailing or doubled.
-	separated := false
-	for line := range strings.SplitSeq(out, "\n") {
-		switch {
-		case legacyIndexSearchLine.MatchString(line):
-		case line == "--":
-			separated = len(kept) > 0
-		default:
-			if separated {
-				kept = append(kept, "--")
-				separated = false
-			}
-			kept = append(kept, line)
-		}
-	}
-	return strings.Join(kept, "\n")
-}
-
 // execMemorySearch searches a scope's files. A scope a session without
 // memory_write has not migrated still has its hand-written root MEMORY.md,
 // which memory_read answers with the generated index instead, so the search
-// leaves that file out. Its lines are dropped after the search's result cap,
-// which can then return fewer lines than the cap allows.
+// never searches that file.
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "path", "search")
 	if err != nil {
@@ -285,11 +253,12 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	if isMemoryIndexPath(target) {
 		return "", nil
 	}
-	out, err := execFileGrep(ctx, env, forwarded)
-	if text, ok := out.(string); ok && err == nil && target == "." {
-		return withoutLegacyIndexLines(text), nil
+	var skip func(rel string) bool
+	if target == "." {
+		skip = isMemoryIndexPath
 	}
-	return out, err
+	g := parseFileGrepArgs(forwarded)
+	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
