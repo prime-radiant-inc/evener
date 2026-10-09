@@ -107,6 +107,26 @@ func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 	}
 }
 
+// A page whose valid frontmatter can't take another key line (a flow
+// mapping, or a block closed by "...") is left unstamped rather than made
+// unreadable, and keeps its description.
+func TestMemoryWriteLeavesUnextendableFrontmatterUnstamped(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	for name, body := range map[string]string{
+		"flow.md":  "---\n{description: Flow page}\n---\n# Flow\n",
+		"ended.md": "---\ndescription: Ended page\n...\n---\n# Ended\n",
+	} {
+		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": body})
+		if res.IsError || strings.Contains(res.Output, "\n\n") {
+			t.Fatalf("%s: %+v", name, res)
+		}
+		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != body {
+			t.Fatalf("%s: got %q, %v", name, raw, err)
+		}
+	}
+}
+
 // memory_read of MEMORY.md renders the whole index, paged by offset and
 // limit; with no pages it says so.
 func TestMemoryReadRendersTheIndex(t *testing.T) {

@@ -91,9 +91,14 @@ func (s *Session) stampMemoryPage(env *execenv.LocalExecutionEnvironment, rel st
 		return memoryStampFailedNote + err.Error()
 	}
 	var notes string
-	// updated is written by hand, unquoted, so it reads back as a YAML date.
-	stamped := setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
-	stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
+	stamped := raw
+	// Valid frontmatter that can't take a key line, such as a flow mapping,
+	// stays unstamped rather than unreadable.
+	if memoryFrontmatterTakesFields(raw) {
+		// updated is written by hand, unquoted, so it reads back as a YAML date.
+		stamped = setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+		stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
+	}
 	// A same-day write by the same session can leave the stamps as they
 	// were; skipping that write keeps the page's modification time.
 	if !bytes.Equal(stamped, raw) {

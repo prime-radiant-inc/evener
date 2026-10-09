@@ -130,6 +130,29 @@ func memoryFrontmatterKeyLines(block string) map[int]string {
 	return keys
 }
 
+// memoryFrontmatterTakesFields reports whether setMemoryFrontmatterField can
+// add a key line to raw's frontmatter without breaking valid YAML: there is
+// no block, or it holds only comments, or it is a block mapping with no "..."
+// document end, after which an added line would start a second document. A
+// block that already fails to parse can take the line too; it stays as
+// unreadable as it was.
+func memoryFrontmatterTakesFields(raw []byte) bool {
+	block, _, ok := splitMemoryFrontmatter(string(raw))
+	if !ok {
+		return true
+	}
+	for line := range strings.Lines(block) {
+		if strings.TrimRight(line, " \t\r\n") == "..." {
+			return false
+		}
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
+		return true
+	}
+	return memoryFrontmatterKeyLines(block) != nil
+}
+
 var (
 	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\(([^)\s]+)\)`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
