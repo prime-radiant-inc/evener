@@ -20,7 +20,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 		return nil
 	}
 	tools := []tool.RegisteredTool{
-		{Definition: tool.MemoryDefinition(tool.DefReadFile(), "memory_read"), ReadOnly: true, Exec: s.execMemoryRead},
+		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
 		{Definition: tool.MemoryDefinition(tool.DefWriteFile(), "memory_write"), Exec: s.execMemoryWrite},
 		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
@@ -61,7 +61,7 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 }
 
 // errMemoryIndexGenerated refuses a write, edit or delete of the index.
-var errMemoryIndexGenerated = errors.New("MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead")
+var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 
 // isMemoryIndexPath reports whether file, cleaned and relative to the scope,
 // names the generated index. Case is ignored: on a case-insensitive

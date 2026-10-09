@@ -7,6 +7,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
+// at a memory scope's root, which Evener generates from the pages.
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+
 // MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
 func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	base.Name = name
@@ -18,9 +22,15 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	return base
 }
 
+func DefMemoryRead() llm.ToolDefinition {
+	read := DefReadFile()
+	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	return MemoryDefinition(read, "memory_read")
+}
+
 func DefMemoryDelete() llm.ToolDefinition {
 	return MemoryDefinition(llm.ToolDefinition{
-		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Description: "Remove one memory file, not a directory. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
 		Parameters: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
