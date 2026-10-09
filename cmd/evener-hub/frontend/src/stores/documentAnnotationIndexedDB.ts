@@ -28,7 +28,7 @@ import {
   type ReadTicket,
   type SaveReceipt,
 } from "@evener/appwire-client";
-import type { ComposerSourceState } from "../panes/session/composer/sourceState";
+import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/sourceState";
 import type { AppendAnnotationResult, BrowserDraftKey, BrowserDraftRepository } from "./browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "./compositionRevision";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
@@ -207,6 +207,14 @@ function epochIdentity(lease: AcceptedSourceLease): string {
 
 function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoch: string): string {
   return JSON.stringify([documentKey, namespaceIncarnation, epoch]);
+}
+
+// Deterministic evidence key for an epoch's retained comparable baseline. It is
+// deliberately distinct from the head's current-display evidence, so an
+// inconclusive read can advance the display without erasing the evidence needed
+// to detect a later definite change. The row is removed with its epoch.
+function annotationBaselineEvidenceKey(epoch: string): string {
+  return JSON.stringify(["annotation-baseline", epoch]);
 }
 
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
@@ -443,30 +451,35 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         ) {
           return { kind: "stale" } as const;
         }
-        let contentChanged = false;
+        // Compare against the epoch's RETAINED comparable baseline, not the
+        // head's current-display evidence: an inconclusive compatible read may
+        // advance the display without erasing the evidence that detects a later
+        // definite change. A head opened by beginRead has no baseline row yet.
+        let baseline: AnnotationEvidenceRow | undefined;
         if (head) {
-          const priorEvidence = await requestResult<AnnotationEvidenceRow | undefined>(
-            transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(head.evidenceKey),
+          baseline = await requestResult<AnnotationEvidenceRow | undefined>(
+            transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(annotationBaselineEvidenceKey(head.epoch)),
           );
-          if (priorEvidence) {
-            contentChanged = compareDisplayedSources(
-              {
-                source: priorEvidence.content.text,
-                evidence: {
-                  wholeRevision: priorEvidence.content.revision,
-                  fingerprint: displayedFingerprint(priorEvidence.content.text, priorEvidence.content.truncated),
-                },
-              },
-              {
-                source: content.text,
-                evidence: {
-                  wholeRevision: content.revision,
-                  fingerprint: displayedFingerprint(content.text, content.truncated),
-                },
-              },
-            ).changed;
-          }
         }
+        const contentChanged =
+          baseline === undefined
+            ? false
+            : compareDisplayedSources(
+                {
+                  source: baseline.content.text,
+                  evidence: {
+                    wholeRevision: baseline.content.revision,
+                    fingerprint: displayedFingerprint(baseline.content.text, baseline.content.truncated),
+                  },
+                },
+                {
+                  source: content.text,
+                  evidence: {
+                    wholeRevision: content.revision,
+                    fingerprint: displayedFingerprint(content.text, content.truncated),
+                  },
+                },
+              ).changed;
         // A locally confirmed suppression keeps the current durable epoch dead even
         // when content reverts, so an unchanged reversion still fences instead of
         // resurrecting the old note.
@@ -489,6 +502,19 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           displayedSnapshotId: createSecureUUID(),
           evidenceKey,
         };
+        if (baseline === undefined) {
+          // Establish this epoch's retained comparable baseline under a
+          // deterministic epoch key. It also covers a head opened by beginRead
+          // that has no evidence row yet.
+          await requestResult(
+            transaction.objectStore(ANNOTATION_EVIDENCE_STORE).put({
+              evidenceKey: annotationBaselineEvidenceKey(epoch),
+              documentKey,
+              epoch,
+              content,
+            } satisfies AnnotationEvidenceRow),
+          );
+        }
         await requestResult(
           transaction
             .objectStore(ANNOTATION_EVIDENCE_STORE)
@@ -585,6 +611,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction
           .objectStore(ANNOTATION_EVIDENCE_STORE)
           .put({ evidenceKey: fencedEvidenceKey, documentKey, epoch: replacementEpoch, content }),
+      );
+      // The replacement epoch also needs its own retained comparable baseline.
+      await requestResult(
+        transaction.objectStore(ANNOTATION_EVIDENCE_STORE).put({
+          evidenceKey: annotationBaselineEvidenceKey(replacementEpoch),
+          documentKey,
+          epoch: replacementEpoch,
+          content,
+        } satisfies AnnotationEvidenceRow),
       );
       await requestResult(
         transaction.objectStore(ANNOTATION_HEADS_STORE).put({
@@ -1026,11 +1061,26 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const namespace = key.namespace;
     if (namespace.kind !== "browser") return { state: "cancelled" };
     const operationKey = annotationOperationKey(namespace, operationId);
-    const receipt = await this.#readOperation(operationKey);
+    // The whole fallible pre-commit path returns the documented fulfilled
+    // pending/owner-unavailable result on a storage or preparation fault: an
+    // unreadable receipt is not cancelled and must stay recoverable through the
+    // runtime's storage-recovery retry. A known committed receipt remains
+    // authoritative, and post-commit observer faults still cannot relabel it.
+    let receipt: AnnotationOperationRow | undefined;
+    try {
+      receipt = await this.#readOperation(operationKey);
+    } catch {
+      return { state: "pending", reason: "owner-unavailable" };
+    }
     if (!receipt) return { state: "cancelled" };
     if (receipt.state === "applied") return { state: "already-applied", draftRevision: receipt.draftRevision };
     if (receipt.state === "cancelled") return { state: "cancelled" };
-    const payload = await this.#readPayload(receipt.payloadKey);
+    let payload: AnnotationPayloadRow | undefined;
+    try {
+      payload = await this.#readPayload(receipt.payloadKey);
+    } catch {
+      return { state: "pending", reason: "owner-unavailable" };
+    }
     if (!payload) return { state: "cancelled" };
     // The immutable ORIGINAL payload lease owns suppression eligibility for this
     // operation; any suppression of that old epoch (provisional or confirmed)
@@ -1040,7 +1090,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (!documentStillEligible()) return { state: "cancelled" };
     const source = this.#options.targetFor(payload.operation.destination, key);
     if (!source) return { state: "pending", reason: "owner-unavailable" };
-    const preparation = await source.prepareAnnotation();
+    let preparation: ComposerPreparation | null;
+    try {
+      preparation = await source.prepareAnnotation();
+    } catch {
+      return { state: "pending", reason: "owner-unavailable" };
+    }
     if (!preparation) return { state: "pending", reason: "owner-unavailable" };
     if (!documentStillEligible()) return { state: "cancelled" };
     let result: AppendAnnotationResult;
