@@ -167,7 +167,9 @@ func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 	}
 }
 
-// A session closed during the quiet period never rests awaiting.
+// A session closed during the quiet period never rests awaiting. The closed
+// state alone fails the timer's idle check, so this pins that a timer
+// outliving its session fires harmlessly, not which check stops it.
 func TestNeedsResponseCloseInsideTheQuietPeriodNeverArms(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
@@ -212,8 +214,8 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 }
 
 // User steering a Stop parked is not work: nothing runs it until the person
-// acts, so it keeps no needs_response rest from arming, at the settle or when
-// the quiet period ends.
+// acts, so steering parked during the quiet period doesn't stop the rest
+// from arming.
 func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
@@ -236,5 +238,30 @@ func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
 	fake.Drain()
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state = %q, want awaiting: parked steering is not work", got)
+	}
+}
+
+// Runnable user steering that arrives during the quiet period will start the
+// next turn, so the rest stays idle and announces nothing.
+func TestNeedsResponseSteeringArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	sess.steeringQueue = append(sess.steeringQueue, steeringMessage{Text: "also this", Source: events.SteeringSourceUser})
+	sess.mu.Unlock()
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle with steering waiting to run", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
 	}
 }
