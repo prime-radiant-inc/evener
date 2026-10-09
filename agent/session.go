@@ -635,6 +635,12 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
+	// emit atomic against a turn advancing restGeneration: either the turn
+	// starts first and the rest stays idle, or the announcement reaches the
+	// event feed before anything the turn emits.
+	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
+	restMu sync.Mutex
 	// restGeneration counts turn starts and drain-loop settles. A
 	// needs_response rest arms awaiting only if neither happened during its
 	// quiet period. Guarded by s.mu.

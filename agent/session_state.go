@@ -675,7 +675,15 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		if !s.restStillPending(generation) || s.autonomyInFlight() {
 			return
 		}
+		// Held across the emit so a turn start can't slip in between.
+		// STATUS_SETTLED must stay out of job_watch.go's modelEventKinds: a
+		// watch fired from this emit could start a turn, which waits on restMu.
+		s.restMu.Lock()
+		defer s.restMu.Unlock()
 		if s.restAwaiting(generation) {
+			if hook := s.cfg.testOnly.needsResponseRestBeforeAnnounce; hook != nil {
+				hook()
+			}
 			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
 		}
 	})

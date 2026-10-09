@@ -39,6 +39,9 @@ node_modules/
 results/
 # The memory lab's built helpers (projid, evener binaries under test).
 tools/prompt-eval/memory-lab/bin/
+# index-overflow-1k is 1,000 generated pages: make it with
+# scenarios/index-overflow/make_seed.py --filler 999 --out scenarios/index-overflow-1k
+tools/prompt-eval/memory-lab/scenarios/index-overflow-1k/
 docs/experiments/runs/
 docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html

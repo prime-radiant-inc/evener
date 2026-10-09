@@ -25,16 +25,15 @@ func Split(raw string) (block, body string, ok bool) {
 	if !found {
 		return "", raw, false
 	}
-	if body, found := strings.CutPrefix(rest, delimiter); found {
-		return "", body, true
-	}
-	// The closing delimiter starts a line, so "a---\n" ending a value is not one.
-	end := strings.Index(rest, "\n"+delimiter)
+	// The closing delimiter starts a line, so "a---\n" ending a value is not
+	// one. Searching from the opening delimiter's "\n" lets a delimiter right
+	// after it match; end is then where the delimiter starts in rest.
+	end := strings.Index(raw[len(delimiter)-1:], "\n"+delimiter)
 	if end < 0 {
 		// Opening delimiter but no closing delimiter: treat as no frontmatter.
 		return "", raw, false
 	}
-	return rest[:end+1], rest[end+1+len(delimiter):], true
+	return rest[:end], rest[end+len(delimiter):], true
 }
 
 // Parse splits a YAML-frontmattered Markdown document into metadata and body.
