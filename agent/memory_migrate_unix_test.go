@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/agent/execenv"
 )
 
 // A page that exists but can't be written keeps its description only in the
@@ -22,13 +20,7 @@ func TestMigrateMemoryScopeKeepsIndexWhenAPageWriteFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file modes")
 	}
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	index := filepath.Join(scope, "MEMORY.md")
 	dir := filepath.Join(scope, "locked")
 	page := filepath.Join(dir, "p.md")
@@ -81,13 +73,7 @@ func TestMigrateMemoryScopeKeepsIndexWhenAPageWriteFails(t *testing.T) {
 // migration: only regular files are read.
 func TestMigrateMemoryScopeSkipsAFIFOPage(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	index := filepath.Join(scope, "MEMORY.md")
 	if err := os.WriteFile(index, []byte("- [pipe](x.md) — a fifo\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -117,13 +103,7 @@ func TestMigrateMemoryScopeSkipsAFIFOPage(t *testing.T) {
 // nor fails on it every run.
 func TestMigrateMemoryScopeSkipsAFIFOIndex(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	if err := syscall.Mkfifo(filepath.Join(scope, "MEMORY.md"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -146,13 +126,7 @@ func TestMigrateMemoryScopeSkipsAFIFOIndex(t *testing.T) {
 // entry alone.
 func TestMigrateMemoryScopeTreatsASymlinkBackupAsTaken(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	link := filepath.Join(scope, memoryLegacyIndexBackup)
 	if err := os.Symlink("gone", link); err != nil {
 		t.Fatal(err)

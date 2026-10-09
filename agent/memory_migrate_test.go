@@ -14,6 +14,19 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 )
 
+// newMemoryMigrateScope is a confined environment rooted at a fresh personal
+// memory scope, and that scope's directory.
+func newMemoryMigrateScope(t *testing.T) (*execenv.LocalExecutionEnvironment, string) {
+	t.Helper()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Cleanup)
+	return env, filepath.Join(root, "memory", "personal")
+}
+
 func TestSetMemoryFrontmatterField(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, raw, line, want string }{
@@ -111,13 +124,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 // the index is still renamed.
 func TestMigrateMemoryScope(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	write := func(rel, body string) {
 		t.Helper()
 		path := filepath.Join(scope, filepath.FromSlash(rel))
@@ -172,13 +179,7 @@ func TestMigrateMemoryScope(t *testing.T) {
 // the first backup is never overwritten.
 func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	indexes := []string{"- [a](a.md) — first index\n", "- [b](b.md) — recreated index\n", "- [c](c.md) — third index\n"}
 	backups := []string{memoryLegacyIndexBackup, memoryLegacyIndexBackup + ".2", memoryLegacyIndexBackup + ".3"}
 	for i, index := range indexes {
@@ -223,13 +224,7 @@ func TestResolveLegacyIndexPage(t *testing.T) {
 // page on disk.
 func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte("- [x](Notes.md) — the notes page\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -250,16 +245,6 @@ func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 // one named exactly MEMORY.md first, so its descriptions win.
 func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 	t.Parallel()
-	setup := func(t *testing.T) (*execenv.LocalExecutionEnvironment, string) {
-		t.Helper()
-		root := t.TempDir()
-		env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(env.Cleanup)
-		return env, filepath.Join(root, "memory", "personal")
-	}
 	write := func(t *testing.T, path, body string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -289,7 +274,7 @@ func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 
 	t.Run("a lower-case index", func(t *testing.T) {
 		t.Parallel()
-		env, scope := setup(t)
+		env, scope := newMemoryMigrateScope(t)
 		write(t, filepath.Join(scope, "memory.md"), "- [a](a.md) — from the index\n")
 		write(t, filepath.Join(scope, "a.md"), "body\n")
 		if err := migrateMemoryScope(env); err != nil {
@@ -305,7 +290,7 @@ func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 
 	t.Run("two indexes differing in case", func(t *testing.T) {
 		t.Parallel()
-		env, scope := setup(t)
+		env, scope := newMemoryMigrateScope(t)
 		write(t, filepath.Join(scope, "MEMORY.md"), "- [a](a.md) — exact index\n")
 		write(t, filepath.Join(scope, "memory.md"), "- [a](a.md) — other index\n- [b](b.md) — only in the other\n")
 		if names(t, scope)[0] != "MEMORY.md" || len(names(t, scope)) != 2 {
@@ -350,43 +335,30 @@ func TestMigrateMemoryScopeWithNoScopeDirectory(t *testing.T) {
 }
 
 // Two links naming one page in a case other than its own: the earlier line
-// wins, as for any page named twice, however the links are ordered in memory.
-// A link naming the page exactly wins over an earlier one in another case.
+// wins, as for any page named twice. A link naming the page exactly wins over
+// an earlier one in another case.
 func TestMigrateMemoryScopeLinkCasePrecedence(t *testing.T) {
 	t.Parallel()
-	for index, want := range map[string]string{
-		"- [x](NOTES.md) — first line\n- [y](Notes.md) — second line\n": "first line",
-		"- [x](NOTES.md) — other case\n- [y](notes.md) — exact name\n":  "exact name",
+	for _, tc := range []struct{ name, index, want string }{
+		{"the earlier of two other-case links", "- [x](NOTES.md) — first line\n- [y](Notes.md) — second line\n", "first line"},
+		{"an exact link over an earlier other-case one", "- [x](NOTES.md) — other case\n- [y](notes.md) — exact name\n", "exact name"},
 	} {
-		for range 20 {
-			migrateLinkCase(t, index, want)
-		}
-	}
-}
-
-// migrateLinkCase migrates index into a scope holding notes.md and checks the
-// description notes.md gets.
-func migrateLinkCase(t *testing.T, index, want string) {
-	t.Helper()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope := filepath.Join(root, "memory", "personal")
-	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scope, "notes.md"), []byte("body\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err = migrateMemoryScope(env)
-	env.Cleanup()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: "+want+"\n---\nbody\n" {
-		t.Fatalf("notes.md=%q, %v", raw, err)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, scope := newMemoryMigrateScope(t)
+			if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(tc.index), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(scope, "notes.md"), []byte("body\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrateMemoryScope(env); err != nil {
+				t.Fatal(err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: "+tc.want+"\n---\nbody\n" {
+				t.Fatalf("notes.md=%q, %v", raw, err)
+			}
+		})
 	}
 }
 
@@ -395,13 +367,7 @@ func migrateLinkCase(t *testing.T, index, want string) {
 // than written into a page that no longer reads.
 func TestMigrateMemoryScopeLeavesFrontmatterItCannotExtend(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	pages := map[string]string{
 		"flow.md":  "---\n{tags: [a]}\n---\nbody\n",
 		"ended.md": "---\ntags: [a]\n...\n---\nbody\n",
@@ -431,13 +397,7 @@ func TestMigrateMemoryScopeLeavesFrontmatterItCannotExtend(t *testing.T) {
 // the others still migrate and the run succeeds.
 func TestMigrateLegacyMemoryIndexesSkipsAnIndexRenamedMeanwhile(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	if err := os.WriteFile(filepath.Join(scope, "memory.md"), []byte("- [a](a.md) — from the index\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -458,13 +418,7 @@ func TestMigrateLegacyMemoryIndexesSkipsAnIndexRenamedMeanwhile(t *testing.T) {
 // name would replace that backup.
 func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	variant := filepath.Join(scope, strings.ToLower(memoryLegacyIndexBackup))
 	if err := os.WriteFile(variant, []byte("the original index\n"), 0o600); err != nil {
 		t.Fatal(err)
