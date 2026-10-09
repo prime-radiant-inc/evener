@@ -41,10 +41,11 @@ var memoryTitleEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
 var memoryAngleEscaper = strings.NewReplacer(`\`, `\\`, `<`, `\<`, `>`, `\>`)
 
 // memoryLinkTarget is rel as its index link's destination. A path a bare
-// Markdown destination can't hold (whitespace, a parenthesis, a leading "<")
-// goes in angle brackets, so the link still names the whole path.
+// Markdown destination can't hold as it is (whitespace, a parenthesis, a
+// backslash Markdown would read as an escape, a leading "<") goes in angle
+// brackets, escaped, so the link still names the whole path.
 func memoryLinkTarget(rel string) string {
-	if !strings.ContainsAny(rel, " \t()") && !strings.HasPrefix(rel, "<") {
+	if !strings.ContainsAny(rel, " \t()\\") && !strings.HasPrefix(rel, "<") {
 		return rel
 	}
 	return "<" + memoryAngleEscaper.Replace(rel) + ">"
