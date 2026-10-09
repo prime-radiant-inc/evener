@@ -170,15 +170,22 @@ under-invalidating a count. Revisit only against a measured win.
    refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
 6. Treat a response whose context `epoch` differs from the loaded one as a source
-   replacement: clear the applied map and the seen-unknown set — their authority
-   is epoch-scoped, because a replacement journal reconstructs
-   `projectionRevision` from 1, so an old epoch's higher revision would otherwise
-   win forever — record the new epoch, and read the collection afresh. Extending
-   the existing epoch comparison (`sessionActivityStore.ts:428`, non-root and only
-   when `read.epoch` is set, assigned at `:473`) to a root read must skip while
-   the stored epoch is unset — otherwise the first read of every store mismatches
+   replacement: clear the applied map, the seen-unknown set, and the buffered
+   unknown-id frames — their authority is epoch-scoped, because a replacement
+   journal reconstructs `projectionRevision` from 1, so an old epoch's higher
+   revision (applied or still buffered) would otherwise win forever — record the
+   new epoch, and read the collection afresh. Extending the existing epoch
+   comparison (`sessionActivityStore.ts:428`, non-root and only when `read.epoch`
+   is set, assigned at `:473`) to a root read must skip while the stored epoch is
+   unset — otherwise the first read of every store mismatches
    `undefined !== epoch` and loops — and record the new epoch before restarting.
    The invalidation carries no epoch, so a response is the only place to see it.
+7. When an accepted response changes the gate from eligible to ineligible — a
+   `live` context that becomes `retained`, or a lost capability — reconcile the
+   observed delegates with one read. Eligibility is cached: an ancestor can
+   release its runtime (`agent/delegate_tree_reclaim.go`) and then receive
+   post-release invalidations with no delegate frame before a response reveals
+   the change, so without this the first suppressed update is permanent.
 
 **Web.** The Agents tab, the Activity sheet, the transcript entity view, the
 status bar, and the session chrome consume the store unchanged; the merge makes
@@ -293,6 +300,11 @@ on `availability`. A negative-path test must pin the fallback.
   revision and a different status/report wins over the old entries.
 - **Epoch guard.** Extending the epoch comparison to root reads neither loops on
   the first read nor misses a real epoch change, and records the new epoch.
+- **Eligibility loss.** A store that was push-eligible, then whose ancestor
+  releases its runtime and receives post-release invalidations before the
+  retained summary reply, reconciles the observed delegates (no stale rows).
+- **Epoch retires the buffer.** An old-epoch buffered unknown-id frame cannot win
+  over a replacement-epoch row admitted at a lower revision.
 - **Native shrink.** The list-shrink case recovers through resync, reconnect, or
   a re-observe rather than a frame; the native fixture's exhaustiveness guard
   covers the new row field and typechecks.
@@ -336,6 +348,8 @@ on `availability`. A negative-path test must pin the fallback.
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
 | Old source with no preview | producer-authored context capability; the read stays unless the source advertises. |
 | Retained ancestor: invalidations but no frames | gate the no-read on a live context, or extend frame routing to retained targets. |
+| Live→retained release hides an update | catch-up read when an accepted context turns ineligible. |
+| Old-epoch buffered frame wins | clear the unknown-id buffer with the map on replacement. |
 | Later-page frame dropped after its one read | buffer the latest unknown-id frame until a read admits the row. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 
