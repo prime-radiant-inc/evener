@@ -114,8 +114,9 @@ func yamlValueEqual(a, b any) bool {
 	}
 }
 
-// indexAfter reports whether a closing "---\n" delimiter exists after the
-// opening one, mirroring Parse's own framing check.
+// indexAfter reports where the closing delimiter, a line that is exactly
+// "---", starts after the opening one, or -1, mirroring Parse's own framing
+// check.
 func indexAfter(raw string) int {
 	const delim = "---\n"
 	if len(raw) < len(delim) || raw[:len(delim)] != delim {
@@ -123,7 +124,7 @@ func indexAfter(raw string) int {
 	}
 	rest := raw[len(delim):]
 	for i := 0; i+len(delim) <= len(rest); i++ {
-		if rest[i:i+len(delim)] == delim {
+		if rest[i:i+len(delim)] == delim && (i == 0 || rest[i-1] == '\n') {
 			return i
 		}
 	}

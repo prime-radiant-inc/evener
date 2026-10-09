@@ -25,6 +25,8 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 		{"does not match a longer key", "---\nbyline: x\n---\n", "by: s1\n",
 			"---\nbyline: x\nby: s1\n---\n"},
 		{"empty block", "---\n---\nbody\n", "by: s1\n", "---\nby: s1\n---\nbody\n"},
+		{"a value ending in --- does not close the block", "---\ndescription: a---\nb: 1\n---\nbody\n", "by: s1\n",
+			"---\ndescription: a---\nb: 1\nby: s1\n---\nbody\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
