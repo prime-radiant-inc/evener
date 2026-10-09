@@ -11,8 +11,8 @@ raw report packet (`packetKind`/`message`); it lacks only the *bounded*
 duplicating the server's 4096-code-point rule in each client) and stops
 re-reading the collection for a field change.
 
-**Status note:** this revision folds in the findings of the two adversarial
-reviews of commit 6342f22da8.
+**Status note:** this revision folds in the findings of the adversarial reviews of
+commits 6342f22da8, a784dd40f7, and 99504f04ff.
 
 **Related:** [session activity product guide](../product/session-activity.md),
 [API design](session-activity-api.md),
@@ -38,10 +38,9 @@ read broke the native suite's settled-report, stop, and list-shrink tests.
 - The activity reads stay the authority for collection membership and counts. A
   push may update a row in place; it may not invent one.
 - Counts are never reconstructed from loaded rows; the summary read stays.
-- The frame's bounded report preview matches the read's exactly (same code point
-  cap, same ellipsis, same truncation flag), or the push and read drift. The
-  frame's unbounded `task`/`description` are never merged over the read's bounded
-  copies.
+- Every bounded field matches the read's exactly (same prose-bound helper, same
+  ellipsis, same truncation flag) — the report preview and `task`, `description`,
+  `reason`, `error`, `notResumableReason`, `model` — or the push and read drift.
 - Additive wire change only: new fields are `omitempty`; no existing field
   changes meaning, and no new read method is introduced.
 - Web, native, and the shared store migrate together; the phone/web visible
@@ -74,7 +73,17 @@ fields never appear there.
 
 The activity row `appwire.SessionDelegate` gains `ProjectionRevision uint64` (JSON
 `projectionRevision`) so a collection read can seed the merge ordering (see
-Consumers). It is an ordering key, not display data.
+Consumers); the read projection must actually fill it from the same aggregate
+revision the frame carries. It is an ordering key, not display data.
+
+`appwire.EvenerDelegateInfo` gains the delegate's **logical owner** identity — a
+session id (`LogicalOwnerSessionID`) — the value the activity read lists a
+session's own delegates by. This is required, not optional: a delegate's
+`ownerSessionId` is always the physical root
+(`agent/delegate_tree_start.go`), while the read's logical owner is the parent
+delegate's `childSessionId` (else `ownerSessionId`,
+`sessionActivityDelegateOwner`). Without it a `session`-scoped store cannot tell
+its own children from a descendant's.
 
 The capability is authored by the response producer, not derived by the hub. A
 daemon that emits the frame sets `reportPreview: true` on the
@@ -99,8 +108,12 @@ with a reported packet, using the same trim, byte bound
 (`activityMaxReportPreviewBytes`) and proof-of-truncation rule as
 `agent/session_activity_delegates.go`. Extract that bounding into one shared,
 exported helper in the agent package and call it from both the read projection
-and the projector, so the two cannot drift. `mergeAppwireDelegateInfo` orders
-the preview by `projectionRevision` like every other field.
+and the projector, so the two cannot drift. Bound the frame's other prose fields
+the same way the read does — `task`, `description`, `reason`, `error`,
+`notResumableReason`, `model` — so a merge can never widen a row the read bounds.
+`appwireDelegateInfo` also sets `LogicalOwnerSessionID` the way
+`sessionActivityDelegateOwner` derives it. `mergeAppwireDelegateInfo` orders by
+`projectionRevision` then `latestActivityAt` like every other field.
 
 **Invalidation.** Unchanged. The daemon keeps emitting
 `evener/thread/activity/changed {summary, delegates}` for every delegate change —
@@ -115,22 +128,20 @@ under-invalidating a count. Revisit only against a measured win.
 **Shared store** (`SessionActivityStore`, used by web and native):
 
 1. Handle `evener/delegate/updated` (existing `ref` filter): merge into
-   `state.delegates.rows` by `delegateId` when the scope matches —
-   `session` accepts only `delegate.ownerSessionId === context.sessionId`,
-   `subtree` accepts the thread's own subtree. Keep `ownerRef`, `rootRef`,
-   `childRef`, and `name` from the loaded row; take the mutable status and report
-   fields from the frame, but keep `task` and `description` from the read: the
-   read bounds its prose and the frame does not, so merging the frame's copy
-   would let a later read shrink the row.
-2. Order every contribution by the projector's own total order — `runGeneration`,
-   then `projectionRevision`, then `latestActivityAt` — held in a per-delegate
-   applied map, so a same-revision later-activity frame still applies (the
-   projector admits it, `mergeAppwireDelegateInfo`) and a stale frame is skipped.
-   A collection read is not exempt: each read row joins the map the same way
-   (seed on first sight, keep the newer of read and applied). Otherwise a read
-   that lands after a newer frame clobbers it, and the seeded revision then skips
-   frames that fall in the gap. On a generation increase, clear the prior run's
-   preview.
+   `state.delegates.rows` by `delegateId`. Scope by the frame's
+   `logicalOwnerSessionId`, never `ownerSessionId` (always the physical root): a
+   `session` store accepts only `logicalOwnerSessionId === context.sessionId`,
+   and `subtree` accepts the thread's own subtree. Keep `ownerRef`, `rootRef`,
+   `childRef`, and `name` from the loaded row; take the value fields from the
+   frame, bounded by the same helper as the read.
+2. Order every contribution by the projector's own order — `projectionRevision`
+   (strictly greater wins), else `latestActivityAt` (`mergeAppwireDelegateInfo`;
+   `runGeneration` is not compared there, because a run start increments
+   `projectionRevision`). Hold it in a per-delegate applied map; a collection
+   read joins the map the same way (seed on first sight, keep the newer of read
+   and applied). Otherwise a read that lands after a newer frame clobbers it, and
+   the seeded revision then skips frames that fall in the gap. Clear the prior
+   run's preview when `runGeneration` increases.
 3. If step 1 accepted the frame (scope matched) and it names a delegate the
    loaded rows do not contain, and the collection is observed, request a root
    read at most once per delegate ID (a seen-unknown set). A frame the scope
@@ -233,6 +244,12 @@ fallback.
   paging still read; an epoch change forces a read; and a behavioral test drives
   a delegate through run/stop/resume/terminal and asserts it never leaves the
   listed set and the client reconciles absence only through a read.
+- **Logical owner.** A `session`-scoped store at a non-root subagent accepts its
+  own direct children's frames and ignores a deeper descendant's; a root session
+  store ignores a descendant-owned frame (no read for it). This is the case the
+  current `ownerSessionId` check gets wrong.
+- **Read revision.** The served `SessionDelegate.ProjectionRevision` is populated
+  and non-zero, so a read seeds the merge order.
 - **Roster.** `SlimDelegateForRoster` strips the preview fields; a thread/read
   roster row never carries them.
 - **Ordering.** The total order matches the projector's; a read seeds the map; a
@@ -259,7 +276,8 @@ fallback.
 | Risk | Guard |
 | --- | --- |
 | Push/read preview drift | Shared bounding helper; parity test. |
-| Read clobbers a newer frame | each read row joins the total order; keep the newer of read and applied. |
+| Wrong scope filter | scope by the frame's logical owner, never `ownerSessionId` (always the root). |
+| Read clobbers a newer frame | each read row joins the order; keep the newer of read and applied. |
 | Stale row from an out-of-order frame | `runGeneration` + `projectionRevision` + `latestActivityAt`, matching the projector. |
 | Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
