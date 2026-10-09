@@ -254,3 +254,32 @@ func TestMemoryIndexLineFor(t *testing.T) {
 		}
 	}
 }
+
+// A page whose path holds a control character other than tab gets a line
+// with no link, since no Markdown destination can hold it: the path,
+// JSON-escaped, and a note. The line is one line, and it is that page's line
+// when patching.
+func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	for rel, name := range map[string]string{
+		"bad\nname.txt":    `"bad\nname.txt"`,
+		"dir\r/x.md":       `"dir\r/x.md"`,
+		"bell\a <x>.md":    `"bell\u0007 <x>.md"`,
+		"del\x7f \"q\".md": `"del\u007f \"q\".md"`,
+	} {
+		line := memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		if want := "- " + name + " — " + memoryUnlinkedPathNote; line != want {
+			t.Fatalf("%q: got %q, want %q", rel, line, want)
+		}
+		if !memoryIndexLineFor(line, rel) || memoryIndexLineFor(line, "other.md") {
+			t.Fatalf("%q: its line does not belong to it alone", rel)
+		}
+		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Title: "A", Description: "d"}})
+		if lines := memoryIndexLines(index); len(lines) != 2 || strings.Count(index, "\n") != 2 {
+			t.Fatalf("%q: index %q is not one line per page", rel, index)
+		}
+		if got := patchMemoryIndex(index, rel, ""); got != "- [A](a.md) — d\n" {
+			t.Fatalf("%q: delete patched %q", rel, got)
+		}
+	}
+}

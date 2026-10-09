@@ -2,6 +2,7 @@ package agent
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -51,8 +52,30 @@ func memoryLinkTarget(rel string) string {
 	return "<" + memoryAngleEscaper.Replace(rel) + ">"
 }
 
+// memoryUnlinkedPathNote follows the path on the index line of a page whose
+// path holds a control character (memoryUnlinkedIndexLine).
+const memoryUnlinkedPathNote = "(no link: the name holds a control character, shown JSON-escaped; read or delete it, and save its content under another name)"
+
+// memoryUnlinkedIndexLine is the index line of the page at rel when rel holds
+// a control character (memoryPathHasControl). No Markdown link destination
+// can hold one, so the line has no link: the path as a JSON string, which a
+// tool call can pass back as file_path, then memoryUnlinkedPathNote. JSON
+// leaves DEL bare, so it is escaped here. The title and description are left
+// out, since a filename entry's are the name itself.
+func memoryUnlinkedIndexLine(rel string) string {
+	var b strings.Builder
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(rel) // a string always encodes
+	name := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
+	return "- " + name + " — " + memoryUnlinkedPathNote
+}
+
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
+	if memoryPathHasControl(p.Path) {
+		return memoryUnlinkedIndexLine(p.Path)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), p.Description)
 	if p.Unreadable {
@@ -71,8 +94,12 @@ func memoryIndexLine(p memoryPage) string {
 // rel: its leading link "- [Title](rel) — ". The title ends at its first
 // unescaped "](" (memoryIndexLine escapes "\\" and "]" in titles), and the
 // path is matched whole from there, so neither a link inside the title nor
-// one quoted in the description is read as this line's page.
+// one quoted in the description is read as this line's page. A path holding
+// a control character has the one line memoryUnlinkedIndexLine writes.
 func memoryIndexLineFor(line, rel string) bool {
+	if memoryPathHasControl(rel) {
+		return line == memoryUnlinkedIndexLine(rel)
+	}
 	title, ok := strings.CutPrefix(line, "- [")
 	if !ok {
 		return false

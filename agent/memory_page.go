@@ -48,6 +48,14 @@ func isMemoryPagePath(rel string) bool {
 	return !isMemoryIndexPath(rel) && !execenv.IsDotPath(rel)
 }
 
+// memoryPathHasControl reports whether rel holds an ASCII control character
+// other than tab: a line ending splits an index line, and a Markdown link
+// destination can hold no other control character either. A tab fits in an
+// angle-bracket destination (memoryLinkTarget).
+func memoryPathHasControl(rel string) bool {
+	return strings.ContainsFunc(rel, func(r rune) bool { return r < ' ' && r != '\t' || r == 0x7f })
+}
+
 // matchMemoryNameCase is the name in names equal to name, else the only one
 // equal to it ignoring case, since on a case-insensitive filesystem a name's
 // case need not match the file's. An ambiguous or missing name matches

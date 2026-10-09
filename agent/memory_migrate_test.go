@@ -504,3 +504,26 @@ func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
 		}
 	}
 }
+
+// Migration skips a file whose name holds a newline, and a legacy index
+// holding that file's generated line, copied in by hand, gives it nothing,
+// while the other pages still migrate.
+func TestMigrateMemoryScopeLeavesAControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	bad := "bad\nname.md"
+	index := memoryIndexLine(filenameMemoryPage(bad, time.Time{})) + "\n- [plain](plain.md) — plain page gets this\n"
+	for rel, body := range map[string]string{"MEMORY.md": index, bad: "# Bad\n", "plain.md": "# Plain\n"} {
+		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{bad: "# Bad\n", "plain.md": "---\ndescription: plain page gets this\n---\n# Plain\n", memoryLegacyIndexBackup: index} {
+		if raw, err := os.ReadFile(filepath.Join(scope, rel)); err != nil || string(raw) != want {
+			t.Fatalf("%q: got %q, %v", rel, raw, err)
+		}
+	}
+}

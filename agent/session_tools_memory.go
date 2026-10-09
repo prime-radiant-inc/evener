@@ -66,14 +66,6 @@ var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 // control character (memoryPathHasControl), which no index line can link to.
 var errMemoryPathControlCharacter = errors.New("memory path holds a control character, such as a newline; choose a name without one")
 
-// memoryPathHasControl reports whether rel holds an ASCII control character
-// other than tab: a line ending splits an index line, and a Markdown link
-// destination can hold no other control character either. A tab fits in an
-// angle-bracket destination (memoryLinkTarget).
-func memoryPathHasControl(rel string) bool {
-	return strings.ContainsFunc(rel, func(r rune) bool { return r < ' ' && r != '\t' || r == 0x7f })
-}
-
 // isMemoryIndexPath reports whether file, cleaned and relative to the scope,
 // names the generated index. Case is ignored: on a case-insensitive
 // filesystem memory.md is the same file.
