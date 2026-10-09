@@ -595,12 +595,12 @@ func (s *Server) finishProcessing(settled *string) {
 		if settled != nil {
 			s.status.State = *settled
 		}
-		// The stored state can still read "active": without the session's
-		// own state it is what the input left running, and the session's own
-		// state reads active while work is still pending (Session.WireState).
-		// Nothing runs now, so that reads as idle.
+		// Without the session's own state, a stored "active" is only what
+		// the input left running, and nothing runs now, so it reads as idle.
+		// The session's own state is authoritative: it reads active while
+		// work is still pending (Session.WireState), and a read says so too.
 		status := appStatus(s.status.State, false, false)
-		if status == appwire.ThreadStatusActive {
+		if settled == nil && status == appwire.ThreadStatusActive {
 			status = appwire.ThreadStatusIdle
 		}
 		// The last status broadcast must match a read. With nothing

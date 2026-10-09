@@ -592,3 +592,19 @@ func TestServerAppWireFinishFollowsADeferredStatusTheSessionMovedPast(t *testing
 		t.Fatalf("statuses = %+v, want the last broadcast awaiting", statuses)
 	}
 }
+
+// A session that settles active, with work still pending to run, broadcasts
+// active, the same status a read reports.
+func TestServerAppWireFinishSettledActiveBroadcastsWhatAReadSays(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_settled_active")
+	srv.SetProcessing(true)
+	srv.SetState("active")
+	srv.FinishProcessing(func() string { return "active" })
+
+	read := readThreadOverWire(t, srv, "local:th_settled_active")
+	statuses := statusNotifications(t, srv, "th_settled_active")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != read.Status.Type {
+		t.Fatalf("statuses = %+v, read %q: want the last broadcast to match the read", statuses, read.Status.Type)
+	}
+}
