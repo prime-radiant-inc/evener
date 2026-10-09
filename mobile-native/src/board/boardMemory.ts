@@ -16,8 +16,7 @@ const MARK_LIMIT = 500;
 const RECENT_LIMIT = 8;
 
 interface SeenRecord {
-	through?: string;
-	unread?: true;
+	through: string;
 }
 interface SeenState {
 	/** First run is done: the Board read this hub once and took the newest
@@ -40,9 +39,7 @@ function parseSeen(value: unknown): SeenState {
 	}
 	if (isPlainObject(value.sessions))
 		for (const [ref, record] of Object.entries(value.sessions)) {
-			if (!isPlainObject(record)) continue;
-			if (record.unread === true) state.sessions[ref] = { unread: true };
-			else if (typeof record.through === "string" && hubTime(record.through) !== null)
+			if (isPlainObject(record) && typeof record.through === "string" && hubTime(record.through) !== null)
 				state.sessions[ref] = { through: record.through };
 		}
 	return state;
@@ -76,7 +73,6 @@ export class SeenMarkers {
 
 	isSeen(row: { ref: string; updated_at?: string }): boolean {
 		const record = this.state.sessions[row.ref];
-		if (record?.unread) return false;
 		if (!this.state.adopted) return true;
 		const updated = hubTime(row.updated_at);
 		if (updated === null) return true;
@@ -106,11 +102,6 @@ export class SeenMarkers {
 		this.save();
 	}
 
-	markUnread(ref: string): void {
-		this.state.sessions[ref] = { unread: true };
-		this.save();
-	}
-
 	subscribe = (listener: () => void): (() => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -121,13 +112,9 @@ export class SeenMarkers {
 	private save(): void {
 		const entries = Object.entries(this.state.sessions);
 		if (entries.length > MARK_LIMIT) {
-			// 500 marks in all, unread kept first: an unread mark is a choice you
-			// made, so past the limit the oldest seen marks go first (they matter
+			// 500 marks in all: past the limit the oldest go first (they matter
 			// least: the epoch covers old sessions).
-			entries.sort(
-				([, a], [, b]) =>
-					(a.unread ? 0 : 1) - (b.unread ? 0 : 1) || (hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0),
-			);
+			entries.sort(([, a], [, b]) => (hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0));
 			this.state.sessions = Object.fromEntries(entries.slice(0, MARK_LIMIT));
 		}
 		writeJson(this.storage, seenKey(this.hubId), this.state);

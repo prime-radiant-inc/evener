@@ -22,8 +22,6 @@ import { StateMark } from "./StateMark";
 
 export const ROW_ACTION_SYMBOLS: Record<RowAction, SFSymbol> = {
 	pin: "pin.fill",
-	markRead: "circle",
-	markUnread: "circle.fill",
 	stop: "stop.fill",
 	shutDown: "power",
 	archive: "archivebox",

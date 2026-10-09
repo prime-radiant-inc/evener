@@ -772,7 +772,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 		requests.Add(1)
 		return endReasonResponse("ok", "needs_response")
 	}
-	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sess := newTestSessionForEnvctx(t, withSteps(steps...), withImmediateRest())
 	sendOneUserInput(t, sess, "first")
 	if requests.Load() != 1 {
 		t.Fatalf("model requests after the first turn = %d, want 1", requests.Load())

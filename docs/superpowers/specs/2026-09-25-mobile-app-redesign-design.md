@@ -184,7 +184,7 @@ Select                                                      ✎
 - **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count. A host shows its state only when it isn't connected (an amber "Offline"); connected hosts carry no dot, so green means working and nothing else.
 - **Test runs** (collapsed): projects whose sessions all came from test runs, as on the web.
 - **Archived** (collapsed): archived sessions and projects, newest first. Unarchive from the row's swipe or menu.
-- **Bottom toolbar (glass).** Leading: Select (multi-select mode with Archive, Pin, Mark as read). Center: the connection status only when it isn't live ("Reconnecting…", "Offline · updated 3m ago"); a live connection shows nothing extra, since the header's meter is already moving (section 14). Trailing: New session, a plain compose glyph in the accent color.
+- **Bottom toolbar (glass).** Leading: Select (multi-select mode with Archive and Pin). Center: the connection status only when it isn't live ("Reconnecting…", "Offline · updated 3m ago"); a live connection shows nothing extra, since the header's meter is already moving (section 14). Trailing: New session, a plain compose glyph in the accent color.
 - Every section's collapsed state persists per device.
 
 ### 7.2 Row anatomy
@@ -210,7 +210,7 @@ Row heights: signal rows about 64 to 88pt; quiet rows 48pt. Horizontal padding 1
 - **Tap** opens the session at the right spot: the pending question or approval, the start of the unread result, or the live end of the transcript.
 - **Swipe right** (leading): Archive (blue-gray action). Full swipe archives. An "Archived · Undo" toast appears at the bottom for 8 seconds. Swipes that begin in the 24pt screen-edge zone never act on a row, so the system back gesture can't archive anything (in round 1 it did, on the root screen, where there is nothing to go back to).
 - **Swipe left** (trailing): Stop (only when working; ends the current turn), Pin, More (the long-press menu).
-- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count, project, host, model and effort, last message excerpt; tapping the card opens the session, so there is no "Open" item, whose chevron read as a submenu) and actions: Pin to category… (category list plus "New category…"), Mark as read / Mark as unread, Stop, Shut down, Archive, Copy link, Rename.
+- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count, project, host, model and effort, last message excerpt; tapping the card opens the session, so there is no "Open" item, whose chevron read as a submenu) and actions: Pin to category… (category list plus "New category…"), Stop, Shut down, Archive, Copy link, Rename.
 - **Pull down** at the top reveals Search.
 - The list never reorders while a finger is on it or it is scrolling. Changes apply when the list settles, rows move with a 250ms spring, and a row entering Needs you gets a brief amber wash (1.2s fade).
 
