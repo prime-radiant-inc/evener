@@ -445,6 +445,7 @@ export type {
 export {
   applyHistoryReadFailure,
   applyNotification,
+  applyOverlayEndForTranscriptHandoff,
   applyReadModel,
   applyReadResponse,
   cachedSessionRecord,

@@ -4824,6 +4824,28 @@ export function applyNotification<M extends ThreadModel>(
   return publicModel<M>(cleared);
 }
 
+/**
+ * Ends one round for the entry-backed transcript handoff without dropping
+ * overlay slots that the reducer's current history has not recorded yet.
+ * Ordinary `applyNotification` keeps its established overlay/end semantics.
+ */
+export function applyOverlayEndForTranscriptHandoff<M extends ThreadModel>(
+  model: M,
+  notification: Extract<AnyNotification, { method: "overlay/end" }>,
+  now: number,
+): ThreadModel & ModelExtras<M> {
+  if (!notificationTargetsThread(notification, model)) return publicModel<M>(model);
+  const roundId = notification.params.roundId;
+  const isEndedRound = (item: OverlayItem) => item.kind !== "notice" && item.roundId === roundId;
+  const next = applyOverlayChange(model, now, (overlay) => {
+    const remaining = filterOverlay(overlay, isEndedRound);
+    if (remaining === overlay) return overlay;
+    const ended = filterOverlay(overlay, (item) => !isEndedRound(item));
+    return { ...remaining, ...pruneCoveredOverlay(model.history?.turns ?? [], ended) };
+  });
+  return publicModel<M>(next);
+}
+
 function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
   switch (n.method) {
     case "history/updated": {
@@ -4856,13 +4878,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "overlay/end": {
       if (!notificationTargetsThread(n, model)) return model;
       const roundId = n.params.roundId;
-      return applyOverlayChange(model, now, (overlay) => {
-        const isEndedRound = (item: OverlayItem) => item.kind !== "notice" && item.roundId === roundId;
-        const remaining = filterOverlay(overlay, isEndedRound);
-        if (remaining === overlay) return overlay;
-        const ended = filterOverlay(overlay, (item) => !isEndedRound(item));
-        return { ...remaining, ...pruneCoveredOverlay(model.history?.turns ?? [], ended) };
-      });
+      return applyOverlayChange(model, now, (overlay) =>
+        filterOverlay(overlay, (item) => item.kind !== "notice" && item.roundId === roundId),
+      );
     }
 
     case "thread/queueChanged": {

@@ -128,6 +128,32 @@ the reducer's omission-tolerant replacement rules for equal or newer versions.
 turn scalars while retaining the already-owned item array. These helpers do not
 establish range coverage or own persisted turn metadata.
 
+## Transcript reader reducer helpers
+
+`mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
+rows into `model.history` with the reducer's ordinary versioned merge rules.
+Equal/newer cached item versions can restore payload over identity-only history
+records; older versions do not regress accepted content. It preserves the
+model's other state, including its live overlay. It is a merge primitive, not a
+coverage proof or a local-storage query.
+
+`pruneBackgroundHistoryBodies(model)` returns an idle background model with
+completed item bodies compacted to identity-only records. It retains identity,
+version, position, round, call and completion fields needed for later upserts
+and overlay handoff. Active overlays are projected through the normal display
+fold and are not persisted by this helper. Call it only for the background
+owner after writes settle; mounted readers retain their own full model. It does
+not write cache rows, prove disk persistence, or compact a reader's displayed
+history.
+
+`applyOverlayEndForTranscriptHandoff(model, notification, now)` is the narrow
+entry-backed repository path for `overlay/end`. It uses the reducer's normal
+display fold, removes ended-round overlays already covered by recorded history,
+and keeps uncovered ended-round slots until their recorded replacement arrives.
+It leaves notices and overlays from other rounds alone. Use it only for the
+entry-backed transcript handoff; ordinary `applyNotification` intentionally
+retains its established end behavior for existing consumers.
+
 ## Host-scoped requests
 
 `hostRequest(client, host, method, params, opts)` sends a typed request to the

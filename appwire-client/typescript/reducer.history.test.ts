@@ -646,7 +646,7 @@ describe("the live overlay", () => {
     expect(next.turns[0]?.items[1]?.overlayKey).toBeUndefined();
   });
 
-  test("overlay/end preserves uncovered round slots and keeps notices", () => {
+  test("overlay/end drops the round's streams, previews and tools but keeps notices", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
     let next = applyNotification(model, upserted(streamOverlay("t1", "r1", 0, "partial")), NOW);
     next = applyNotification(next, upserted(toolOverlay("t1", "r1", "tool-without-history", "")), NOW);
@@ -656,15 +656,11 @@ describe("the live overlay", () => {
       { method: "overlay/end", params: { threadId: THREAD_ID, ref: REF, roundId: "r1" } },
       NOW,
     );
-    expect(Object.keys(next.overlay ?? {})).toEqual(
-      expect.arrayContaining(["stream:r1/0:agentMessage", "tool:tool-without-history", "notice:0"]),
-    );
-    expect(shown(next)[0]?.[1]).toEqual(
-      expect.arrayContaining([itemKey("t1", 0), "stream:r1/0:agentMessage", "tool:tool-without-history", "notice:0"]),
-    );
+    expect(Object.keys(next.overlay ?? {})).toEqual(["notice:0"]);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), "notice:0"]]]);
   });
 
-  test("end-before-history preserves text, reasoning, preview and tool slots until their records cover them", () => {
+  test("overlay/end drops uncovered slots for the shared reducer default", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
     const text = streamOverlay("t1", "r1", 0, "pending text");
     const reasoning: OverlayItem = {
@@ -693,7 +689,7 @@ describe("the live overlay", () => {
       { method: "overlay/end", params: { threadId: THREAD_ID, ref: REF, roundId: "r1" } },
       NOW,
     );
-    expect(Object.keys(next.overlay ?? {})).toEqual([text.key, reasoning.key, preview.key, tool.key]);
+    expect(next.overlay).toEqual({});
 
     next = applyNotification(
       next,

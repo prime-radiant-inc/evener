@@ -493,6 +493,142 @@ it("rejects notification frames from an incompatible ref or lifetime", () => {
   owner.dispose();
 });
 
+it("keeps an ended-round overlay until the repository receives its recorded replacement", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-end-order", boundary: "read-end-order-boundary" });
+  const streamKey = "stream:round-1/1:agentMessage";
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: streamKey,
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "round-1",
+          streamId: "round-1/1",
+          item: {
+            type: "agentMessage",
+            id: "live-handoff",
+            turnId: "turn_1",
+            roundId: "round-1",
+            text: "pending handoff",
+            status: "inProgress",
+          },
+        },
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "round-1" } } as AnyNotification, {
+    lifetime: 1,
+  });
+  expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toEqual([streamKey]);
+
+  expect(
+    owner.accept(
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 2 },
+          items: [
+            {
+              type: "agentMessage",
+              id: "recorded-handoff",
+              transcriptKey: "recorded-handoff",
+              turnId: "turn_1",
+              position: { entry: 2, item: 0 },
+              version: 2,
+              roundId: "round-1",
+              text: "recorded handoff",
+            },
+          ],
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.overlay).toEqual({});
+  expect(owner.getSnapshot()?.turns[0]?.items.map((item) => item.text)).toEqual(["base", "recorded handoff"]);
+  owner.dispose();
+});
+
+it("keeps the repository's recorded replacement when history arrives before overlay/end", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-end-first", boundary: "read-end-first-boundary" });
+  const streamKey = "stream:round-1/1:agentMessage";
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: streamKey,
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "round-1",
+          streamId: "round-1/1",
+          item: {
+            type: "agentMessage",
+            id: "live-before-history",
+            turnId: "turn_1",
+            roundId: "round-1",
+            text: "pending text",
+            status: "inProgress",
+          },
+        },
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "recorded-before-end",
+            transcriptKey: "recorded-before-end",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 2,
+            roundId: "round-1",
+            text: "recorded text",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  expect(owner.getSnapshot()?.overlay).toEqual({});
+  expect(owner.getSnapshot()?.turns[0]?.items.map((item) => item.text)).toEqual(["base", "recorded text"]);
+
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "round-1" } } as AnyNotification, {
+    lifetime: 1,
+  });
+  expect(owner.getSnapshot()?.overlay).toEqual({});
+  expect(owner.getSnapshot()?.turns[0]?.items.map((item) => item.text)).toEqual(["base", "recorded text"]);
+  owner.dispose();
+});
+
 it("publishes a recorded item and covered stream retirement before the real IDB transaction commits", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

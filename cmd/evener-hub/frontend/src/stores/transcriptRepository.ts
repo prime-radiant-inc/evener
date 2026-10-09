@@ -1,6 +1,7 @@
 import {
   type AnyNotification,
   applyNotification,
+  applyOverlayEndForTranscriptHandoff,
   applyReadResponse,
   type CachedSessionItem,
   compareBootGeneration,
@@ -202,7 +203,11 @@ export class TranscriptRepository {
       }
       if (generation === "ignore" || (this.#epoch !== undefined && history.epoch < this.#epoch)) return false;
     }
-    const next = applyNotification(this.#model, notification, this.#now());
+    const now = this.#now();
+    const next =
+      notification.method === "overlay/end"
+        ? applyOverlayEndForTranscriptHandoff(this.#model, notification, now)
+        : applyNotification(this.#model, notification, now);
     if (next === this.#model) {
       if (notification.method !== "overlay/end") return false;
       this.#recoveryNeeded = true;
