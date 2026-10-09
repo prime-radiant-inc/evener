@@ -146,7 +146,10 @@ func memoryFrontmatterKeyLines(block string) map[int]string {
 }
 
 var (
-	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\(([^)\s]+)\)`)
+	// A link's destination is bare, or in angle brackets (memoryLinkTarget's
+	// form for a path with spaces or parentheses) with backslash escapes.
+	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|([^)\s]+))\)`)
+	legacyIndexEscape   = regexp.MustCompile(`\\([!-/:-@\[-` + "`" + `{-~])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
 
@@ -211,7 +214,12 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	for line := range strings.SplitSeq(index, "\n") {
 		var target, text, rest string
 		if m := legacyIndexLink.FindStringSubmatchIndex(line); m != nil {
-			text, target = line[m[2]:m[3]], line[m[4]:m[5]]
+			text = line[m[2]:m[3]]
+			if m[4] >= 0 {
+				target = legacyIndexEscape.ReplaceAllString(line[m[4]:m[5]], "$1")
+			} else {
+				target = line[m[6]:m[7]]
+			}
 			rest = line[:m[0]] + line[m[1]:]
 		} else if m := legacyIndexBarePageMatch(line); m != nil {
 			target = line[m[2]:m[3]]

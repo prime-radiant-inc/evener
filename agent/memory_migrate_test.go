@@ -107,6 +107,8 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- see old.md.txt for the old notes\n" +
 		"- a.md/foo is a directory path\n" +
 		"- [emph](emph.md) — **important** note\n" +
+		"- [spaced](<my notes (old).md>) — a path in angle brackets\n" +
+		"- [escaped](<x \\<y\\>.md>) — angle brackets escaped inside one\n" +
 		"- [](quiet.md)\n" +
 		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
@@ -119,6 +121,8 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"cpp.md":             "learned C++",
 		"emph.md":            "**important** note",
 		"quiet.md":           "a later line describes a page an empty one named",
+		"my notes (old).md":  "a path in angle brackets",
+		"x <y>.md":           "angle brackets escaped inside one",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
@@ -445,5 +449,18 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
 		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	}
+}
+
+// Migration reads back the link a generated index line writes for any path,
+// so an index an older build copied from a generated one still migrates.
+func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, "<x> y.md", "sub/half).md"} {
+		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
+		got := parseLegacyMemoryIndex(line + "\n")
+		if len(got) != 1 || got[0].Link != rel || got[0].Description != "d" {
+			t.Fatalf("%q from %q: got %+v", rel, line, got)
+		}
 	}
 }
