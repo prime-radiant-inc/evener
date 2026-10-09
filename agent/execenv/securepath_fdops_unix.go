@@ -530,6 +530,24 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 	return unix.Renameat(oldParent, oldLeaf, newParent, newLeaf)
 }
 
+// link gives the file at oldAbs the second name newAbs. Both endpoints must
+// resolve beneath a writable root; the destination's parents are created
+// beneath its root fd. Unlike rename, it never replaces newAbs: an existing
+// newAbs fails with EEXIST, which matches fs.ErrExist.
+func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	oldParent, oldLeaf, err := s.openWriteParent(tool, oldAbs, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(oldParent) }()
+	newParent, newLeaf, err := s.openWriteParent(tool, newAbs, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(newParent) }()
+	return unix.Linkat(oldParent, oldLeaf, newParent, newLeaf, 0)
+}
+
 // mkdirAll creates abs (and any missing parents) beneath a writable root.
 func (s *sandboxFS) mkdirAll(tool, abs string) error {
 	abs = filepath.Clean(abs)

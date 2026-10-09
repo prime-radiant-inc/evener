@@ -77,6 +77,10 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 	return errSandboxUnsupported()
 }
 
+func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	return errSandboxUnsupported()
+}
+
 func (s *sandboxFS) mkdirAll(tool, abs string) error {
 	return errSandboxUnsupported()
 }

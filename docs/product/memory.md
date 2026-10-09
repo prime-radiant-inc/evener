@@ -304,7 +304,11 @@ a writing session migrates.
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
 write the same descriptions, a page that already has a description is skipped,
-and a rename that finds `MEMORY.md` already gone counts as done. A crash midway
+and a move that finds `MEMORY.md` already gone counts as done. The move links
+`MEMORY.md` to its backup name, which never replaces an existing backup (a
+taken name moves on to the next number), and removes `MEMORY.md` only when the
+linked bytes are the ones that migration read; an index an older build wrote in
+between stays for the next rendering to migrate. A crash midway
 leaves some pages described and the old file in place, so the next rendering
 finishes the job.
 

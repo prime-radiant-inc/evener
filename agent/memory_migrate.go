@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"maps"
@@ -28,15 +29,8 @@ const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 // memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
-// overwritten when that file is migrated too.
-//
-// The name is checked, then renamed onto, and execenv has no rename that
-// refuses to replace. That is safe between migrators: concurrent runs list the
-// same indexes and rename them in the same order, so of two runs picking one
-// name for one index only one rename finds its source and the other gets
-// fs.ErrNotExist. A backup is lost only if an older build writes MEMORY.md
-// again between one run's rename and another's earlier check; that window is
-// accepted, since the lost index's descriptions are already in its pages.
+// overwritten when that file is migrated too. The name can be taken by the
+// time it is used; moveLegacyMemoryIndex never relies on it being free.
 func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (string, error) {
 	entries, err := env.ListDirectory(root, 1)
 	if err != nil {
@@ -51,6 +45,83 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 		backup = memoryLegacyIndexBackup + "." + strconv.Itoa(n)
 	}
 	return filepath.Join(root, backup), nil
+}
+
+// moveLegacyMemoryIndex moves the migrated hand-written index at legacy,
+// whose bytes the migration read as raw, to a backup in root, trying the
+// name backup first. A backup is never replaced or removed, since each holds
+// what a person or an older build wrote. An index that repeats an existing
+// backup byte for byte is removed instead of backed up, so alternating builds
+// that write the same index add nothing.
+//
+// No lock guards the move, and another migration or an older build may have
+// changed the scope since backup was chosen. So the index is hard-linked to
+// the backup name, which fails rather than replace a file put there
+// meanwhile, and a taken name moves on to the next free one. Any other link
+// failure, such as a filesystem without hard links, returns an error and
+// leaves the index in place. The index is removed only once its bytes are
+// the ones the migration read: an older build may have written it again
+// since, and those lines are not in the pages yet, so that file stays for the
+// next run (its link is dropped; the index itself still holds those bytes).
+// A rewrite landing between that check and the removal would still be lost;
+// the window is two system calls wide.
+func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
+	repeated, err := memoryBackupHolds(env, root, raw)
+	if err != nil {
+		return err
+	}
+	if repeated {
+		current, err := env.ReadFileRaw(legacy)
+		if err != nil || !bytes.Equal(current, raw) {
+			return ignoreNotExist(err)
+		}
+		return ignoreNotExist(env.RemoveConfinedFile(legacy))
+	}
+	for {
+		err := env.LinkConfinedFile(legacy, backup)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			// fs.ErrNotExist: another migration moved the index first.
+			return ignoreNotExist(err)
+		}
+		if backup, err = freeMemoryBackupPath(env, root); err != nil {
+			return err
+		}
+	}
+	if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
+		return errors.Join(err, env.RemoveConfinedFile(backup))
+	}
+	return ignoreNotExist(env.RemoveConfinedFile(legacy))
+}
+
+// memoryBackupHolds reports whether a regular file in root named like a
+// backup (memoryLegacyIndexBackup, numbered or not, in any case) holds
+// exactly raw.
+func memoryBackupHolds(env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
+	entries, err := env.ListDirectory(root, 1)
+	if err != nil {
+		return false, err
+	}
+	prefix := strings.ToLower(memoryLegacyIndexBackup)
+	for _, entry := range entries {
+		if !entry.IsRegular || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
+			continue
+		}
+		if existing, err := env.ReadFileRaw(filepath.Join(root, entry.Name)); err == nil && bytes.Equal(existing, raw) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ignoreNotExist is err, or nil when err says a file was already gone.
+func ignoreNotExist(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // memoryYAMLField encodes one frontmatter line, quoting value as YAML needs.
@@ -236,13 +307,13 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 
 // migrateMemoryScope moves a scope's hand-written index (see
 // legacyMemoryIndexes) into its pages: each linked page with no description
-// gets the one its index line gave, then the index is renamed to a free
-// backup name (see freeMemoryBackupPath). It is idempotent and takes no lock
-// (the write loop says why), and the run that finds the index already renamed
-// is done. A linked target that can't be read (missing, a directory, a
+// gets the one its index line gave, then the index is moved to a backup
+// (see moveLegacyMemoryIndex). It is idempotent and takes no lock (the write
+// loop and moveLegacyMemoryIndex say why), and the run that finds the index
+// already moved is done. A linked target that can't be read (missing, a directory, a
 // refused symlink), or whose frontmatter does not parse or can't take the
 // description in place, is skipped. A page that fails to write does not stop
-// the others; any failed write, or failing to read or rename the index,
+// the others; any failed write, or failing to read or move the index,
 // returns an error and leaves the index in place, so the next run finishes
 // the job.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
@@ -272,15 +343,17 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	// index a link naming the page exactly wins over the earliest line naming
 	// it in another case.
 	descriptions := make(map[string]string)
+	raws := make(map[string][]byte, len(legacies))
 	for _, legacy := range legacies {
 		raw, err := env.ReadFileRaw(legacy)
 		if errors.Is(err, fs.ErrNotExist) {
-			// A concurrent run renamed it after the listing, so it is migrated.
+			// A concurrent run moved it after the listing, so it is migrated.
 			continue
 		}
 		if err != nil {
 			return err
 		}
+		raws[legacy] = raw
 		entries := parseLegacyMemoryIndex(string(raw))
 		for _, exact := range []bool{true, false} {
 			for _, entry := range entries {
@@ -297,7 +370,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	// migrations racing write the same description. A page edit landing in
 	// the instant between one page's read and write would be overwritten;
 	// that is accepted, because migration runs once per scope (the index is
-	// renamed when it finishes) and touches only pages with no description.
+	// moved when it finishes) and touches only pages with no description.
 	var writeErrs []error
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
 		abs := filepath.Join(root, filepath.FromSlash(page))
@@ -316,7 +389,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
 		// ended by "...") comes back without the description; such a page is
 		// left as it is, like one whose frontmatter does not parse, and the
-		// index is still renamed. Keeping the index for it instead would retry
+		// index is still moved. Keeping the index for it instead would retry
 		// every run until someone rewrites the page. The description stays
 		// recoverable in the backup, and the page renders with its fallback
 		// description meanwhile.
@@ -333,11 +406,15 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		return errors.Join(writeErrs...)
 	}
 	for _, legacy := range legacies {
+		raw, read := raws[legacy]
+		if !read {
+			continue
+		}
 		backup, err := freeMemoryBackupPath(env, root)
 		if err != nil {
 			return err
 		}
-		if err := env.RenamePath(legacy, backup); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := moveLegacyMemoryIndex(env, root, legacy, raw, backup); err != nil {
 			return err
 		}
 	}

@@ -12,22 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/agent/execenv"
 )
-
-// memoryMigrationScope is a confined scope environment for migration tests
-// and the scope's directory on disk.
-func memoryMigrationScope(t *testing.T) (*execenv.LocalExecutionEnvironment, string) {
-	t.Helper()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(env.Cleanup)
-	return env, filepath.Join(root, "memory", "personal")
-}
 
 // oldBuildRound plays an older Evener build's session in scope: it writes
 // three pages with no frontmatter and, finding no MEMORY.md, a fresh
@@ -53,34 +38,35 @@ func oldBuildRound(t *testing.T, scope string, round int) (string, map[string]st
 	return index.String(), descriptions
 }
 
-// memoryBackupCount counts a scope's backups of hand-written indexes.
-func memoryBackupCount(t *testing.T, scope string) int {
+// memoryBackups is a scope's backups of hand-written indexes, by name.
+func memoryBackups(t *testing.T, scope string) map[string]string {
 	t.Helper()
 	entries, err := os.ReadDir(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
+	backups := make(map[string]string)
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), memoryLegacyIndexBackup) {
-			n++
+			raw, err := os.ReadFile(filepath.Join(scope, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backups[entry.Name()] = string(raw)
 		}
 	}
-	return n
+	return backups
 }
-
-// memoryMaxBackups is the most index backups a scope should keep however
-// many times old and new builds alternate on it: the original index and,
-// at most, the latest one an old build wrote.
-const memoryMaxBackups = 2
 
 // An old build and a new build take turns on one scope five times: each old
 // round adds pages and writes a fresh MEMORY.md, each new round migrates it.
 // Every old line's description must reach its page, the first backup must
-// keep the original index's bytes, and the backups must not pile up.
+// keep the original index's bytes, every index an old build wrote must keep a
+// backup, and no two backups may hold the same bytes. Each round also writes
+// the previous round's index again, which must add no backup.
 func TestMigrateMemoryScopeAlternatingWithAnOldBuild(t *testing.T) {
 	t.Parallel()
-	env, scope := memoryMigrationScope(t)
+	env, scope := newMemoryMigrateScope(t)
 	want := make(map[string]string)
 	var original string
 	for round := 1; round <= 5; round++ {
@@ -104,42 +90,72 @@ func TestMigrateMemoryScopeAlternatingWithAnOldBuild(t *testing.T) {
 		if backup, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup)); err != nil || string(backup) != original {
 			t.Errorf("round %d: first backup=%q err=%v, want the original index %q", round, backup, err, original)
 		}
-		if n := memoryBackupCount(t, scope); n > memoryMaxBackups {
-			t.Errorf("round %d: %d index backups in the scope, want at most %d", round, n, memoryMaxBackups)
+		backups := memoryBackups(t, scope)
+		if len(backups) != round {
+			t.Errorf("round %d: %d index backups, want one per distinct index: %q", round, len(backups), backups)
+		}
+		seen := make(map[string]string)
+		for name, raw := range backups {
+			if other, dup := seen[raw]; dup {
+				t.Errorf("round %d: backups %s and %s hold the same bytes", round, name, other)
+			}
+			seen[raw] = name
+		}
+		// An old build writing the same index again adds no backup.
+		if err := os.WriteFile(filepath.Join(scope, memoryIndexFile), []byte(index), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrateMemoryScope(env); err != nil {
+			t.Fatalf("round %d repeat: %v", round, err)
+		}
+		if again := memoryBackups(t, scope); !maps.Equal(again, backups) {
+			t.Errorf("round %d: migrating a repeated index changed the backups to %q", round, again)
+		}
+		if _, err := os.Stat(filepath.Join(scope, memoryIndexFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("round %d: repeated MEMORY.md was not removed: %v", round, err)
 		}
 	}
 }
 
 // Two migrations race on one scope while an old build writes MEMORY.md
-// again. Migration B chooses its backup name, migration A then finishes
-// (renaming the original index to that same name), the old build recreates
-// MEMORY.md, and B renames what is now MEMORY.md onto its chosen name.
-// migrateMemoryScope has no seam between choosing the name and renaming, so
-// this test replays B's last statement, freeMemoryBackupPath then
-// RenamePath, in that interleaving. The original index must survive, and the
-// recreated index's line must reach its page or stay for the next run.
+// again. Migration B chooses its backup name (the first, still free),
+// migration A then finishes (moving the original index to that name), the
+// old build recreates MEMORY.md, and B moves what is now MEMORY.md to the
+// name it chose. The test drives B's move with the name B chose before A ran.
+// The original index must survive, and the recreated index's lines, which B
+// never migrated, must reach their pages or stay for the next run.
 func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 	t.Parallel()
-	env, scope := memoryMigrationScope(t)
+	env, scope := newMemoryMigrateScope(t)
 	original, _ := oldBuildRound(t, scope, 1)
 	legacy := filepath.Join(scope, memoryIndexFile)
 
-	// B has written its descriptions and chooses where the index goes.
-	backupB := freeMemoryBackupPath(env, scope)
-	// A runs to completion: the same descriptions, then the rename.
+	// B has written its descriptions and chooses its backup name.
+	backupB, err := freeMemoryBackupPath(env, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A runs to completion: the same descriptions, then the move.
 	if err := migrateMemoryScope(env); err != nil {
 		t.Fatal(err)
 	}
 	// The old build finds no MEMORY.md and writes a fresh one.
-	_, recreated := oldBuildRound(t, scope, 2)
-	// B renames onto the name it chose before A's rename.
-	if err := env.RenamePath(legacy, backupB); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	recreatedIndex, recreated := oldBuildRound(t, scope, 2)
+	// B moves the index it read, the original, to the name it chose before
+	// A's move.
+	if err := moveLegacyMemoryIndex(env, scope, legacy, []byte(original), backupB); err != nil {
 		t.Fatal(err)
 	}
 
 	backup, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup))
 	if err != nil || string(backup) != original {
 		t.Errorf("first backup=%q err=%v, want the original index %q", backup, err, original)
+	}
+	if index, err := os.ReadFile(legacy); err != nil || string(index) != recreatedIndex {
+		t.Errorf("MEMORY.md=%q err=%v, want the recreated index left for the next run", index, err)
+	}
+	if backups := memoryBackups(t, scope); len(backups) != 1 {
+		t.Errorf("index backups %q, want only the original", backups)
 	}
 	_, indexErr := os.Stat(legacy)
 	for page, description := range recreated {
@@ -150,5 +166,37 @@ func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 		if got := parseMemoryPage(page, raw, time.Time{}); got.Description != description && indexErr != nil {
 			t.Errorf("%s description=%q and MEMORY.md is gone (%v): its line %q is lost", page, got.Description, indexErr, description)
 		}
+	}
+}
+
+// When the index cannot be linked to its backup name for a reason other
+// than a taken name (here a read-only scope directory; a filesystem without
+// hard links fails the same way), migration reports the error and keeps
+// MEMORY.md, so a later run can still migrate it. Nothing is backed up.
+func TestMigrateMemoryScopeKeepsTheIndexWhenTheLinkFails(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	env, scope := newMemoryMigrateScope(t)
+	index := "- [Fact](fact.md) — the fact\n"
+	for name, body := range map[string]string{memoryIndexFile: index, "fact.md": "---\ndescription: already described\n---\n"} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(scope, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(scope, 0o700) })
+	err := migrateMemoryScope(env)
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		t.Fatalf("migration with an unlinkable index returned %v, want the link error", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, memoryIndexFile)); err != nil || string(raw) != index {
+		t.Fatalf("MEMORY.md=%q err=%v, want it kept", raw, err)
+	}
+	if backups := memoryBackups(t, scope); len(backups) != 0 {
+		t.Fatalf("backups %q, want none", backups)
 	}
 }

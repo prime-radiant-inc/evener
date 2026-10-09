@@ -3,6 +3,8 @@
 package execenv
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,5 +174,42 @@ func TestConfinedFileAuthority(t *testing.T) {
 	}
 	if _, err := env.ReadFileRaw(filepath.Join(outside, "data")); err == nil {
 		t.Fatal("outside read accepted")
+	}
+}
+
+// LinkConfinedFile adds a second name for a file and never replaces an
+// existing one; an unconfined environment refuses it.
+func TestConfinedFileLink(t *testing.T) {
+	t.Parallel()
+	env, err := NewConfinedFileEnvironment(t.TempDir(), "memory/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	root := env.WorkingDirectory()
+	for name, body := range map[string]string{"MEMORY.md": "index", ".backup": "earlier"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.LinkConfinedFile("MEMORY.md", ".backup"); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("link onto an existing name: %v, want fs.ErrExist", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, ".backup")); string(got) != "earlier" {
+		t.Fatalf("existing name replaced: %q", got)
+	}
+	if err := env.LinkConfinedFile("MEMORY.md", ".backup.2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"MEMORY.md", ".backup.2"} {
+		if got, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(got) != "index" {
+			t.Fatalf("%s=%q %v", name, got, err)
+		}
+	}
+	if err := env.LinkConfinedFile("missing", ".backup.3"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("link of a missing file: %v, want fs.ErrNotExist", err)
+	}
+	if err := NewLocalExecutionEnvironment(root).LinkConfinedFile("MEMORY.md", ".backup.4"); err == nil {
+		t.Fatal("unconfined environment linked a file")
 	}
 }
