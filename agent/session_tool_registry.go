@@ -48,7 +48,7 @@ type toolDeps struct {
 	resultToolName func() string
 
 	// offersEndReason reports that communicate takes end_reason
-	// (Session.offersCommunicateEndReason).
+	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
 
 	// cmdTimeouts is a live getter for the default and max shell command
@@ -351,7 +351,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
-		offersEndReason:        s.offersCommunicateEndReason(),
+		offersEndReason:        s.hasHumanPartnerToAsk(),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
@@ -469,7 +469,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerCommunicateTool(reg, deps)
 	// ask_user is root-only and interactive-only (spec §7 point 1): invisible,
 	// not merely disabled, when nobody can answer and in every subagent.
-	if !s.cfg.noOneToAsk() && !s.isSubagentSession() {
+	if s.hasHumanPartnerToAsk() {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)

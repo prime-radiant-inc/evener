@@ -88,7 +88,7 @@ func promptConfigs() []promptConfig {
 		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, true)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
 			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
