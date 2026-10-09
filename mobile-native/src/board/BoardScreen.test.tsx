@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { DocumentMemory } from "../reader/documentMemory";
 // Imported at file scope, so the Reader's graph is transformed at collection
 // time, outside the timeout of the test that opens a real Reader.
+import { FreshDot } from "../reader/FreshDot";
 import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
@@ -1627,6 +1628,38 @@ const hubFleet: Fleet = {
 };
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+
+// A dormant session rests in Idle even with updates you haven't opened, so
+// folded, Idle's header carries the blue dot for it (Jesse, #4093).
+it("dots the folded Idle header while a session inside is unseen, and the row once unfolded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const dormantUnseen = session("local:dormant-unseen", {
+		title: "Dormant unseen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+		dormant: true,
+	});
+	const fake = hub({ ...fleet, live: [[dormantUnseen, hubSeen]], needsYou: [] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const fold = () =>
+		tree.root.find(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				node.props.accessibilityState?.expanded !== undefined &&
+				String(node.props.accessibilityLabel).startsWith("Idle"),
+		);
+	expect(fold().props.accessibilityLabel).toBe("Idle, 2 sessions, unread sessions inside");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(1);
+	act(() => fold().props.onPress());
+	expect(fold().props.accessibilityLabel).toBe("Idle, 2 sessions");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(0);
+	expect(rowTitled(tree, "Dormant unseen").findAllByType(FreshDot)).toHaveLength(1);
+	expect(rowTitled(tree, "Hub seen").findAllByType(FreshDot)).toHaveLength(0);
+	act(() => tree.unmount());
+});
 
 it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
 	const id = hubId();

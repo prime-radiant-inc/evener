@@ -277,6 +277,23 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
 	});
 
+	it("marks every unseen row, whatever its band, and no seen one", () => {
+		const live = [
+			row("work-unseen", { state: "active" }),
+			row("ask-unseen", { state: "awaiting", ask_pending: true }),
+			row("done-unseen", { state: "idle" }),
+			row("dormant-unseen", { state: "idle", dormant: true }),
+			row("seen-work", { state: "active" }),
+		];
+		const bands = liveBands(live, [], (r) => r.ref.startsWith("seen"));
+		const unseen = [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]
+			.filter((item) => item.unseen)
+			.map((item) => item.row.ref)
+			.sort();
+		expect(unseen).toEqual(["ask-unseen", "done-unseen", "dormant-unseen", "work-unseen"]);
+		expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([["dormant-unseen", true]]);
+	});
+
 	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {
 		const live = [
 			row("work-a", { state: "active", updated_at: at(1) }),

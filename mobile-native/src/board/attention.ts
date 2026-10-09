@@ -31,6 +31,9 @@ export type Band = "needsYou" | "finished" | "working" | "idle";
 export interface ClassifiedRow {
 	row: NavigationSessionSummary;
 	state: BoardState;
+	/** Updates since you last opened it: the row's blue dot, wherever it
+	 * sits. Absent reads as seen. */
+	unseen?: boolean;
 }
 
 export interface LiveBands {
@@ -121,7 +124,10 @@ export function rowClassifier(
 	isSeen: (row: NavigationSessionSummary) => boolean,
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
-	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+	return (row) => {
+		const seen = isSeen(row);
+		return { row, state: boardState(row, approvals.has(row.ref), seen), unseen: !seen };
+	};
 }
 
 const BANDS: Record<BoardState, Band | null> = {

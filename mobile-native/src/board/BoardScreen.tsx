@@ -71,6 +71,7 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { FreshDot } from "../reader/FreshDot";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -293,7 +294,10 @@ function Board({
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
 	const projectRow = useCallback(
-		(row: NavigationSessionSummary): ClassifiedRow => ({ row, state: boardState(row, false, seen.isSeen(row)) }),
+		(row: NavigationSessionSummary): ClassifiedRow => {
+			const isSeen = seen.isSeen(row);
+			return { row, state: boardState(row, false, isSeen), unseen: !isSeen };
+		},
 		[seen],
 	);
 	const folds = useCategoryFolds(hubId);
@@ -1037,7 +1041,14 @@ function Board({
 			content = <BandHeader text={`${BAND_HEADERS[item.band]} · ${item.count}`} />;
 			onLayout = measure(item.band);
 		} else if (item.kind === "idleFold") {
-			content = <IdleFold count={item.count} folded={item.folded} onToggle={() => foldIdle(!item.folded)} />;
+			content = (
+				<IdleFold
+					count={item.count}
+					folded={item.folded}
+					unseen={item.unseen}
+					onToggle={() => foldIdle(!item.folded)}
+				/>
+			);
 			onLayout = measure("idle");
 		} else if (item.kind === "row")
 			content = (
@@ -1978,14 +1989,27 @@ function SummaryLine({
 	);
 }
 
-/** Idle's header, folded by default; its state persists per device. */
-function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean; onToggle: () => void }) {
+/** Idle's header, folded by default; its state persists per device. Folded,
+ * it shows the blue dot while any session inside has updates you haven't
+ * opened: no count, no words. */
+function IdleFold({
+	count,
+	folded,
+	unseen,
+	onToggle,
+}: {
+	count: number;
+	folded: boolean;
+	unseen: boolean;
+	onToggle: () => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const dot = folded && unseen;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Idle, ${plural(count, "session")}`}
+			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
 			accessibilityState={{ expanded: !folded }}
 			onPress={onToggle}
 			style={({ pressed }) => ({
@@ -2004,7 +2028,10 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			>
 				{`Idle · ${count}`}
 			</Text>
-			<FoldChevron folded={folded} />
+			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
+				{dot ? <FreshDot /> : null}
+				<FoldChevron folded={folded} />
+			</View>
 		</Pressable>
 	);
 }

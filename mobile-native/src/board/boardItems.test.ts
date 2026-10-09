@@ -74,8 +74,17 @@ it("leaves out empty bands, and Idle's rows while it is folded", () => {
 		["live:local:done", "live", "signal", false, false, false, 0, true],
 		["idle-fold", "live", "idleFold"],
 	]);
-	expect(items.at(-1)).toMatchObject({ count: 1, folded: true });
+	expect(items.at(-1)).toMatchObject({ count: 1, folded: true, unseen: false });
 	expect(liveItems(bands(), false)).toEqual([]);
+});
+
+it("says on Idle's fold whether any session inside is unseen", () => {
+	const fold = (idle: ClassifiedRow[]) => liveItems(bands({ idle }), true).at(-1);
+	expect(fold([classified("local:old", "idle")])).toMatchObject({ kind: "idleFold", unseen: false });
+	expect(fold([classified("local:old", "idle"), { ...classified("local:new", "idle"), unseen: true }])).toMatchObject({
+		kind: "idleFold",
+		unseen: true,
+	});
 });
 
 it("lists each pinned category as its header, then its sessions as quiet still rows, even a working one", () => {

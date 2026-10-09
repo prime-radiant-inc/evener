@@ -178,7 +178,7 @@ Select                                                      ✎
   - Needs you: failed first, then questions and approvals, then warnings and restart-needed; oldest waiting first within each band (Jesse, 2026-09-27).
   - Finished: sessions whose turn ended, newest first. A blue dot marks the ones you haven't opened since.
   - Working: stable order by start time, newest first. Sessions that "may be stuck" float to the top of this band.
-  - Idle: finished sessions you have already seen, collapsed by default, most recent first.
+  - Idle: finished sessions you have already seen, collapsed by default, most recent first. Folded, its header shows a blue dot while any session inside has updates you haven't opened: no count and no words; VoiceOver says "unread sessions inside" (Jesse, 2026-10-09).
   Band headers show counts. Empty bands are omitted.
 - **Pinned categories.** Pinned sessions live in the user's named categories, and each category is its own section (as on the web's rail), in the order the hub returns them; there is no generic "Pinned" section. Each section header has a pin glyph, the name, a count, a collapse toggle and a ⋯ menu (Rename, Delete). Its rows are quiet one-line rows with a still mark: a pinned category is a place, and a live session's full row is already in Live (a round-4 participant read the repeated full row as a second job). An empty category says how to pin to it. Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
 - **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count. A host shows its state only when it isn't connected (an amber "Offline"); connected hosts carry no dot, so green means working and nothing else.
@@ -195,7 +195,7 @@ Signal rows (needs you, finished and not yet seen, working) have up to three lin
 |---|---|
 | Leading mark | 28pt column. State mark (see 13.1). Working rows in the Live band show the pulse meter. The same session listed again under a pinned category or in Projects shows a still green dot: only the Live band moves. |
 | Title | SF Pro semibold 17/22, one line (two for Needs you), tail truncation. |
-| Age | Trailing on line 1, 13pt tabular, ink-low. "2m", "1h", "3d". For working rows, time since the session last started a turn. |
+| Age | Trailing on line 1, 13pt tabular, ink-low. "2m", "1h", "3d". For working rows, time since the session last started a turn. After it, a blue dot (`circle.fill`, 8pt) marks a session with updates you haven't opened, in any band or section; VoiceOver says "unread" (Jesse, 2026-10-09). |
 | Why line | 15/20, up to two lines for Needs you so the reason's key words survive. Needs you: the state word, semibold in its hue ("Failed", "Question", "Approval", "Restart needed", "May be stuck"), a middle dot, then the reason in ink. Only the word takes the hue; the reason is what you read. Finished (not yet seen): the opening of the last agent message in Source Serif 15/21, ink-mid, without quotation marks, up to two lines; the typeface says the agent is speaking. Working: the current activity in ink-mid ("Running go test ./agent/...", "Thinking", "Waiting on 31 subagents", "Quiet 4m"). |
 | Attachments (finished, not yet seen) | Up to two chips for documents named in the final message: "[Plan] Host and project hierarchy". Tapping a chip opens it on top of its session, so Back goes to the session. |
 | Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); the project with a folder glyph, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. The line never wraps: the task's title truncates first. |
@@ -565,7 +565,7 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 | `active` | Working | pulse meter, green | Working | current activity |
 | `active`, no subagent running, no activity 3 to 10 min | Quiet | flat pulse meter | Working | "Quiet 4m" |
 | `active`, no subagent running, no activity 10 min or more | May be stuck | the pulse meter gone flat and amber (a ring read like the restart mark at row size) | top of Working | "May be stuck · no updates for 12m" (amber ink) |
-| turn ended, not seen since | Finished | blue dot (`circle.fill`, 8pt) | Finished | last message excerpt |
+| turn ended, not seen since | Finished | none (the row's unread dot) | Finished | last message excerpt |
 | turn ended, seen | Idle | none | Idle (collapsed) | age only |
 | shut down / not loaded | Shut down | none | Projects only | age only |
 
