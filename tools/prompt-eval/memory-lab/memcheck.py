@@ -61,9 +61,39 @@ YAML_NON_STRING = re.compile(
     r"|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}([Tt ].*)?")
 
 
-def plain_value(value):
-    """value, an unquoted one-line scalar, or Unreadable when YAML would read a
-    mapping in it: a ": " inside it or a ":" at its end."""
+def closing_quote(value):
+    """The index of the quote that closes value's opening one, or -1. A double-quoted
+    scalar escapes with a backslash; a single-quoted one doubles its quote."""
+    q, i = value[0], 1
+    while i < len(value):
+        if q == '"' and value[i] == "\\":
+            i += 2
+        elif value[i] == q and q == "'" and value[i + 1:i + 2] == "'":
+            i += 2
+        elif value[i] == q:
+            return i
+        else:
+            i += 1
+    return -1
+
+
+def scalar(value):
+    """The string a frontmatter value holds, None when YAML types it as something
+    else (YAML_NON_STRING, a [sequence] or {mapping}, or only a comment), or
+    Unreadable on the invalid YAML a model most often writes: a quote left open
+    or followed by more than a comment, or a plain value holding ": " or ending
+    in ":". A " #" in a plain value starts a comment."""
+    if value[:1] in ("'", '"'):
+        end = closing_quote(value)
+        if end < 0:
+            raise Unreadable(f"value {value!r} never closes its quote")
+        after = value[end + 1:].strip()
+        if after and not after.startswith("#"):
+            raise Unreadable(f"value {value!r} goes on after its closing quote")
+        return value[1:end]
+    value = re.split(r"(?:^|[ \t])#", value, maxsplit=1)[0].strip()
+    if not value or YAML_NON_STRING.fullmatch(value) or value[:1] in ("[", "{"):
+        return None
     if ": " in value or value.endswith(":"):
         raise Unreadable(f"unquoted value {value!r} holds a ':' that YAML reads as a mapping")
     return value
@@ -89,10 +119,10 @@ def parse_frontmatter(text):
     """The page's top-level frontmatter keys as {key: value} and its tags list.
 
     Returns None when there is no frontmatter block, and raises Unreadable on
-    the invalid YAML a model most often writes (plain_value). A value may be
+    the invalid YAML a model most often writes (scalar). A value may be
     plain, quoted, or a folded/literal block scalar (> or |) with indented
-    continuation lines, which join with spaces; a plain value YAML types
-    (YAML_NON_STRING) is None. tags is a flow list `[a, b]`,
+    continuation lines, which join with spaces; a value YAML types as other
+    than a string is None (scalar). tags is a flow list `[a, b]`,
     a block list of `- a` lines, or one scalar tag (normalize_tags)."""
     block = split_frontmatter(text)
     if block is None:
@@ -109,24 +139,17 @@ def parse_frontmatter(text):
         while i < len(block) and (block[i].startswith((" ", "\t")) or (key == "tags" and block[i].startswith("- "))):
             rest.append(block[i].strip())
             i += 1
-        quoted = value[:1] in ("'", '"')
         if key == "tags":
             if value.startswith("["):
                 tags = normalize_tags(value.strip("[]").split(","))
-            elif value:
-                tags = normalize_tags([value if quoted else plain_value(value)])
+            elif value and not value.startswith("#"):
+                tags = normalize_tags([t for t in [scalar(value)] if t is not None])
             else:
                 tags = normalize_tags(r[2:] for r in rest if r.startswith("- "))
         elif re.match(r"^[>|][+-]?$", value):
             fields[key] = " ".join(rest).strip()
         else:
-            joined = " ".join([value] + rest)
-            if quoted:
-                fields[key] = unquote(joined)
-            else:
-                # A value opening with [ or { is a YAML sequence or mapping, not a string.
-                typed = YAML_NON_STRING.fullmatch(joined) or joined[:1] in ("[", "{")
-                fields[key] = None if typed else plain_value(joined)
+            fields[key] = scalar(" ".join([value] + rest))
     return fields, tags
 
 

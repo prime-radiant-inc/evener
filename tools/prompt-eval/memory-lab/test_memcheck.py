@@ -202,6 +202,25 @@ class NewPages(Root):
         os.symlink(target, os.path.join(self.root, "evener", "memory", "projects", "p", "linked"))
         self.assertEqual(self.run_cmd("new-pages"), 1)
 
+    def test_unterminated_or_trailing_quoted_description_is_unreadable(self):
+        for value in ('"unterminated', "'unterminated", '"a" trailing'):
+            with self.subTest(value=value):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_comment_after_a_typed_value_leaves_no_description(self):
+        for value in ("42 # comment", "null # c", "# only a comment"):
+            with self.subTest(value=value):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_comment_after_a_string_drops_the_comment(self):
+        for value, tag in (("a plain # " + "c" * 300, "plain"), ('"q" # c', "quoted"), ("a#b", "hash")):
+            with self.subTest(tag=tag):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+                self.assertEqual(self.run_cmd("index-lines"), 0)
+
 class SeedFrontmatter(unittest.TestCase):
     def test_quoted_description_word_tags_and_date_pass(self):
         self.assertIsNone(memcheck.seed_frontmatter_problem(
