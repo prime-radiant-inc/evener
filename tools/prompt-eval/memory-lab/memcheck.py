@@ -22,18 +22,20 @@ memory-lab check also imports seed_frontmatter_problem to vet scenario seeds.
 
 Standard library only; run `python3 -B test_memcheck.py` for its tests.
 """
-import argparse, glob, os, re, sys
+import argparse, glob, os, re, stat, sys
 
 MAX_INDEX_LINE = 200
 
 
 def split_frontmatter(text):
-    """The lines of the leading `---` block, or None when the text has none."""
+    """The lines of the leading `---` block, or None when the text has none.
+    As in the product (frontmatter.Split), each delimiter is a line of exactly
+    "---" ending in "\n", so a CRLF or space-padded one is none."""
     lines = text.split("\n")
-    if not lines or lines[0].rstrip() != "---":
+    if lines[0] != "---":
         return None
-    for i in range(1, len(lines)):
-        if lines[i].rstrip() == "---":
+    for i in range(1, len(lines) - 1):
+        if lines[i] == "---":
             return lines[1:i]
     return None
 
@@ -67,11 +69,16 @@ def plain_value(value):
     return value
 
 
+YAML_NULL = {"~", "null", "Null", "NULL"}
+
+
 def normalize_tags(items):
     """The product's tag rules (normalizeMemoryTags): trimmed, lowercased, runs
-    of whitespace as "-", empty tags and duplicates dropped."""
+    of whitespace as "-", empty tags, unquoted nulls and duplicates dropped."""
     tags = []
     for item in items:
+        if item.strip() in YAML_NULL:
+            continue
         tag = "-".join(unquote(item).lower().split())
         if tag and tag not in tags:
             tags.append(tag)
@@ -117,15 +124,18 @@ def parse_frontmatter(text):
             if quoted:
                 fields[key] = unquote(joined)
             else:
-                fields[key] = None if YAML_NON_STRING.fullmatch(joined) else plain_value(joined)
+                # A value opening with [ or { is a YAML sequence or mapping, not a string.
+                typed = YAML_NON_STRING.fullmatch(joined) or joined[:1] in ("[", "{")
+                fields[key] = None if typed else plain_value(joined)
     return fields, tags
 
 
 def seed_frontmatter_problem(text):
     """Why a seeded page's frontmatter would not parse, or None when it will.
     memory-lab check runs this over every seed page."""
-    if text.split("\n", 1)[0].rstrip() != "---":
-        return None
+    first = text.split("\n", 1)[0]
+    if first != "---":
+        return None if first.rstrip() != "---" else f"opening delimiter is {first!r}; the product reads only '---' then a newline"
     try:
         if parse_frontmatter(text) is None:
             return "frontmatter has no closing ---"
@@ -135,15 +145,24 @@ def seed_frontmatter_problem(text):
 
 
 def read(path):
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:  # raw line ends, as the product reads them
         return f.read()
 
 
 def memory_files(root, scopes):
-    """Every file the product lists as a page or index: any name, none under a dot path."""
+    """Every file the product lists as a page or index: regular files only, with
+    no dot path and no symlink on the way, as the product's listing skips them."""
+    base = glob.escape(os.path.join(root, "evener", "memory"))
     for scope in scopes:
-        paths = glob.glob(os.path.join(glob.escape(os.path.join(root, "evener", "memory")), scope, "**", "*"), recursive=True)
-        yield from sorted(p for p in paths if os.path.isfile(p))
+        for top in sorted(glob.glob(os.path.join(base, scope))):
+            if os.path.islink(top) or not os.path.isdir(top):
+                continue
+            found = []
+            for dirpath, dirnames, filenames in os.walk(top):  # os.walk never enters a symlinked dir
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                found += [os.path.join(dirpath, f) for f in filenames
+                          if not f.startswith(".") and stat.S_ISREG(os.lstat(os.path.join(dirpath, f)).st_mode)]
+            yield from sorted(found)
 
 
 def is_root_index(root, path):
@@ -171,7 +190,7 @@ def index_lines_ok(root):
         if is_root_index(root, path):
             lines = read(path).split("\n")
         else:
-            lines = [readable_frontmatter(path)[0].get("description", "")]
+            lines = [readable_frontmatter(path)[0].get("description") or ""]
         for line in lines:
             if len(line) > MAX_INDEX_LINE:
                 print(f"{path}: index line is {len(line)} characters", file=sys.stderr)

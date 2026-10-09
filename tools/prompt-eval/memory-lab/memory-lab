@@ -969,7 +969,7 @@ def scenario_problems(scen):
             pages += find_files(dirs[-1], ".md")
     problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
     for page in pages:
-        problem = memcheck.seed_frontmatter_problem(read_file(page))
+        problem = memcheck.seed_frontmatter_problem(memcheck.read(page))  # raw line ends, unlike read_file
         if problem:
             problems.append(f"{os.path.relpath(page, scen)}: {problem}")
     return problems

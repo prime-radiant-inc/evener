@@ -71,6 +71,18 @@ class IndexLines(Root):
         self.put("projects/p/sub/MEMORY.md", "---\ndescription: short\n---\n" + "x" * 300 + "\n")
         self.assertEqual(self.run_cmd("index-lines"), 0)
 
+    def test_typed_description_is_no_index_line(self):
+        self.put("projects/p/a.md", "---\ndescription: 42\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_symlinked_page_is_not_read(self):
+        outside = os.path.join(self.root, "outside.md")
+        with open(outside, "w", encoding="utf-8") as f:
+            f.write("---\ndescription: " + "y" * 300 + "\n---\n")
+        self.put("projects/p/real.md", "---\ndescription: ok\n---\n")
+        os.symlink(outside, os.path.join(self.root, "evener", "memory", "projects", "p", "link.md"))
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
 class NewPages(Root):
     def test_no_new_page_fails(self):
         self.put("projects/p/seed.md", "---\ndescription: d\ntags: [a]\nby: seed-fixture\n---\n")
@@ -165,6 +177,31 @@ class NewPages(Root):
         self.put("projects/p/a.md", "---\ndescription: d\n---\n")
         self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
 
+    def test_flow_collection_description_does_not_count(self):
+        for value in ("[x]", "{a: b}"):
+            with self.subTest(value=value):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_null_tag_items_are_dropped(self):
+        self.put("projects/p/a.md", "---\ntags: [pricing, null, ~]\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "pricing"), 0)
+
+    def test_crlf_or_spaced_delimiter_is_no_frontmatter(self):
+        for text in ("---\r\ndescription: d\r\n---\r\n", "--- \ndescription: d\n---\n"):
+            with self.subTest(text=text):
+                self.put("projects/p/a.md", text)
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_symlinked_dir_is_not_walked(self):
+        target = os.path.join(self.root, "elsewhere")
+        os.makedirs(target)
+        with open(os.path.join(target, "a.md"), "w", encoding="utf-8") as f:
+            f.write("---\ndescription: d\n---\n")
+        os.makedirs(os.path.join(self.root, "evener", "memory", "projects", "p"))
+        os.symlink(target, os.path.join(self.root, "evener", "memory", "projects", "p", "linked"))
+        self.assertEqual(self.run_cmd("new-pages"), 1)
+
 class SeedFrontmatter(unittest.TestCase):
     def test_quoted_description_word_tags_and_date_pass(self):
         self.assertIsNone(memcheck.seed_frontmatter_problem(
@@ -179,6 +216,9 @@ class SeedFrontmatter(unittest.TestCase):
     def test_plain_sentence_and_folded_value_pass(self):
         self.assertIsNone(memcheck.seed_frontmatter_problem("---\ndescription: a plain sentence\n---\n"))
         self.assertIsNone(memcheck.seed_frontmatter_problem("---\ndescription: >\n  folded: text\n---\n"))
+
+    def test_crlf_frontmatter_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\r\ndescription: d\r\n---\r\n"))
 
     def test_plain_tag_with_colon_space_fails(self):
         self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ntags: a: b\n---\n"))
