@@ -2,11 +2,12 @@ import {
   type AnyNotification,
   encodeTranscriptItem,
   hydrateThread,
+  invalidateHistory,
   type ThreadItem,
   type ThreadModel,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
-import { IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
@@ -122,6 +123,15 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
     clearEpoch: 0,
     lifetime,
     seedModel,
+    seedAuthority: seedModel?.history
+      ? {
+          trustedCurrentSource: true,
+          bootGeneration: seedModel.history.bootGeneration,
+          epoch: seedModel.history.epoch,
+          incarnation: seedModel.history.incarnation ?? "",
+          snapshotLength: seedModel.history.length,
+        }
+      : undefined,
     now: () => 100,
   });
 }
@@ -171,6 +181,246 @@ function holdNextEntryPut(transcriptKey: string) {
   };
 }
 
+function gateEntryCommit(cache: ReturnType<typeof createEntryCacheFixture>["cache"], transcriptKey: string) {
+  const commit = cache.commitBatch.bind(cache);
+  let released = false;
+  let release!: () => void;
+  let markReached!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  let previous = Promise.resolve();
+  const spy = vi.spyOn(cache, "commitBatch").mockImplementation((batch) => {
+    const predecessor = previous;
+    let finish!: () => void;
+    previous = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    return (async () => {
+      await predecessor;
+      try {
+        if (batch.items.some((row) => row.transcriptKey === transcriptKey)) {
+          markReached();
+          await gate;
+        }
+        return await commit(batch);
+      } finally {
+        finish();
+      }
+    })();
+  });
+  return {
+    reached,
+    release() {
+      released = true;
+      release();
+      spy.mockRestore();
+    },
+    isReleased: () => released,
+  };
+}
+
+const coveredOverlayKeys = [
+  "stream:covered-round/1:agentMessage",
+  "stream:covered-round/2:reasoning",
+  "preview:covered-call",
+  "tool:covered-tool",
+];
+const uncoveredOverlayKeys = [
+  "stream:uncovered-round/1:agentMessage",
+  "stream:uncovered-round/2:reasoning",
+  "preview:uncovered-call",
+  "tool:uncovered-tool",
+];
+
+function mixedHandoffOverlays(): AnyNotification[] {
+  const slots = [
+    {
+      key: coveredOverlayKeys[0],
+      kind: "stream",
+      turnId: "turn_1",
+      roundId: "covered-round",
+      streamId: "covered-round/1",
+      item: {
+        type: "agentMessage",
+        id: "covered-text-live",
+        turnId: "turn_1",
+        roundId: "covered-round",
+        text: "covered live text",
+        status: "inProgress",
+      },
+    },
+    {
+      key: coveredOverlayKeys[1],
+      kind: "stream",
+      turnId: "turn_1",
+      roundId: "covered-round",
+      streamId: "covered-round/2",
+      item: {
+        type: "reasoning",
+        id: "covered-reasoning-live",
+        turnId: "turn_1",
+        roundId: "covered-round",
+        text: "covered live reasoning",
+        status: "inProgress",
+      },
+    },
+    {
+      key: coveredOverlayKeys[2],
+      kind: "preview",
+      turnId: "turn_1",
+      roundId: "covered-round",
+      callId: "covered-call",
+      item: {
+        type: "agentMessage",
+        id: "covered-preview-live",
+        turnId: "turn_1",
+        callId: "covered-call",
+        text: "covered preview",
+      },
+    },
+    {
+      key: coveredOverlayKeys[3],
+      kind: "tool",
+      turnId: "turn_1",
+      roundId: "covered-round",
+      callId: "covered-tool-call",
+      historyKey: "covered-tool",
+      item: {
+        type: "commandExecution",
+        id: "covered-tool-live",
+        turnId: "turn_1",
+        callId: "covered-tool-call",
+        output: "covered live tool",
+        status: "inProgress",
+      },
+    },
+    {
+      key: uncoveredOverlayKeys[0],
+      kind: "stream",
+      turnId: "turn_1",
+      roundId: "uncovered-round",
+      streamId: "uncovered-round/1",
+      item: {
+        type: "agentMessage",
+        id: "uncovered-text-live",
+        turnId: "turn_1",
+        roundId: "uncovered-round",
+        text: "uncovered live text",
+        status: "inProgress",
+      },
+    },
+    {
+      key: uncoveredOverlayKeys[1],
+      kind: "stream",
+      turnId: "turn_1",
+      roundId: "uncovered-round",
+      streamId: "uncovered-round/2",
+      item: {
+        type: "reasoning",
+        id: "uncovered-reasoning-live",
+        turnId: "turn_1",
+        roundId: "uncovered-round",
+        text: "uncovered live reasoning",
+        status: "inProgress",
+      },
+    },
+    {
+      key: uncoveredOverlayKeys[2],
+      kind: "preview",
+      turnId: "turn_1",
+      roundId: "uncovered-round",
+      callId: "uncovered-call",
+      item: {
+        type: "agentMessage",
+        id: "uncovered-preview-live",
+        turnId: "turn_1",
+        callId: "uncovered-call",
+        text: "uncovered preview",
+      },
+    },
+    {
+      key: uncoveredOverlayKeys[3],
+      kind: "tool",
+      turnId: "turn_1",
+      roundId: "uncovered-round",
+      callId: "uncovered-tool-call",
+      historyKey: "uncovered-tool",
+      item: {
+        type: "commandExecution",
+        id: "uncovered-tool-live",
+        turnId: "turn_1",
+        callId: "uncovered-tool-call",
+        output: "uncovered live tool",
+        status: "inProgress",
+      },
+    },
+  ];
+  return slots.map(
+    (item) => ({ method: "overlay/upserted", params: { ref, threadId, item } }) as unknown as AnyNotification,
+  );
+}
+
+function mixedHandoffHistory(): AnyNotification {
+  return {
+    method: "history/updated",
+    params: {
+      ref,
+      threadId,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length: 2 },
+      items: [
+        {
+          type: "agentMessage",
+          id: "covered-text",
+          transcriptKey: "covered-text",
+          turnId: "turn_1",
+          position: { entry: 2, item: 0 },
+          version: 2,
+          roundId: "covered-round",
+          text: "recorded covered text",
+        },
+        {
+          type: "reasoning",
+          id: "covered-reasoning",
+          transcriptKey: "covered-reasoning",
+          turnId: "turn_1",
+          position: { entry: 3, item: 0 },
+          version: 2,
+          roundId: "covered-round",
+          text: "recorded covered reasoning",
+        },
+        {
+          type: "agentMessage",
+          id: "covered-preview",
+          transcriptKey: "covered-preview",
+          turnId: "turn_1",
+          position: { entry: 4, item: 0 },
+          version: 2,
+          callId: "covered-call",
+          text: "recorded covered preview",
+        },
+        {
+          type: "commandExecution",
+          id: "covered-tool",
+          transcriptKey: "covered-tool",
+          turnId: "turn_1",
+          position: { entry: 5, item: 0 },
+          version: 2,
+          callId: "covered-tool-call",
+          output: "recorded covered tool",
+          status: "completed",
+          completedAtEntry: 5,
+        },
+      ],
+    },
+  } as unknown as AnyNotification;
+}
+
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) await fixture.dispose();
 });
@@ -208,6 +458,301 @@ it("accepts a complete wire read, publishes a real model, and commits keyed rows
   owner.dispose();
 });
 
+it("persists recorded tool fields from a complete read, not its live display overlay", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("tool read");
+  response.thread.turns![0]!.items = [
+    {
+      type: "commandExecution",
+      id: "tool-display-id",
+      transcriptKey: "tool-recorded-key",
+      turnId: "turn_1",
+      position: { entry: 1, item: 0 },
+      version: 1,
+      callId: "call-1",
+      status: "inProgress",
+      output: "recorded-output",
+      outputImages: [{ source: "recorded", name: "recorded.png" }],
+    },
+  ];
+  response.overlay = [
+    {
+      key: "tool:tool-recorded-key",
+      kind: "tool",
+      turnId: "turn_1",
+      roundId: "round-1",
+      callId: "call-1",
+      historyKey: "tool-recorded-key",
+      item: {
+        type: "commandExecution",
+        id: "tool-display-id",
+        turnId: "turn_1",
+        roundId: "round-1",
+        callId: "call-1",
+        status: "inProgress",
+        output: "LIVE_ONLY",
+        outputImages: [{ source: "live", name: "live.png" }],
+      },
+    },
+  ];
+
+  owner.acceptRead(response, { lifetime: 1, readId: "read-tool-overlay", boundary: "read-tool-overlay-boundary" });
+  await owner.settled();
+
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    {
+      transcriptKey: "tool-recorded-key",
+      item: {
+        status: "inProgress",
+        output: "recorded-output",
+        outputImages: [{ source: "recorded", name: "recorded.png" }],
+      },
+    },
+  ]);
+  expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toMatchObject([
+    { transcriptKey: "tool-recorded-key", output: "LIVE_ONLY", outputImages: [{ name: "live.png" }] },
+  ]);
+  owner.dispose();
+});
+
+it("persists the accepted recorded tool update while an unfinished tool overlay remains live", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("tool read");
+  response.thread.turns![0]!.items = [
+    {
+      type: "commandExecution",
+      id: "tool-display-id",
+      transcriptKey: "tool-recorded-key",
+      turnId: "turn_1",
+      position: { entry: 1, item: 0 },
+      version: 1,
+      callId: "call-1",
+      status: "inProgress",
+      output: "initial-recorded-output",
+    },
+  ];
+  owner.acceptRead(response, { lifetime: 1, readId: "read-tool-update", boundary: "read-tool-update-boundary" });
+  await owner.settled();
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "tool:tool-recorded-key",
+          kind: "tool",
+          turnId: "turn_1",
+          roundId: "round-1",
+          callId: "call-1",
+          historyKey: "tool-recorded-key",
+          item: {
+            type: "commandExecution",
+            id: "tool-display-id",
+            turnId: "turn_1",
+            roundId: "round-1",
+            callId: "call-1",
+            status: "inProgress",
+            output: "LIVE_ONLY",
+            outputImages: [{ source: "live", name: "live.png" }],
+          },
+        },
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "commandExecution",
+            id: "tool-display-id",
+            transcriptKey: "tool-recorded-key",
+            turnId: "turn_1",
+            position: { entry: 1, item: 0 },
+            version: 2,
+            callId: "call-1",
+            status: "inProgress",
+            output: "updated-recorded-output",
+            outputImages: [{ source: "recorded", name: "updated.png" }],
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  await owner.settled();
+
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    {
+      transcriptKey: "tool-recorded-key",
+      version: 2,
+      item: {
+        status: "inProgress",
+        output: "updated-recorded-output",
+        outputImages: [{ source: "recorded", name: "updated.png" }],
+      },
+    },
+  ]);
+  expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toMatchObject([
+    { transcriptKey: "tool-recorded-key", output: "LIVE_ONLY", outputImages: [{ name: "live.png" }] },
+  ]);
+  owner.dispose();
+});
+
+it("uses a supplied transcript key before a colliding display ID when extracting a notification row", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("identity seed");
+  response.thread.turns![0]!.items = [
+    {
+      type: "agentMessage",
+      id: "colliding-display-id",
+      transcriptKey: "other-record",
+      turnId: "turn_1",
+      position: { entry: 1, item: 0 },
+      version: 1,
+      text: "other record",
+    },
+    {
+      type: "agentMessage",
+      id: "target-display-id",
+      transcriptKey: "target-record",
+      turnId: "turn_1",
+      position: { entry: 2, item: 0 },
+      version: 1,
+      text: "target record",
+    },
+  ];
+  owner.acceptRead(response, { lifetime: 1, readId: "read-identity", boundary: "read-identity-boundary" });
+  await owner.settled();
+
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "colliding-display-id",
+            transcriptKey: "target-record",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 2,
+            text: "target update",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  await owner.settled();
+
+  const rows = await fixture.cache.getLatest(historyKey, 40);
+  expect(rows.find((row) => row.transcriptKey === "target-record")).toMatchObject({
+    transcriptKey: "target-record",
+    item: { text: "target update" },
+  });
+  expect(rows.find((row) => row.transcriptKey === "other-record")).toMatchObject({
+    transcriptKey: "other-record",
+    item: { text: "other record" },
+  });
+  owner.dispose();
+});
+
+it("commits interleaved read coverage through the greatest transcript position", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("interleaved", 20);
+  response.thread.turns = [
+    {
+      id: "turn-a",
+      itemsView: "full",
+      status: "completed",
+      version: 10,
+      items: [
+        {
+          type: "agentMessage",
+          id: "a-1",
+          transcriptKey: "a-1",
+          turnId: "turn-a",
+          position: { entry: 1, item: 0 },
+          version: 1,
+          text: "a1",
+        },
+        {
+          type: "agentMessage",
+          id: "a-10",
+          transcriptKey: "a-10",
+          turnId: "turn-a",
+          position: { entry: 10, item: 0 },
+          version: 10,
+          text: "a10",
+        },
+      ],
+    },
+    {
+      id: "turn-b",
+      itemsView: "full",
+      status: "completed",
+      version: 3,
+      items: [
+        {
+          type: "agentMessage",
+          id: "b-2",
+          transcriptKey: "b-2",
+          turnId: "turn-b",
+          position: { entry: 2, item: 0 },
+          version: 2,
+          text: "b2",
+        },
+        {
+          type: "agentMessage",
+          id: "b-3",
+          transcriptKey: "b-3",
+          turnId: "turn-b",
+          position: { entry: 3, item: 0 },
+          version: 3,
+          text: "b3",
+        },
+      ],
+    },
+  ];
+  owner.acceptRead(response, { lifetime: 1, readId: "read-interleaved", boundary: "read-interleaved-boundary" });
+  await owner.settled();
+
+  await expect(fixture.cache.getCoverage(historyKey, "read:read-interleaved")).resolves.toMatchObject({
+    start: { entry: 1 },
+    end: { entry: 10 },
+  });
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    { transcriptKey: "a-1" },
+    { transcriptKey: "b-2" },
+    { transcriptKey: "b-3" },
+    { transcriptKey: "a-10" },
+  ]);
+  owner.dispose();
+});
+
 it("commits all initial read rows and serves the latest bounded ascending window after bodies settle", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -228,6 +773,75 @@ it("commits all initial read rows and serves the latest bounded ascending window
     Array.from({ length: 40 }, (_, index) => `item-${index + 6}`),
   );
   expect(window.coverage[0]).toMatchObject({ representedSnapshot: 45, start: { entry: 1 }, end: { entry: 45 } });
+  owner.dispose();
+});
+
+it("opens the latest window after repeated committed live appends pass the initial window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(45);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 8_004 };
+  owner.acceptRead(baseline, {
+    lifetime: 1,
+    readId: "read-repeated-suffix",
+    boundary: "read-repeated-suffix-boundary",
+  });
+  await owner.settled();
+
+  for (let batch = 0; batch < 5; batch += 1) {
+    const firstEntry = 46 + batch * 9;
+    const items = Array.from({ length: 9 }, (_, index) => {
+      const entry = firstEntry + index;
+      return {
+        type: "agentMessage",
+        id: `live-${entry}`,
+        transcriptKey: `live-${entry}`,
+        turnId: "turn_1",
+        position: { entry, item: 0 },
+        version: entry,
+        text: `live row ${entry}`,
+      };
+    });
+    expect(
+      owner.accept(
+        {
+          method: "history/updated",
+          params: {
+            ref,
+            threadId,
+            bootGeneration: "1",
+            epoch: 0,
+            snapshot: { incarnation: identity.incarnation, length: 8_004 + (batch + 1) * 100 },
+            items,
+          },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    await owner.settled();
+  }
+
+  const durable = await fixture.cache.getLatest(historyKey, 100);
+  expect(durable).toHaveLength(90);
+  expect(durable.slice(-45).map((row) => row.transcriptKey)).toEqual(
+    Array.from({ length: 45 }, (_, index) => `live-${index + 46}`),
+  );
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(40);
+  expect(opened.status).toBe("current");
+  expect(
+    opened.model?.turns
+      .flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean),
+  ).toEqual(Array.from({ length: 40 }, (_, index) => `live row ${index + 51}`));
+  expect(opened.olderCursor).toBe("entry:51:0:0");
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-repeated-suffix")).resolves.toMatchObject({
+    representedSnapshot: 8_504,
+    end: { entry: 90 },
+  });
+  reader.dispose();
   owner.dispose();
 });
 
@@ -367,6 +981,293 @@ it("reopens committed nonresident history from bounded local rows without a serv
   localOnly.dispose();
 });
 
+it("keeps local opening recovery-needed after a reducer resync invalidation", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("baseline"), { lifetime: 1, readId: "read-resync", boundary: "read-resync-boundary" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  owner.accept(
+    {
+      method: "evener/thread/resync",
+      params: { ref, threadId, bootGeneration: "1", epoch: 1 },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("does not let an old-generation read erase a newer history authority signal", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("baseline"), {
+    lifetime: 1,
+    readId: "read-new-authority",
+    boundary: "read-new-authority-boundary",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "2",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  const oldRead = read("old-generation", 2);
+  oldRead.requestGeneration = 0;
+
+  expect(owner.acceptRead(oldRead, { lifetime: 1, readId: "old-read", boundary: "old-read-boundary" })).toBe(false);
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("accepts a matching recorded append into a seeded model's current source authority", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const seed = hydrateThread(read("seed", 1), ref, 100);
+  const owner = repository(fixture.cache, 2, seed);
+
+  const accepted = owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "item-seed-append",
+            transcriptKey: "item-seed-append",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 2,
+            text: "accepted from seed authority",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 2 },
+  );
+
+  expect(accepted).toBe(true);
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toContain("accepted from seed authority");
+  await owner.settled();
+  const cached = await fixture.cache.getLatestWindow(historyKey, 40);
+  expect(cached.coverage).toEqual([]);
+  expect(cached.complete).toBe(false);
+  owner.dispose();
+});
+
+it("does not certify stale cached coverage as current for a newer invalidated seed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const writer = repository(fixture.cache);
+  writer.acceptRead(read("old cache", 1), {
+    lifetime: 1,
+    readId: "read-old-cache",
+    boundary: "read-old-cache-boundary",
+  });
+  await writer.settled();
+  writer.dispose();
+
+  const invalidSeed = invalidateHistory(hydrateThread(read("new invalid seed", 3), ref, 100));
+  const owner = repository(fixture.cache, 2, invalidSeed);
+  const reader = owner.attachReader();
+
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("requires explicit current source authority and cache coverage through a valid seed boundary", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const writer = repository(fixture.cache);
+  writer.acceptRead(read("old cache", 1), {
+    lifetime: 1,
+    readId: "read-seed-old-coverage",
+    boundary: "read-seed-old-coverage-boundary",
+  });
+  await writer.settled();
+  writer.dispose();
+
+  const seed = hydrateThread(read("current seed", 3), ref, 100);
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: seed,
+    seedAuthority: {
+      trustedCurrentSource: true,
+      bootGeneration: seed.history!.bootGeneration,
+      epoch: seed.history!.epoch,
+      incarnation: seed.history!.incarnation ?? "",
+      snapshotLength: seed.history!.length,
+    },
+    now: () => 100,
+  });
+  const reader = owner.attachReader();
+
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("does not treat a valid-looking seed as trusted when its caller omits source authority", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const writer = repository(fixture.cache);
+  writer.acceptRead(read("cached", 1), {
+    lifetime: 1,
+    readId: "read-seed-untrusted",
+    boundary: "seed-untrusted-boundary",
+  });
+  await writer.settled();
+  writer.dispose();
+
+  const seed = hydrateThread(read("untrusted seed", 1), ref, 100);
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: seed,
+    now: () => 100,
+  });
+  const reader = owner.attachReader();
+
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("opens the fixed A/B cut after a stale A query while later C and D stay live", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("A", 1), { lifetime: 1, readId: "read-cut-A", boundary: "read-cut-A-boundary" });
+  await owner.settled();
+
+  const writeGate = gateEntryCommit(fixture.cache, "item-B");
+  owner.acceptRead(read("B", 2), { lifetime: 1, readId: "read-cut-B", boundary: "read-cut-B-boundary" });
+  await writeGate.reached;
+  const getLatestWindow = fixture.cache.getLatestWindow.bind(fixture.cache);
+  const observedWindows: Awaited<ReturnType<typeof fixture.cache.getLatestWindow>>[] = [];
+  vi.spyOn(fixture.cache, "getLatestWindow").mockImplementation(async (...args) => {
+    const result = await getLatestWindow(...args);
+    observedWindows.push(result);
+    return result;
+  });
+  const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+  const reader = owner.attachReader();
+  const opening = reader.openLocal(40);
+  await queryHold.reached;
+
+  owner.acceptRead(read("C", 3), { lifetime: 1, readId: "read-cut-C", boundary: "read-cut-C-boundary" });
+  writeGate.release();
+  await owner.settled();
+  queryHold.release();
+  const opened = await opening;
+
+  expect(observedWindows[0]?.boundary).toBe("read-cut-A-boundary");
+  expect(observedWindows[0]?.rows.map((row) => row.transcriptKey)).toEqual(["item-A"]);
+  expect(opened.status).toBe("current");
+  expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["A", "B", "C"]);
+  owner.acceptRead(read("D", 4), { lifetime: 1, readId: "read-cut-D", boundary: "read-cut-D-boundary" });
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["A", "B", "C", "D"]);
+  reader.dispose();
+  owner.dispose();
+});
+
+it("opens a retained A/B boundary while B's real cache write is still pending", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("A", 1), { lifetime: 1, readId: "read-pending-A", boundary: "read-pending-A-boundary" });
+  await owner.settled();
+
+  const writeGate = gateEntryCommit(fixture.cache, "item-B");
+  owner.acceptRead(read("B", 2), { lifetime: 1, readId: "read-pending-B", boundary: "read-pending-B-boundary" });
+  await writeGate.reached;
+  const getLatestWindow = fixture.cache.getLatestWindow.bind(fixture.cache);
+  let observedWindow: Awaited<ReturnType<typeof fixture.cache.getLatestWindow>> | undefined;
+  vi.spyOn(fixture.cache, "getLatestWindow").mockImplementation(async (...args) => {
+    observedWindow = await getLatestWindow(...args);
+    return observedWindow;
+  });
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(40);
+  expect(observedWindow?.boundary).toBe("read-pending-A-boundary");
+  expect(observedWindow?.rows.map((row) => row.transcriptKey)).toEqual(["item-A"]);
+  expect(opened.status).toBe("current");
+  expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["A", "B"]);
+
+  writeGate.release();
+  await owner.settled();
+  reader.dispose();
+  owner.dispose();
+});
+
+it.each(["server cursor present", "no server cursor"] as const)(
+  "returns an older boundary tied to the first omitted local row with %s",
+  async (cursorCase) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const response = readMany(45);
+    if (cursorCase === "server cursor present") response.olderCursor = "opaque-server-cursor-before-row-1";
+    const openingBoundary = `boundary-${cursorCase}`;
+    owner.acceptRead(response, { lifetime: 1, readId: `read-cursor-${cursorCase}`, boundary: openingBoundary });
+    await owner.settled();
+    const reader = owner.attachReader();
+
+    const opened = await reader.openLocal(40);
+
+    const localWindow = await fixture.cache.getLatestWindow(historyKey, 40, openingBoundary);
+    expect(localWindow.rows.map((row) => row.transcriptKey)).toEqual(
+      Array.from({ length: 40 }, (_, index) => `item-${index + 6}`),
+    );
+    expect(opened.olderCursor).toBe("entry:6:0:0");
+    reader.dispose();
+    owner.dispose();
+  },
+);
+
 it("attaches a reader to an already-mounted model by reference without reconstructing history", () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -380,6 +1281,36 @@ it("attaches a reader to an already-mounted model by reference without reconstru
   expect(localQuery).not.toHaveBeenCalled();
   reader.dispose();
   owner.dispose();
+});
+
+it("drops the seed reference from binding ownership after reader disposal and write settlement", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const seed = hydrateThread(readMany(45), ref, 101);
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: seed,
+    seedAuthority: {
+      trustedCurrentSource: true,
+      bootGeneration: seed.history!.bootGeneration,
+      epoch: seed.history!.epoch,
+      incarnation: seed.history!.incarnation ?? "",
+      snapshotLength: seed.history!.length,
+    },
+    now: () => 100,
+  });
+  const reader = owner.attachReader();
+  expect(reader.getSnapshot()).toBe(seed);
+  reader.dispose();
+  await owner.settled();
+  owner.dispose();
+
+  expect(owner.getRetentionSnapshotForTesting()).toEqual({ bindingHasSeedModel: false });
 });
 
 it("attaches before its local query and keeps the reader subscribed to later accepted reads", async () => {
@@ -626,6 +1557,100 @@ it("keeps the repository's recorded replacement when history arrives before over
   });
   expect(owner.getSnapshot()?.overlay).toEqual({});
   expect(owner.getSnapshot()?.turns[0]?.items.map((item) => item.text)).toEqual(["base", "recorded text"]);
+  owner.dispose();
+});
+
+it("hands off only history-covered text, reasoning, preview, and tool overlays before a real commit", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-mixed-commit", boundary: "read-mixed-commit-boundary" });
+  await owner.settled();
+  for (const overlay of mixedHandoffOverlays()) expect(owner.accept(overlay, { lifetime: 1 })).toBe(true);
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "covered-round" } } as AnyNotification, {
+    lifetime: 1,
+  });
+  expect(Object.keys(owner.getSnapshot()?.overlay ?? {}).sort()).toEqual(
+    [...coveredOverlayKeys, ...uncoveredOverlayKeys].sort(),
+  );
+
+  const writeHold = holdNextEntryPut("covered-text");
+  expect(owner.accept(mixedHandoffHistory(), { lifetime: 1 })).toBe(true);
+  try {
+    await writeHold.reached;
+    expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toEqual(uncoveredOverlayKeys);
+    expect(
+      owner
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(
+      expect.arrayContaining([
+        "recorded covered text",
+        "recorded covered reasoning",
+        "recorded covered preview",
+        "uncovered live text",
+        "uncovered live reasoning",
+        "uncovered preview",
+      ]),
+    );
+  } finally {
+    writeHold.commit();
+  }
+  await owner.settled();
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    { transcriptKey: "item-base" },
+    { transcriptKey: "covered-text", item: { text: "recorded covered text" } },
+    { transcriptKey: "covered-reasoning", item: { text: "recorded covered reasoning" } },
+    { transcriptKey: "covered-preview", item: { text: "recorded covered preview" } },
+    { transcriptKey: "covered-tool", item: { output: "recorded covered tool" } },
+  ]);
+  expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toEqual(uncoveredOverlayKeys);
+  owner.dispose();
+});
+
+it("keeps mixed uncovered overlays and accepted history visible after a real abort in history-before-end order", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-mixed-abort", boundary: "read-mixed-abort-boundary" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  for (const overlay of mixedHandoffOverlays()) expect(owner.accept(overlay, { lifetime: 1 })).toBe(true);
+
+  const writeHold = holdNextEntryPut("covered-text");
+  expect(owner.accept(mixedHandoffHistory(), { lifetime: 1 })).toBe(true);
+  try {
+    await writeHold.reached;
+    expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toEqual(uncoveredOverlayKeys);
+    owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "covered-round" } } as AnyNotification, {
+      lifetime: 1,
+    });
+    expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toEqual(uncoveredOverlayKeys);
+  } finally {
+    writeHold.abort();
+  }
+  await owner.settled();
+
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(
+    expect.arrayContaining([
+      "recorded covered text",
+      "recorded covered reasoning",
+      "recorded covered preview",
+      "uncovered live text",
+      "uncovered live reasoning",
+      "uncovered preview",
+    ]),
+  );
+  expect(Object.keys(reader.getSnapshot()?.overlay ?? {})).toEqual(uncoveredOverlayKeys);
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([{ transcriptKey: "item-base" }]);
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-mixed-abort")).resolves.toBeUndefined();
+  reader.dispose();
   owner.dispose();
 });
 
@@ -973,7 +1998,7 @@ it("extends producer-complete suffix coverage across an old update and distant n
   owner.dispose();
 });
 
-it("does not certify isolated old-plus-distant input after history authority breaks", async () => {
+it("rejects isolated old-plus-distant input after shared history authority breaks", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
@@ -1033,7 +2058,7 @@ it("does not certify isolated old-plus-distant input after history authority bre
       } as AnyNotification,
       { lifetime: 1 },
     ),
-  ).toBe(true);
+  ).toBe(false);
   await owner.settled();
 
   await expect(fixture.cache.getCoverage(historyKey, "suffix:read-broken")).resolves.toBeUndefined();
@@ -1042,12 +2067,10 @@ it("does not certify isolated old-plus-distant input after history authority bre
     end: { entry: 50 },
   });
   const rows = await fixture.cache.getLatest(historyKey, 100);
-  expect(rows).toHaveLength(51);
+  expect(rows).toHaveLength(50);
   expect(rows[0]).toMatchObject({ transcriptKey: "item-1", item: { text: "row-1" } });
-  expect(rows.find((row) => row.transcriptKey === "item-2")).toMatchObject({
-    item: { text: "isolated old update" },
-  });
-  expect(rows.at(-1)).toMatchObject({ transcriptKey: "item-51", item: { text: "isolated distant entry" } });
+  expect(rows.find((row) => row.transcriptKey === "item-2")).toMatchObject({ item: { text: "row-2" } });
+  expect(rows.find((row) => row.transcriptKey === "item-51")).toBeUndefined();
   const reader = owner.attachReader();
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
   reader.dispose();
@@ -1219,5 +2242,75 @@ it("keeps live overlay in memory without storing its payload beside settled reco
     { transcriptKey: "item-recorded", item: { text: "recorded" } },
   ]);
   expect(JSON.stringify(await fixture.cache.getLatest(historyKey, 40))).not.toContain("not recorded yet");
+  owner.dispose();
+});
+
+it("issues no IDB transaction, request, or recorded-history load for overlay-only traffic", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("recorded"), {
+    lifetime: 1,
+    readId: "read-overlay-zero-io",
+    boundary: "read-overlay-zero-io-boundary",
+  });
+  await owner.settled();
+
+  const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+  const historyLoads = [
+    vi.spyOn(fixture.cache, "getLatestWindow"),
+    vi.spyOn(fixture.cache, "getLatest"),
+    vi.spyOn(fixture.cache, "getCoverage"),
+    vi.spyOn(fixture.cache, "commitBatch"),
+  ];
+  const requestCalls: string[] = [];
+  const requests = [
+    "get",
+    "getAll",
+    "getAllKeys",
+    "openCursor",
+    "openKeyCursor",
+    "put",
+    "delete",
+    "clear",
+    "count",
+  ] as const;
+  const requestSpies = requests.map((method) => {
+    const original = IDBObjectStore.prototype[method] as (...args: unknown[]) => IDBRequest;
+    return vi.spyOn(IDBObjectStore.prototype, method).mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: unknown[]
+    ) {
+      requestCalls.push(method);
+      return original.apply(this, args);
+    } as never);
+  });
+
+  try {
+    for (const overlay of mixedHandoffOverlays()) expect(owner.accept(overlay, { lifetime: 1 })).toBe(true);
+    expect(
+      owner.accept(
+        {
+          method: "overlay/delta",
+          params: { ref, threadId, key: coveredOverlayKeys[0], field: "text", delta: " more" },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    expect(
+      owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "covered-round" } } as AnyNotification, {
+        lifetime: 1,
+      }),
+    ).toBe(true);
+    await owner.settled();
+
+    expect(transactionSpy).not.toHaveBeenCalled();
+    expect(requestCalls).toEqual([]);
+    for (const load of historyLoads) expect(load).not.toHaveBeenCalled();
+  } finally {
+    transactionSpy.mockRestore();
+    for (const spy of requestSpies) spy.mockRestore();
+    for (const load of historyLoads) load.mockRestore();
+  }
   owner.dispose();
 });

@@ -4,12 +4,12 @@ import {
   applyOverlayEndForTranscriptHandoff,
   applyReadResponse,
   type CachedSessionItem,
-  compareBootGeneration,
   comparePositions,
   decodeTranscriptItem,
   encodeTranscriptItem,
   hydrateThread,
   type ItemModel,
+  invalidateHistory,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
@@ -38,6 +38,13 @@ export interface TranscriptRepositoryBinding {
   clearEpoch: number;
   lifetime: number;
   seedModel?: ThreadModel;
+  seedAuthority?: {
+    trustedCurrentSource: true;
+    bootGeneration: string;
+    epoch: number;
+    incarnation: string;
+    snapshotLength: number;
+  };
   now?: () => number;
 }
 
@@ -59,7 +66,7 @@ export interface TranscriptReader {
 /** Owns real wire acceptance, publication, local writes and attached readers for one binding. */
 export class TranscriptRepository {
   readonly #cache: SessionEntryCache;
-  readonly #binding: TranscriptRepositoryBinding;
+  readonly #binding: Omit<TranscriptRepositoryBinding, "seedModel">;
   readonly #listeners = new Set<() => void>();
   readonly #writes = new Set<Promise<void>>();
   readonly #pending = new Map<string, TranscriptItemRow<CachedSessionItem>>();
@@ -72,8 +79,9 @@ export class TranscriptRepository {
   #coverageStart: { entry: number; item: number; sub?: number } | null = null;
   #coverageEnd: { entry: number; item: number; sub?: number } | null = null;
   #representedSnapshot = 0;
-  #bootGeneration: string | undefined;
-  #epoch: number | undefined;
+  #committedCoverageBoundary: string | undefined;
+  #seedSnapshot: number | undefined;
+  #seedAuthorityInvalid = false;
   #recoveryNeeded = false;
   #disposed = false;
   #invalidated = false;
@@ -81,12 +89,39 @@ export class TranscriptRepository {
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
+    const { seedModel, ...scalarBinding } = binding;
     this.#cache = cache;
-    this.#binding = binding;
-    this.#model = binding.seedModel;
+    this.#binding = scalarBinding;
+    if (seedModel) {
+      const history = seedModel.history;
+      const authority = binding.seedAuthority;
+      this.#seedAuthorityInvalid =
+        authority?.trustedCurrentSource !== true ||
+        seedModel.ref !== binding.ref ||
+        seedModel.threadId !== binding.threadId ||
+        !history ||
+        authority.incarnation !== binding.identity.incarnation ||
+        authority.incarnation !== history.incarnation ||
+        authority.bootGeneration !== history.bootGeneration ||
+        authority.epoch !== history.epoch ||
+        authority.snapshotLength !== history.length ||
+        history?.invalidatedAtGeneration !== undefined ||
+        history?.failed !== undefined;
+      if (!this.#seedAuthorityInvalid && authority) this.#seedSnapshot = authority.snapshotLength;
+      this.#recoveryNeeded = this.#seedAuthorityInvalid;
+      this.#model = this.#seedAuthorityInvalid ? invalidateHistory(seedModel) : seedModel;
+    } else {
+      this.#model = undefined;
+    }
   }
 
   getSnapshot = (): ThreadModel | undefined => this.#model;
+
+  /** @internal Reports ownership scalars without exposing or copying transcript bodies. */
+  getRetentionSnapshotForTesting(): { bindingHasSeedModel: boolean } {
+    const binding = this.#binding as TranscriptRepositoryBinding;
+    return { bindingHasSeedModel: binding.seedModel !== undefined };
+  }
 
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
@@ -137,10 +172,10 @@ export class TranscriptRepository {
       response.snapshot?.incarnation ?? this.#binding.identity.incarnation,
       request.readId,
     ]);
-    this.#bootGeneration = response.bootGeneration;
-    this.#epoch = response.epoch;
     this.#recoveryNeeded = candidate.history?.invalidatedAtGeneration !== undefined;
-    const rows = this.#rowsFromRead(response);
+    this.#seedAuthorityInvalid = false;
+    this.#seedSnapshot = undefined;
+    const rows = this.#rowsFromRead(response, candidate);
     const coverageRows = this.#rowsFromWindow(response);
     const positions = coverageRows.map((row) => row.position);
     const orderedPositions = [...positions].sort(comparePosition);
@@ -165,8 +200,8 @@ export class TranscriptRepository {
       coverage: {
         kind: "read",
         readId: request.readId,
-        start: positions[0] ?? null,
-        end: positions.at(-1) ?? null,
+        start: orderedPositions[0] ?? null,
+        end: orderedPositions.at(-1) ?? null,
         representedSnapshot: response.snapshot?.length ?? 0,
         serverCursor: response.olderCursor,
         boundary: request.boundary,
@@ -182,27 +217,7 @@ export class TranscriptRepository {
     const params = notification.params as { ref?: unknown; threadId?: unknown; item?: unknown };
     if (params.ref !== this.#binding.ref || params.threadId !== this.#binding.threadId) return false;
     if (!this.#model) return false;
-    if (notification.method === "history/updated") {
-      const history = notification.params as {
-        bootGeneration: string;
-        epoch: number;
-        snapshot: { incarnation: string };
-      };
-      const generation =
-        this.#bootGeneration === undefined
-          ? "replace"
-          : compareBootGeneration(this.#bootGeneration, history.bootGeneration);
-      if (
-        history.snapshot.incarnation !== this.#binding.identity.incarnation ||
-        generation === "replace" ||
-        (this.#epoch !== undefined && history.epoch > this.#epoch)
-      ) {
-        this.#recoveryNeeded = true;
-        this.#publish();
-        return false;
-      }
-      if (generation === "ignore" || (this.#epoch !== undefined && history.epoch < this.#epoch)) return false;
-    }
+    const previousModel = this.#model;
     const now = this.#now();
     const next =
       notification.method === "overlay/end"
@@ -216,13 +231,25 @@ export class TranscriptRepository {
     }
     this.#model = next;
     this.#boundary++;
-    const rows = this.#notificationRows(notification);
+    const authorityBlocked = next.history?.invalidatedAtGeneration !== undefined || next.history?.failed !== undefined;
+    const rows = authorityBlocked ? [] : this.#notificationRows(notification);
     const history =
       notification.method === "history/updated" ? (notification.params as { snapshot: { length: number } }) : undefined;
-    const turns = this.#notificationTurns(notification);
+    const turns = authorityBlocked ? [] : this.#notificationTurns(notification);
     const hasRecordedInput = rows.length > 0 || turns.length > 0;
     const coverage =
       history && hasRecordedInput ? this.#contiguousSuffix(rows, turns, history.snapshot.length) : undefined;
+    if (next.history?.invalidatedAtGeneration !== undefined || next.history?.failed !== undefined) {
+      this.#recoveryNeeded = true;
+    }
+    const historyNotApplied =
+      notification.method === "history/updated" &&
+      (authorityBlocked || next.history?.turns === previousModel.history?.turns);
+    if (historyNotApplied) {
+      this.#publish();
+      this.#reclaimBackgroundModel();
+      return false;
+    }
     if (history && hasRecordedInput && !coverage) this.#recoveryNeeded = true;
     if (notification.method === "overlay/end") this.#recoveryNeeded = true;
     this.#publish();
@@ -249,39 +276,80 @@ export class TranscriptRepository {
     let active = true;
     this.#readerCount++;
     const lifetime = this.#binding.lifetime;
-    let acceptedBoundary = this.#boundary;
+    const openingBoundary = this.#boundary;
+    const openingModel = this.#model;
+    const committedBoundary = this.#committedCoverageBoundary;
+    const acceptedCoverageBoundary = this.#coverageBoundary;
+    const pendingAtAttachment = [...this.#pending.values()];
+    const hadPendingWritesAtAttachment = this.#writes.size > 0;
+    const authorityWasValidAtAttachment = !this.#recoveryNeeded && !this.#seedAuthorityInvalid;
     let latest = this.#model;
     const unlisten = this.subscribe(() => {
       latest = this.#model;
-      acceptedBoundary = this.#boundary;
     });
     return {
       getSnapshot: () => latest,
       openLocal: async (limit) => {
-        const openingBoundary = acceptedBoundary;
         if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
         try {
-          const coverageBoundary = this.#coverageBoundary;
+          const modelAtOpen = openingModel ?? this.#model;
+          const hasModelAtAttachment = openingModel !== undefined;
+          const openingCutBoundary = hasModelAtAttachment ? openingBoundary : this.#boundary;
+          const coverageBoundary = hasModelAtAttachment ? committedBoundary : this.#committedCoverageBoundary;
+          const acceptedBoundaryAtOpen = hasModelAtAttachment ? acceptedCoverageBoundary : this.#coverageBoundary;
+          const pendingAtOpen = hasModelAtAttachment ? pendingAtAttachment : [...this.#pending.values()];
+          const hadPendingWritesAtOpen = hasModelAtAttachment ? hadPendingWritesAtAttachment : this.#writes.size > 0;
+          const authorityValidAtOpen = hasModelAtAttachment
+            ? authorityWasValidAtAttachment
+            : !this.#recoveryNeeded && !this.#seedAuthorityInvalid;
           const window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, coverageBoundary);
           if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
-          if (!coverageBoundary && window.boundary) this.#coverageBoundary = window.boundary;
-          const current = this.#model;
+          const current = modelAtOpen;
           if (!current) return { status: window.complete ? "stale" : "recovery-needed" };
-          const restored = await this.#restoreWindow(current, window.rows);
+          const rowsByKey = new Map<string, TranscriptItemRow<unknown>>();
+          for (const row of [...window.rows, ...pendingAtOpen]) {
+            const held = rowsByKey.get(row.transcriptKey);
+            if (!held || held.version <= row.version) rowsByKey.set(row.transcriptKey, row);
+          }
+          const localRows = [...rowsByKey.values()].sort((left, right) =>
+            comparePosition(left.position, right.position),
+          );
+          const boundedRows = limit === 0 ? [] : localRows.slice(-limit);
+          const restored = await this.#restoreWindow(current, boundedRows);
           if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
           // A racing accepted model wins by item version; the stale query only fills absent slots.
-          latest = this.#boundary > openingBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+          latest =
+            this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
           this.#model = latest;
           this.#publish();
+          const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
+          const seedCovered =
+            this.#seedSnapshot === undefined ||
+            (certifiedSnapshot !== undefined && certifiedSnapshot >= this.#seedSnapshot);
+          const pendingCutCovered =
+            !hadPendingWritesAtOpen ||
+            (acceptedBoundaryAtOpen !== undefined && acceptedBoundaryAtOpen !== coverageBoundary);
           const status =
-            window.complete && !window.stale && !this.#cacheContinuityLost && !this.#recoveryNeeded
+            window.complete &&
+            !window.stale &&
+            seedCovered &&
+            pendingCutCovered &&
+            authorityValidAtOpen &&
+            !this.#cacheContinuityLost &&
+            !this.#recoveryNeeded
               ? "current"
               : "recovery-needed";
+          const oldestReturned = boundedRows[0]?.position;
+          const certifiedStart = window.coverage[0]?.start;
+          const localOlderBoundary =
+            oldestReturned && certifiedStart && comparePosition(certifiedStart, oldestReturned) < 0
+              ? `entry:${oldestReturned.entry}:${oldestReturned.item}:${oldestReturned.sub ?? 0}`
+              : undefined;
           return {
             model: latest ?? current,
             status,
             boundary: this.#boundary,
-            olderCursor: current.olderCursor,
+            olderCursor: localOlderBoundary ?? window.serverCursor ?? current.olderCursor,
           };
         } catch {
           return { model: latest, status: "recovery-needed", boundary: this.#boundary };
@@ -328,12 +396,11 @@ export class TranscriptRepository {
     );
   }
 
-  #rowsFromRead(response: ThreadReadResponse): TranscriptItemRow<CachedSessionItem>[] {
-    const model = this.#model;
+  #rowsFromRead(response: ThreadReadResponse, model: ThreadModel): TranscriptItemRow<CachedSessionItem>[] {
+    const recordedItems = model.history?.turns.flatMap((turn) => turn.items) ?? [];
     return this.#readItems(response).flatMap((wire) => {
-      const item = model?.turns
-        .flatMap((turn) => turn.items)
-        .find((candidate) => candidate.transcriptKey === wire.transcriptKey || candidate.id === wire.id);
+      const key = wire.transcriptKey ?? wire.id;
+      const item = recordedItems.find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
       return item
         ? [this.#row(item)].filter((row): row is TranscriptItemRow<CachedSessionItem> => row !== undefined)
         : [];
@@ -341,14 +408,13 @@ export class TranscriptRepository {
   }
 
   #rowsFromWindow(response: ThreadReadResponse): TranscriptItemRow<CachedSessionItem>[] {
-    const model = this.#model;
+    const recordedItems = this.#model?.history?.turns.flatMap((turn) => turn.items) ?? [];
     const items = (response.thread.turns ?? []).flatMap((turn) =>
       (turn.items ?? []).map((item) => ({ ...item, turnId: item.turnId ?? turn.id })),
     );
     return items.flatMap((wire) => {
-      const item = model?.turns
-        .flatMap((turn) => turn.items)
-        .find((candidate) => candidate.transcriptKey === wire.transcriptKey || candidate.id === wire.id);
+      const key = wire.transcriptKey ?? wire.id;
+      const item = recordedItems.find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
       return item
         ? [this.#row(item)].filter((row): row is TranscriptItemRow<CachedSessionItem> => row !== undefined)
         : [];
@@ -395,9 +461,9 @@ export class TranscriptRepository {
       const key = input.transcriptKey ?? input.id;
       if (byKey.has(key)) continue;
       byKey.add(key);
-      const item = this.#model?.turns
+      const item = this.#model?.history?.turns
         .flatMap((turn) => turn.items)
-        .find((candidate) => candidate.transcriptKey === key || candidate.id === input.id);
+        .find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
       const row = item && this.#row(item);
       if (row) rows.push(row);
     }
@@ -532,6 +598,7 @@ export class TranscriptRepository {
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       if (outcome.outcome === "committed") {
+        if (batch.coverage) this.#committedCoverageBoundary = batch.coverage.boundary;
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
