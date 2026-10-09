@@ -700,7 +700,10 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 			// it) — not a completion. Keep scanning past it too.
 		case schema.TurnToolResults:
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError {
+				// An accepted turn-ending communicate is a completion even when
+				// a PostToolUse hook failure turned its result into an error:
+				// its tool state still carries the end reason.
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && (!part.ToolResult.IsError || communicateEndReasonOf(part.ToolResult) != "") {
 					if endedOnNeedsResponse(history, i) {
 						return SessionAwaiting
 					}
@@ -740,13 +743,22 @@ func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
 				continue
 			}
-			var state communicateEndState
-			if json.Unmarshal(part.ToolResult.ToolState, &state) == nil && state.EndReason != "" {
-				return state.EndReason == tool.CommunicateEndReasonNeedsResponse
+			if reason := communicateEndReasonOf(part.ToolResult); reason != "" {
+				return reason == tool.CommunicateEndReasonNeedsResponse
 			}
 		}
 	}
 	return false
+}
+
+// communicateEndReasonOf is the end reason an accepted turn-ending
+// communicate call recorded in its result's tool state, or "".
+func communicateEndReasonOf(result *llm.ToolResultData) string {
+	var state communicateEndState
+	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	return state.EndReason
 }
 
 // deriveRestoredAskPending rebuilds the pending-ask SET from a restored

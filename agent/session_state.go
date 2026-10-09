@@ -26,8 +26,9 @@ const (
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
 	// work (goal kick, pending notifications, queued input, a pending
-	// delegate report, working child subagents) is in flight. A plain reply rests idle. It is the
-	// daemon-truth source for the hub's "needs you" attention state.
+	// delegate report, working child subagents) is in flight. A plain reply
+	// rests idle. It is the daemon-truth source for the hub's "needs you"
+	// attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
