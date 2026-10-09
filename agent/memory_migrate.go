@@ -22,7 +22,9 @@ import (
 const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 
 // freeMemoryBackupPath is the first backup name that no entry in root has (a
-// symlink, even a dangling one, counts): memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
+// symlink, even a dangling one, counts), compared ignoring case since on a
+// case-insensitive filesystem names differing in case are one file:
+// memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
 // overwritten when that file is migrated too.
@@ -41,10 +43,10 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 	}
 	taken := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		taken[entry.Name] = true
+		taken[strings.ToLower(entry.Name)] = true
 	}
 	backup := memoryLegacyIndexBackup
-	for n := 2; taken[backup]; n++ {
+	for n := 2; taken[strings.ToLower(backup)]; n++ {
 		backup = memoryLegacyIndexBackup + "." + strconv.Itoa(n)
 	}
 	return filepath.Join(root, backup), nil
@@ -316,7 +318,10 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
 		// ended by "...") would no longer read back; such a page is left as it
-		// is, like one whose frontmatter does not parse.
+		// is, like one whose frontmatter does not parse, and the index is still
+		// renamed. Keeping the index for it instead would retry every run until
+		// someone rewrites the page. The description stays recoverable in the
+		// backup, and the page renders with its fallback description meanwhile.
 		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
 			continue
 		}

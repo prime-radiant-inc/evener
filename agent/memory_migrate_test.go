@@ -452,3 +452,33 @@ func TestMigrateLegacyMemoryIndexesSkipsAnIndexRenamedMeanwhile(t *testing.T) {
 		t.Fatalf("a.md=%q, %v", raw, err)
 	}
 }
+
+// A backup name held by an entry differing from it only in case is taken: on
+// a case-insensitive filesystem the two are one file, so renaming onto the
+// name would replace that backup.
+func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	variant := filepath.Join(scope, strings.ToLower(memoryLegacyIndexBackup))
+	if err := os.WriteFile(variant, []byte("the original index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte("- [a](a.md) — index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(variant); err != nil || string(raw) != "the original index\n" {
+		t.Fatalf("the earlier backup was replaced: %q, %v", raw, err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
+		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	}
+}

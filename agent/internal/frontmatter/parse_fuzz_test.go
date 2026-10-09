@@ -17,8 +17,8 @@ import (
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body
-// parses to a null/empty mapping (e.g. "---\n!---\n"), so the contract keys on
-// framing, not on Meta-nilness.
+// parses to a null/empty mapping (e.g. "---\nnull\n---\nbody"), so the
+// contract keys on framing, not on Meta-nilness.
 func FuzzFrontmatterParse(f *testing.F) {
 	seeds := []string{
 		"---\ntitle: hi\ntags: [a, b]\n---\nbody text\n",
