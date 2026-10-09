@@ -935,7 +935,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 					<-done
 					t.Fatal("refresh never armed finite wait")
 				}
-				clk.Advance(250 * time.Millisecond)
+				clk.Advance(memoryBoundaryBudget)
 				select {
 				case err := <-done:
 					if err != nil {
@@ -1012,7 +1012,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			s.memoryMu.Unlock()
 			switch mode {
 			case "shared-deadline":
-				clk.Advance(250 * time.Millisecond)
+				clk.Advance(memoryBoundaryBudget)
 			case "cancel":
 				cancel()
 			default:
