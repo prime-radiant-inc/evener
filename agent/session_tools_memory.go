@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -85,9 +86,15 @@ func (s *Session) stampMemoryPage(env *execenv.LocalExecutionEnvironment, rel st
 	abs := filepath.Join(env.WorkingDirectory(), filepath.FromSlash(rel))
 	raw, err := env.ReadFileRaw(abs)
 	if err == nil {
-		raw = setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
-		raw = setMemoryFrontmatterField(raw, memoryYAMLField("by", s.ID()))
-		err = env.WriteFileRaw(abs, raw, 0o644)
+		// updated is written by hand, unquoted, so it reads back as a YAML date.
+		stamped := setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+		stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
+		// A same-day write by the same session can leave the stamps as they
+		// were; skipping that write keeps the page's modification time.
+		if !bytes.Equal(stamped, raw) {
+			err = env.WriteFileRaw(abs, stamped, 0o644)
+		}
+		raw = stamped
 	}
 	if err != nil {
 		return "\n\nEvener could not stamp this page's updated date: " + err.Error()
