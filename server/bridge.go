@@ -174,8 +174,8 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 		return
 	}
 	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
-		if d, ok := ev.Data.(events.StatusSettledData); ok && s.status.State != string(agent.SessionClosed) {
-			s.appHeldSettledState = d.State
+		if s.status.State != string(agent.SessionClosed) {
+			s.appHeldSettledEffect = effect
 		}
 		return
 	}
@@ -185,7 +185,7 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 // settledStatusSupersededLocked reports whether a resting status that settled
 // outside any turn (EventStatusSettled) can't describe the session yet: an
 // input is being taken or a turn is reserved, so it is held for the end of
-// processing (appHeldSettledState), or the session already closed, and closed
+// processing (appHeldSettledEffect), or the session already closed, and closed
 // wins. The caller holds s.mu.
 func (s *Server) settledStatusSupersededLocked() bool {
 	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)

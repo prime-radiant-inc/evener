@@ -366,12 +366,13 @@ type Server struct {
 	// published if the execution is abandoned, and discarded when its
 	// EXECUTION_STARTED arrives.
 	appDeferredTerminalNotifications []pendingAppNotification
-	// appHeldSettledState is a resting state the session settled outside any
-	// turn (EventStatusSettled) while an input was being taken. It is applied
-	// when processing ends, unless a turn starts first (its EXECUTION_STARTED,
-	// which the feed delivers after the settle, discards it, and the turn's
-	// own end restates the state), the session ends, or the root is replaced.
-	appHeldSettledState string
+	// appHeldSettledEffect is the status effect of a resting state the session
+	// settled outside any turn (EventStatusSettled) while an input was being
+	// taken. It is applied when processing ends, unless a turn starts first
+	// (its EXECUTION_STARTED, which the feed delivers after the settle,
+	// discards it, and the turn's own end restates the state), the session
+	// ends, or the root is replaced.
+	appHeldSettledEffect func(*Server)
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
