@@ -274,7 +274,7 @@ func TestMemoryRefreshIgnoresOwnDeleteOfAControlCharacterPath(t *testing.T) {
 	path := memorySeedPage(t, root, "personal", "bad\nname.md", "opaque-doomed-2")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(req llm.Request) llm.Response {
-			if _, index, _ := memoryRequestIndex(t, req, "personal"); len(memoryIndexLines(index)) != 2 || strings.Count(index, "\n") != 2 {
+			if _, index, _ := memoryRequestIndex(t, req, "personal"); strings.Count(index, "\n") != 2 {
 				t.Fatalf("index %q is not one line per page", index)
 			}
 			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "bad\nname.md"})

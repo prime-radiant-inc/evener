@@ -59,9 +59,8 @@ const memoryUnlinkedPathNote = "(no link: the name holds a control character, sh
 // memoryUnlinkedIndexLine is the index line of the page at rel when rel holds
 // a control character (memoryPathHasControl). No Markdown link destination
 // can hold one, so the line has no link: the path as a JSON string, which a
-// tool call can pass back as file_path, then memoryUnlinkedPathNote. JSON
-// leaves DEL bare, so it is escaped here. The title and description are left
-// out, since a filename entry's are the name itself.
+// tool call can pass back as file_path, then memoryUnlinkedPathNote, and no
+// title, description or tags. JSON leaves DEL bare, so it is escaped here.
 func memoryUnlinkedIndexLine(rel string) string {
 	var b strings.Builder
 	encoder := json.NewEncoder(&b)

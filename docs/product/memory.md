@@ -257,13 +257,13 @@ without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
 or `\` in a title is backslash-escaped. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets
 (`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
-the link names the whole path. No link can hold a path with an ASCII control
-character other than tab, a name `memory_write` refuses but a file can still
-have: that file's line is the path as a JSON string, then a note, with no title,
-description, tags or date (`- "bad\nname.md" — (no link: the name holds a
-control character, shown JSON-escaped; read or delete it, and save its content
-under another name)`), so every page is still one line. A scope with no pages
-has the `missing` state.
+the link names the whole path. A file whose name holds an ASCII control
+character other than tab, which `memory_write` refuses but a file can still
+have, gets no link. Its line is the path as a JSON string, then a note, with no
+title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
+a control character, shown JSON-escaped; read or delete it, and save its
+content under another name)`. So every page stays one line. A scope with no
+pages has the `missing` state.
 
 When the rendering passes the 8 KiB projection budget, the projection keeps the
 header, then the newest lines that fit, then one closing line such as

@@ -275,8 +275,8 @@ func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
 			t.Fatalf("%q: its line does not belong to it alone", rel)
 		}
 		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Title: "A", Description: "d"}})
-		if lines := memoryIndexLines(index); len(lines) != 2 || strings.Count(index, "\n") != 2 {
-			t.Fatalf("%q: index %q is not one line per page", rel, index)
+		if want := "- [A](a.md) — d\n" + line + "\n"; index != want {
+			t.Fatalf("%q: index %q, want %q", rel, index, want)
 		}
 		if got := patchMemoryIndex(index, rel, ""); got != "- [A](a.md) — d\n" {
 			t.Fatalf("%q: delete patched %q", rel, got)

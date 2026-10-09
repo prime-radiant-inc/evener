@@ -53,7 +53,7 @@ func isMemoryPagePath(rel string) bool {
 // destination can hold no other control character either. A tab fits in an
 // angle-bracket destination (memoryLinkTarget).
 func memoryPathHasControl(rel string) bool {
-	return strings.ContainsFunc(rel, func(r rune) bool { return r < ' ' && r != '\t' || r == 0x7f })
+	return strings.ContainsFunc(rel, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f })
 }
 
 // matchMemoryNameCase is the name in names equal to name, else the only one
