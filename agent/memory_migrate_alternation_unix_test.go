@@ -192,6 +192,64 @@ func TestRemoveMigratedMemoryIndexRestoresARewrittenIndex(t *testing.T) {
 	}
 }
 
+// A backup is a copy of its own: MEMORY.md rewritten in place after the
+// backup was made leaves the backup's bytes as they were.
+func TestBackUpMemoryIndexKeepsItsOwnCopy(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	legacy := filepath.Join(scope, memoryIndexFile)
+	index := "- [a](a.md) — the migrated index\n"
+	if err := os.WriteFile(legacy, []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backUpMemoryIndex(env, scope, []byte(index), filepath.Join(scope, memoryLegacyIndexBackup)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("- [b](b.md) — rewritten in place\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{memoryLegacyIndexBackup: index}
+	if got := memoryBackups(t, scope); !maps.Equal(got, want) {
+		t.Fatalf("backups %q, want %q", got, want)
+	}
+}
+
+// An index a crashed migration left under its staging name is migrated on
+// the next run: its lines reach their pages, it is backed up, and no
+// private file is left behind.
+func TestMigrateMemoryScopeRecoversAStagedIndex(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	index := "- [Fact](fact.md) — the staged fact\n"
+	for name, body := range map[string]string{memoryIndexStagingPrefix + "crashed": index, "fact.md": "# Fact\n"} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(scope, "fact.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseMemoryPage("fact.md", raw, time.Time{}); got.Description != "the staged fact" {
+		t.Fatalf("fact.md description=%q, want the staged index's line", got.Description)
+	}
+	if got, want := memoryBackups(t, scope), map[string]string{memoryLegacyIndexBackup: index}; !maps.Equal(got, want) {
+		t.Fatalf("backups %q, want %q", got, want)
+	}
+	entries, err := os.ReadDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), memoryIndexStagingPrefix) || strings.HasPrefix(entry.Name(), memoryBackupCopyPrefix) {
+			t.Fatalf("private file %s left behind", entry.Name())
+		}
+	}
+}
+
 // When the index cannot be linked to its backup name for a reason other
 // than a taken name (here a read-only scope directory; a filesystem without
 // hard links fails the same way), migration reports the error and keeps

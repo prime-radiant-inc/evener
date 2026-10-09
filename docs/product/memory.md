@@ -310,15 +310,16 @@ session migrates.
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
 write the same descriptions, a page that already has a description is skipped,
-and a move that finds `MEMORY.md` already gone counts as done. The move links
-`MEMORY.md` to its backup name, which never replaces an existing backup (a
-taken name moves on to the next free one), and removes `MEMORY.md` only when it
-still holds the bytes that migration read. To check that without a window, it
-first renames `MEMORY.md` to a private `.MEMORY.md.migrating-…` name, which
-captures the file atomically; a captured index an older build rewrote goes back
-to `MEMORY.md` (or to a backup of its own if `MEMORY.md` was written yet again)
-for the next rendering to migrate. A crash midway
-leaves some pages described and the old file in place, so the next rendering
+and a move that finds `MEMORY.md` already gone counts as done. The move writes
+the bytes it migrated as a backup copy of their own, linked into place so it
+never replaces an existing backup (a taken name moves on to the next free one),
+and removes `MEMORY.md` only when it still holds those bytes. To check that
+without a window, it first renames `MEMORY.md` to a private
+`.MEMORY.md.migrating-…` name, which captures the file atomically; a captured
+index an older build rewrote goes back to `MEMORY.md` (or to a backup of its
+own if `MEMORY.md` was written yet again) for the next rendering to migrate. A crash midway
+leaves some pages described and the old file in place, under `MEMORY.md` or
+its private name, which migration also picks up, so the next rendering
 finishes the job.
 
 ## Faults, recovery and concurrent work

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/rand"
 	"errors"
 	"io/fs"
@@ -55,8 +54,14 @@ var errLegacyMemoryIndexChanged = errors.New("hand-written memory index changed 
 
 // memoryIndexStagingPrefix starts the private name a migration moves
 // MEMORY.md to while it checks the bytes. It is a dot name, so never a page,
-// and differs from memoryLegacyIndexBackup, so never taken for a backup.
+// and differs from memoryLegacyIndexBackup, so never taken for a backup. A
+// file left under it by a crash is found and migrated like MEMORY.md (see
+// legacyMemoryIndexes).
 const memoryIndexStagingPrefix = ".MEMORY.md.migrating-"
+
+// memoryBackupCopyPrefix starts the private name a backup's bytes are
+// written under before the copy is linked to its backup name.
+const memoryBackupCopyPrefix = ".MEMORY.md.copying-"
 
 // moveLegacyMemoryIndex moves the migrated hand-written index at legacy,
 // whose bytes the migration read as raw, to a backup in root, trying the
@@ -64,47 +69,46 @@ const memoryIndexStagingPrefix = ".MEMORY.md.migrating-"
 // it still holds raw (see removeMigratedMemoryIndex). No lock guards the
 // move: another migration, or an older build writing MEMORY.md again, may
 // change the scope at any point, and neither step relies on it holding
-// still. A failure leaves MEMORY.md in place for the next run.
+// still. A failure leaves the index in place for the next run.
 func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
-	if err := backUpMemoryIndex(env, root, legacy, raw, backup); err != nil {
-		// fs.ErrNotExist: another migration moved the index first.
-		return ignoreNotExist(err)
+	if err := backUpMemoryIndex(env, root, raw, backup); err != nil {
+		return err
 	}
 	return removeMigratedMemoryIndex(env, root, legacy, raw)
 }
 
-// backUpMemoryIndex gives the file at src, expected to hold raw, a backup
-// name in root, trying backup first, unless a backup already holds raw byte
-// for byte, so alternating builds that write the same index add nothing. A
+// backUpMemoryIndex keeps raw, an index's bytes, as a backup in root, trying
+// the name backup first, unless a backup already holds raw byte for byte, so
+// alternating builds that write the same index add nothing. The backup is a
+// copy of its own, so nothing written to MEMORY.md later reaches it. A
 // backup is never replaced or removed, since each holds what a person or an
-// older build wrote: the file is hard-linked to the name, which fails rather
-// than replace a file put there since the name was chosen, and a taken name
-// moves on to the next free one. Any other link failure, such as a
-// filesystem without hard links, is returned. A link to bytes other than raw
-// backs up nothing migrated, so it is dropped (src still holds them) and
-// errLegacyMemoryIndexChanged returned.
-func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root, src string, raw []byte, backup string) error {
+// older build wrote: the copy is written in full under a private name, then
+// hard-linked to the backup name, which fails rather than replace a file put
+// there since the name was chosen, and a taken name moves on to the next free
+// one. Any other link failure, such as a filesystem without hard links, is
+// returned.
+func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
+	if repeated, err := memoryBackupHolds(env, root, raw); err != nil || repeated {
+		return err
+	}
+	copied := filepath.Join(root, memoryBackupCopyPrefix+rand.Text())
+	if err := env.WriteFileRaw(copied, raw, 0o600); err != nil {
+		return err
+	}
+	defer func() { _ = env.RemoveConfinedFile(copied) }()
 	for {
-		// Checked again after a taken name: another migration may have just
-		// backed up the same bytes.
-		if repeated, err := memoryBackupHolds(env, root, raw); err != nil || repeated {
+		err := env.LinkConfinedFile(copied, backup)
+		if !errors.Is(err, fs.ErrExist) {
 			return err
 		}
-		err := env.LinkConfinedFile(src, backup)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrExist) {
+		// Another migration may have just backed up the same bytes.
+		if repeated, err := memoryBackupHolds(env, root, raw); err != nil || repeated {
 			return err
 		}
 		if backup, err = freeMemoryBackupPath(env, root); err != nil {
 			return err
 		}
 	}
-	if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
-		return cmp.Or(errors.Join(err, env.RemoveConfinedFile(backup)), errLegacyMemoryIndexChanged)
-	}
-	return nil
 }
 
 // removeMigratedMemoryIndex removes the index at legacy only if it holds
@@ -116,18 +120,20 @@ func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root, src string,
 // if it holds raw. Otherwise it goes back to MEMORY.md, or, when MEMORY.md
 // was written yet again meanwhile, to a backup of its own; either way
 // errLegacyMemoryIndexChanged reports that an index is left for the next
-// run. If even that fails, the captured file keeps its private name.
+// run. A captured file that can't be put back keeps its private name, where
+// the next migration finds it.
 func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
 	staged := filepath.Join(root, memoryIndexStagingPrefix+rand.Text())
 	if err := env.RenamePath(legacy, staged); err != nil {
+		// fs.ErrNotExist: another migration moved the index first.
 		return ignoreNotExist(err)
 	}
 	captured, err := env.ReadFileRaw(staged)
-	if err == nil && bytes.Equal(captured, raw) {
-		return env.RemoveConfinedFile(staged)
-	}
 	if err != nil {
 		return err
+	}
+	if bytes.Equal(captured, raw) {
+		return env.RemoveConfinedFile(staged)
 	}
 	restored := env.LinkConfinedFile(staged, legacy)
 	if errors.Is(restored, fs.ErrExist) {
@@ -135,7 +141,7 @@ func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, leg
 		if err != nil {
 			return err
 		}
-		restored = backUpMemoryIndex(env, root, staged, captured, backup)
+		restored = backUpMemoryIndex(env, root, captured, backup)
 	}
 	if restored != nil {
 		return restored
@@ -474,7 +480,9 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 // excludes them all from the pages. Like a page, an index that is not a
 // regular file (a symlink, FIFO or directory) is skipped. The one named exactly
 // MEMORY.md comes first. A case-insensitive filesystem holds at most one,
-// under whatever case it was created with.
+// under whatever case it was created with. An index a migration left under
+// its private staging name (removeMigratedMemoryIndex), after a crash, comes
+// last, so it is migrated and backed up too.
 func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
 	root := env.WorkingDirectory()
 	entries, err := env.ListDirectory(root, 1)
@@ -486,17 +494,20 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out, stagedOut []string
 	for _, entry := range entries {
-		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) {
+		staged := strings.HasPrefix(entry.Name, memoryIndexStagingPrefix)
+		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) && !staged {
 			continue
 		}
 		legacy := filepath.Join(root, entry.Name)
 		if entry.Name == memoryIndexFile {
 			out = slices.Insert(out, 0, legacy)
+		} else if staged {
+			stagedOut = append(stagedOut, legacy)
 		} else {
 			out = append(out, legacy)
 		}
 	}
-	return out, nil
+	return append(out, stagedOut...), nil
 }

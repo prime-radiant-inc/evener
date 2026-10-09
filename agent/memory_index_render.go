@@ -167,6 +167,8 @@ func memoryNotShownLine(rest []memoryPage) string {
 	counts, untagged := memoryTagCounts(rest)
 	part := func(tag string) string { return fmt.Sprintf("%s %d", tag, counts[tag]) }
 	tags, more := topMemoryTags(counts, part)
+	// parts is never empty: rest holds at least one page, which is either
+	// untagged or counted under a tag, listed or among the more.
 	parts := memoryTagParts(tags, part, more)
 	if untagged > 0 {
 		parts = append(parts, fmt.Sprintf("untagged %d", untagged))
@@ -209,6 +211,10 @@ func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, tr
 		sizes[i+1] = sizes[i] + len(line)
 	}
 	if sizes[len(sorted)] <= limit {
+		// Every page is shown, so the projection is not truncated:
+		// truncated promises a closing line counting pages left out
+		// (memoryIndexPartial). The capped header says itself how many
+		// tags it leaves out.
 		return prefix + strings.Join(lines, ""), full, false
 	}
 	// Only a k whose first k lines fit can also hold the closing line.
