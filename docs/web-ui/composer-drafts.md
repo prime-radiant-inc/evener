@@ -72,6 +72,20 @@ Ordinary draft persistence does not store attachment bytes or cursor state.
 Submitted attachment retirement joins deferred exact-object cleanup with the
 corresponding ordinary drain or recovery persistence attempt.
 
+A doc pane opened from a session, a read-only transcript or a cascade column
+serializes the OPENING scope's provenance into its params: the source session's
+runtime composer identity (`browser-origin`) or an explicit read-only source pane
+(`browser-readonly-session`). [docOpeningOriginFor](../../cmd/evener-hub/frontend/src/panes/doc/docOpeningContext.tsx)
+derives it from the pane lifetime and the scope's displayed requestedRef, never
+from focus; a missing provider leaves the params origin-less.
+[retainedComposerSourceFor](../../cmd/evener-hub/frontend/src/shell/paneLifetime.ts)
+resolves a saved note's destination against that retained, still-live source,
+using the existing WeakMap and workspace record, and returns null for a closed,
+replaced or mismatched one. A missing origin stays readable and session-bound; a
+malformed serialized origin is refused by the doc pane's `parseParams`, not read
+as the older origin-less shape. Reader UI, automatic handoff and browser/phone
+qualification are not part of this contract.
+
 ## Submission and cleanup
 
 ```mermaid
