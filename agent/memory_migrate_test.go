@@ -128,7 +128,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
-		got[entry.Link] = entry.Description
+		got[entry.Links[0]] = entry.Description
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
@@ -231,6 +231,31 @@ func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: the notes page\n---\nbody\n" {
 		t.Fatalf("notes.md=%q, %v", raw, err)
+	}
+}
+
+// A link target resolves to the listed page it names whole, else to the page
+// before its fragment: a#b.md is a page named so, and a.md#rule.md is a.md
+// with a fragment that happens to end in .md.
+func TestMigrateMemoryScopeResolvesFragmentsAgainstListedPages(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	index := "- [x](a.md#rule.md) — the a page\n- [y](b#c.md) — the hash page\n"
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b#c.md"} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte("body\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for name, description := range map[string]string{"a.md": "the a page", "b#c.md": "the hash page"} {
+		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != "---\ndescription: "+description+"\n---\nbody\n" {
+			t.Fatalf("%s=%q, %v", name, raw, err)
+		}
 	}
 }
 
@@ -440,7 +465,7 @@ func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
 		for _, title := range []string{"T", `[WIP] Fix \ it`} {
 			line := memoryIndexLine(memoryPage{Path: rel, Title: title, Description: "d"})
 			got := parseLegacyMemoryIndex(line + "\n")
-			if len(got) != 1 || got[0].Link != rel || got[0].Description != "d" {
+			if len(got) != 1 || got[0].Links[0] != rel || got[0].Description != "d" {
 				t.Fatalf("%q from %q: got %+v", rel, line, got)
 			}
 		}

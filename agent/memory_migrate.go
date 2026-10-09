@@ -186,28 +186,42 @@ func trimLegacyIndexDescription(rest string) string {
 	return strings.Trim(rest, legacyIndexTrim)
 }
 
-// legacyIndexPage turns a link target into a page path in the scope, or
-// reports false for anything that is not a local Markdown page.
-func legacyIndexPage(target string) (string, bool) {
-	// A "#" starts a fragment ("cents.md#rule") unless the whole target is a
-	// page path, as the generated index writes for a page named "a#b.md".
-	if path.Ext(target) != ".md" {
-		target, _, _ = strings.Cut(target, "#")
-	}
+// legacyIndexPages turns a link target into the page paths in the scope it
+// may name, the whole target first, then the target before a "#" fragment:
+// "a#b.md" can be a page so named, and "a.md#rule.md" can be a.md with a
+// fragment. Migration takes the first one listed. A target naming no local
+// Markdown page gives none.
+func legacyIndexPages(target string) []string {
 	if strings.Contains(target, "://") {
-		return "", false
+		return nil
 	}
-	page := path.Clean(target)
-	if !filepath.IsLocal(page) || path.Ext(page) != ".md" || !isMemoryPagePath(page) {
-		return "", false
+	beforeFragment, _, _ := strings.Cut(target, "#")
+	var pages []string
+	for _, candidate := range []string{target, beforeFragment} {
+		page := path.Clean(candidate)
+		if filepath.IsLocal(page) && path.Ext(page) == ".md" && isMemoryPagePath(page) && !slices.Contains(pages, page) {
+			pages = append(pages, page)
+		}
 	}
-	return page, true
+	return pages
 }
 
-// legacyIndexEntry is one line of a hand-written index: the page path it
-// links to and the description it gives that page.
+// legacyIndexEntry is one line of a hand-written index: the page paths it may
+// link to (legacyIndexPages) and the description it gives that page.
 type legacyIndexEntry struct {
-	Link, Description string
+	Links       []string
+	Description string
+}
+
+// legacyIndexLinkPage is the listed page that the first of links naming one
+// resolves to (matchMemoryNameCase), and whether that link spells it exactly.
+func legacyIndexLinkPage(links []string, listed map[string]bool) (page string, exact, ok bool) {
+	for _, link := range links {
+		if page, ok := matchMemoryNameCase(link, maps.Keys(listed)); ok {
+			return page, link == page, true
+		}
+	}
+	return "", false, false
 }
 
 // parseLegacyMemoryIndex reads a hand-written MEMORY.md: for each line naming
@@ -233,8 +247,8 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 		} else {
 			continue
 		}
-		page, ok := legacyIndexPage(target)
-		if !ok || seen[page] {
+		links := legacyIndexPages(target)
+		if len(links) == 0 || seen[links[0]] {
 			continue
 		}
 		source := trimLegacyIndexDescription(rest)
@@ -242,8 +256,8 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 			source = text
 		}
 		if description := strings.Join(strings.Fields(source), " "); description != "" {
-			out = append(out, legacyIndexEntry{Link: page, Description: description})
-			seen[page] = true
+			out = append(out, legacyIndexEntry{Links: links, Description: description})
+			seen[links[0]] = true
 		}
 	}
 	return out
@@ -299,8 +313,8 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		entries := parseLegacyMemoryIndex(string(raw))
 		for _, exact := range []bool{true, false} {
 			for _, entry := range entries {
-				page, ok := matchMemoryNameCase(entry.Link, maps.Keys(isListed))
-				if _, taken := descriptions[page]; ok && !taken && (entry.Link == page) == exact {
+				page, spelled, ok := legacyIndexLinkPage(entry.Links, isListed)
+				if _, taken := descriptions[page]; ok && !taken && spelled == exact {
 					descriptions[page] = entry.Description
 				}
 			}
