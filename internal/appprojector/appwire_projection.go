@@ -135,6 +135,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		p.runningTurnID = ""
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
+	case events.EventStatusSettled:
+		// A resting session's state moved outside any turn (a needs_response
+		// rest arming awaiting after its quiet period). Only a resting state
+		// settles this way; the bridge ignores anything else, and so does
+		// this.
+		state := eventData[events.StatusSettledData](event.Data).State
+		if state != appwire.ThreadStatusAwaiting && state != appwire.ThreadStatusIdle {
+			return nil
+		}
+		return []AppNotification{p.threadStatus(state)}
 	case events.EventGoalUpdated:
 		data := eventData[events.GoalUpdatedData](event.Data)
 		var state *appwire.GoalState

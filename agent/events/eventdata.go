@@ -83,6 +83,7 @@ func (RoundTimings) eventKind() EventKind           { return EventRoundTimings }
 func (EnvironmentData) eventKind() EventKind        { return EventEnvironment }
 func (EnvironmentChangedData) eventKind() EventKind { return EventEnvironmentChanged }
 func (TurnEndedData) eventKind() EventKind          { return EventTurnEnded }
+func (StatusSettledData) eventKind() EventKind      { return EventStatusSettled }
 func (TurnStartedData) eventKind() EventKind        { return EventTurnStarted }
 func (GoalContinuationData) eventKind() EventKind   { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind          { return EventGoalEnded }
@@ -146,6 +147,7 @@ var (
 	_ EventData = EnvironmentData{}
 	_ EventData = EnvironmentChangedData{}
 	_ EventData = TurnEndedData{}
+	_ EventData = StatusSettledData{}
 	_ EventData = TurnStartedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
