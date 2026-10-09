@@ -440,7 +440,7 @@ export class SessionEntryCache {
     }
   }
 
-  async getLatestWindow(historyKey: string, limit: number, requestedBoundary: string): Promise<EntryWindow> {
+  async getLatestWindow(historyKey: string, limit: number, requestedBoundary?: string): Promise<EntryWindow> {
     if (!Number.isInteger(limit) || limit < 0)
       throw new RangeError("entry window limit must be a non-negative integer");
     const database = await this.#connection.open();
@@ -449,12 +449,30 @@ export class SessionEntryCache {
     const itemIndex = transaction.objectStore(ENTRY_ITEM_STORE).index("historyKey_position");
     const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
     const coverageIndex = coverageStore.index(ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX);
-    const certificateRange = this.#keyRange.bound(
-      [historyKey, requestedBoundary, 0],
-      [historyKey, requestedBoundary, Number.MAX_SAFE_INTEGER],
-    );
     try {
       const best = await new Promise<TranscriptCoverageRow | undefined>((resolve, reject) => {
+        if (requestedBoundary === undefined) {
+          const request = coverageStore.openCursor(this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"]));
+          let selected: TranscriptCoverageRow | undefined;
+          request.addEventListener("error", () => reject(request.error ?? new Error("coverage cursor failed")), {
+            once: true,
+          });
+          request.addEventListener("success", () => {
+            const cursor = request.result;
+            if (!cursor) {
+              resolve(selected);
+              return;
+            }
+            const row = cursor.value as TranscriptCoverageRow;
+            if (!selected || row.representedSnapshot >= selected.representedSnapshot) selected = row;
+            cursor.continue();
+          });
+          return;
+        }
+        const certificateRange = this.#keyRange.bound(
+          [historyKey, requestedBoundary, 0],
+          [historyKey, requestedBoundary, Number.MAX_SAFE_INTEGER],
+        );
         const request = coverageIndex.openCursor(certificateRange, "prev");
         request.addEventListener("error", () => reject(request.error ?? new Error("coverage cursor failed")), {
           once: true,
