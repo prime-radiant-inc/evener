@@ -33,10 +33,9 @@ func (s *Session) Compact(ctx context.Context) error {
 	// leaves the history and the pending question untouched — the reply or
 	// Clear are the only ways forward (protecting the pending-ask tail through
 	// compaction instead of refusing outright is the fast-follow). Keyed on
-	// the pending-ask set (askPendingCount), not the awaiting rest state: under
-	// attention-status-model v5, SessionAwaiting also covers a plain
-	// output-producing rest with nothing pending, where Compact must proceed
-	// normally.
+	// the pending-ask set (askPendingCount), not the awaiting rest state:
+	// SessionAwaiting also covers a turn that ended on needs_response with
+	// nothing pending, where Compact must proceed normally.
 	if s.askPendingCount() > 0 {
 		return errors.New("a question is pending; reply or clear first")
 	}

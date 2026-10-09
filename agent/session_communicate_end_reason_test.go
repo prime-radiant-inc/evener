@@ -87,7 +87,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				drainSteering:          func() []steeringMessage { return nil },
 				prependSteering:        func([]steeringMessage) {},
 				resultToolName:         func() string { return "communicate" },
-				setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
+				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 				offersEndReason:        tc.root,
 			}
 			reg := tool.NewRegistry()

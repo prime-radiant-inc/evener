@@ -841,11 +841,8 @@ async function sourceMutationJourney() {
   const releasedAfter = frames.length;
   driver.control("release-provider");
   await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual source status settles after queued provider delivery");
-  // A finalized delegate's runtime stays warm for at least
-  // delegateIdleReleaseDelayDefault (30s), and, other things equal, the root
-  // rests idle while any child is live and awaiting once none is. A slow
-  // journey outlives that window, so either resting state is real.
-  await assertSpineStatus(ref, "idle", "awaiting");
+  // The queued turn ends on a plain reply, which rests idle.
+  await assertSpineStatus(ref, "idle");
   assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "actual source status changes preserve focused element");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "actual provider completion never changes geometry");
   await read("window.__cascadeGeometryObserver.disconnect()");

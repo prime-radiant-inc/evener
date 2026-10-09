@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -21,11 +22,12 @@ const (
 	SessionIdle SessionState = "idle"
 	// SessionProcessing indicates the session is actively processing.
 	SessionProcessing SessionState = "active"
-	// SessionAwaiting indicates the session is idle with the ball in the
-	// user's court: the last completed turn ended with agent output and no
-	// autonomous work (goal kick, pending notifications, queued input, live
-	// child subagents) is in flight. It is the daemon-truth source for the
-	// hub's "needs you" attention state (spec: attention-status-model v5).
+	// SessionAwaiting indicates the session is idle with the ball in its
+	// human partner's court: a question is pending, or the last completed
+	// turn ended on a communicate that said needs_response and no autonomous
+	// work (goal kick, pending notifications, queued input, live child
+	// subagents) is in flight. A plain reply rests idle. It is the
+	// daemon-truth source for the hub's "needs you" attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
@@ -407,9 +409,9 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 // finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
 // was rejected by the same transcript-tail rule restore uses. Marker rejection
 // can follow an admitted reply, which clears askPending before a completed
-// tool-results turn leaves the durable session awaiting. Generic failures keep
-// the pending-set rule above; this path is only for an interrupt marker that
-// never became a boundary record.
+// tool-results turn that ended on needs_response leaves the durable session
+// awaiting. Generic failures keep the pending-set rule above; this path is
+// only for an interrupt marker that never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
 	// recordTurn retains the live pair before an ordinary transcript write
 	// reports a clean rollback. Read the transcript while attentionMu excludes
@@ -589,12 +591,11 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // an upgrade back out once autonomy signals that were not yet restored the
 // first time — live children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
-// they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
-// its one caller (RestoreSessionFromMetaWithConfig) already computed for
-// escapeHistoryWithSessionProvenance, in the same units as s.history at this
-// point: a forked child's inherited prefix must not be decided by this
-// session's own journal (steeringOriginBoundary).
+// they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
+// the same value its one caller (RestoreSessionFromMetaWithConfig) already
+// computed for escapeHistoryWithSessionProvenance, in the same units as
+// s.history at this point: a forked child's inherited prefix must not be
+// decided by this session's own journal (steeringOriginBoundary).
 func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
@@ -614,7 +615,10 @@ func (s *Session) recomputeRestoredState(divergenceTurn int) {
 }
 
 // armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
-// settleTerminalState says the ball is in the user's court. It runs after
+// the session waits on its human partner: a question is pending, or the turn
+// ended on a communicate that said needs_response and settleTerminalState
+// finds nothing autonomous in flight. A plain reply (done) and a wait on
+// work (waiting_on_work) rest idle. It runs after
 // settleGoalOnIdle (so the goal kick is known) and before the EventSessionEnd
 // emit (so the emitted State carries the upgrade). The upgrade respects the
 // same closed-guard as finishProcessingAtBoundary and only ever upgrades from
@@ -626,6 +630,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// session that will move on its own is not waiting on the user.
 	target := SessionAwaiting
 	if s.askPendingCount() == 0 {
+		if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
+			return
+		}
 		target = settleTerminalState(hadOutput, goalKicked,
 			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
 	}

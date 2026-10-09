@@ -132,21 +132,12 @@ func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval 
 // TestServeAsk_StatusAwaitingAtRest proves spec §8's serve-level claim:
 // AppWire thread/read — the endpoint the hub prober actually uses, not just the
 // in-process appStatus function — reports "awaiting" while a question is
-// pending, and that the reply genuinely resolves it (rather than the ask
-// mechanism silently getting stuck). It does not assert "idle" once the
-// reply lands: under attention-status-model v5's inbox semantics (merged
-// after this test was first written), the reply's own turn
-// (scriptedCommunicate("answered")) is itself a clean, output-producing
-// completion with nothing else in flight, so thread/read legitimately settles
-// back to "awaiting" — the identical wire value an unresolved ask would
-// show. The discriminator that the reply was accepted and processed, not
-// that the ask stuck, is the Turns counter advancing; polling for that
-// (rather than for a specific state string) also sidesteps any race on
-// observing the transient "active" state between two polls. This drives the
-// real serve daemon (installServeScriptedProvider + runServe, the
-// TestServeGoal_TUIPathEndToEnd harness) rather than the Session directly,
-// because the serve-level turn-end SetState wiring (cmd/evener/serve.go) is a
-// seam agenttest cannot reach.
+// pending, and that the reply genuinely resolves it: the reply's own turn
+// (scriptedCommunicate("answered")) is a plain reply, so thread/read settles
+// back to "idle". This drives the real serve daemon
+// (installServeScriptedProvider + runServe, the TestServeGoal_TUIPathEndToEnd
+// harness) rather than the Session directly, because the serve-level turn-end
+// SetState wiring (cmd/evener/serve.go) is a seam agenttest cannot reach.
 func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	workDir := t.TempDir()
 	stateDir := t.TempDir()
@@ -240,16 +231,11 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	// Inbox semantics (attention-status-model v5): the reply's own turn
-	// (scriptedCommunicate("answered")) is a clean, output-producing
-	// completion with nothing else in flight, so thread/read legitimately
-	// settles back to "awaiting" rather than "idle" — the merged truth.
-	afterReply = pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
+	// The reply's own turn (scriptedCommunicate("answered")) is a plain
+	// reply, so thread/read settles idle.
+	afterReply = pollServeAskStatusUntil(t, entry.Address, "idle", 10*time.Second, 100*time.Millisecond)
 	if afterReply.Turns <= turnsBeforeReply {
-		t.Fatalf("state settled awaiting before reply turn advanced: turns=%d, want > %d", afterReply.Turns, turnsBeforeReply)
-	}
-	if afterReply.State != "awaiting" {
-		t.Fatalf("state after reply's turn completed = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", afterReply.State, "awaiting")
+		t.Fatalf("state settled idle before reply turn advanced: turns=%d, want > %d", afterReply.Turns, turnsBeforeReply)
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
