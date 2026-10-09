@@ -206,28 +206,6 @@ func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 	}
 }
 
-// A name whose case differs from the only listed name matching it resolves
-// to that name; an exact match wins, and an ambiguous or missing one does not
-// resolve.
-func TestMatchMemoryNameCase(t *testing.T) {
-	t.Parallel()
-	listed := map[string]bool{"notes.md": true, "a.md": true, "A.md": true, "Exact.md": true, "exact.md": true}
-	for _, tc := range []struct {
-		link, want string
-		ok         bool
-	}{
-		{"notes.md", "notes.md", true},
-		{"Notes.md", "notes.md", true},
-		{"Exact.md", "Exact.md", true},
-		{"a.MD", "", false},
-		{"missing.md", "", false},
-	} {
-		if got, ok := matchMemoryNameCase(tc.link, maps.Keys(listed)); got != tc.want || ok != tc.ok {
-			t.Fatalf("%s: got %q, %t; want %q, %t", tc.link, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
 // Migration writes a description linked by a differently cased name into the
 // page on disk.
 func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {

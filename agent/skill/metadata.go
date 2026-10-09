@@ -12,6 +12,63 @@ import (
 
 const skillFrontmatterDelimiter = "---\n"
 
+// utf8BOM is the byte-order mark an editor may leave at the very start of a file.
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}
+
+// recoverMissingOpeningDelimiter accepts a skill source whose YAML frontmatter
+// block is missing only its opening delimiter line. A skill written from
+// scratch sometimes begins directly with "name: ..." and closes with "---",
+// forgetting the leading line; this restores it so the block parses normally.
+// It reports true only when the first non-blank line begins a plain mapping
+// entry and the block before the closing "---" line parses as a YAML mapping
+// carrying both a name and a description, so ordinary body text that merely
+// contains a "---" rule is left alone. A leading UTF-8 BOM is trimmed either
+// way, so the returned bytes never carry it into the parse.
+func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
+	data = bytes.TrimPrefix(data, utf8BOM)
+	if bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
+		return data, false
+	}
+	if !looksLikeFrontmatterStart(data) {
+		return data, false
+	}
+	normalized := append([]byte(skillFrontmatterDelimiter), data...)
+	document, err := frontmatter.Parse(string(normalized))
+	if err != nil || document.Meta == nil {
+		return data, false
+	}
+	if !nonBlankString(document.Meta["name"]) || !nonBlankString(document.Meta["description"]) {
+		return data, false
+	}
+	return normalized, true
+}
+
+// looksLikeFrontmatterStart reports whether data's first non-blank line begins a
+// plain YAML mapping entry, the shape a delimiterless frontmatter block has. A
+// Markdown heading, a list item, a bare "---", or prose does not qualify, so a
+// body that merely contains a "---" rule is not mistaken for frontmatter.
+func looksLikeFrontmatterStart(data []byte) bool {
+	for len(data) > 0 {
+		line := data
+		if at := bytes.IndexByte(data, '\n'); at >= 0 {
+			line, data = data[:at], data[at+1:]
+		} else {
+			data = nil
+		}
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		return trimmed[0] != '#' && bytes.ContainsRune(trimmed, ':')
+	}
+	return false
+}
+
+func nonBlankString(value any) bool {
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) != ""
+}
+
 // InvocationControls governs how a skill may be advertised for invocation.
 type InvocationControls struct {
 	DisableModelInvocation bool `json:"disable_model_invocation"`
@@ -68,11 +125,9 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 		return descriptor, []Diagnostic{diagnostic}, parseErr
 	}
 
+	data, recovered := recoverMissingOpeningDelimiter(data)
 	if !bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
 		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
-	}
-	if !bytes.Contains(data[len(skillFrontmatterDelimiter):], []byte(skillFrontmatterDelimiter)) {
-		return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
 	}
 
 	document, err := frontmatter.Parse(string(data))
@@ -80,7 +135,12 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 		return invalidFrontmatter("skill frontmatter is not valid YAML", fmt.Errorf("parsing skill frontmatter: %w", err))
 	}
 	if document.Meta == nil {
-		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
+		if document.Body == string(data) {
+			// No whole-line closing delimiter: Parse returns the input verbatim.
+			return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
+		}
+		// Framed, but the YAML decodes to null (e.g. "---\nnull\n---").
+		return invalidFrontmatter("skill frontmatter has no metadata", nil)
 	}
 	descriptor.Meta.Metadata = cloneMetadata(document.Meta)
 
@@ -95,6 +155,17 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 		return descriptor, []Diagnostic{diagnostic}, errors.New("skill name requires a non-blank string")
 	}
 	descriptor.Meta.Name = name
+
+	var diagnostics []Diagnostic
+	if recovered {
+		diagnostics = append(diagnostics, Diagnostic{
+			Category: "missing_frontmatter_delimiter",
+			Name:     name,
+			Source:   source,
+			Message:  "skill frontmatter is missing its opening --- delimiter; the leading block was read as frontmatter",
+		})
+	}
+
 	if !IsSlashAddressableName(name) {
 		diagnostic := Diagnostic{
 			Category: "invalid_metadata",
@@ -102,7 +173,7 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 			Field:    "name",
 			Message:  "name is not slash-addressable",
 		}
-		return descriptor, []Diagnostic{diagnostic}, fmt.Errorf("skill name %q is not slash-addressable", name)
+		return descriptor, append(diagnostics, diagnostic), fmt.Errorf("skill name %q is not slash-addressable", name)
 	}
 	descriptor.CatalogName = name
 
@@ -115,11 +186,10 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 			Field:    "description",
 			Message:  "description requires a non-blank string",
 		}
-		return descriptor, []Diagnostic{diagnostic}, errors.New("skill description requires a non-blank string")
+		return descriptor, append(diagnostics, diagnostic), errors.New("skill description requires a non-blank string")
 	}
 	descriptor.Meta.Description = description
 
-	var diagnostics []Diagnostic
 	var validationErrors []error
 
 	disableModelInvocation, controlErr := parseControl(document.Meta, "disable-model-invocation", false)
