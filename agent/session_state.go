@@ -25,8 +25,8 @@ const (
 	// SessionAwaiting indicates the session is idle with the ball in its
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
-	// work (goal kick, pending notifications, queued input, working child
-	// subagents) is in flight. A plain reply rests idle. It is the
+	// work (goal kick, pending notifications, queued input, a pending
+	// delegate report, working child subagents) is in flight. A plain reply rests idle. It is the
 	// daemon-truth source for the hub's "needs you" attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
@@ -189,10 +189,13 @@ func (s *Session) hasPendingStableSteering() bool {
 // autonomy: nothing will move until the user acts, and amber is what surfaces
 // that stall.
 func (s *Session) autonomyInFlight() bool {
-	if s.sessionWorkPending() {
+	// Children first: a child's finalize tail delivers its report before it
+	// stops reading as working, so a child read as idle has already delivered
+	// whatever the pending-work read after it then sees.
+	if s.hasWorkingSubagent() {
 		return true
 	}
-	return s.hasWorkingSubagent()
+	return s.sessionWorkPending()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to

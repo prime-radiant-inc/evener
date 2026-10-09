@@ -221,7 +221,9 @@ func (s *Session) liveSubagentSessions() []*Session {
 // hasWorkingSubagent reports whether a direct child is still at work
 // (subagentActive): running, driven, or finalizing a generation until its
 // finalize tail has delivered the report. A finished child's runtime kept warm
-// for a quick follow-up is not.
+// for a quick follow-up is not. Only direct children are read: a child's
+// generation cannot finish while its own delegates still run, since its
+// finalization drains its subtree first.
 func (s *Session) hasWorkingSubagent() bool {
 	for _, sub := range s.liveDirectSubagents() {
 		if active, _ := s.subagentActive(sub); active {
