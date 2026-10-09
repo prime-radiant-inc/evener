@@ -1672,8 +1672,9 @@ it("takes Finished or Idle from the hub for a row that carries its turn end, wha
 	expect(stateOf(tree, "Hub seen")).toBe("Idle");
 	// A row without a turn end still follows the device: updated since its epoch.
 	expect(stateOf(tree, "Ship it")).toBe("Finished");
-	// The categories classify the same way.
+	// The categories classify the same way, and carry the blue dot.
 	expect(stateOf(tree, "Pinned unseen")).toBe("Finished");
+	expect(rowTitled(tree, "Pinned unseen").findAllByType(FreshDot)).toHaveLength(1);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 2", "WORKING · 1", "Idle · 1"]);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());

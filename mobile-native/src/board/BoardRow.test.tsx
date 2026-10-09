@@ -78,6 +78,12 @@ describe("a Board row (spec 7.2)", () => {
 			expect(tree.root.findAllByType(FreshDot)).toHaveLength(1);
 			expect(pressable(tree).props.accessibilityLabel.split(", ")[2]).toBe("unread");
 		}
+		// A quiet row, and one with no age to sit after, show it too.
+		const quiet = mount({
+			variant: "quiet",
+			item: { ...item("idle", { state: "idle", updated_at: undefined }), unseen: true },
+		});
+		expect(quiet.root.findAllByType(FreshDot)).toHaveLength(1);
 		const seen = mount({ item: item("working", { state: "active" }) });
 		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
 		expect(pressable(seen).props.accessibilityLabel).not.toContain("unread");
