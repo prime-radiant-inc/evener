@@ -314,9 +314,6 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 // memorySeedManyPages writes count pages into scope, each stamped updated and
 // with a description long enough that the rendered index outgrows the
 // projection budget, and returns them as listed.
-// Sessions over that many pages run on a fake clock, whose boundary budget
-// never expires: rendering them on a loaded machine can take longer than the
-// real 250 ms, which would project the scope as unavailable.
 func memorySeedManyPages(t *testing.T, root, scope string, count int, updated string) []memoryPage {
 	t.Helper()
 	for i := range count {
@@ -331,7 +328,7 @@ func TestMemoryRefreshBaselineIsTheFullRenderedIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	pages := memorySeedManyPages(t, root, "personal", 200, "2026-10-01")
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}), withSteps(
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response { return finalResponse("observed") },
 	))
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -530,7 +527,7 @@ func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 	root := t.TempDir()
 	memorySeedPage(t, root, "personal", "fact.md", "opaque-small-1")
 	var delta string
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}), withSteps(
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response { return finalResponse("first") },
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 2 {
@@ -571,7 +568,7 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 			return finalResponse("observed")
 		}
 	}
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}), withSteps(
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		deltaTurn(1), deltaTurn(2), deltaTurn(3), deltaTurn(4),
 	))
 	turn := func() {
@@ -1083,7 +1080,7 @@ func TestMemoryProjectionReportsOnlyAPartialIndex(t *testing.T) {
 			root := t.TempDir()
 			memorySeedManyPages(t, root, "personal", tc.pages, "2026-10-01")
 			var text string
-			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}), withSteps(func(req llm.Request) llm.Response {
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 				text = latestMemoryContext(req, "personal")
 				return finalResponse("observed")
 			}))
