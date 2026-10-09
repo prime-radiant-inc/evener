@@ -196,9 +196,10 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 	return out
 }
 
-// migrateMemoryScope moves a scope's hand-written index into its pages: each
-// linked page with no description gets the one its index line gave, then the
-// index is renamed to memoryLegacyIndexBackup. It is idempotent and needs no
+// migrateMemoryScope moves a scope's hand-written index (see
+// legacyMemoryIndexes) into its pages: each linked page with no description
+// gets the one its index line gave, then the index is renamed to a free
+// backup name (see freeMemoryBackupPath). It is idempotent and needs no
 // lock: concurrent runs write the same descriptions, skip pages that have
 // one, and the run that finds the index already renamed is done. A linked
 // target that can't be read (missing, a directory, a refused symlink) is
@@ -211,12 +212,8 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 // accepted.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	root := env.WorkingDirectory()
-	legacy := filepath.Join(root, memoryIndexFile)
-	raw, err := env.ReadFileRaw(legacy)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	legacies, err := legacyMemoryIndexes(env)
+	if err != nil || len(legacies) == 0 {
 		return err
 	}
 	// Only regular page files are read or written; a FIFO, directory or
@@ -231,13 +228,26 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 		needsDescription[p.Path] = !p.HasDescription && !p.Unreadable
 		isListed[p.Path] = true
 	}
-	// Each link resolves to a listed page; a link naming the page exactly wins
-	// over one that differs from it only in case.
+	// Each link resolves to a listed page; within one index a link naming the
+	// page exactly wins over one that differs from it only in case, and an
+	// earlier index wins over a later one.
 	descriptions := make(map[string]string)
-	for link, description := range parseLegacyMemoryIndex(string(raw)) {
-		page, ok := resolveLegacyIndexPage(link, isListed)
-		if _, taken := descriptions[page]; ok && (link == page || !taken) {
-			descriptions[page] = description
+	for _, legacy := range legacies {
+		raw, err := env.ReadFileRaw(legacy)
+		if err != nil {
+			return err
+		}
+		fromIndex := make(map[string]string)
+		for link, description := range parseLegacyMemoryIndex(string(raw)) {
+			page, ok := resolveLegacyIndexPage(link, isListed)
+			if _, taken := fromIndex[page]; ok && (link == page || !taken) {
+				fromIndex[page] = description
+			}
+		}
+		for page, description := range fromIndex {
+			if _, taken := descriptions[page]; !taken {
+				descriptions[page] = description
+			}
 		}
 	}
 	var writeErrs []error
@@ -265,8 +275,36 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	if len(writeErrs) > 0 {
 		return errors.Join(writeErrs...)
 	}
-	if err := env.RenamePath(legacy, freeMemoryBackupPath(env, root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+	for _, legacy := range legacies {
+		if err := env.RenamePath(legacy, freeMemoryBackupPath(env, root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
+}
+
+// legacyMemoryIndexes is the scope's hand-written root indexes: every root
+// entry other than a directory whose name is MEMORY.md ignoring case, as
+// isMemoryPagePath excludes them all from the pages. The one named exactly
+// MEMORY.md comes first. A case-insensitive filesystem holds at most one,
+// under whatever case it was created with.
+func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
+	root := env.WorkingDirectory()
+	entries, err := env.ListDirectory(root, 1)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir || !strings.EqualFold(entry.Name, memoryIndexFile) {
+			continue
+		}
+		legacy := filepath.Join(root, entry.Name)
+		if entry.Name == memoryIndexFile {
+			out = slices.Insert(out, 0, legacy)
+		} else {
+			out = append(out, legacy)
+		}
+	}
+	return out, nil
 }

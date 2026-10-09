@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,5 +225,110 @@ func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: the notes page\n---\nbody\n" {
 		t.Fatalf("notes.md=%q, %v", raw, err)
+	}
+}
+
+// The root index is excluded from the pages whatever its case (see
+// isMemoryPagePath), so migration finds it whatever its case too. On a
+// case-sensitive filesystem a scope can hold several; each is migrated, the
+// one named exactly MEMORY.md first, so its descriptions win.
+func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (*execenv.LocalExecutionEnvironment, string) {
+		t.Helper()
+		root := t.TempDir()
+		env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(env.Cleanup)
+		return env, filepath.Join(root, "memory", "personal")
+	}
+	write := func(t *testing.T, path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(t *testing.T, path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	names := func(t *testing.T, dir string) []string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+
+	t.Run("a lower-case index", func(t *testing.T) {
+		t.Parallel()
+		env, scope := setup(t)
+		write(t, filepath.Join(scope, "memory.md"), "- [a](a.md) — from the index\n")
+		write(t, filepath.Join(scope, "a.md"), "body\n")
+		if err := migrateMemoryScope(env); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, filepath.Join(scope, "a.md")); got != "---\ndescription: from the index\n---\nbody\n" {
+			t.Fatalf("a.md=%q", got)
+		}
+		if got, want := names(t, scope), []string{memoryLegacyIndexBackup, "a.md"}; !slices.Equal(got, want) {
+			t.Fatalf("scope holds %q, want %q", got, want)
+		}
+	})
+
+	t.Run("two indexes differing in case", func(t *testing.T) {
+		t.Parallel()
+		env, scope := setup(t)
+		write(t, filepath.Join(scope, "MEMORY.md"), "- [a](a.md) — exact index\n")
+		write(t, filepath.Join(scope, "memory.md"), "- [a](a.md) — other index\n- [b](b.md) — only in the other\n")
+		if names(t, scope)[0] != "MEMORY.md" || len(names(t, scope)) != 2 {
+			t.Skip("the filesystem is case-insensitive")
+		}
+		write(t, filepath.Join(scope, "a.md"), "a\n")
+		write(t, filepath.Join(scope, "b.md"), "b\n")
+		if err := migrateMemoryScope(env); err != nil {
+			t.Fatal(err)
+		}
+		for rel, want := range map[string]string{
+			"a.md":                         "---\ndescription: exact index\n---\na\n",
+			"b.md":                         "---\ndescription: only in the other\n---\nb\n",
+			memoryLegacyIndexBackup:        "- [a](a.md) — exact index\n",
+			memoryLegacyIndexBackup + ".2": "- [a](a.md) — other index\n- [b](b.md) — only in the other\n",
+		} {
+			if got := read(t, filepath.Join(scope, rel)); got != want {
+				t.Fatalf("%s=%q, want %q", rel, got, want)
+			}
+		}
+		if got := len(names(t, scope)); got != 4 {
+			t.Fatalf("scope holds %q, want the two pages and two backups", names(t, scope))
+		}
+	})
+}
+
+// A scope whose directory does not exist yet has nothing to migrate.
+func TestMigrateMemoryScopeWithNoScopeDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	if err := os.Remove(filepath.Join(root, "memory", "personal")); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
 	}
 }
