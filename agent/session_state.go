@@ -25,9 +25,10 @@ const (
 	// SessionAwaiting indicates the session is idle with the ball in its
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
-	// work (goal kick, pending notifications, queued input, live child
-	// subagents) is in flight. A plain reply rests idle. It is the
-	// daemon-truth source for the hub's "needs you" attention state.
+	// work (goal kick, pending notifications, queued input, a pending
+	// delegate report, working child subagents) is in flight. A plain reply
+	// rests idle. It is the daemon-truth source for the hub's "needs you"
+	// attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
@@ -182,16 +183,20 @@ func (s *Session) hasPendingStableSteering() bool {
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
-// without user input: pending job notifications, queued input, or live child
-// subagents. Reads take each signal's own lock sequentially — never nested —
-// per the settle lock discipline (spec v5). A restored-but-unkicked goal is
-// deliberately NOT autonomy: nothing will move until the user acts, and amber
-// is what surfaces that stall.
+// without user input: pending job notifications, queued input, a pending
+// delegate report, or a working child subagent (hasWorkingSubagent). Reads
+// take each signal's own lock sequentially — never nested — per the settle
+// lock discipline (spec v5). A restored-but-unkicked goal is deliberately NOT
+// autonomy: nothing will move until the user acts, and amber is what surfaces
+// that stall.
 func (s *Session) autonomyInFlight() bool {
-	if s.sessionWorkPending() {
+	// Children first: a child's finalize tail delivers its report before it
+	// stops reading as working, so a child read as idle has already delivered
+	// whatever the pending-work read after it then sees.
+	if s.hasWorkingSubagent() {
 		return true
 	}
-	return len(s.liveSubagentSessions()) > 0
+	return s.sessionWorkPending()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -574,8 +579,8 @@ func (s *Session) isClosingOrClosed() bool {
 // turns return from ProcessInputKind before the settle), so turn outcome is
 // implied by reachability. awaiting arms only when the turn produced
 // user-visible output and nothing autonomous will move the session next.
-func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, childrenLive bool) SessionState {
-	if !hadOutput || goalKicked || notifsPending || queuePending || childrenLive {
+func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bool) SessionState {
+	if !hadOutput || goalKicked || queuePending || autonomyPending {
 		return SessionIdle
 	}
 	return SessionAwaiting
@@ -589,7 +594,7 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // RestoreSession already decided from history alone (including awaiting,
 // when this second pass is not needed), so this call exists purely to rule
 // an upgrade back out once autonomy signals that were not yet restored the
-// first time — live children, pending notifications, queued input — are
+// first time — working children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
 // the same value its one caller (RestoreSessionFromMetaWithConfig) already
@@ -634,7 +639,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 			return
 		}
 		target = settleTerminalState(hadOutput, goalKicked,
-			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+			s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.autonomyInFlight())
 	}
 	if target != SessionAwaiting {
 		return
