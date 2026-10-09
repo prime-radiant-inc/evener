@@ -85,6 +85,8 @@ import {
   MutationOutboxIndexedDB,
   MutationStorageError,
   MutationStorageTimeoutError,
+  type RecoveryOrdinaryConsumption,
+  type RecoveryWriteGuard,
   type RetargetedMutations,
 } from "./mutationOutboxIndexedDB";
 import { trackProjectionWork } from "./projectionWork";
@@ -3297,6 +3299,8 @@ export async function updateRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
+  consumeOrdinary?: RecoveryOrdinaryConsumption,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3306,6 +3310,8 @@ export async function updateRecoveryMutation(
     durableAttachments(attachments),
     text,
     mentions,
+    guard,
+    consumeOrdinary,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -3316,10 +3322,11 @@ export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
   shouldDiscard?: () => boolean,
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard, guard);
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
@@ -3340,6 +3347,7 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3348,7 +3356,7 @@ export async function resendRecoveryMutation(
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent),
+    () => runtime.storage.resendRecovery(clientMutationId, intent, guard),
     // A resend mints its own row, so the id comes from the record it returns.
     (resent) =>
       resent === undefined
@@ -3373,6 +3381,15 @@ export async function resendRecoveryMutation(
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
   if (mutationRuntime) throw new Error("setMutationStorageForTests must run before the mutation runtime starts");
   mutationStorageForTests = storage;
+}
+
+// The source defaults share the EXISTING mutation runtime storage - the same
+// outbox the dispatcher uses, never a second instance or database. It awaits the
+// runtime's own start so a caller sees a ready outbox.
+export async function getComposerMutationStorage(): Promise<MutationOutboxIndexedDB> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  return runtime.storage;
 }
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
@@ -3815,7 +3832,7 @@ function attachmentBlob(attachment: InputAttachment): Blob {
   return new Blob([bytes], { type: attachment.mediaType });
 }
 
-function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
+export function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
   return (attachments ?? []).map((attachment) => ({
     presentationId: createSecureUUID(),
     marker: attachment.marker,

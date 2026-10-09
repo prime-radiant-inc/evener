@@ -3573,7 +3573,15 @@ test("Send follows the returned identity through transcript and new sends", asyn
             result = { data: [], nextCursor: null };
             break;
           case "turn/start":
-            result = { turn: { id: "new-turn", status: "inProgress", itemsView: "full" } };
+            result = {
+              turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${currentRef}`,
+                projectionState: "pending",
+              },
+            } satisfies appwireClient.TurnStartResponse;
             break;
         }
         socket.receive({ id: request.id, result });
@@ -3644,6 +3652,14 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(starts[0]?.params).toEqual(
     expect.objectContaining({ ref: currentRef, expectedInstanceId: `thr_${currentRef}` }),
   );
+  const sentId = requests.find(({ method }) => method === "turn/start")?.params.clientMutationId;
+  expect(sentId).toEqual(expect.any(String));
+  expect(sentId).not.toBe("");
+  expect(sentId).not.toBe(uncertain);
+  expect(await mutationStorage.listOutbox(currentRef)).toEqual([]);
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([
+    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
+  ]);
 });
 
 // R09 acceptance applies to EVERY resume trigger, not only the Send-resumes

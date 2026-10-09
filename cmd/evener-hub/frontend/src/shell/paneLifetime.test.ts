@@ -23,6 +23,34 @@ function rootPane(): OpenPaneRecord {
   return { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
 }
 
+// Runtime source identity belongs to the lifetime, not the record or dedup params.
+test("new committed session records get distinct runtime sources without storing sourceId in dedup params", () => {
+  const id = workspaceStore.getState().openPane("session", { ref: "root" });
+  const original = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  if (!original) throw new Error("session did not open");
+  expect(original.params).toEqual({ ref: "root" });
+  expect(original).not.toHaveProperty("sourceId");
+  const originalLifetime = conversationPaneLifetime(original);
+  const originalSource = originalLifetime.composer;
+  expect(originalSource?.sourceId).toEqual(expect.any(String));
+  workspaceStore.getState().closePane(id);
+  const replacementId = workspaceStore.getState().openPane("session", { ref: "root" });
+  const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
+  if (!replacement) throw new Error("replacement session did not open");
+  const replacementLifetime = conversationPaneLifetime(replacement);
+  const replacementSource = replacementLifetime.composer;
+  expect(replacementSource?.sourceId).toEqual(expect.any(String));
+  expect(replacementSource?.sourceId).not.toBe(originalSource?.sourceId);
+  expect(replacementLifetime.serial).not.toBe(originalLifetime.serial);
+  expect(originalLifetime.alive).toBe(false);
+  expect(replacement.params).toEqual({ ref: "root" });
+  expect(replacement).not.toHaveProperty("sourceId");
+  expect(workspaceStore.getState().openPane("session", { ref: "root" })).toBe(replacementId);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === replacementId)).toBe(replacement);
+  expect(conversationPaneLifetime(replacement)).toBe(replacementLifetime);
+  expect(conversationPaneLifetime(replacement).composer).toBe(replacementSource);
+});
+
 test("the same committed pane retains its source owner across focus changes", () => {
   const pane = rootPane();
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });

@@ -21,6 +21,8 @@ import {
   createBrowserDraftRepository,
   createBrowserDraftTransferRuntime,
   type DraftCommit,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
   type StoredComposerDraft,
 } from "./browserDraftRepository";
 import {
@@ -1579,3 +1581,22 @@ void completeToken;
 
 void (0 as unknown as DraftBackingIdentity);
 expectTypeOf(createBrowserDraftRepository).returns.toEqualTypeOf<BrowserDraftRepository>();
+
+// The reset seam must hand out a repository for the NEW storage universe: a
+// stale captured factory would otherwise leak one test's durable row into the
+// next test that replaces globalThis.indexedDB.
+test("the test singleton reset drops the previous storage universe", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  vi.stubGlobal("localStorage", new MemoryStorage());
+  const first = getBrowserDraftRepository();
+  const resetKey = browserDraftKey("reset-seam", "https://hub.test");
+  await first.seedDraft(resetKey, { text: "first universe", skillNames: [] });
+  // Replace the universe and reset deliberately.
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  resetBrowserDraftRepositoryForTests();
+  const second = getBrowserDraftRepository();
+  expect(second).not.toBe(first);
+  expect(await second.load(resetKey)).toBeNull();
+  resetBrowserDraftRepositoryForTests();
+  vi.unstubAllGlobals();
+});

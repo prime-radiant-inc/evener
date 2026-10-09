@@ -16,10 +16,10 @@ import type { ItemModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { memo, type ReactNode, useState } from "react";
 import { workspaceStore } from "../../../../shell/workspace";
+import { browserDraftKey, getBrowserDraftRepository } from "../../../../stores/browserDraftRepository";
 import { threadsStore } from "../../../../stores/threads";
 import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { writeDraft } from "../../composer/draft";
 import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
@@ -75,7 +75,12 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
       const resp = await threadsStore
         .getState()
         .forkFromTurn(sessionRef, { sourceItemKey: transcriptKey, deferInput: true });
-      writeDraft(resp.thread.evener.ref, resp.originalInput ?? "");
+      const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey(resp.thread.evener.ref), {
+        text: resp.originalInput ?? "",
+        skillNames: [],
+      });
+      if (seeded.state === "conflict") throw new Error("The forked session already has a draft");
+      if (seeded.state !== "committed") throw new Error("Couldn't save the forked message locally");
       workspaceStore.getState().openPane("session", { ref: resp.thread.evener.ref });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't fork from here", err));
