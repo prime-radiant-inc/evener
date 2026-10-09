@@ -99,12 +99,13 @@ those the budget showed); a scope with no pages leaves no baseline, so content t
 appears later arrives in full. When the session itself writes, edits or
 deletes any page through the memory tools, that page's new index line (or its
 removal) is patched into the baseline, so its own change is never echoed back
-while other sessions' changes since the baseline still arrive. The line is
-matched under the path the scope lists the page at, so writing `Fact.md` on a
-case-insensitive filesystem replaces the line of a page listed as `fact.md`. A
-scope with no baseline starts one from that line only when the model was last
-told the scope had no pages; after an unavailable state the next boundary
-delivers the index in full. A scope with a baseline is read only at the first
+while other sessions' changes since the baseline still arrive. Reads and
+writes are recorded under the path the scope lists the page at, so on a
+case-insensitive filesystem writing `Fact.md` replaces the line of a page
+listed as `fact.md`, and a page read as `FACT.md` is the same page. A scope
+with no baseline starts one from that line only when the model was last told
+the scope had no pages; after an unavailable state the next boundary delivers
+the index in full. A scope with a baseline is read only at the first
 model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read appends one change block for the
