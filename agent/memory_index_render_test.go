@@ -126,16 +126,64 @@ func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	}
 }
 
-// A tag header too large to fit is cut at the budget, still truncated.
-func TestProjectMemoryIndexOversizedHeader(t *testing.T) {
+// With more tags than the projection can list, its header and "Not shown"
+// line each name the most-used tags, ties by name, then count the rest; the
+// page lines keep the space. The whole index still lists every tag.
+func TestProjectMemoryIndexCapsTagLists(t *testing.T) {
 	t.Parallel()
 	var pages []memoryPage
 	for i := range 600 {
-		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{fmt.Sprintf("tag-number-%03d", i)}})
+		tags := []string{fmt.Sprintf("tag-number-%03d", i)}
+		if i%2 == 0 {
+			tags = append(tags, "common")
+		}
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: tags})
 	}
-	content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
-	if !truncated || len(content) > memoryProjectionCap || !strings.HasPrefix(content, "Tags: ") {
-		t.Fatalf("truncated=%t len=%d", truncated, len(content))
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	header, closing := lines[0], lines[len(lines)-1]
+	if !truncated || len(content) > memoryProjectionCap || len(lines) < 100 {
+		t.Fatalf("truncated=%t len=%d, %d lines", truncated, len(content), len(lines))
+	}
+	if !strings.HasPrefix(header, "Tags: common (300), tag-number-000 (1), tag-number-001 (1), ") || !strings.HasSuffix(header, " more tags") || len(header) > memoryTagListBudget+100 {
+		t.Fatalf("header %q", header)
+	}
+	if !strings.HasPrefix(closing, "Not shown: ") || !strings.Contains(closing, " (common ") || !strings.HasSuffix(closing, " more tags).") || len(closing) > memoryTagListBudget+100 {
+		t.Fatalf("closing line %q", closing)
+	}
+	if !strings.Contains(full, "tag-number-599 (1)\n") {
+		t.Fatalf("the whole index's header does not list every tag: %.300q", full)
+	}
+}
+
+// A scope whose full tag header overflows the cap but whose page lines fit
+// beside the capped header shows every page under that header, with no
+// closing line, so the projection is not truncated.
+func TestProjectMemoryIndexCapsTheHeaderAloneWhenEveryPageFits(t *testing.T) {
+	t.Parallel()
+	var pages []memoryPage
+	for i := range 60 {
+		tag := fmt.Sprintf("a-long-distinct-tag-name-that-takes-room-in-the-header-%03d", i)
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{tag}})
+	}
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	if len(full) <= memoryProjectionCap {
+		t.Fatalf("the whole index fits (%d bytes); the case needs it not to", len(full))
+	}
+	if truncated || len(content) > memoryProjectionCap {
+		t.Fatalf("truncated=%t len=%d, want every page under a capped header", truncated, len(content))
+	}
+	header, _, _ := strings.Cut(content, "\n")
+	if !strings.HasSuffix(header, " more tags") {
+		t.Fatalf("header %q, want it capped", header)
+	}
+	for _, p := range pages {
+		if !strings.Contains(content, memoryIndexLine(p)+"\n") {
+			t.Fatalf("%s missing from %q", p.Path, content)
+		}
+	}
+	if !strings.Contains(full, "a-long-distinct-tag-name-that-takes-room-in-the-header-059 (1)") {
+		t.Fatalf("the whole index's header does not list every tag: %.300q", full)
 	}
 }
 

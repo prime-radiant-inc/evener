@@ -203,8 +203,9 @@ the same file on macOS's default filesystem.
 
 **What counts as a page.** Every regular file under the scope root, in
 subdirectories too, except a path with a segment starting with `.` (the rule
-`memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
-skipped, as scope confinement already refuses them. The listing goes 64 levels
+`memory_search` uses) and a file named `MEMORY.md` at the root. The listing
+never enters a dot directory, so a `.git` in the scope costs it nothing.
+Symlinks are skipped, as scope confinement already refuses them. The listing goes 64 levels
 deep, so a file inside more than 63 nested directories is not listed: it never
 appears in the index and migration never describes it. Only `.md` files are
 parsed for frontmatter. Any other file, or a page that cannot be read, renders
@@ -259,7 +260,11 @@ When the rendering passes the 8 KiB projection budget, the projection keeps the
 header, then the newest lines that fit, then one closing line such as
 `Not shown: 9 pages (vitest 4, indexeddb 3, untagged 2).` A page counts once
 under each of its tags; tags are ordered by count, highest first, then by name,
-with `untagged` last, and one page reads `1 page`. The line counts and names no
+with `untagged` last, and one page reads `1 page`. In this projection the
+header and the closing line each list only the most-used tags (ties by name)
+that fit in 512 bytes, then `and M more tags`, so a scope with hundreds of tags
+still shows its newest pages; the header keeps its kept tags alphabetical. The
+whole index that `memory_read` returns lists every tag. The line counts and names no
 routes; the envelope adds " Not every page is shown; the index's last line
 counts the rest." after its `memory_read` route.
 
@@ -272,16 +277,16 @@ frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
 ordinary page. Deleting a page needs no index repair; its line is gone from the
 next rendering.
 
-**Stamps.** After a successful `memory_write` or `memory_edit` of a `.md` file
-that counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted
-so it reads back as a YAML date) and `by` (the session's full id, YAML-encoded),
-creating a frontmatter block if there is none and keeping every other byte. A
-page whose stamps would not change (same session, same day) is not rewritten.
-Frontmatter Evener can't safely edit in place is left unstamped. A
-failed write is not stamped. A stamp that fails to write does not fail the call;
-the result carries a note saying so, ahead of the notes below. A written page
-with no description gets a note asking for one, and a page whose frontmatter
-does not parse gets its own note asking to fix the YAML.
+**Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
+counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so
+it reads back as a YAML date) and `by` (the session's full id, YAML-encoded)
+in the bytes the tool writes, creating a frontmatter block if there is none and
+keeping every other byte. Frontmatter Evener can't safely edit in place is left
+unstamped. The stamps land in the tool's one write, never a second
+read-modify-write, so a stamp cannot undo another session's later write or
+delete of the page. A failed write writes nothing. A written page with no
+description gets a note asking for one, and a page whose frontmatter does not
+parse gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
@@ -297,19 +302,32 @@ frontmatter can't take it is left alone (the backup keeps its line). The first
 line naming a page wins, except that within one index a link in the page's
 exact case wins over an earlier line naming it in another case. Across indexes,
 the one named exactly `MEMORY.md` is read first, and an earlier index wins over
-a later one. Migration does not stamp. Each old index is then renamed to a
+a later one. Migration does not stamp. Each old index is then moved to a
 `.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
-numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
-that fails to write does not stop the others, but leaves the old index in
-place. A failed migration never blocks rendering; the next rendering retries.
-Other sessions render the pages as they are, with fallback descriptions, until
-a writing session migrates.
+numbered `.2`, `.3` and so on when taken. This matters while older Evener builds
+still share the scope, since one of them can write `MEMORY.md` again after
+migration. No backup is ever replaced or removed; an index whose bytes repeat an
+existing backup is removed instead of backed up again. If the move fails for
+any reason other than a taken name (for example a filesystem without hard
+links), the old index stays and each later rendering retries. A page that fails
+to write does not stop the others, but leaves the old index in place. A failed
+migration never blocks rendering; the next rendering retries. Other sessions
+render the pages as they are, with fallback descriptions, until a writing
+session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
 write the same descriptions, a page that already has a description is skipped,
-and a rename that finds `MEMORY.md` already gone counts as done. A crash midway
-leaves some pages described and the old file in place, so the next rendering
+and a move that finds `MEMORY.md` already gone counts as done. The move writes
+the bytes it migrated as a backup copy of their own, linked into place so it
+never replaces an existing backup (a taken name moves on to the next free one),
+and removes `MEMORY.md` only when it still holds those bytes. To check that
+without a window, it first renames `MEMORY.md` to a private
+`.MEMORY.md.migrating-…` name, which captures the file atomically; a captured
+index an older build rewrote goes back to `MEMORY.md` (or to a backup of its
+own if `MEMORY.md` was written yet again) for the next rendering to migrate. A crash midway
+leaves some pages described and the old file in place, under `MEMORY.md` or
+its private name, which migration also picks up, so the next rendering
 finishes the job.
 
 ## Faults, recovery and concurrent work
