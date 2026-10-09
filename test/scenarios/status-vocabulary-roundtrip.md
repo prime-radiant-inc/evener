@@ -32,9 +32,11 @@ in the context card.
 ## Steps
 
 1. **[browser-free]** Spawn a session and let it settle to a generic
-   `awaiting` (your-move) state — a prompt with no `ask_user` call, e.g.
-   "Say hello and stop." Wait for `state=="awaiting"` via
-   `GET /api/sessions/local:<id>`.
+   `awaiting` state with no pending question — a prompt with no `ask_user`
+   call that ends on `needs_response`, e.g. "Ask me in one sentence which
+   color I prefer, then end your turn with end_reason needs_response. Do not
+   use ask_user." (A plain reply such as "Say hello and stop." rests `idle`.)
+   Wait for `state=="awaiting"` via `GET /api/sessions/local:<id>`.
 
 2. **[browser-free] Every row for this session must agree — assert it on the
    wire.** A live session is listed **twice** in the rail: once in the

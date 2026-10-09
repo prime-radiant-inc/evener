@@ -351,29 +351,28 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 	}
 }
 
-// --- Post-merge fixup: SetGoal must not over-hold on a plain awaiting rest ---
+// --- SetGoal must not over-hold on an awaiting rest with nothing pending ---
 //
-// attention-status-model v5's general inbox semantics (merged post-write-up)
-// changed what SessionAwaiting means: it is no longer produced only by a
-// pending ask_user question. A plain, output-producing turn with nothing else
-// in flight now also rests SessionAwaiting (TestProcessInput_CleanCompletionArmsAwaiting,
-// session_awaiting_test.go), with an EMPTY pending-ask set. SetGoal's guard
-// above still read raw state (s.state == SessionAwaiting) rather than the
-// pending-ask set, so it over-held on every such rest even though nothing is
-// actually pending — a regression this test pins.
+// SessionAwaiting is not produced only by a pending ask_user question: a turn
+// that ended on needs_response also rests SessionAwaiting
+// (TestProcessInput_CleanCompletionRestsByEndReason, session_awaiting_test.go),
+// with an EMPTY pending-ask set. A guard that read raw state
+// (s.state == SessionAwaiting) rather than the pending-ask set would over-hold
+// on every such rest even though nothing is pending — a regression this test
+// pins.
 
-// TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk covers the corrected guard:
-// a session resting SessionAwaiting purely from a clean completion (no
+// TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk covers the guard: a
+// session resting SessionAwaiting from a needs_response turn (no
 // question posted, askPendingCount()==0) must let an idle /goal kick
 // immediately, exactly as it would on a plain SessionIdle session — the
 // arm-don't-kick hold is for a genuine unanswered question, not this general
 // rest state.
-func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
+func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	t.Parallel()
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -389,10 +388,10 @@ func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 	}
 
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (a GENERIC awaiting rest, no pending question — test setup broken)", got)
+		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (a needs_response rest, no pending question — test setup broken)", got)
 	}
 
 	started, err := sess.SetGoal(ctx, "ship it")
@@ -400,7 +399,7 @@ func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal on a plain awaiting rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this general rest)")
+		t.Fatal("SetGoal on a needs_response rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this needs_response rest)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))

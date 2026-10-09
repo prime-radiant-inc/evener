@@ -673,12 +673,11 @@ func TestAskUser_DeniedOrInvalidOnlyAskDoesNotEndTurn(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the clarifying question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	// Inbox semantics (attention-status-model v5): round 2's communicate is a
-	// clean, output-producing completion with nothing else in flight, so it
-	// re-arms awaiting on its own — unrelated to the invalid ask, which posted
-	// nothing (askPendingCount below is the discriminator that proves that).
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q", got, SessionAwaiting)
+	// Round 2's communicate is a plain reply, so the session rests idle:
+	// the invalid ask posted nothing (askPendingCount below is the
+	// discriminator that proves that).
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q", got, SessionIdle)
 	}
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("askPendingCount = %d, want 0 (the invalid call posts nothing)", got)
@@ -741,13 +740,12 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	// Inbox semantics (attention-status-model v5): round 2's communicate is a
-	// clean, output-producing completion with nothing else in flight, so it
-	// re-arms awaiting on its own. What this test actually guards — that a
-	// deny alone does not end the turn early, at the ask boundary — is proven
-	// above by askPendingCount==0 and requests==2 (round 2 ran at all).
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q (a deny alone must not end the turn AT THE ASK BOUNDARY; round 2's own communicate legitimately re-arms awaiting)", got, SessionAwaiting)
+	// Round 2's communicate is a plain reply, so the session rests idle.
+	// What this test actually guards — that a deny alone does not end the
+	// turn early, at the ask boundary — is proven above by askPendingCount==0
+	// and requests==2 (round 2 ran at all).
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (a deny alone must not end the turn AT THE ASK BOUNDARY; round 2's plain reply rests idle)", got, SessionIdle)
 	}
 }
 
@@ -813,14 +811,13 @@ func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	// Inbox semantics (attention-status-model v5): the drained notification
-	// turn runs last within this ProcessInput call and is itself a clean,
-	// output-producing completion ("notification ack") with nothing else in
-	// flight, so it re-arms awaiting on its own. What this test guards — the
-	// notification actually drained instead of staying stuck — is proven by
-	// requests==3 and peekNotifications==0 below, not by the raw rest state.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
+	// The drained notification turn runs last within this ProcessInput call
+	// and is itself a plain completion ("notification ack"), so it rests
+	// idle. What this test guards — the notification actually drained
+	// instead of staying stuck — is proven by requests==3 and
+	// peekNotifications==0 below, not by the raw rest state.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own plain completion rests idle)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -1015,15 +1012,13 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	// Inbox semantics (attention-status-model v5): the drained notification
-	// turn runs last within this ProcessInput call and is itself a clean,
-	// output-producing completion ("notification ack") with nothing else in
-	// flight, so it re-arms awaiting on its own. What this test guards — the
-	// notification held during the ask actually drained afterward instead of
-	// being dropped — is proven by requests==3 and peekNotifications==0
-	// below, not by the raw rest state.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
+	// The drained notification turn runs last within this ProcessInput call
+	// and is itself a plain completion ("notification ack"), so it rests
+	// idle. What this test guards — the notification held during the ask
+	// actually drained afterward instead of being dropped — is proven by
+	// requests==3 and peekNotifications==0 below, not by the raw rest state.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own plain completion rests idle)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -1037,12 +1032,10 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 // which stays live by design: a message the user queues mid-round (via the
 // same deterministic same-round-tool idiom as the notification test above)
 // drains as the very next turn once the ask ends the round — it IS the reply,
-// so the pending set clears (askPendingCount below). It does NOT prove the
-// session stays idle: under attention-status-model v5's inbox semantics, the
-// drained reply's own turn is itself a clean, output-producing completion
-// with nothing else in flight, so it independently re-arms awaiting — the
-// discriminator that the ASK resolved (rather than the reply never landing)
-// is askPendingCount==0 and the ack present in history, not the raw state.
+// so the pending set clears (askPendingCount below). The drained reply's own
+// plain completion then rests idle; the discriminator that the ASK resolved
+// (rather than the reply never landing) is askPendingCount==0 and the ack
+// present in history.
 func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
@@ -1072,8 +1065,8 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q (the drained queued text's own clean completion re-arms awaiting; see askPendingCount below for the ask-resolved discriminator)", got, SessionAwaiting)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (the drained queued text's own plain reply rests idle; see askPendingCount below for the ask-resolved discriminator)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests = %d, want 2 (the asking round + the queued text drained as the reply)", got)
@@ -1228,27 +1221,25 @@ func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
 	}
 }
 
-// --- Post-merge fixup: Compact must not over-hold on a plain awaiting rest ---
+// --- Compact must not over-hold on an awaiting rest with nothing pending ---
 //
-// attention-status-model v5's general inbox semantics (merged post-write-up)
-// changed what SessionAwaiting means: it is no longer produced only by a
-// pending ask_user question. A plain, output-producing turn with nothing else
-// in flight now also rests SessionAwaiting, with an EMPTY pending-ask set.
-// Compact's guard above still read raw state (s.State() == SessionAwaiting)
-// rather than askPendingCount(), so it refused Compact on ANY rested session
-// even when nothing is pending — a regression this test pins.
+// SessionAwaiting is not produced only by a pending ask_user question: a turn
+// that ended on needs_response also rests SessionAwaiting, with an EMPTY
+// pending-ask set. A guard that read raw state (s.State() == SessionAwaiting)
+// rather than askPendingCount() would refuse Compact even when nothing is
+// pending — a regression this test pins.
 
-// TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk covers the
-// corrected guard: a session resting SessionAwaiting purely from a clean
-// completion (no question posted, askPendingCount()==0) must not trip the
+// TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk covers the
+// guard: a session resting SessionAwaiting from a needs_response turn (no
+// question posted, askPendingCount()==0) must not trip the
 // pending-ask error — Compact may still fail or succeed for other reasons,
 // but not this one.
-func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
+func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	t.Parallel()
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
@@ -1260,14 +1251,14 @@ func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (test setup broken)", got)
+		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (test setup broken)", got)
 	}
 
 	if err := sess.Compact(context.Background()); err != nil && strings.Contains(err.Error(), compactErrPending) {
-		t.Fatalf("Compact on a plain awaiting rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this general rest)", err)
+		t.Fatalf("Compact on a needs_response rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this needs_response rest)", err)
 	}
 }
 
@@ -2117,11 +2108,15 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	ask := askUserCall("ask1", askUserArgsValid())
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	trigger := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	// The answered round also ends on needs_response, so the durable boundary
+	// is awaiting: it differs from the idle the generic failure boundary would
+	// pick, which is what makes this test tell the two apart.
+	reply := communicateCallArgs("reply1", map[string]any{"message": "which region?", "end_reason": "needs_response"})
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return toolCallResponse(loop, trigger) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop, reply, trigger) },
 		},
 	}
 	c := llm.NewClient()
@@ -2207,7 +2202,7 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 		}
 		terminalEvents++
 		if data.Reason != "turn_failed" || data.State != string(SessionAwaiting) || data.Interrupted {
-			t.Fatalf("failed marker session-end = %+v, want turn_failed/Awaiting without interruption", data)
+			t.Fatalf("failed marker session-end = %+v, want turn_failed/awaiting without interruption", data)
 		}
 	}
 	if terminalEvents != 1 {
@@ -2629,15 +2624,11 @@ func TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder
 	if len(restored.askPending) != 0 {
 		t.Fatalf("restored askPending = %+v, want empty (the outer scan must pass the reminder and resolve at the user steer entry)", restored.askPending)
 	}
-	// The round ends in a plain final response with nothing after it, so the
-	// restored at-rest state is the generic "agent moved last" awaiting of
-	// deriveRestoredState's TurnAssistant branch — with no ask pending. That
-	// Awaiting-with-empty-pending pair is the shape
-	// TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks pins;
-	// what this fixture adds is that the reminder never lets the scan
+	// The round ends in a plain final response with nothing after it and no
+	// ask pending, so it restores idle: the reminder never lets the scan
 	// re-derive the older ask underneath it.
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored state = %q, want %q (generic awaiting: agent moved last, no ask pending)", got, SessionAwaiting)
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (a plain final response, no ask pending)", got, SessionIdle)
 	}
 }
 
@@ -3797,19 +3788,15 @@ func TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
 }
 
 // TestAskUser_RestoreRederivesIdleAfterAnsweredAsk covers spec §6's other
-// half: a user turn following the ack (the reply) resolves the question. It
-// no longer asserts idle after the reply: under attention-status-model v5's
-// inbox semantics (merged post-write-up), the reply's OWN turn is itself a
-// clean completion with user-visible output and nothing else in flight, so
-// it legitimately re-arms awaiting — the identical wire value an unresolved
-// ask would show. What must hold, and what this test asserts instead, is
-// that the ASK genuinely resolved: askPendingCount drops to 0 the moment the
+// half: a user turn following the ack (the reply) resolves the question, and
+// the reply's own plain completion rests idle. What must also hold is that
+// the ASK genuinely resolved: askPendingCount drops to 0 the moment the
 // reply is accepted (spec §5.2, checked live, where the pending set is a
 // real in-memory signal — it is not persisted, so checking it again after
 // restore would be vacuous), and the reply demonstrably reached the model as
 // a new turn (the second fakeAdapter step only fires for a genuine new
-// round). Restored state is awaiting for the same inbox reason live state
-// was, not because ask1 resurrected as pending: the transcript-shape pending
+// round). Restored state is idle, as live state was, and ask1 does not
+// resurrect as pending: the transcript-shape pending
 // definition (§6) that distinguishes "resolved" from "still pending" keys on
 // ask1's ack having a LATER TurnUserInput, which it does here regardless of
 // what the tail's own state settles to.
@@ -3852,8 +3839,8 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("post-reply pending count = %d, want 0 (the reply must resolve the ask)", got)
 	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("post-reply state = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", got, SessionAwaiting)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("post-reply state = %q, want %q (the reply's own plain completion rests idle)", got, SessionIdle)
 	}
 
 	meta := sess.Meta()
@@ -3865,16 +3852,10 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	}
 	defer restored.Close()
 
-	// The restored state is awaiting for the same general reason (agent
-	// moved last with the reply's own plain-text turn) — not because ask1
-	// re-derived as pending. deriveRestoredAskPending (spec §2) reads this
-	// tail as a GENERIC awaiting rest too — the decisive turn is the reply's
-	// own plain final response, with no tool calls at all — so checking
-	// askPendingCount here would still read 0: not because restore skips the
-	// set (post-§2 it doesn't), but because nothing here is genuinely
-	// pending. The meaningful check already ran live above.
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored state = %q, want %q (agent moved last: the reply's own response)", got, SessionAwaiting)
+	// The restored state is idle, as live: the decisive turn is the reply's
+	// own plain final response, and ask1 does not re-derive as pending.
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (the reply's own plain response)", got, SessionIdle)
 	}
 }
 
@@ -4219,22 +4200,20 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	}
 }
 
-// TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks is the
-// negative control that must stay green both before and after the fix: a
-// restart after a GENERIC awaiting rest (a plain completion, no ask_user
-// involved — attention-status-model v5's general inbox semantics) must never
-// rebuild a pending set, and an idle /goal must still kick immediately, not
-// arm — mirroring the live TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk.
-// This is spec §2's "generic awaiting: no rebuild" edge case, observed
-// through restore.
-func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.T) {
+// TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks is the
+// negative control: a restart after an awaiting rest with no ask_user
+// involved (a needs_response turn) must never rebuild a pending set, and an
+// idle /goal must still kick immediately, not arm — mirroring the live
+// TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk. This is spec §2's
+// "generic awaiting: no rebuild" edge case, observed through restore.
+func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -4265,10 +4244,10 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if restored.HasPendingAsk() {
-		t.Fatal("HasPendingAsk() = true after restoring a GENERIC awaiting rest with no ask, want false")
+		t.Fatal("HasPendingAsk() = true after restoring a needs_response rest with no ask, want false")
 	}
 	if got := restored.askPendingCount(); got != 0 {
-		t.Fatalf("restored askPendingCount = %d, want 0 (a generic awaiting rest must never rebuild a pending set)", got)
+		t.Fatalf("restored askPendingCount = %d, want 0 (a needs_response rest must never rebuild a pending set)", got)
 	}
 
 	var kicked []string
@@ -4278,7 +4257,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal against a restored GENERIC awaiting rest must report started=true and kick immediately (nothing is genuinely pending)")
+		t.Fatal("SetGoal against a restored needs_response rest must report started=true and kick immediately (nothing is genuinely pending)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))

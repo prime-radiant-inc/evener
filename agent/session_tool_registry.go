@@ -114,7 +114,7 @@ type toolDeps struct {
 	// canonicalization, for delegate structured_result capture. Nil means the
 	// call carried no explicit structured output; an explicit JSON null is
 	// passed as json.RawMessage("null"), which is non-nil and therefore present.
-	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
+	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any, endReason string) bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when

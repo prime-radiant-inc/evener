@@ -656,9 +656,9 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 // must hold its status shadow write for exactly the (kind, hasPendingAsk) pairs
 // where ProcessInputKind will refuse before any state transition, and flip as
 // before everywhere else. Keyed on hasPendingAsk rather than raw SessionState
-// (attention-status-model v5 reconciliation): a session generally awaiting with
-// no pending ask must NOT be held — async wakes re-arm by design there — only a
-// genuine pending question is a stronger stop than the wake.
+// (SessionAwaiting alone does not imply a pending question): a needs_response
+// rest with no pending ask must NOT be held — async wakes may move it on — only
+// a genuine pending question is a stronger stop than the wake.
 func TestHoldServeStateForAwaitingWake(t *testing.T) {
 	cases := []struct {
 		name          string
