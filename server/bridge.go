@@ -174,16 +174,19 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 		return
 	}
 	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
+		if d, ok := ev.Data.(events.StatusSettledData); ok && s.status.State != string(agent.SessionClosed) {
+			s.appHeldSettledState = d.State
+		}
 		return
 	}
 	effect(s)
 }
 
 // settledStatusSupersededLocked reports whether a resting status that settled
-// outside any turn (EventStatusSettled) arrives too late to describe the
-// session: a turn is running or about to run, and its own end restates the
-// state, or the session already closed, and closed wins. The caller holds
-// s.mu.
+// outside any turn (EventStatusSettled) can't describe the session yet: an
+// input is being taken or a turn is reserved, so it is held for the end of
+// processing (appHeldSettledState), or the session already closed, and closed
+// wins. The caller holds s.mu.
 func (s *Server) settledStatusSupersededLocked() bool {
 	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }

@@ -205,6 +205,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appActiveTurnID = ""
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
+		s.appHeldSettledState = ""
 		s.appReservedTurnID = ""
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
@@ -370,6 +371,11 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// after this boundary.
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
+		}
+		if event.Kind == events.EventExecutionStarted || event.Kind == events.EventSessionEnd {
+			// A turn started after the rest settled, or the input ended on
+			// its own SESSION_END: either restates the state.
+			s.appHeldSettledState = ""
 		}
 		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
@@ -583,7 +589,13 @@ func (s *Server) finishProcessing() {
 			pending = append(pending, item)
 		}
 		s.appDeferredTerminalNotifications = nil
-		if len(pending) == 0 && wasProcessing && threadID != "" {
+		held := s.appHeldSettledState
+		s.appHeldSettledState = ""
+		applyHeld := held != "" && len(pending) == 0 && s.status.State != string(agent.SessionClosed)
+		if applyHeld {
+			s.status.State = held
+		}
+		if len(pending) == 0 && (wasProcessing || applyHeld) && threadID != "" {
 			// The session state still says what the input left running
 			// ("active") until serve samples it after this call: nothing runs
 			// now, so that reads as idle.

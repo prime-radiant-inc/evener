@@ -505,10 +505,14 @@ func TestServerAppWireStatusSettledDuringATurnIsNotPublished(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_settled_late")
 	srv.SetProcessingTurn("next-turn")
+	// The rest settled before the turn started, so its announcement precedes
+	// the turn's EXECUTION_STARTED on the feed, but the bridge reaches it only
+	// after serve published the turn.
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_late", Data: events.StatusSettledData{State: "awaiting"}}, nil)
 	if read := readThreadOverWire(t, srv, "local:th_settled_late"); read.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("read status = %q, want the running turn's active", read.Status.Type)
 	}
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_settled_late", Data: events.ExecutionStartedData{TurnID: "next-turn"}}, nil)
 	srv.SetProcessing(false)
 
 	statuses := statusNotifications(t, srv, "th_settled_late")
@@ -533,6 +537,70 @@ func TestServerAppWireStatusSettledAfterCloseIsNotPublished(t *testing.T) {
 	for _, status := range statusNotifications(t, srv, "th_settled_closed") {
 		if status.Status.Type == appwire.ThreadStatusAwaiting {
 			t.Fatalf("broadcast awaiting after the session closed: %+v", status)
+		}
+	}
+}
+
+// A rest that settles while an input is being taken, one that never starts a
+// turn, is held and published when processing ends: the broadcast and a read
+// both say awaiting.
+func TestServerAppWireStatusSettledDuringARefusedPassIsPublishedAtItsEnd(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_refused_pass")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_refused_pass", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	for _, status := range statusNotifications(t, srv, "th_refused_pass") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting while the input was still being taken: %+v", status)
+		}
+	}
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_refused_pass"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+	statuses := statusNotifications(t, srv, "th_refused_pass")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want the pass's end to broadcast awaiting", statuses)
+	}
+}
+
+// A held rest belongs to the session that settled it: a thread/clear that
+// replaces the root before the pass ends leaves the new root's state alone.
+func TestServerAppWireHeldStatusSettledDoesNotReachAReplacementRoot(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_old_root")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_old_root", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetAppIdentity("local", "th_new_root")
+	srv.SetState("idle")
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_new_root"); read.Status.Type == appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q on the replacement root, want the old root's rest dropped", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_new_root") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the old root's awaiting on the replacement: %+v", status)
+		}
+	}
+}
+
+// Closed wins over a held rest.
+func TestServerAppWireHeldStatusSettledYieldsToAClose(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_closed")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_closed", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_held_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_held_closed"); read.Status.Type != appwire.ThreadStatusClosed {
+		t.Fatalf("read status = %q, want closed", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_held_closed") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting after the close: %+v", status)
 		}
 	}
 }
