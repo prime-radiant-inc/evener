@@ -1,5 +1,5 @@
 {
-  "arms": ["on"],
+  "arms": ["on", "off"],
   "stages": [
     {
       "name": "A",

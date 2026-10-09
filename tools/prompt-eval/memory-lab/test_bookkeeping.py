@@ -515,5 +515,33 @@ class ScenarioValidationTest(unittest.TestCase):
                 self.assertEqual(self.load({"fixture": "fixture2", "workspace": name})["stages"][1]["workspace"], name)
 
 
+class ArmDeltasTest(unittest.TestCase):
+    """memory-lab report: memory on minus off, per check and version, plus the cost of each arm."""
+
+    @staticmethod
+    def grade(arm, ok, version="try", tools=10, seconds=100, error=None):
+        g = {"scenario": "feedback", "stage": "B", "version": version, "arm": arm, "checks": {"ran vet": ok},
+             "tool_calls": tools, "seconds": seconds}
+        if error:
+            g["error"] = error
+        return g
+
+    def test_pairs_the_arms_of_each_check_and_version(self):
+        grades = [self.grade("on", True), self.grade("on", True), self.grade("off", True), self.grade("off", False),
+                  self.grade("on", False, version="base")]
+        self.assertEqual(bookkeeping.lab.arm_deltas(grades), {("feedback", "B", "ran vet", "try"): (2, 2, 1, 2)})
+
+    def test_costs_average_the_stages_that_ran(self):
+        grades = [self.grade("on", True, tools=20, seconds=300), self.grade("on", True, tools=10, seconds=100),
+                  self.grade("on", False, tools=0, seconds=0, error="session timed out"),
+                  self.grade("off", True, tools=8, seconds=50)]
+        self.assertEqual(bookkeeping.lab.arm_costs(grades), {("feedback", "B", "try"): ((15, 200), (8, 50))})
+
+    def test_a_scenario_with_one_arm_has_no_delta(self):
+        grades = [self.grade("on", True), self.grade("on", False)]
+        self.assertEqual(bookkeeping.lab.arm_deltas(grades), {})
+        self.assertEqual(bookkeeping.lab.arm_costs(grades), {})
+
+
 if __name__ == "__main__":
     unittest.main()
