@@ -121,11 +121,14 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	text := string(raw)
 	doc, err := frontmatter.Parse(text)
 	body := doc.Body
+	_, splitBody, hasBlock := splitMemoryFrontmatter(text)
 	if err != nil {
 		p.Unreadable = true
-		_, body, _ = splitMemoryFrontmatter(text)
+		body = splitBody
 	}
-	p.Frontmatter = err != nil || doc.Meta != nil
+	// The block's presence, not its parsed value: a block holding only a YAML
+	// null parses to no metadata but is still frontmatter.
+	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
 	if heading != "" {
 		p.Title = heading
