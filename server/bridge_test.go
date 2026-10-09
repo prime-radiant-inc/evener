@@ -341,6 +341,28 @@ func TestBridge_StatusSettledAfterCloseIsIgnored(t *testing.T) {
 	}
 }
 
+// A settled status names a resting state; anything else is ignored rather
+// than stored, so the stored state never disagrees with the projected one.
+func TestBridge_StatusSettledIgnoresAStateThatIsNotARest(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	srv.SetState("idle")
+	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
+
+	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "bogus"}}
+	close(evs)
+	<-done
+
+	if got := srv.GetStatus().State; got != "idle" {
+		t.Errorf("state: got %q, want idle kept", got)
+	}
+}
+
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)

@@ -227,8 +227,10 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
 	case events.EventStatusSettled:
+		// Only a resting state settles outside a turn; anything else would
+		// store a state the projector maps differently.
 		d, ok := ev.Data.(events.StatusSettledData)
-		if !ok || d.State == "" {
+		if !ok || (d.State != string(agent.SessionAwaiting) && d.State != string(agent.SessionIdle)) {
 			return nil
 		}
 		return func(s *Server) { s.status.State = d.State }
