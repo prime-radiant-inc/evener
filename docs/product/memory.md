@@ -195,8 +195,9 @@ the same file on macOS's default filesystem.
 
 **What counts as a page.** Every regular file under the scope root, in
 subdirectories too, except a path with a segment starting with `.` (the rule
-`memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
-skipped, as scope confinement already refuses them. The listing goes 64 levels
+`memory_search` uses) and a file named `MEMORY.md` at the root. The listing
+never enters a dot directory, so a `.git` in the scope costs it nothing.
+Symlinks are skipped, as scope confinement already refuses them. The listing goes 64 levels
 deep, so a file inside more than 63 nested directories is not listed: it never
 appears in the index and migration never describes it. Only `.md` files are
 parsed for frontmatter. Any other file, or a page that cannot be read, renders
