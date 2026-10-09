@@ -141,14 +141,17 @@ under-invalidating a count. Revisit only against a measured win.
    frame, bounded by the same helper as the read. A frame for an unknown delegate
    never adds a row — step 3 reads instead — so a push updates in place and never
    invents one.
-2. Order every contribution by the projector's own order — `projectionRevision`
-   (strictly greater wins), else `latestActivityAt` (`mergeAppwireDelegateInfo`;
-   `runGeneration` is not compared there, because a run start increments
-   `projectionRevision`). Hold it in a per-delegate applied map; a collection
-   read joins the map the same way (seed on first sight, keep the newer of read
-   and applied). Otherwise a read that lands after a newer frame clobbers it, and
-   the seeded revision then skips frames that fall in the gap. Clear the prior
-   run's preview when `runGeneration` increases.
+2. Join contributions exactly as `mergeAppwireDelegateInfo` does — the snapshot
+   fields come from the contribution with the strictly greater
+   `projectionRevision` (a lower one never replaces them), while
+   `latestActivityAt` is the **maximum** of the two, independent of revision (a
+   lower-revision contribution may advance it; a higher-revision one must not
+   move it backward). A single "keep the newer contribution" order is wrong: it
+   loses that crossed case and can regress activity time. Hold each delegate's
+   applied `projectionRevision`/`latestActivityAt` in a per-delegate map; a
+   collection read joins the same way, so a read landing after a newer frame
+   cannot clobber it and a frame in the gap is not skipped. Clear the prior run's
+   preview when `runGeneration` increases.
 3. If step 1 accepted the frame (scope matched) and it names a delegate the
    loaded rows do not contain, and the collection is observed, request a root
    read at most once per delegate ID (a seen-unknown set). A frame the scope
@@ -163,14 +166,15 @@ under-invalidating a count. Revisit only against a measured win.
    refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
 6. Treat a response whose context `epoch` differs from the loaded one as a source
-   replacement and read the collection afresh. Today the store compares epochs
-   only on non-root page reads (`sessionActivityStore.ts:428`), and only when
-   `read.epoch` is already set (it is assigned after that branch, at `:473`).
-   Extending the comparison to a root read must (a) skip it while the stored
-   epoch is unset — otherwise the first read of every store mismatches
-   `undefined !== epoch` and loops — and (b) record the new epoch before
-   restarting. The invalidation carries no epoch, so a response is the only place
-   to see it.
+   replacement: clear the applied map and the seen-unknown set — their authority
+   is epoch-scoped, because a replacement journal reconstructs
+   `projectionRevision` from 1, so an old epoch's higher revision would otherwise
+   win forever — record the new epoch, and read the collection afresh. Extending
+   the existing epoch comparison (`sessionActivityStore.ts:428`, non-root and only
+   when `read.epoch` is set, assigned at `:473`) to a root read must skip while
+   the stored epoch is unset — otherwise the first read of every store mismatches
+   `undefined !== epoch` and loops — and record the new epoch before restarting.
+   The invalidation carries no epoch, so a response is the only place to see it.
 
 **Web.** The Agents tab, the Activity sheet, the transcript entity view, the
 status bar, and the session chrome consume the store unchanged; the merge makes
@@ -270,6 +274,14 @@ fallback.
 - **Helper home.** The shared prose-bound helper lives in a leaf package both
   `agent` and `internal/appprojector` import; `make test` compiles with no import
   cycle.
+- **Ordering.** Mirrors `mergeAppwireDelegateInfo`: snapshot fields follow the
+  greater revision, `latestActivityAt` is the independent maximum, in both
+  directions (a lower-revision later-activity frame advances only the timestamp;
+  a higher-revision frame does not move it backward); a read joins the same way
+  and cannot clobber a newer frame or skip one in the gap.
+- **Epoch replacement.** An epoch change clears the applied map and seen-unknown
+  set, and a replacement source returning the same delegate id with a *lower*
+  revision and a different status/report wins over the old entries.
 - **Epoch guard.** Extending the epoch comparison to root reads neither loops on
   the first read nor misses a real epoch change, and records the new epoch.
 - **Native shrink.** The list-shrink case recovers through resync, reconnect, or
@@ -277,10 +289,6 @@ fallback.
   covers the new row field and typechecks.
 - **Roster.** `SlimDelegateForRoster` strips the preview fields; a thread/read
   roster row never carries them.
-- **Ordering.** The total order matches the projector's; a read seeds the map; a
-  read that lands after a newer frame does not clobber it and does not skip a
-  frame in the gap; a same-revision later-activity frame still applies; a stale
-  frame is skipped.
 - **Capability.** A context advertising `reportPreview` merges without reading
   the collection on an invalidation; a context that does not advertise it keeps
   reading, so the report still lands.
@@ -306,7 +314,8 @@ fallback.
 | Root-epoch guard loops | skip while the stored epoch is unset; record the new epoch before restart. |
 | Native fixture typecheck | extend the exhaustiveness guard for the new row field. |
 | Read clobbers a newer frame | each read row joins the order; keep the newer of read and applied. |
-| Stale row from an out-of-order frame | `runGeneration` + `projectionRevision` + `latestActivityAt`, matching the projector. |
+| Stale row from an out-of-order frame | `mergeAppwireDelegateInfo`'s join: greater revision for fields, independent maximum for activity time. |
+| Epoch replacement outlives the old map | clear the applied map and seen-unknown set on an epoch change. |
 | Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
