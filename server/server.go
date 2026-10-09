@@ -908,6 +908,12 @@ func (s *Server) SetProcessing(processing bool) {
 func (s *Server) FinishProcessing(settle func() string) {
 	state := settle()
 	s.finishProcessing(&state)
+	// A needs_response rest that settled between that sample and the end of
+	// processing was dropped as stale, because a turn still looked to be
+	// running. Sampling again now that processing is over publishes it; an
+	// unchanged state publishes nothing.
+	again := settle()
+	s.finishProcessing(&again)
 }
 
 // SetProcessingTurn publishes turnID as the running execution: the thread is

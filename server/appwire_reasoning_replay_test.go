@@ -608,3 +608,30 @@ func TestServerAppWireFinishSettledActiveBroadcastsWhatAReadSays(t *testing.T) {
 		t.Fatalf("statuses = %+v, read %q: want the last broadcast to match the read", statuses, read.Status.Type)
 	}
 }
+
+// A needs_response rest that settles between the finish's sample and the end
+// of processing is dropped as stale, since a turn still looked to be running;
+// the finish samples again once processing is over and publishes it.
+func TestServerAppWireFinishPublishesARestThatSettledDuringIt(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_settled_during_finish")
+	srv.SetProcessing(true)
+	srv.SetState("active")
+	samples := 0
+	srv.FinishProcessing(func() string {
+		samples++
+		if samples == 1 {
+			BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_during_finish", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+			return "idle"
+		}
+		return "awaiting"
+	})
+
+	if read := readThreadOverWire(t, srv, "local:th_settled_during_finish"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+	statuses := statusNotifications(t, srv, "th_settled_during_finish")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want the last broadcast awaiting", statuses)
+	}
+}
