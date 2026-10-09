@@ -149,7 +149,7 @@ var (
 	// A link's destination is bare, or in angle brackets (memoryLinkTarget's
 	// form for a path with spaces or parentheses) with backslash escapes.
 	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|([^)\s]+))\)`)
-	legacyIndexEscape   = regexp.MustCompile(`\\([!-/:-@\[-` + "`" + `{-~])`)
+	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
 
