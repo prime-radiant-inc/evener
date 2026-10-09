@@ -77,16 +77,13 @@ exported helper in the agent package and call it from both the read projection
 and the projector, so the two cannot drift. `mergeAppwireDelegateInfo` orders
 the preview by `projectionRevision` like every other field.
 
-**Invalidation.** `emitStableDelegateUpdate` (via `emitSessionActivityChanged`)
-currently names `delegates` for every row update. It must name `delegates` only
-when the listed membership changed (a delegate entered the owner's listed set,
-and a removal if one exists — see Membership), and always name `summary` when a
-count can move. A field-only update then pushes only `evener/delegate/updated`
-(plus a `summary` invalidation), and the client updates the row without reading
-the collection.
-
-Optional follow-on (separate ruling): narrow `summary` to count-moving changes
-only, so a pure `latestActivityAt` update invalidates nothing.
+**Invalidation.** Unchanged. The daemon keeps emitting
+`evener/thread/activity/changed {summary, delegates}` for every delegate change —
+an un-upgraded client still needs it — and the upgraded client simply does not
+act on `delegates`. The `summary` invalidation also stays on every delegate
+change for now: the page read is the cost worth removing, while narrowing
+`summary` to count-moving changes needs daemon-side count deltas and risks
+under-invalidating a count. Revisit only against a measured win.
 
 ## Consumers
 
@@ -123,16 +120,35 @@ invalidation (five tests today).
 
 ## Membership
 
-The client stops reading `delegates` on an invalidation, so a row can only
-disappear through a read. The durable delegate read model appears append-only
-(no removal event or delete path; `deriveSessionActivityDelegateKeys` derives
-from every non-nil stored row), so within an epoch the listed set only grows,
-and a source replacement or session change already restarts the walk through the
-stale-cursor/epoch path. The first implementation task must **prove** this with
-a journal/store test — a delegate record survives every lifecycle transition,
-and a page's set is monotonic within an epoch. If any removal path exists, the
-producer must signal it in the membership invalidation before the client rule
-changes (the client then reads on membership, so no new removal rule is needed).
+A loaded row can change two ways: its fields (an in-place patch) or its
+membership (the row appears or disappears). The pushed frame covers fields and
+creates; it cannot cover a removal, because no "this delegate went away" signal
+exists. Once the client stops reading `delegates` on an invalidation, the only
+thing that deletes a loaded row is a read — so a removal the client cannot
+observe would leave a stale row until the next recovery read. Whether that is
+possible is the pivot of this design.
+
+Evidence that it is not: the durable delegate journal is append-only. Its nine
+event kinds (`agent/internal/delegatestore/event.go`) are create, run-start,
+terminal-prepared, run-finished, resumability-closed, subtree-stop requested and
+completed, delivery-acknowledged, and attention-changed — none removes a
+delegate. The activity keys derive from every non-nil stored row
+(`deriveSessionActivityDelegateKeys`); a page excludes a row only for the
+response byte budget (`candidate.included`, which reports `complete:false`); and
+retirement deletes a child's artifacts directory, not its durable record (a
+retained delegate still lists with no live runtime). Within one source epoch the
+listed set therefore only grows. It shrinks only when the epoch or session is
+replaced, which resets the store (`acceptContext`) and re-reads; journal
+recovery truncates an uncommitted trailing batch, never a served row.
+
+Decision (pending Jesse's ruling): take the append-only model. Creates are
+caught because the new delegate's frame names an ID the loaded rows do not hold,
+so the store reads then; removals do not occur. Pin the invariant with a
+regression test — a delegate record survives every lifecycle transition and a
+page's set is monotonic within an epoch — so a future removal path fails loudly.
+If one is ever added, the producer signals membership (a `delegates`
+invalidation the client still reads) before the client rule changes; the client
+then needs no new removal rule.
 
 ## Compatibility
 
@@ -153,8 +169,9 @@ fallback is to leave the read in place for such sources and accept the work.
   `evener/thread/delegates/list` reads; a repeated frame publishes nothing; a
   stale `projectionRevision` cannot regress a row; a resume clears the prior
   report; a `session` store ignores another owner's delegate.
-- **Membership.** An unknown delegate triggers exactly one read; a membership
-  invalidation reads; resync, reconnect, observe and paging still read.
+- **Membership.** An unknown delegate triggers exactly one read; a `delegates`
+  invalidation alone triggers none; resync, reconnect, observe and paging still
+  read; the append-only invariant is pinned by a store test.
 - **Counts.** A count-moving update still refreshes the summary; the Agents
   count never derives from loaded rows.
 - **Web.** Rows update from a frame with no collection read; the boundary test
@@ -173,18 +190,17 @@ fallback is to leave the read in place for such sources and accept the work.
 | --- | --- |
 | Push/read preview drift | Shared bounding helper; parity test. |
 | Stale row from an out-of-order frame | `runGeneration` + `projectionRevision` map. |
-| Missed removal | Task 1 proves append-only; otherwise the producer signals membership. |
+| Missed removal | Append-only invariant pinned by a regression test; a future removal path must signal membership. |
 | Old source with no preview | Feature gate keeps the read. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor) unchanged; the collection still reads on observe and paging. |
 
 ## Open questions for Jesse
 
-1. Membership: accept the append-only proof plus the existing recovery paths, or
-   require an explicit removal signal in the invalidation regardless?
-2. Scope: web + native + shared store together (recommended), or web first
-   behind the feature gate?
-3. Also narrow the `summary` invalidation to count-moving changes, or keep it
-   for every delegate change?
+1. **Membership:** confirm the append-only model above (recommended), or require
+   an explicit removal signal in the invalidation regardless?
+2. **Scope:** decided — web + native + shared store together.
+3. **Summary invalidation:** decided — keep it on every delegate change; narrow
+   only against a measured win.
 
 ## File map
 
