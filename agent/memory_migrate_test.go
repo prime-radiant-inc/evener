@@ -25,6 +25,10 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 		{"does not match a longer key", "---\nbyline: x\n---\n", "by: s1\n",
 			"---\nbyline: x\nby: s1\n---\n"},
 		{"empty block", "---\n---\nbody\n", "by: s1\n", "---\nby: s1\n---\nbody\n"},
+		{"replaces a block scalar with blank lines inside it", "---\nupdated: |\n  old\n\n  older\ntags: [a]\n---\nb\n", "updated: 2026-10-08\n",
+			"---\nupdated: 2026-10-08\ntags: [a]\n---\nb\n"},
+		{"keeps a blank line that ends the replaced value", "---\nnote: |\n  x\n\nkeep: 1\n---\n", "note: y\n",
+			"---\nnote: y\n\nkeep: 1\n---\n"},
 		{"a value ending in --- does not close the block", "---\ndescription: a---\nb: 1\n---\nbody\n", "by: s1\n",
 			"---\ndescription: a---\nb: 1\nby: s1\n---\nbody\n"},
 	} {
@@ -65,7 +69,10 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- [escape](../other/x.md): skipped\n" +
 		"- [not markdown](notes.txt): skipped\n" +
 		"- [hidden](.draft/x.md): skipped\n" +
-		"- **no-link** — [feedback] a line with no page\n"
+		"- **no-link** — [feedback] a line with no page\n" +
+		"- see old.md.txt for the old notes\n" +
+		"- a.md/foo is a directory path\n" +
+		"- [emph](emph.md) — **important** note\n"
 	want := map[string]string{
 		"testing.md":         "plain `go test` silently skips everything",
 		"money/cents.md":     "Money is integer cents",
@@ -74,6 +81,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"ticks.md":           "bare path in backticks",
 		"bold.md":            "bare path in bold",
 		"cpp.md":             "learned C++",
+		"emph.md":            "**important** note",
 	}
 	if got := parseLegacyMemoryIndex(index); !maps.Equal(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
@@ -169,5 +177,52 @@ func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 				t.Fatalf("run %d: %s=%q, %v", i+1, backup, raw, err)
 			}
 		}
+	}
+}
+
+// A link whose case differs from the only listed page matching it resolves to
+// that page; an exact match wins, and an ambiguous or missing one does not
+// resolve.
+func TestResolveLegacyIndexPage(t *testing.T) {
+	t.Parallel()
+	listed := map[string]bool{"notes.md": true, "a.md": true, "A.md": true, "Exact.md": true, "exact.md": true}
+	for _, tc := range []struct {
+		link, want string
+		ok         bool
+	}{
+		{"notes.md", "notes.md", true},
+		{"Notes.md", "notes.md", true},
+		{"Exact.md", "Exact.md", true},
+		{"a.MD", "", false},
+		{"missing.md", "", false},
+	} {
+		if got, ok := resolveLegacyIndexPage(tc.link, listed); got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got %q, %t; want %q, %t", tc.link, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// Migration writes a description linked by a differently cased name into the
+// page on disk.
+func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte("- [x](Notes.md) — the notes page\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "notes.md"), []byte("body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: the notes page\n---\nbody\n" {
+		t.Fatalf("notes.md=%q, %v", raw, err)
 	}
 }

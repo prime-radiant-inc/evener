@@ -57,8 +57,9 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	}
 	var kept []string
 	replaced, skipping := false, false
-	for existing := range strings.Lines(block) {
-		if skipping && (strings.HasPrefix(existing, " ") || strings.HasPrefix(existing, "\t") || strings.HasPrefix(existing, "-")) {
+	lines := slices.Collect(strings.Lines(block))
+	for i, existing := range lines {
+		if skipping && memoryFrontmatterContinuation(lines[i:]) {
 			continue
 		}
 		skipping = false
@@ -81,17 +82,54 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte("---\n" + strings.Join(kept, "") + "---\n" + body)
 }
 
+// memoryFrontmatterContinuation reports whether lines[0] continues the value
+// above it: an indented or list line, or a blank line followed, past any
+// more blank lines, by one. A blank line before the next key ends the value.
+func memoryFrontmatterContinuation(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "-")
+	}
+	return false
+}
+
 var (
 	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\(([^)\s]+)\)`)
-	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)\b[` + "`" + `*]*`)
+	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
 
-// A description loses list markers at its start and separators at both ends.
-// Markers are trimmed from the left only so "learned C++" stays intact.
-const (
-	legacyIndexLeadingTrim = " \t-*+—–:"
-	legacyIndexTrim        = " \t-—–:"
-)
+// legacyIndexPathByte reports whether c can continue a path, so a bare
+// "a.md" followed by it ("a.md.txt", "a.md/x") names no page.
+func legacyIndexPathByte(c byte) bool {
+	return c == '_' || c == '.' || c == '/' || c == '-' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+}
+
+// legacyIndexBarePageMatch is the submatch indexes of line's first bare page
+// path that nothing path-like follows, or nil.
+func legacyIndexBarePageMatch(line string) []int {
+	for _, m := range legacyIndexBarePage.FindAllStringSubmatchIndex(line, -1) {
+		if m[3] == len(line) || !legacyIndexPathByte(line[m[3]]) {
+			return m
+		}
+	}
+	return nil
+}
+
+// legacyIndexTrim is what a description loses at both ends: separators.
+const legacyIndexTrim = " \t-—–:"
+
+// trimLegacyIndexDescription strips one list marker ("-", "*" or "+" and a
+// space) from the start of rest, then separators from both ends, so
+// "**important** note" and "learned C++" keep their own punctuation.
+func trimLegacyIndexDescription(rest string) string {
+	rest = strings.TrimLeft(rest, " \t")
+	if len(rest) >= 2 && strings.ContainsRune("-*+", rune(rest[0])) && rest[1] == ' ' {
+		rest = rest[2:]
+	}
+	return strings.Trim(rest, legacyIndexTrim)
+}
 
 // legacyIndexPage turns a link target into a page path in the scope, or
 // reports false for anything that is not a local Markdown page.
@@ -107,6 +145,26 @@ func legacyIndexPage(target string) (string, bool) {
 	return page, true
 }
 
+// resolveLegacyIndexPage is the listed page a legacy link names: the exact
+// path, else the only listed path equal to it ignoring case, since on a
+// case-insensitive filesystem a link's case need not match the page's.
+// An ambiguous or missing link resolves to nothing.
+func resolveLegacyIndexPage(link string, listed map[string]bool) (string, bool) {
+	if listed[link] {
+		return link, true
+	}
+	var match string
+	for page := range listed {
+		if strings.EqualFold(page, link) {
+			if match != "" {
+				return "", false
+			}
+			match = page
+		}
+	}
+	return match, match != ""
+}
+
 // parseLegacyMemoryIndex reads a hand-written MEMORY.md: for each line naming
 // a page, by a Markdown link or a bare path ending in .md, the description
 // the rest of the line gives it. The first line naming a page wins.
@@ -117,7 +175,7 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 		if m := legacyIndexLink.FindStringSubmatchIndex(line); m != nil {
 			text, target = line[m[2]:m[3]], line[m[4]:m[5]]
 			rest = line[:m[0]] + line[m[1]:]
-		} else if m := legacyIndexBarePage.FindStringSubmatchIndex(line); m != nil {
+		} else if m := legacyIndexBarePageMatch(line); m != nil {
 			target = line[m[2]:m[3]]
 			rest = line[:m[0]] + line[m[1]:]
 		} else {
@@ -127,7 +185,7 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 		if _, seen := out[page]; !ok || seen {
 			continue
 		}
-		source := strings.TrimRight(strings.TrimLeft(rest, legacyIndexLeadingTrim), legacyIndexTrim)
+		source := trimLegacyIndexDescription(rest)
 		if strings.TrimSpace(source) == "" {
 			source = text
 		}
@@ -168,10 +226,20 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 		return err
 	}
 	needsDescription := make(map[string]bool, len(listed))
+	isListed := make(map[string]bool, len(listed))
 	for _, p := range listed {
 		needsDescription[p.Path] = !p.HasDescription && !p.Unreadable
+		isListed[p.Path] = true
 	}
-	descriptions := parseLegacyMemoryIndex(string(raw))
+	// Each link resolves to a listed page; a link naming the page exactly wins
+	// over one that differs from it only in case.
+	descriptions := make(map[string]string)
+	for link, description := range parseLegacyMemoryIndex(string(raw)) {
+		page, ok := resolveLegacyIndexPage(link, isListed)
+		if _, taken := descriptions[page]; ok && (link == page || !taken) {
+			descriptions[page] = description
+		}
+	}
 	var writeErrs []error
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
 		if !needsDescription[page] {
