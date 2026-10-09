@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // memoryLegacyIndexBackup is where migration keeps a scope's hand-written
@@ -66,8 +67,11 @@ func memoryYAMLField(key, value string) string {
 // only top-level entry for its key, replacing an existing one and the lines of
 // its value, or adding it at the end of the block, or adding a block. Every
 // other byte of the page is kept. Keys are found as YAML reads them (quoted,
-// or with a space before the colon); a block YAML can't read as a mapping
-// gains the line at its end.
+// or with a space before the colon); a block that does not parse gains the
+// line at its end and stays as unreadable as it was (frontmatter.Parse
+// reads only a mapping). Readable frontmatter that would not read the line
+// back as its key, such as a flow mapping or a block
+// with a "..." document end, is returned as it is.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
 	text := string(raw)
@@ -108,7 +112,17 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !replaced {
 		kept = append(kept, line)
 	}
-	return []byte("---\n" + strings.Join(kept, "") + "---\n" + body)
+	out := "---\n" + strings.Join(kept, "") + "---\n" + body
+	// Checked by reading the page back as pages are read, rather than
+	// predicted: the line can break a flow mapping, or land after a document
+	// end YAML never reads past.
+	if _, err := frontmatter.Parse(text); err == nil {
+		doc, err := frontmatter.Parse(out)
+		if _, set := doc.Meta[key]; err != nil || !set {
+			return raw
+		}
+	}
+	return []byte(out)
 }
 
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
@@ -297,11 +311,12 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
-		// ended by "...") would no longer read back; such a page is left as it
-		// is, like one whose frontmatter does not parse, and the index is still
-		// renamed. Keeping the index for it instead would retry every run until
-		// someone rewrites the page. The description stays recoverable in the
-		// backup, and the page renders with its fallback description meanwhile.
+		// ended by "...") comes back without the description; such a page is
+		// left as it is, like one whose frontmatter does not parse, and the
+		// index is still renamed. Keeping the index for it instead would retry
+		// every run until someone rewrites the page. The description stays
+		// recoverable in the backup, and the page renders with its fallback
+		// description meanwhile.
 		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
 			continue
 		}
@@ -345,7 +360,7 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	}
 	var out []string
 	for _, entry := range entries {
-		if !entry.IsRegular || !strings.EqualFold(entry.Name, memoryIndexFile) {
+		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) {
 			continue
 		}
 		legacy := filepath.Join(root, entry.Name)

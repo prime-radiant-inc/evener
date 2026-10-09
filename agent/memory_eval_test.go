@@ -1157,13 +1157,13 @@ func TestMemoryEvalGradeFalsePositives(t *testing.T) {
 		{"empty-read", []events.SessionEvent{read(""), shell("sh scripts/check.sh", "ok\tmemoryfixture\t0.1s", 0)}, map[string]string{}, "retrieval", false},
 		{"printf-checker", []events.SessionEvent{shell("printf '%s\\n' 'scripts/check.sh'", "scripts/check.sh", 0)}, map[string]string{}, "application", false},
 		{"hidden-failed-checker", []events.SessionEvent{shell("sh scripts/check.sh --current || true", "FAIL", 0)}, map[string]string{}, "application", true},
-		{"correction-before-counterevidence", []events.SessionEvent{write("MEMORY.md", revised), shell("sh scripts/check.sh", "Checker now requires --current", 2), write("notes.md", "opaque-unrelated-note"), finish}, map[string]string{"projects/fixture-project/MEMORY.md": revised}, "correction", true},
-		{"incomplete-root-capture", []events.SessionEvent{write("MEMORY.md", "sh scripts/check.sh\n")}, map[string]string{"projects/fixture-project/MEMORY.md": "sh scripts/check.sh\n"}, "capture", false},
-		{"unrelated-capture-write", []events.SessionEvent{write("notes.md", "opaque-unrelated-note")}, map[string]string{"projects/fixture-project/MEMORY.md": old}, "capture", false},
+		{"correction-before-counterevidence", []events.SessionEvent{write("check.md", revised), shell("sh scripts/check.sh", "Checker now requires --current", 2), write("notes.md", "opaque-unrelated-note"), finish}, map[string]string{"projects/fixture-project/check.md": revised}, "correction", true},
+		{"incomplete-root-capture", []events.SessionEvent{write("check.md", "sh scripts/check.sh\n")}, map[string]string{"projects/fixture-project/check.md": "sh scripts/check.sh\n"}, "capture", false},
+		{"unrelated-capture-write", []events.SessionEvent{write("notes.md", "opaque-unrelated-note")}, map[string]string{"projects/fixture-project/check.md": old}, "capture", false},
 		{"successful-counterevidence-text", []events.SessionEvent{shell("sh scripts/check.sh", "Checker now requires --current", 0)}, map[string]string{}, "counterevidence", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := memoryEvalStageEvidence{Trace: tc.trace, Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"projects/fixture-project/MEMORY.md": old}, WikiAfter: tc.after}
+			e := memoryEvalStageEvidence{Trace: tc.trace, Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"projects/fixture-project/check.md": old}, WikiAfter: tc.after}
 			body := old
 			for _, ev := range tc.trace {
 				if ev.Kind != events.EventToolCallEnd {
@@ -1178,7 +1178,7 @@ func TestMemoryEvalGradeFalsePositives(t *testing.T) {
 				}
 				if d.ToolName == "memory_write" {
 					obs.After, _ = args["content"].(string)
-					if args["file_path"] == "MEMORY.md" {
+					if args["file_path"] == "check.md" {
 						obs.Before = body
 						body = obs.After
 					}
@@ -1223,7 +1223,7 @@ func TestMemoryEvalGradeCompletion(t *testing.T) {
 		}
 		add("memory_read", map[string]any{"file_path": "MEMORY.md", "scope": "project"}, old, 0, memoryEvalToolObservation{})
 		add("shell", map[string]any{"command": "sh scripts/check.sh"}, "Checker now requires --current", 2, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
-		add("memory_edit", map[string]any{"file_path": "MEMORY.md", "scope": "project", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}, "", 0, memoryEvalToolObservation{Before: old, After: newRule})
+		add("memory_edit", map[string]any{"file_path": "check.md", "scope": "project", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}, "", 0, memoryEvalToolObservation{Before: old, After: newRule})
 		add("shell", map[string]any{"command": "sh scripts/check.sh --current"}, "ok\tmemoryfixture\t0.1s", 0, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
 		e.Trace = append(e.Trace, completion)
 		memoryEvalGrade(&e, true)

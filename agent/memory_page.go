@@ -43,10 +43,7 @@ const (
 // without regard to case: on a case-insensitive filesystem memory.md is the
 // same file.
 func isMemoryPagePath(rel string) bool {
-	if strings.EqualFold(rel, memoryIndexFile) {
-		return false
-	}
-	return !execenv.IsDotPath(rel)
+	return !isMemoryIndexPath(rel) && !execenv.IsDotPath(rel)
 }
 
 // matchMemoryNameCase is the name in names equal to name, else the only one

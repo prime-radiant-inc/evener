@@ -98,7 +98,7 @@ func grepOrFailFast(t *testing.T, s *sandboxFS, base string) (string, error) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		out, err := s.grepNative(context.Background(), "needle", base, "", false, 100, "")
+		out, err := s.grepNative(context.Background(), "needle", base, "", false, 100, "", 0, nil)
 		resCh <- result{out, err}
 	}()
 	select {

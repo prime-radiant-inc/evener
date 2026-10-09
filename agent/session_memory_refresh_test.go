@@ -227,7 +227,7 @@ func TestMemoryRefreshIgnoresOwnPageWriteWithoutPages(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "fact.md")); err != nil || string(got) != page {
+	if got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "fact.md")); err != nil || string(got) != strings.TrimSuffix(page, "---\n")+memoryOwnStamps(s)+"---\n" {
 		t.Fatalf("page=%q err=%v, want the write applied", got, err)
 	}
 }
@@ -721,7 +721,7 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(page); err != nil || string(got) != "opaque-own-body-2\n" {
+	if got, err := os.ReadFile(page); err != nil || string(got) != "---\n"+memoryOwnStamps(s)+"---\nopaque-own-body-2\n" {
 		t.Fatalf("page=%q err=%v, want the edit applied", got, err)
 	}
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
