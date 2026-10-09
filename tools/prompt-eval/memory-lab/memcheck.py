@@ -33,6 +33,10 @@ import argparse, glob, json, os, subprocess, sys
 MAX_INDEX_LINE = 200
 MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "memscope")
 MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
+MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"
+# The agent.MemoryScopePage fields the checks read; a memscope built before one
+# existed leaves it out.
+PAGE_FIELDS = {"path", "description", "has_description", "frontmatter", "unreadable", "tags", "by"}
 
 
 class MemscopeError(RuntimeError):
@@ -46,12 +50,17 @@ def scope_pages(dirs):
     try:
         out = subprocess.run([MEMSCOPE, *dirs], capture_output=True, text=True, timeout=MEMSCOPE_TIMEOUT)
     except FileNotFoundError:
-        raise MemscopeError(f"{MEMSCOPE} is missing; build it in the lab directory: go build -o bin/memscope ./memscope")
+        raise MemscopeError(f"{MEMSCOPE} is missing; {MEMSCOPE_BUILD}")
     except subprocess.TimeoutExpired:
         raise MemscopeError(f"memscope timed out after {MEMSCOPE_TIMEOUT}s")
     if out.returncode != 0:
         raise MemscopeError(f"memscope failed: {out.stderr.strip()}")
-    return json.loads(out.stdout)
+    scopes = json.loads(out.stdout)
+    for pages in scopes.values():
+        for p in pages:
+            if missing := PAGE_FIELDS - p.keys():
+                raise MemscopeError(f"{MEMSCOPE} is out of date (its pages lack {', '.join(sorted(missing))}); re{MEMSCOPE_BUILD}")
+    return scopes
 
 
 def scope_dirs(root, scopes):

@@ -135,6 +135,20 @@ class NewPages(Root):
             self.run_cmd("new-pages")
         self.assertIn("go build -o bin/memscope", str(cm.exception.code))
 
+    def test_stale_helper_exits_with_how_to_rebuild_it(self):
+        self.put("projects/p/a.md", "---\ndescription: d\n---\n")
+        # A memscope built before a field existed lists pages without it.
+        stale = os.path.join(self.root, "stale-memscope")
+        with open(stale, "w") as f:
+            f.write('#!/bin/sh\necho \'{"%s": [{"path": "a.md", "description": "d"}]}\'\n' % os.path.join(self.root, "evener", "memory", "projects", "p"))
+        os.chmod(stale, 0o755)
+        built = memcheck.MEMSCOPE
+        memcheck.MEMSCOPE = stale
+        self.addCleanup(setattr, memcheck, "MEMSCOPE", built)
+        with self.assertRaises(SystemExit) as cm:
+            self.run_cmd("new-pages")
+        self.assertIn("go build -o bin/memscope", str(cm.exception.code))
+
 
 class SeedProblems(Root):
     def test_unreadable_or_unread_frontmatter_is_a_problem(self):
