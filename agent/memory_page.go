@@ -176,13 +176,15 @@ func firstMarkdownHeading(body string) string {
 }
 
 // fenceRun returns the leading run of three or more backticks or tildes in
-// line, which opens or closes a code fence, or "".
+// line, which opens or closes a code fence, or "". A backtick run followed by
+// another backtick on the line is no fence (CommonMark: a backtick fence's
+// info string holds no backtick), so "```a`b" is inline code.
 func fenceRun(line string) string {
 	if line == "" || (line[0] != '`' && line[0] != '~') {
 		return ""
 	}
 	run := line[:len(line)-len(strings.TrimLeft(line, line[:1]))]
-	if len(run) < 3 {
+	if len(run) < 3 || (run[0] == '`' && strings.Contains(line[len(run):], "`")) {
 		return ""
 	}
 	return run
