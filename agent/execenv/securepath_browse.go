@@ -67,10 +67,13 @@ func compileGrepPattern(pattern string, caseInsensitive bool) (*regexp.Regexp, e
 	return re, nil
 }
 
-// CheckGrepPattern reports the error a grep for pattern would give for the
-// pattern itself, so a caller that searches nothing can still refuse a bad
-// one.
-func CheckGrepPattern(pattern string, caseInsensitive bool) error {
+// CheckGrepArgs reports the error a grep would give for its pattern or its
+// glob filter's brace syntax before searching anything, so a caller that
+// searches nothing can still refuse bad arguments.
+func CheckGrepArgs(pattern, globFilter string, caseInsensitive bool) error {
+	if _, err := expandGrepFilter(globFilter); err != nil {
+		return err
+	}
 	_, err := compileGrepPattern(pattern, caseInsensitive)
 	return err
 }

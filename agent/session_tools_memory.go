@@ -254,9 +254,9 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	g := parseFileGrepArgs(forwarded)
 	target := filepath.Clean(stringArg(args, "path"))
 	if isMemoryIndexPath(target) {
-		// A search of the index itself finds nothing, but a bad pattern is
+		// A search of the index itself finds nothing, but bad arguments are
 		// still an error.
-		return "", execenv.CheckGrepPattern(g.pattern, g.caseInsensitive)
+		return "", execenv.CheckGrepArgs(g.pattern, g.glob, g.caseInsensitive)
 	}
 	var skip func(rel string) bool
 	if target == "." {
