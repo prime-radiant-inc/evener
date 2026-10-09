@@ -245,10 +245,6 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 // skipped. A page that fails to write does not stop the others; any failed
 // write, or failing to read or rename the index, returns an error and leaves
 // the index in place, so the next run finishes the job.
-//
-// Migration runs once per scope and the window between a page's read and its
-// write is tiny; a concurrent edit landing in it would be overwritten, which is
-// accepted.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	legacies, err := legacyMemoryIndexes(env)
 	if err != nil || len(legacies) == 0 {
@@ -295,6 +291,13 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 			}
 		}
 	}
+	// No lock guards these read-then-write pairs. Each page is re-read just
+	// before its write and written only when it still has no description, so
+	// a page another session described meanwhile is left alone, and two
+	// migrations racing write the same description. A page edit landing in
+	// the instant between one page's read and write would be overwritten;
+	// that is accepted, because migration runs once per scope (the index is
+	// renamed when it finishes) and touches only pages with no description.
 	var writeErrs []error
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
 		abs := filepath.Join(root, filepath.FromSlash(page))
