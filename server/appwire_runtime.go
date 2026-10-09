@@ -578,13 +578,16 @@ func (s *Server) finishProcessing(settled *string) {
 		wasProcessing := s.processing
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
+		previous := s.status.State
 		var pending []pendingAppNotification
+		deferredStatus := ""
 		for _, item := range s.appDeferredTerminalNotifications {
 			if item.threadID != threadID || item.ref != ref {
 				continue
 			}
 			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok && item.method == appwire.NotifyThreadStatusChanged {
 				s.status.State = params.Status.Type
+				deferredStatus = params.Status.Type
 			}
 			pending = append(pending, item)
 		}
@@ -592,15 +595,29 @@ func (s *Server) finishProcessing(settled *string) {
 		if settled != nil {
 			s.status.State = *settled
 		}
-		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The stored state can still read "active": without the
-			// session's own state it is what the input left running, and the
-			// session's own state reads active while work is still pending
-			// (Session.WireState). Nothing runs now, so that reads as idle.
-			status := appStatus(s.status.State, false, false)
-			if status == appwire.ThreadStatusActive {
-				status = appwire.ThreadStatusIdle
-			}
+		// The stored state can still read "active": without the session's
+		// own state it is what the input left running, and the session's own
+		// state reads active while work is still pending (Session.WireState).
+		// Nothing runs now, so that reads as idle.
+		status := appStatus(s.status.State, false, false)
+		if status == appwire.ThreadStatusActive {
+			status = appwire.ThreadStatusIdle
+		}
+		// The last status broadcast must match a read. With nothing
+		// deferred, an input that ran publishes its settled state, and one
+		// that never marked processing publishes only a change. A deferred
+		// status the session's own state has since moved past is followed by
+		// it.
+		var publish bool
+		switch {
+		case len(pending) > 0:
+			publish = settled != nil && deferredStatus != "" && deferredStatus != status
+		case wasProcessing:
+			publish = true
+		default:
+			publish = settled != nil && *settled != previous
+		}
+		if publish && threadID != "" {
 			pending = append(pending, pendingAppNotification{
 				threadID: threadID,
 				ref:      ref,

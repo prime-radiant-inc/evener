@@ -556,3 +556,39 @@ func TestServerAppWireFinishPublishesTheSessionsRestingState(t *testing.T) {
 		t.Fatalf("statuses = %+v, want the finish to broadcast awaiting", statuses)
 	}
 }
+
+// A pass serve never marked processing (an autonomous wake it held at the
+// resting state) still broadcasts a state the session changed to meanwhile,
+// and broadcasts nothing when the state is unchanged.
+func TestServerAppWireFinishWithoutProcessingPublishesOnlyAChange(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_unmarked_pass")
+	srv.SetState("idle")
+	srv.FinishProcessing(func() string { return "idle" })
+	if statuses := statusNotifications(t, srv, "th_unmarked_pass"); len(statuses) != 0 {
+		t.Fatalf("statuses = %+v, want none for an unchanged state", statuses)
+	}
+	srv.FinishProcessing(func() string { return "awaiting" })
+	statuses := statusNotifications(t, srv, "th_unmarked_pass")
+	if len(statuses) != 1 || statuses[0].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want one awaiting", statuses)
+	}
+}
+
+// A deferred terminal status that the session's own state has since moved
+// past is followed by that state, so the last broadcast matches a read.
+func TestServerAppWireFinishFollowsADeferredStatusTheSessionMovedPast(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_deferred_moved")
+	srv.SetProcessingTurn("deferred-turn")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_deferred_moved", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
+	srv.FinishProcessing(func() string { return "awaiting" })
+
+	if read := readThreadOverWire(t, srv, "local:th_deferred_moved"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+	statuses := statusNotifications(t, srv, "th_deferred_moved")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want the last broadcast awaiting", statuses)
+	}
+}
