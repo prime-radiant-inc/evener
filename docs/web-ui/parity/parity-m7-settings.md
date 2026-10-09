@@ -235,7 +235,8 @@ Appwire: none — localStorage key `evener-hub.notifications` (JSON); OS toggle 
 - [ ] Every non-OS-gated commit + the loudScope radio change both dispatch `document`
       `CustomEvent("evener hub:notifications-changed", {detail:{key,value}})` and toast "Settings
       saved" — `assets/settings-notifications.js:27-36,64-75`
-- [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions & errors, default) vs `"all"` (Everything
+- [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions, reply requests, approvals & errors,
+      default; reply requests are `needsResponse` attention entries, #4093) vs `"all"` (Everything
       needing me); governs which state-transitions get OS notification + sound — title/favicon
       count always reflects everything regardless — `templates/partials/settings/notifications.html:45-54`,
       `assets/settings-notifications.js:89`
