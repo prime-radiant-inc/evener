@@ -1,6 +1,6 @@
 ---
 description: "Test helper 52 builds catalogs with prices in cents"
-tags: [tests, tests]
+tags: [tests]
 updated: 2026-08-10
 by: seed-fixture
 ---

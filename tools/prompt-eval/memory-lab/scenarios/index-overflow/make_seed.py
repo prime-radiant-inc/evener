@@ -51,17 +51,22 @@ def page(title, description, tags, updated, body):
             f"updated: {updated}\nby: seed-fixture\n---\n# {title}\n\n{body}")
 
 
-def main():
-    shutil.rmtree(SEED, ignore_errors=True)
-    os.makedirs(SEED)
+def seed_pages():
+    """The seed's pages, newest first, the target last."""
     pages = []
     for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), FILLER), 1):
         description = TOPICS[tag].format(n=n)
         pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
-                      "description": description, "tags": [tag] if n % 4 else [tag, "tests"],
+                      "description": description, "tags": [tag] if n % 4 or tag == "tests" else [tag, "tests"],
                       "updated": (NEWEST - datetime.timedelta(days=n - 1)).isoformat(),
                       "body": description + ".\n"})
-    pages.append(TARGET)
+    return pages + [TARGET]
+
+
+def main():
+    shutil.rmtree(SEED, ignore_errors=True)
+    os.makedirs(SEED)
+    pages = seed_pages()
     for p in pages:
         dest = os.path.join(SEED, p["path"])
         os.makedirs(os.path.dirname(dest), exist_ok=True)
