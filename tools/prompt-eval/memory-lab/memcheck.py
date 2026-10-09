@@ -16,9 +16,11 @@ new-pages     Looks only at project pages the stage wrote (not MEMORY.md, not
               --require-description is set and one has no description, or when
               --tags-subset-of is set and one has no tags or a tag outside the list.
 
+memory-lab check also imports seed_frontmatter_problem to vet scenario seeds.
+
 Standard library only; run `python3 -B test_memcheck.py` for its tests.
 """
-import argparse, glob, os, re, sys
+import argparse, glob, json, os, re, sys
 
 MAX_INDEX_LINE = 200
 
@@ -74,6 +76,35 @@ def parse_frontmatter(text):
         else:
             fields[key] = unquote(" ".join([value] + rest))
     return fields, tags
+
+
+# The frontmatter values a seed page may use: a JSON string, which is also a valid
+# YAML double-quoted scalar, a flow list of plain words, or one plain word or date.
+SEED_VALUE = re.compile(r'^(".*"|\[[\w-]+(, [\w-]+)*\]|[\w][\w.-]*)$')
+
+
+def seed_frontmatter_problem(text):
+    """Why a seeded page's frontmatter might not parse as YAML, or None when it will.
+
+    memory-lab check runs this over every seed page. Rather than parse YAML, it
+    accepts only `key: value` lines whose value is in SEED_VALUE: a bare value
+    holding ": " is invalid YAML, and the product lists a page whose
+    frontmatter fails to parse as "(frontmatter unreadable)" with no date."""
+    if text.split("\n", 1)[0].rstrip() != "---":
+        return None
+    block = split_frontmatter(text)
+    if block is None:
+        return "frontmatter has no closing ---"
+    for line in block:
+        m = re.match(r"^[A-Za-z_][\w-]*: (.*)$", line)
+        if not (m and SEED_VALUE.match(m.group(1))):
+            return f"frontmatter line {line!r} is not key: followed by a JSON string, a [word, ...] list or one word"
+        if m.group(1).startswith('"'):
+            try:
+                json.loads(m.group(1))
+            except ValueError as e:
+                return f"frontmatter line {line!r}: {e}"
+    return None
 
 
 def read(path):

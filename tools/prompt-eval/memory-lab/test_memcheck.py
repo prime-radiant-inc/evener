@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for memcheck.py. Run: python3 -B tools/prompt-eval/memory-lab/test_memcheck.py"""
-import contextlib, io, os, sys, tempfile, unittest
+import contextlib, glob, io, os, sys, tempfile, unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -108,6 +108,37 @@ class NewPages(Root):
     def test_page_without_frontmatter_fails_tag_reuse(self):
         self.put("projects/p/a.md", "# just text\n")
         self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a"), 1)
+
+
+class SeedFrontmatter(unittest.TestCase):
+    def test_quoted_description_word_tags_and_date_pass(self):
+        self.assertIsNone(memcheck.seed_frontmatter_problem(
+            '---\ndescription: "Cart rule 7: whole numbers"\ntags: [cart, tests]\nupdated: 2026-09-24\nby: seed-fixture\n---\n# T\n'))
+
+    def test_page_without_frontmatter_passes(self):
+        self.assertIsNone(memcheck.seed_frontmatter_problem("# Just a page\n\nkey: value\n"))
+
+    def test_plain_value_with_colon_space_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: Cart rule 7: whole numbers\n---\n"))
+
+    def test_plain_sentence_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: a plain sentence\n---\n"))
+
+    def test_continuation_line_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: >\n  folded\n---\n"))
+
+    def test_bad_json_string_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem('---\ndescription: "bad \\q escape"\n---\n'))
+
+    def test_unclosed_frontmatter_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: \"x\"\n"))
+
+    def test_index_overflow_seed_pages_all_pass(self):
+        seed = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios", "index-overflow", "seed")
+        pages = [p for p in glob.glob(os.path.join(seed, "**", "*.md"), recursive=True) if os.path.basename(p) != "MEMORY.md"]
+        self.assertEqual(len(pages), 120)
+        problems = [(p, memcheck.seed_frontmatter_problem(memcheck.read(p))) for p in pages]
+        self.assertEqual([pp for pp in problems if pp[1]], [])
 
 
 if __name__ == "__main__":

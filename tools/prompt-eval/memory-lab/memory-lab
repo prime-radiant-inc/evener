@@ -51,6 +51,9 @@ import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, sig
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True
+sys.path.insert(0, HERE)
+import memcheck  # next to this script
 PROJID = os.path.join(HERE, "bin", "projid")
 
 
@@ -944,7 +947,8 @@ def print_pass_rates(grades):
 
 def scenario_problems(scen):
     """Why scen can't run as written, or [] when it can: load_scenario must accept it and
-    return that scenario's own dict, and every fixture and seed dir it names must exist."""
+    return that scenario's own dict, every fixture and seed dir it names must exist, and every
+    seeded page's frontmatter must be in the YAML subset memcheck.seed_frontmatter_problem accepts."""
     try:
         with open(os.path.join(scen, "scenario.json")) as f:
             raw = json.load(f)
@@ -961,7 +965,15 @@ def scenario_problems(scen):
     dirs = [base_fixture(scen, spec)]
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
-    return [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    for st in spec["stages"]:
+        if st.get("seed_project_memory"):
+            seed = os.path.join(scen, st["seed_project_memory"])
+            for page in sorted(glob.glob(os.path.join(seed, "**", "*.md"), recursive=True)):
+                problem = memcheck.seed_frontmatter_problem(memcheck.read(page))
+                if problem:
+                    problems.append(f"{os.path.relpath(page, scen)}: {problem}")
+    return problems
 
 
 def cmd_check(args):
