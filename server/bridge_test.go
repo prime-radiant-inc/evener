@@ -319,6 +319,28 @@ func TestBridge_StatusSettledDuringATurnIsIgnored(t *testing.T) {
 	}
 }
 
+// A settled resting status that reaches the bridge after the session closed
+// never reopens it: closed wins.
+func TestBridge_StatusSettledAfterCloseIsIgnored(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
+
+	evs <- events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "s1", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}
+	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
+	close(evs)
+	<-done
+
+	if got := srv.GetStatus().State; got != "closed" {
+		t.Errorf("state: got %q, want closed", got)
+	}
+}
+
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)

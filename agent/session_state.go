@@ -689,11 +689,13 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 }
 
 // restAwaiting moves the session to awaiting if the rest numbered generation
-// can still arm, and reports whether it did.
+// can still arm, and reports whether it did. Queued input and user steering
+// are read again under the same hold as the transition, since neither starts
+// a turn the moment it arrives.
 func (s *Session) restAwaiting(generation uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) {
+	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.hasPendingUserSteeringLocked() {
 		return false
 	}
 	s.state = SessionAwaiting
