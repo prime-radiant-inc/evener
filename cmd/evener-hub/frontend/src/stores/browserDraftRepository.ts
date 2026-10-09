@@ -1,4 +1,5 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import type { ComposerMention, DocumentKey, HandoffResult } from "@evener/appwire-client";
+import { buildInput, formatAnnotationReference } from "@evener/appwire-client";
 import type {
   DraftBackingIdentity,
   DraftSessionToken,
@@ -11,7 +12,9 @@ import {
   decodeSupportedComposerDraft,
   draftStorageKey,
 } from "../panes/session/composer/draft";
-import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
+import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
+import { appendLiteralReference, type SkillEditorValue } from "../panes/session/composer/skillDocument";
+import type { ComposerPreparation } from "../panes/session/composer/sourceState";
 import {
   type NamespaceRow,
   nextSessionRow,
@@ -25,13 +28,28 @@ import {
 } from "./compositionRevision";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import {
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_EXPIRY_STORE,
+  ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
+  ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_PAYLOADS_STORE,
+  ANNOTATION_SEQUENCES_STORE,
+  type AnnotationExpiryRow,
+  type AnnotationHeadRow,
+  type AnnotationOperationRow,
+  type AnnotationPayloadRow,
+  annotationDocumentKey,
+  annotationExpiryKey,
   COMPOSER_DRAFTS_STORE,
   DRAFT_TRANSFERS_STORE,
   LOCAL_COMPOSITION_DATABASE_NAME,
   LOCAL_COMPOSITION_DATABASE_VERSION,
+  MUTATION_RECOVERY_STORE,
   registerLocalCompositionSchema,
 } from "./localCompositionSchema";
+import type { MutationRecoveryRecord } from "./mutationOutbox";
+import { applyRecoveryInput } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 
 // Owner-free browser draft repository. A durable session row carries one
@@ -64,6 +82,7 @@ export interface BrowserDraftRepository {
     stillAuthorized: () => boolean,
   ): Promise<DraftCommit>;
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
+  appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult>;
   transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }>;
   subscribe(listener: (key: BrowserDraftKey) => void): () => void;
   close(): void;
@@ -120,6 +139,40 @@ interface InspectedDraft {
 const STORAGE_WAIT_MS = 10_000;
 const DRAFT_STORES = [COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE] as const;
 const TRANSFER_STORES = [COMPOSER_DRAFTS_STORE, DRAFT_TRANSFERS_STORE, ANNOTATION_NAMESPACES_STORE] as const;
+// The one atomic append scope: the ordinary session row, the recovery record,
+// and every annotation store the append resolves or writes.
+const APPEND_STORES = [
+  COMPOSER_DRAFTS_STORE,
+  MUTATION_RECOVERY_STORE,
+  ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_HEADS_STORE,
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_PAYLOADS_STORE,
+  ANNOTATION_SEQUENCES_STORE,
+  ANNOTATION_EXPIRY_STORE,
+  ANNOTATION_NAMESPACES_STORE,
+] as const;
+
+export interface AppendAnnotationInput {
+  operationKey: string;
+  document: DocumentKey;
+  preparation: ComposerPreparation;
+  sourceId: string;
+  stillOwnsEdit: () => boolean;
+  documentStillEligible: () => boolean;
+  onAppendReadsIssued?: () => void;
+  beforeFinalGuard?: () => void;
+  beforeAbortableCompletion?: () => void;
+}
+
+export type AppendAnnotationResult =
+  | Exclude<HandoffResult, { state: "applied" }>
+  | {
+      state: "applied";
+      draftRevision: number;
+      token: DraftSessionToken;
+      value: SkillEditorValue;
+    };
 
 export function browserDraftKey(sessionRef: string, origin = location.origin): BrowserDraftKey {
   return { namespace: { kind: "browser", origin }, sessionRef };
@@ -381,6 +434,151 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     } catch {
       return { cleared: false, draftUnchanged, persistence: "pending" };
     }
+  }
+
+  async appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult> {
+    const preparation = input.preparation;
+    return this.#transaction(
+      APPEND_STORES,
+      "readwrite",
+      undefined,
+      async (transaction): Promise<AppendAnnotationResult> => {
+        const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
+        const operation = await requestResult<AnnotationOperationRow | undefined>(operations.get(input.operationKey));
+        if (!operation) return { state: "cancelled" };
+        if (operation.state === "applied") return { state: "already-applied", draftRevision: operation.draftRevision };
+        if (operation.state === "cancelled") return { state: "cancelled" };
+        const documentKey = annotationDocumentKey(input.document);
+        const reads = Promise.all([
+          readNamespaceRow(transaction, preparation.key.namespace),
+          readSessionRow(transaction, preparation.key),
+          requestResult<AnnotationHeadRow | undefined>(
+            transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
+          ),
+          requestResult<AnnotationPayloadRow | undefined>(
+            transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(operation.payloadKey),
+          ),
+          requestResult<AnnotationExpiryRow | undefined>(
+            transaction.objectStore(ANNOTATION_EXPIRY_STORE).get(annotationExpiryKey(documentKey, operation.epoch)),
+          ),
+          requestResult<AnnotationOperationRow[]>(operations.getAll()),
+          preparation.backing.kind === "recovery"
+            ? requestResult<MutationRecoveryRecord | undefined>(
+                transaction.objectStore(MUTATION_RECOVERY_STORE).get(preparation.backing.recoveryId),
+              )
+            : Promise.resolve(undefined),
+        ]);
+        // All IDB prerequisites are outstanding; the transaction is untouched by
+        // this synchronous observation.
+        input.onAppendReadsIssued?.();
+        const [namespace, row, head, payload, expiry, allOperations, recovery] = await reads;
+        if (
+          !namespace ||
+          !head ||
+          !payload ||
+          expiry ||
+          operation.documentKey !== documentKey ||
+          operation.sessionKey !== serializeSessionKey(preparation.key) ||
+          operation.namespaceIncarnation !== namespace.incarnation ||
+          head.namespaceIncarnation !== namespace.incarnation ||
+          head.epoch !== operation.epoch ||
+          payload.epoch !== operation.epoch ||
+          input.document.namespace.kind !== "browser" ||
+          input.document.namespace.origin !== preparation.key.namespace.origin ||
+          input.document.sessionRef !== preparation.key.sessionRef ||
+          operation.destination.kind !== "browser-origin" ||
+          operation.destination.compositionOwnerId !== input.sourceId
+        ) {
+          return { state: "cancelled" };
+        }
+        if (
+          allOperations.some(
+            (candidate) =>
+              candidate.sessionKey === operation.sessionKey &&
+              candidate.namespaceIncarnation === namespace.incarnation &&
+              candidate.state === "pending" &&
+              candidate.sessionSequence < operation.sessionSequence,
+          )
+        ) {
+          return { state: "pending", reason: "dirty-draft" };
+        }
+        if (
+          !row ||
+          row.token.namespaceIncarnation !== namespace.incarnation ||
+          !sameSessionToken(row.token, preparation.token)
+        ) {
+          return { state: "pending", reason: "revision-conflict" };
+        }
+        if (
+          preparation.backing.kind === "recovery" &&
+          (!recovery || recovery.targetRef !== preparation.key.sessionRef)
+        ) {
+          return { state: "pending", reason: "owner-unavailable" };
+        }
+        const reference = formatAnnotationReference(
+          payload.operation.capture,
+          input.document.path,
+          payload.operation.note,
+        );
+        let value: SkillEditorValue;
+        let nextRecovery: MutationRecoveryRecord | undefined;
+        if (preparation.backing.kind === "recovery" && recovery) {
+          const current = recoveryComposerDraft(recovery);
+          const next = appendLiteralReference(current, reference);
+          nextRecovery = applyRecoveryInput(
+            recovery,
+            buildInput(
+              next.text,
+              next.attachments.map((attachment) => ({
+                marker: attachment.marker,
+                mediaType: attachment.mediaType,
+                data: attachment.data ?? "",
+                name: attachment.name,
+              })),
+              next.skillNames,
+              next.commandNames,
+              next.mentions,
+            ),
+            recovery.attachments,
+            next.text,
+            next.mentions,
+          );
+          value = next;
+        } else {
+          value = appendLiteralReference(row, reference);
+        }
+        const nextRow = nextSessionRow(row, preparation.backing.kind === "draft" ? value : undefined);
+        // Every asynchronous prerequisite and construction precedes this guard.
+        input.beforeFinalGuard?.();
+        if (!input.documentStillEligible()) return { state: "cancelled" };
+        if (!input.stillOwnsEdit()) return { state: "pending", reason: "owner-unavailable" };
+        const writes: Promise<unknown>[] = [requestResult(putSessionRow(transaction, nextRow))];
+        if (nextRecovery) {
+          writes.push(requestResult(transaction.objectStore(MUTATION_RECOVERY_STORE).put(nextRecovery)));
+        }
+        const { destination: _destination, payloadKey: _payloadKey, ...terminal } = operation;
+        writes.push(
+          requestResult(
+            operations.put({ ...terminal, state: "applied", draftRevision: nextRow.token.sessionRevision }),
+          ),
+        );
+        const written = Promise.all(writes);
+        try {
+          input.beforeAbortableCompletion?.();
+        } catch (error) {
+          tryAbortTransaction(transaction);
+          await written.catch(() => undefined);
+          throw error;
+        }
+        await written;
+        return {
+          state: "applied",
+          draftRevision: nextRow.token.sessionRevision,
+          token: nextRow.token,
+          value,
+        };
+      },
+    );
   }
 
   async transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }> {
