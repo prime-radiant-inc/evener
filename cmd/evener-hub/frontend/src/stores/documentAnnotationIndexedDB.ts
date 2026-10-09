@@ -209,14 +209,6 @@ function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoc
   return JSON.stringify([documentKey, namespaceIncarnation, epoch]);
 }
 
-// Deterministic evidence key for an epoch's retained comparable baseline. It is
-// deliberately distinct from the head's current-display evidence, so an
-// inconclusive read can advance the display without erasing the evidence needed
-// to detect a later definite change. The row is removed with its epoch.
-function annotationBaselineEvidenceKey(epoch: string): string {
-  return JSON.stringify(["annotation-baseline", epoch]);
-}
-
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
   readonly #connection: IDBConnection;
   readonly #options: DocumentAnnotationOptions;
@@ -451,35 +443,37 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         ) {
           return { kind: "stale" } as const;
         }
-        // Compare against the epoch's RETAINED comparable baseline, not the
-        // head's current-display evidence: an inconclusive compatible read may
-        // advance the display without erasing the evidence that detects a later
-        // definite change. A head opened by beginRead has no baseline row yet.
-        let baseline: AnnotationEvidenceRow | undefined;
-        if (head) {
-          baseline = await requestResult<AnnotationEvidenceRow | undefined>(
-            transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(annotationBaselineEvidenceKey(head.epoch)),
-          );
-        }
-        const contentChanged =
-          baseline === undefined
-            ? false
-            : compareDisplayedSources(
-                {
-                  source: baseline.content.text,
-                  evidence: {
-                    wholeRevision: baseline.content.revision,
-                    fingerprint: displayedFingerprint(baseline.content.text, baseline.content.truncated),
-                  },
+        // Compare against EVERY retained comparable observation of the current
+        // epoch, not just the first. An accepted prefix or revision-less read is
+        // legitimately incomplete, so a change is definite only when it is
+        // definite against some observation that was actually accepted; a later
+        // richer observation must therefore be consulted too. Missing or
+        // inconclusive evidence alone never expires notes.
+        const currentEpoch = head?.epoch;
+        const retained = currentEpoch
+          ? (
+              await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll())
+            ).filter((row) => row.documentKey === documentKey && row.epoch === currentEpoch)
+          : [];
+        const contentChanged = retained.some(
+          (observation) =>
+            compareDisplayedSources(
+              {
+                source: observation.content.text,
+                evidence: {
+                  wholeRevision: observation.content.revision,
+                  fingerprint: displayedFingerprint(observation.content.text, observation.content.truncated),
                 },
-                {
-                  source: content.text,
-                  evidence: {
-                    wholeRevision: content.revision,
-                    fingerprint: displayedFingerprint(content.text, content.truncated),
-                  },
+              },
+              {
+                source: content.text,
+                evidence: {
+                  wholeRevision: content.revision,
+                  fingerprint: displayedFingerprint(content.text, content.truncated),
                 },
-              ).changed;
+              },
+            ).changed,
+        );
         // A locally confirmed suppression keeps the current durable epoch dead even
         // when content reverts, so an unchanged reversion still fences instead of
         // resurrecting the old note.
@@ -502,19 +496,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           displayedSnapshotId: createSecureUUID(),
           evidenceKey,
         };
-        if (baseline === undefined) {
-          // Establish this epoch's retained comparable baseline under a
-          // deterministic epoch key. It also covers a head opened by beginRead
-          // that has no evidence row yet.
-          await requestResult(
-            transaction.objectStore(ANNOTATION_EVIDENCE_STORE).put({
-              evidenceKey: annotationBaselineEvidenceKey(epoch),
-              documentKey,
-              epoch,
-              content,
-            } satisfies AnnotationEvidenceRow),
-          );
-        }
         await requestResult(
           transaction
             .objectStore(ANNOTATION_EVIDENCE_STORE)
@@ -611,15 +592,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction
           .objectStore(ANNOTATION_EVIDENCE_STORE)
           .put({ evidenceKey: fencedEvidenceKey, documentKey, epoch: replacementEpoch, content }),
-      );
-      // The replacement epoch also needs its own retained comparable baseline.
-      await requestResult(
-        transaction.objectStore(ANNOTATION_EVIDENCE_STORE).put({
-          evidenceKey: annotationBaselineEvidenceKey(replacementEpoch),
-          documentKey,
-          epoch: replacementEpoch,
-          content,
-        } satisfies AnnotationEvidenceRow),
       );
       await requestResult(
         transaction.objectStore(ANNOTATION_HEADS_STORE).put({

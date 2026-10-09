@@ -3,10 +3,12 @@
 
 import {
   type AcceptedReadResult,
+  type AcceptedSourceLease,
   type AnnotationView,
   buildInput,
   type ComposerMention,
   type DestinationProvenance,
+  type DocFileContent,
   type DocumentKey,
   displayedFingerprint,
   type PreparedAnnotation,
@@ -2746,4 +2748,136 @@ it("expires when a revision-less read intervenes before a definite revision chan
   // The same text at a DEFINITE new revision must expire the old epoch.
   const changed = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-B"));
   expect(changed.state).toBe("expiry-pending");
+});
+
+// An accepted, richer observation must itself become durable comparison evidence.
+// Save a real operation under the richer lease, recreate the adapter on the SAME
+// database with the SAME still-live target, then require the later definite change
+// to fence and expire that operation before any deletion is requested.
+async function evidenceGrowthExpiry(
+  f: Awaited<ReturnType<typeof fixture>>,
+  fresh: DocumentKey,
+  richerLease: AcceptedSourceLease,
+  operationId: string,
+  finalContent: DocFileContent,
+): Promise<void> {
+  // Backing baseline is captured after the fixture's pending predecessor was
+  // settled through its real handoff, so FIFO cannot mask the operation below.
+  const ordinaryBefore = await f.drafts.load(f.key);
+  const recoveryBefore = await f.outbox.getRecovery("rec-1");
+  if (!ordinaryBefore || !recoveryBefore) throw new Error("fixture baseline rows missing");
+  const textBefore = f.source.getSnapshot().text;
+  const operation = preparedAnnotationFromLease(richerLease, operationId, "growth note", f.destination, "rev-A");
+  expect((await f.repo.saveAnnotation(operation)).operationId).toBe(operationId);
+  const operationKey = annotationOperationKey(fresh.namespace, operationId);
+  const saved = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).find((row) => row.operationKey === operationKey);
+  if (!saved) throw new Error("saved operation row missing");
+
+  // Close the first adapter, then use the replacement for every later call. The
+  // target resolves the real still-alive source, so a missing target cannot
+  // masquerade as expiry protection.
+  f.repo.close();
+  const replacement = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => f.source,
+  });
+  cleanupAfterTest(() => replacement.close());
+
+  const changed = await replacement.acceptRead(await replacement.beginRead(fresh), finalContent);
+  expect(changed.state).toBe("expiry-pending");
+  if (changed.state !== "expiry-pending" || !changed.receipt) throw new Error("changed read did not fence");
+  const receipt = changed.receipt;
+  expect(receipt.key).toEqual(fresh);
+  expect(receipt.expiredEpoch).toBe(saved.epoch);
+
+  // The fence alone must already unlist and cancel the old operation while every
+  // backing, its revision token and the composer text stay unchanged. This runs
+  // BEFORE deletion is requested, pinning the fenced-before-deletion contract.
+  expect((await replacement.listAnnotations(fresh)).map((view) => view.operation.operationId)).not.toContain(
+    operationId,
+  );
+  expect((await replacement.handoff(fresh, operationId)).state).toBe("cancelled");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+  expect((await f.drafts.load(f.key))?.token.sessionRevision).toBe(ordinaryBefore.token.sessionRevision);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+  const attachmentBeforeFinish = (await f.outbox.getRecovery("rec-1"))?.attachments[0];
+  if (!attachmentBeforeFinish) throw new Error("recovery attachment lost before deletion");
+  expect(await blobBytes(attachmentBeforeFinish.blob)).toEqual(new Uint8Array([1]));
+  expect(f.source.getSnapshot().text).toBe(textBefore);
+
+  await replacement.finishExpiry(receipt);
+
+  // Fresh row reads: the old operation is unlisted and terminally cancelled, its
+  // payload row is deleted, and neither backing nor composer text moved.
+  expect((await replacement.listAnnotations(fresh)).map((view) => view.operation.operationId)).not.toContain(
+    operationId,
+  );
+  expect(
+    (await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).find(
+      (row) => row.operationKey === operationKey,
+    )?.state,
+  ).toBe("cancelled");
+  expect((await replacement.handoff(fresh, operationId)).state).toBe("cancelled");
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+      (row) => row.payloadKey === operationKey,
+    ),
+  ).toBe(false);
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+  expect((await f.drafts.load(f.key))?.token.sessionRevision).toBe(ordinaryBefore.token.sessionRevision);
+  expect(f.source.getSnapshot().text).toBe(textBefore);
+  const attachmentAfter = (await f.outbox.getRecovery("rec-1"))?.attachments[0];
+  if (!attachmentAfter) throw new Error("recovery attachment lost");
+  expect(attachmentAfter).toMatchObject(attachmentIdentity);
+  expect(await blobBytes(attachmentAfter.blob)).toEqual(new Uint8Array([1]));
+}
+
+// A revision acquired after a revision-less full read is richer evidence: it
+// establishes a definite revision change that a later rev-B must detect even
+// though the first observation carried no revision. Must expire, not accept.
+it("expires when a definite revision arrives after a revision-less full first observation", async () => {
+  const f = await fixture("growth-revision");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const fresh: DocumentKey = { ...f.document, path: "GROWTH-REV.md" };
+
+  const first = await f.repo.acceptRead(await f.repo.beginRead(fresh), docContent(SOURCE, undefined));
+  expect(first.state).toBe("accepted");
+  if (first.state !== "accepted") throw new Error("first observation not accepted");
+
+  const richer = await f.repo.acceptRead(await f.repo.beginRead(fresh), docContent(SOURCE, "rev-A"));
+  expect(richer.state).toBe("accepted");
+  if (richer.state !== "accepted") throw new Error("richer observation not accepted");
+  // The richer observation advances the SAME epoch it was accepted into.
+  expect(richer.lease.epoch).toBe(first.lease.epoch);
+
+  await evidenceGrowthExpiry(f, fresh, richer.lease, "growth-rev-op", docContent(SOURCE, "rev-B"));
+});
+
+// Full coverage acquired after an initial prefix is richer evidence too: the
+// prefix-only baseline must not let a later changed full source pass. Increased
+// coverage alone is accepted in the same epoch and its valid save succeeds.
+it("expires when full coverage arrives after an initial prefix observation", async () => {
+  const f = await fixture("growth-prefix");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const fresh: DocumentKey = { ...f.document, path: "GROWTH-PREFIX.md" };
+
+  const prefix = await f.repo.acceptRead(
+    await f.repo.beginRead(fresh),
+    docContent(SOURCE.slice(0, 10), undefined, true),
+  );
+  expect(prefix.state).toBe("accepted");
+  if (prefix.state !== "accepted") throw new Error("prefix observation not accepted");
+
+  const full = await f.repo.acceptRead(await f.repo.beginRead(fresh), docContent(SOURCE, "rev-A"));
+  expect(full.state).toBe("accepted");
+  if (full.state !== "accepted") throw new Error("full observation not accepted");
+  // The full observation advances the SAME epoch it was accepted into.
+  expect(full.lease.epoch).toBe(prefix.lease.epoch);
+
+  await evidenceGrowthExpiry(f, fresh, full.lease, "growth-prefix-op", docContent(`${SOURCE}changed\n`, "rev-B"));
 });
