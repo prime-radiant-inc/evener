@@ -888,7 +888,7 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 			defer unblock()
 			var reads atomic.Int32
 			var indexReads atomic.Int32
-			cfg := SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project", clock: clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+			cfg := SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project", clock: clk, testOnly: testConfig{memoryRealBudget: true, memoryBeforeIO: func(scope, op string) error {
 				if scope == "project" && op == "index_read" {
 					healthyStarted <- struct{}{}
 				}
@@ -987,7 +987,7 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 			if mode == "close-setup" {
 				operation = "setup"
 			}
-			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project", clock: clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project", clock: clk, testOnly: testConfig{memoryRealBudget: true, memoryBeforeIO: func(scope, op string) error {
 				if op == operation {
 					started <- scope
 					<-release
