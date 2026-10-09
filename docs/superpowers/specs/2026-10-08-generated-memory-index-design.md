@@ -71,13 +71,13 @@ The existing machinery (`memoryIndexBaseline`, `memoryIndexLineChanges`, the 2 K
 - a page another session deleted shows as `- line`;
 - a description, tag or stamp change shows as `- old` and `+ new`.
 
-A session's own `memory_write`, `memory_edit` or `memory_delete` of any page re-renders the index after the write and makes that rendering the session's new baseline (today only a write to `MEMORY.md` does this), so its own change is never reported back to it.
+A session's own `memory_write`, `memory_edit` or `memory_delete` of any page reads that page back and patches the session's baseline: the page's old line is replaced by its new one, or dropped for a delete, so its own change is never reported back to it. Only that line changes, so pages other sessions changed since the last boundary still reach the next one as changes.
 
-Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn, own writes) and runs under the same off-loop read and 250 ms wait.
+Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn) and runs under the same off-loop read and 250 ms wait. An own write reads back only the page it wrote.
 
 ## Migration
 
-The first time Evener renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Migration takes no lock:
+The first time a session with `memory_write`, `memory_edit` and `memory_delete` renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Any other session never migrates, because migration edits pages and removes the root index; it renders the pages as they are, with fallback descriptions, until a writing session migrates. Migration takes no lock:
 1. Parse each line of the old index for a Markdown link to a page in the scope (`[text](path)` or a bare `path.md`). The rest of the line, with the link and leading list markers and separators (`-`, `—`, `:`) stripped, is that page's description.
 2. For each linked page that exists and has no `description` in its frontmatter, write that description into its frontmatter. Pages that already have a description keep it. Migration does not stamp `updated`/`by`.
 3. Rename the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched). An earlier backup is never replaced: when the name is taken, the file goes to the first free name of `.MEMORY.md.pre-generated.2`, `.3` and so on, because an older build sharing the scope can write `MEMORY.md` again after migration.

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -177,6 +178,54 @@ func TestIsMemoryPagePathExcludesTheRootIndexInAnyCase(t *testing.T) {
 	} {
 		if got := isMemoryPagePath(rel); got != want {
 			t.Errorf("isMemoryPagePath(%q)=%v, want %v", rel, got, want)
+		}
+	}
+}
+
+// A name whose case differs from the only listed name matching it resolves
+// to that name; an exact match wins, and an ambiguous or missing one does not
+// resolve.
+func TestMatchMemoryNameCase(t *testing.T) {
+	t.Parallel()
+	listed := map[string]bool{"notes.md": true, "a.md": true, "A.md": true, "Exact.md": true, "exact.md": true}
+	for _, tc := range []struct {
+		link, want string
+		ok         bool
+	}{
+		{"notes.md", "notes.md", true},
+		{"Notes.md", "notes.md", true},
+		{"Exact.md", "Exact.md", true},
+		{"a.MD", "", false},
+		{"missing.md", "", false},
+	} {
+		if got, ok := matchMemoryNameCase(tc.link, maps.Keys(listed)); got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got %q, %t; want %q, %t", tc.link, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// Each segment of a path takes the spelling its directory lists, matched
+// ignoring case on any filesystem; a segment its directory doesn't list, and
+// everything below it, is kept as given.
+func TestListedMemoryPagePath(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	if err := os.MkdirAll(filepath.Join(scope, "Notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"fact.md", filepath.Join("Notes", "x.md")} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte("body\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]string{
+		"fact.md": "fact.md", "Notes/x.md": "Notes/x.md",
+		"Fact.md": "fact.md", "notes/X.md": "Notes/x.md",
+		"new.md": "new.md", "New/y.md": "New/y.md",
+	}
+	for rel, listed := range want {
+		if got := listedMemoryPagePath(env, rel); got != listed {
+			t.Fatalf("%s: got %q, want %q", rel, got, listed)
 		}
 	}
 }

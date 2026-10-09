@@ -70,11 +70,13 @@ func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
 	return match, true
 }
 
-// listedMemoryPagePath is the slash path the scope lists the file at rel
-// under, which on a case-insensitive filesystem can differ from rel's case:
-// rel with each segment in its directory's case (matchMemoryNameCase). From
-// the first directory that can't be listed, such as one a write is about to
-// create, the rest of rel stays as it is.
+// listedMemoryPagePath is rel with each segment in the case its directory
+// lists it (matchMemoryNameCase, which ignores case on any filesystem). For a
+// file rel names, that is the path the scope lists it under, which on a
+// case-insensitive filesystem can differ from rel's case; on a case-sensitive
+// one the exact name is listed and wins. From the first directory that can't
+// be listed, such as one a write is about to create, the rest of rel stays as
+// it is.
 func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
 	listed := ""
 	segments := strings.Split(rel, "/")

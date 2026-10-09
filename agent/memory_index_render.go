@@ -132,8 +132,8 @@ func memoryTagsHeader(pages []memoryPage) string {
 	return "Tags: " + strings.Join(parts, ", ")
 }
 
-// memoryNotShownLine closes a projection that leaves rest out: how many pages
-// and their tags, most common first, then the routes to them.
+// memoryNotShownLine closes a projection that leaves rest out: how many pages,
+// then their tags with counts, most common first, then the untagged count.
 func memoryNotShownLine(rest []memoryPage) string {
 	counts, untagged := memoryTagCounts(rest)
 	tags := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {

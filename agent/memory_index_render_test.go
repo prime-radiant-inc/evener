@@ -110,7 +110,7 @@ func TestMemoryNotShownLine(t *testing.T) {
 	}
 }
 
-// Review Focus 2: one page larger than the whole budget is never cut mid-line.
+// One page larger than the whole budget is never cut mid-line.
 func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	t.Parallel()
 	pages := []memoryPage{
@@ -126,7 +126,7 @@ func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	}
 }
 
-// Ruling 13: a header too large to fit is cut at the budget, still truncated.
+// A tag header too large to fit is cut at the budget, still truncated.
 func TestProjectMemoryIndexOversizedHeader(t *testing.T) {
 	t.Parallel()
 	var pages []memoryPage

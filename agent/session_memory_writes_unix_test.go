@@ -36,7 +36,7 @@ func TestMemoryStampFailureKeepsTheDescriptionNote(t *testing.T) {
 	}
 	defer release()
 	notes := s.stampMemoryPage(env, filepath.Join("locked", "p.md"))
-	if !strings.HasPrefix(notes, "\n\nEvener could not stamp this page's updated date: ") || !strings.HasSuffix(notes, memoryMissingDescriptionNote) {
+	if !strings.HasPrefix(notes, memoryStampFailedNote) || !strings.HasSuffix(notes, memoryMissingDescriptionNote) {
 		t.Fatalf("notes=%q", notes)
 	}
 }

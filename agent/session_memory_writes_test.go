@@ -25,7 +25,8 @@ func memoryOwnStamps(s *Session) string {
 	return "updated: " + s.sclock().Now().UTC().Format(time.DateOnly) + "\n" + memoryYAMLField("by", s.ID())
 }
 
-// Review Focus 3.
+// Writing, editing or deleting the root MEMORY.md, in any letter case, is
+// refused; sub/MEMORY.md is an ordinary page.
 func TestMemoryIndexWritesRefused(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
@@ -97,7 +98,8 @@ func TestMemoryWriteNotesMissingDescription(t *testing.T) {
 	}
 }
 
-// Review Focus 1.
+// A written page whose frontmatter is not valid YAML gets a note asking to
+// fix it.
 func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 	t.Parallel()
 	s, _ := memoryWritesSession(t)
