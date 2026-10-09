@@ -104,16 +104,21 @@ protocol catalog (`docs/appwire-protocol.md`) with `make generate`.
 
 **Projection.** `appwireDelegateInfo(data events.DelegateUpdatedData)` fills the
 two fields from `data.PacketKind`/`data.Message` when the snapshot is settled
-with a reported packet, using the same trim, byte bound
+with a reported packet, and applies the same trim, byte bound
 (`activityMaxReportPreviewBytes`) and proof-of-truncation rule as
-`agent/session_activity_delegates.go`. Extract that bounding into one shared,
-exported helper in the agent package and call it from both the read projection
-and the projector, so the two cannot drift. Bound the frame's other prose fields
-the same way the read does — `task`, `description`, `reason`, `error`,
-`notResumableReason`, `model` — so a merge can never widen a row the read bounds.
-`appwireDelegateInfo` also sets `LogicalOwnerSessionID` the way
-`sessionActivityDelegateOwner` derives it. `mergeAppwireDelegateInfo` orders by
-`projectionRevision` then `latestActivityAt` like every other field.
+`agent/session_activity_delegates.go`. Put that bounding in a **leaf** package
+both `agent` and `internal/appprojector` can import (the precedent is
+`agent/sandbox`): the projector cannot import package `agent`, because package
+`agent`'s own tests import the projector and `make test` would fail with an
+import cycle. Bound the frame's other prose fields the same way the read does —
+`task`, `description`, `reason`, `error`, `notResumableReason`, `model`, and the
+`worktree` strings — so a merge can never widen a row the read bounds.
+`appwireDelegateInfo` sets `LogicalOwnerSessionID` from
+`data.AncestorSessionIDs[0]` (nearest ancestor) when present, else
+`data.OwnerSessionID` — the same result as `sessionActivityDelegateOwner`, and
+derivable from the event without the durable tree (the runtime already sets the
+ancestry). `mergeAppwireDelegateInfo` orders by `projectionRevision` then
+`latestActivityAt` like every other field.
 
 **Invalidation.** Unchanged. The daemon keeps emitting
 `evener/thread/activity/changed {summary, delegates}` for every delegate change —
@@ -133,7 +138,9 @@ under-invalidating a count. Revisit only against a measured win.
    `session` store accepts only `logicalOwnerSessionId === context.sessionId`,
    and `subtree` accepts the thread's own subtree. Keep `ownerRef`, `rootRef`,
    `childRef`, and `name` from the loaded row; take the value fields from the
-   frame, bounded by the same helper as the read.
+   frame, bounded by the same helper as the read. A frame for an unknown delegate
+   never adds a row — step 3 reads instead — so a push updates in place and never
+   invents one.
 2. Order every contribution by the projector's own order — `projectionRevision`
    (strictly greater wins), else `latestActivityAt` (`mergeAppwireDelegateInfo`;
    `runGeneration` is not compared there, because a run start increments
@@ -149,16 +156,21 @@ under-invalidating a count. Revisit only against a measured win.
    A root read reconciles only to the displayed boundary, so a delegate beyond
    the loaded extent can never be adopted by that read; without the per-ID bound,
    every later frame for it would re-read. A genuinely new delegate sorts into
-   the first page the read returns and is adopted.
+   the first page the read returns and is adopted. Clear the seen-unknown set on
+   session replacement and dispose so it cannot grow for the store's lifetime.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
    as today, but do not refresh `delegates`. `evener/thread/resync` still
    refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
 6. Treat a response whose context `epoch` differs from the loaded one as a source
    replacement and read the collection afresh. Today the store compares epochs
-   only on non-root page reads (`sessionActivityStore.ts`), so this comparison
-   must also cover a root read and the summary. The invalidation carries no
-   epoch, so a response is the only place to see it.
+   only on non-root page reads (`sessionActivityStore.ts:428`), and only when
+   `read.epoch` is already set (it is assigned after that branch, at `:473`).
+   Extending the comparison to a root read must (a) skip it while the stored
+   epoch is unset — otherwise the first read of every store mismatches
+   `undefined !== epoch` and loops — and (b) record the new epoch before
+   restarting. The invalidation carries no epoch, so a response is the only place
+   to see it.
 
 **Web.** The Agents tab, the Activity sheet, the transcript entity view, the
 status bar, and the session chrome consume the store unchanged; the merge makes
@@ -166,8 +178,13 @@ rows update without a re-read. `ActivityPageBoundary` already presents nothing
 for a background refresh.
 
 **Native.** The subagent tree consumes the same store rows; its report text now
-arrives on the frame. Its tests emit the pushed frame instead of a bare
-invalidation (five tests today).
+arrives on the frame. Its update and stop tests emit the pushed frame instead of
+a bare invalidation. The **list-shrink** case cannot: a removal has no frame
+(that is the membership ruling), so that test must trigger a still-reading owner
+instead — `evener/thread/resync`, a reconnect, or a re-observe. The test
+fixture's compile-time exhaustiveness guard
+(`mobile-native/src/subagents/sessionActivityTestUtils.ts`) must be extended for
+the new row field, or `make test-native`/`test-web` typecheck fails.
 
 **TUI.** `cmd/evener-tui/hub_notifications.go` already consumes
 `evener/delegate/updated`; it gains the preview field with no contract change.
@@ -250,6 +267,14 @@ fallback.
   current `ownerSessionId` check gets wrong.
 - **Read revision.** The served `SessionDelegate.ProjectionRevision` is populated
   and non-zero, so a read seeds the merge order.
+- **Helper home.** The shared prose-bound helper lives in a leaf package both
+  `agent` and `internal/appprojector` import; `make test` compiles with no import
+  cycle.
+- **Epoch guard.** Extending the epoch comparison to root reads neither loops on
+  the first read nor misses a real epoch change, and records the new epoch.
+- **Native shrink.** The list-shrink case recovers through resync, reconnect, or
+  a re-observe rather than a frame; the native fixture's exhaustiveness guard
+  covers the new row field and typechecks.
 - **Roster.** `SlimDelegateForRoster` strips the preview fields; a thread/read
   roster row never carries them.
 - **Ordering.** The total order matches the projector's; a read seeds the map; a
@@ -277,6 +302,9 @@ fallback.
 | --- | --- |
 | Push/read preview drift | Shared bounding helper; parity test. |
 | Wrong scope filter | scope by the frame's logical owner, never `ownerSessionId` (always the root). |
+| Shared helper import cycle | leaf package importable by both `agent` and `internal/appprojector`. |
+| Root-epoch guard loops | skip while the stored epoch is unset; record the new epoch before restart. |
+| Native fixture typecheck | extend the exhaustiveness guard for the new row field. |
 | Read clobbers a newer frame | each read row joins the order; keep the newer of read and applied. |
 | Stale row from an out-of-order frame | `runGeneration` + `projectionRevision` + `latestActivityAt`, matching the projector. |
 | Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
@@ -302,8 +330,8 @@ All resolved 2026-10-09.
 | Wire + generated | `appwire/types.go`, `appwire/session_activity.go`, `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md` |
 | Roster slimming | `appwire/delegate_roster.go`, `server/appwire_runtime.go` |
 | Capability plumbing | `SessionActivityContext` field, set by the producing daemon (`agent/session_activity*.go`) and the retained loader; the hub passes it through (`cmd/evener-hub/app_session_activity.go`, `internal/appsource`) |
-| Producer | `internal/appprojector/appwire_projection.go`, `agent/session_activity_delegates.go` (shared bound) |
+| Producer | `internal/appprojector/appwire_projection.go`, `agent/session_activity_delegates.go`, and one leaf package for the shared prose-bound helper |
 | Shared store | `appwire-client/typescript/sessionActivityStore.ts`, `.test.ts` |
 | Web | `cmd/evener-hub/frontend/src/shell/activitybar/ActivityPageBoundary.tsx` (done), `activityApi.test.tsx` |
-| Native | `mobile-native/src/subagentRows.test.tsx`, `src/subagents/SubagentsScreen.test.tsx`, `src/ConversationScreen.send.test.tsx` |
+| Native | `mobile-native/src/subagentRows.test.tsx`, `src/subagents/SubagentsScreen.test.tsx`, `src/ConversationScreen.send.test.tsx`, `src/subagents/sessionActivityTestUtils.ts` (exhaustiveness guard) |
 | Docs | `docs/product/session-activity.md`, `docs/design/session-activity-api.md`, `docs/product/subsystems.md` if ownership moves |
