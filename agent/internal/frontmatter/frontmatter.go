@@ -26,9 +26,9 @@ func Split(raw string) (block, body string, ok bool) {
 		return "", raw, false
 	}
 	// The closing delimiter starts a line, so "a---\n" ending a value is not
-	// one. The leading "\n" lets a delimiter right after the opening one match;
-	// end is then where the delimiter starts in rest.
-	end := strings.Index("\n"+rest, "\n"+delimiter)
+	// one. Searching from the opening delimiter's "\n" lets a delimiter right
+	// after it match; end is then where the delimiter starts in rest.
+	end := strings.Index(raw[len(delimiter)-1:], "\n"+delimiter)
 	if end < 0 {
 		// Opening delimiter but no closing delimiter: treat as no frontmatter.
 		return "", raw, false
