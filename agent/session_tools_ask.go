@@ -721,10 +721,11 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
 // input on past it), and that call alone records its end reason in its
 // result's tool state, so this looks for that state among the input's
-// rounds: the turns sharing the decisive turn's TurnID. A history without
-// turn ids predates end_reason, so only the decisive round is read there.
-// Two narrow cases can still differ from live: a round a recovery reopen
-// reran under the same TurnID, and rounds a mid-input compaction dropped.
+// rounds: the turns sharing the decisive turn's TurnID. The latest state
+// wins, because a recovery reopen reruns an input under the same TurnID and
+// the rerun's own accepted call is the one live settled on. A history
+// without turn ids predates end_reason, so only the decisive round is read
+// there. Rounds a mid-input compaction dropped can still differ from live.
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 	turnID := history[toolResultsIdx].TurnID
 	for j := toolResultsIdx; j >= 0; j-- {
@@ -740,8 +741,8 @@ func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 				continue
 			}
 			var state communicateEndState
-			if json.Unmarshal(part.ToolResult.ToolState, &state) == nil && state.EndReason == tool.CommunicateEndReasonNeedsResponse {
-				return true
+			if json.Unmarshal(part.ToolResult.ToolState, &state) == nil && state.EndReason != "" {
+				return state.EndReason == tool.CommunicateEndReasonNeedsResponse
 			}
 		}
 	}
