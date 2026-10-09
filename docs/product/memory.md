@@ -71,18 +71,24 @@ written: the agent checks that a file, function, command or setting a note names
 still exists before relying on it, and follows a recorded decision or rule
 unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint, decision or unfinished
-work (saved to project memory), and when the agent learns
+done, when the partner states a project plan, constraint or decision (saved to
+project memory), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
-not carry them to the next session. The Finishing guidance and the result
+not carry them to the next session. A constraint is something about the
+project that stays true on its own; a hold that lasts until the partner lifts
+it is a sign-off for this conversation, and an instruction scoped to this work
+(such as which model to use for some steps of a plan) is not a standing
+preference, so neither is saved. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
 fact with its reason and how to apply it, with a frontmatter description that
 says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
 paths, test counts, review verdicts) stay out of
-personal and project memory. A changed fact is rewritten in place. When the
+personal and project memory, as do approvals, sign-offs, authorizations and
+where a plan or task stands: memory never records permission, because a later
+session would act on a grant nobody gave it. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
 ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
@@ -99,11 +105,14 @@ those the budget showed); a scope with no pages leaves no baseline, so content t
 appears later arrives in full. When the session itself writes, edits or
 deletes any page through the memory tools, that page's new index line (or its
 removal) is patched into the baseline, so its own change is never echoed back
-while other sessions' changes since the baseline still arrive. A scope with no
-baseline starts one from that line only when the model was last told the scope
-had no pages; after an unavailable state the next boundary delivers the index in
-full. A scope with a baseline is read only at the
-first model call of each turn (each input the session processes: a user message
+while other sessions' changes since the baseline still arrive. Reads and
+writes are recorded under the path the scope lists the page at, so on a
+case-insensitive filesystem writing `Fact.md` replaces the line of a page
+listed as `fact.md`, and a page read as `FACT.md` is the same page. A scope
+with no baseline starts one from that line only when the model was last told
+the scope had no pages; after an unavailable state the next boundary delivers
+the index in full. A scope with a baseline is read only at the first
+model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read appends one change block for the
 scope instead of the full index: the quoted page lines added and removed since the
@@ -179,7 +188,9 @@ runtime-maintained change log.
 The bundled `gardening-memory` skill is explicitly activated through
 `use_skill`. It supports small editorial passes: check evidence, correct
 contradictions, remove duplicates, split sprawling pages, fix descriptions and
-tags, merge pages that share tags, and delete stale pages. It does not activate automatically or run background work.
+tags, merge pages that share tags, delete stale pages, and remove recorded
+approvals, plan status and progress while keeping any durable fact on the same
+page. It does not activate automatically or run background work.
 
 ## Generated index
 
@@ -193,9 +204,11 @@ the same file on macOS's default filesystem.
 **What counts as a page.** Every regular file under the scope root, in
 subdirectories too, except a path with a segment starting with `.` (the rule
 `memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
-skipped, as scope confinement already refuses them. Only `.md` files are parsed
-for frontmatter. Any other file, or a page that cannot be read, renders with its
-filename as the description and no `(no description)` marker.
+skipped, as scope confinement already refuses them. The listing goes 64 levels
+deep, so a file inside more than 63 nested directories is not listed: it never
+appears in the index and migration never describes it. Only `.md` files are
+parsed for frontmatter. Any other file, or a page that cannot be read, renders
+with its filename as the description and no `(no description)` marker.
 
 **Page format.** A page starts with YAML frontmatter, parsed with
 `agent/internal/frontmatter`:
@@ -266,25 +279,31 @@ creating a frontmatter block if there is none and keeping every other byte. A
 page whose stamps would not change (same session, same day) is not rewritten.
 Frontmatter Evener can't safely edit in place is left unstamped. A
 failed write is not stamped. A stamp that fails to write does not fail the call;
-the result ends with a note saying so. A written page with no description gets a
-note asking for one, and a page whose frontmatter does not parse gets its own
-note asking to fix the YAML.
+the result carries a note saying so, ahead of the notes below. A written page
+with no description gets a note asking for one, and a page whose frontmatter
+does not parse gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
 it moves the old index into the pages; on a case-sensitive filesystem every
-case variant is migrated. Each line that
-links to a page in the scope (`[text](path)` or a bare `path.md`) gives that
-page a description: the rest of the line, with the link, list markers and
-separators stripped. A linked page that exists and has no description gets it;
-a page that already has one keeps it, and a page whose frontmatter can't take
-it is left alone (the backup keeps its line). The first line naming a page
-wins. Migration does not stamp. Each old index is then renamed to a
+case variant is migrated. Each line that links to a page in the scope
+(`[text](path)` or a bare `path.md`) gives that page a description: the rest of
+the line, with the link, list markers and separators stripped. A bare path
+counts only when nothing path-like follows `.md` (`a.md.txt` and `a.md/x` name
+no page). A link whose letter case differs from a page's names that page when
+exactly one page matches it ignoring case. A linked page that exists and has no
+description gets it; a page that already has one keeps it, and a page whose
+frontmatter can't take it is left alone (the backup keeps its line). The first
+line naming a page wins, except that within one index a link in the page's
+exact case wins over an earlier line naming it in another case. Across indexes,
+the one named exactly `MEMORY.md` is read first, and an earlier index wins over
+a later one. Migration does not stamp. Each old index is then renamed to a
 `.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
 numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
-that fails to write leaves the old index in place. A failed migration never
-blocks rendering; the next rendering retries. Other sessions render the pages
-as they are, with fallback descriptions, until a writing session migrates.
+that fails to write does not stop the others, but leaves the old index in
+place. A failed migration never blocks rendering; the next rendering retries.
+Other sessions render the pages as they are, with fallback descriptions, until
+a writing session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
