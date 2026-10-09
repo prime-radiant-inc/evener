@@ -312,9 +312,12 @@ does not need one. It is idempotent: two migrators read the same old index and
 write the same descriptions, a page that already has a description is skipped,
 and a move that finds `MEMORY.md` already gone counts as done. The move links
 `MEMORY.md` to its backup name, which never replaces an existing backup (a
-taken name moves on to the next free one), and removes `MEMORY.md` only when the
-linked bytes are the ones that migration read; an index an older build wrote in
-between stays for the next rendering to migrate. A crash midway
+taken name moves on to the next free one), and removes `MEMORY.md` only when it
+still holds the bytes that migration read. To check that without a window, it
+first renames `MEMORY.md` to a private `.MEMORY.md.migrating-…` name, which
+captures the file atomically; a captured index an older build rewrote goes back
+to `MEMORY.md` (or to a backup of its own if `MEMORY.md` was written yet again)
+for the next rendering to migrate. A crash midway
 leaves some pages described and the old file in place, so the next rendering
 finishes the job.
 

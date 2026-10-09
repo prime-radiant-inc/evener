@@ -164,6 +164,34 @@ func TestMoveLegacyMemoryIndexSkipsATakenBackupName(t *testing.T) {
 	}
 }
 
+// An index rewritten after migration read it is captured by the staging
+// rename, found to differ, and put back as MEMORY.md for the next run; no
+// staging file is left behind.
+func TestRemoveMigratedMemoryIndexRestoresARewrittenIndex(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	legacy := filepath.Join(scope, memoryIndexFile)
+	rewritten := "- [b](b.md) — written after the read\n"
+	if err := os.WriteFile(legacy, []byte(rewritten), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeMigratedMemoryIndex(env, scope, legacy, []byte("- [a](a.md) — what migration read\n")); !errors.Is(err, errLegacyMemoryIndexChanged) {
+		t.Fatalf("removal of a rewritten index returned %v, want errLegacyMemoryIndexChanged", err)
+	}
+	if raw, err := os.ReadFile(legacy); err != nil || string(raw) != rewritten {
+		t.Fatalf("MEMORY.md=%q err=%v, want the rewritten index back", raw, err)
+	}
+	entries, err := os.ReadDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), memoryIndexStagingPrefix) {
+			t.Fatalf("staging file %s left behind", entry.Name())
+		}
+	}
+}
+
 // When the index cannot be linked to its backup name for a reason other
 // than a taken name (here a read-only scope directory; a filesystem without
 // hard links fails the same way), migration reports the error and keeps
