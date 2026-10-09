@@ -136,8 +136,12 @@ func (s *idlePublicationServer) observeProcessing(processing bool) {
 	s.mu.Unlock()
 }
 
-func (s *idlePublicationServer) FinishProcessing(state string) {
-	s.Server.FinishProcessing(state)
+func (s *idlePublicationServer) FinishProcessing(settle func() string) {
+	var state string
+	s.Server.FinishProcessing(func() string {
+		state = settle()
+		return state
+	})
 	s.observeProcessing(false)
 	s.notePostTurnState(state)
 }
@@ -199,6 +203,9 @@ type sessionControlIdentityServer struct {
 	releaseUnclaimedPass     chan struct{}
 	unclaimedPassOnce        sync.Once
 	unclaimedPassReleaseOnce sync.Once
+
+	// heldPassState is what the held pass sampled once released.
+	heldPassState string
 }
 
 func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
@@ -236,21 +243,36 @@ func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
 	<-s.releaseProcessing
 }
 
-// FinishProcessing opens the finish gate and, when asked, holds the daemon
-// in the unclaimed input pass.
-func (s *sessionControlIdentityServer) FinishProcessing(state string) {
-	s.Server.FinishProcessing(state)
+// FinishProcessing, when asked, holds the daemon in the unclaimed input pass
+// before it samples the session's state, then opens the finish gate.
+func (s *sessionControlIdentityServer) FinishProcessing(settle func() string) {
+	s.Server.FinishProcessing(func() string {
+		s.mu.Lock()
+		holdUnclaimedPass := s.holdUnclaimedPass
+		s.mu.Unlock()
+		if !holdUnclaimedPass {
+			return settle()
+		}
+		held := false
+		s.unclaimedPassOnce.Do(func() {
+			held = true
+			close(s.unclaimedPassEntered)
+			<-s.releaseUnclaimedPass
+		})
+		state := settle()
+		if held {
+			s.mu.Lock()
+			s.heldPassState = state
+			s.mu.Unlock()
+		}
+		return state
+	})
 	s.mu.Lock()
 	finishing := s.processing
 	s.processing = false
-	holdUnclaimedPass := s.holdUnclaimedPass
 	s.mu.Unlock()
 	if finishing {
 		s.processingFinishOnce.Do(func() { close(s.processingFinished) })
-	}
-	if holdUnclaimedPass {
-		s.unclaimedPassOnce.Do(func() { close(s.unclaimedPassEntered) })
-		<-s.releaseUnclaimedPass
 	}
 }
 
@@ -483,6 +505,12 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		start := startClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
 		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
+		lifecycle.server.mu.Lock()
+		heldPassState := lifecycle.server.heldPassState
+		lifecycle.server.mu.Unlock()
+		if heldPassState != string(agent.SessionProcessing) {
+			t.Fatalf("held pass settled %q, want %q: the turn/start must land before its sample", heldPassState, agent.SessionProcessing)
+		}
 		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
@@ -535,7 +563,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // input loop publishes owning Session state after an exhausted streaming
 // failure: the session rests on a failed turn, so it reports systemError until
 // its next turn (agent RestingWireState). The wrapper observes the production
-// true -> false -> SetState boundary while forwarding every state mutation to
+// processing start and FinishProcessing boundary while forwarding every state mutation to
 // the real AppWire server projection.
 func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}

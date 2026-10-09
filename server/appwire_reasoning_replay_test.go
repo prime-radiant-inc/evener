@@ -545,8 +545,8 @@ func TestServerAppWireFinishPublishesTheSessionsRestingState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_refused_pass")
 	srv.SetProcessing(true)
-	srv.SetState("processing")
-	srv.FinishProcessing("awaiting")
+	srv.SetState("active")
+	srv.FinishProcessing(func() string { return "awaiting" })
 
 	if read := readThreadOverWire(t, srv, "local:th_refused_pass"); read.Status.Type != appwire.ThreadStatusAwaiting {
 		t.Fatalf("read status = %q, want awaiting", read.Status.Type)

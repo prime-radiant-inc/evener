@@ -902,9 +902,11 @@ func (s *Server) SetProcessing(processing bool) {
 }
 
 // FinishProcessing ends the running input with the session's own state as
-// the input left it (Session.WireState): stored, and published when no
+// the input left it: settle samples it (serve passes Session.WireState) once
+// the input has returned, and the result is stored, and published when no
 // SESSION_END already spoke for the thread (finishProcessing).
-func (s *Server) FinishProcessing(state string) {
+func (s *Server) FinishProcessing(settle func() string) {
+	state := settle()
 	s.finishProcessing(&state)
 }
 

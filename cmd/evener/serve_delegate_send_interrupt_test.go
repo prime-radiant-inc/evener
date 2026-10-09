@@ -134,8 +134,8 @@ type waiterInterruptServer struct {
 	once                    sync.Once
 }
 
-func (s *waiterInterruptServer) FinishProcessing(state string) {
-	s.Server.FinishProcessing(state)
+func (s *waiterInterruptServer) FinishProcessing(settle func() string) {
+	s.Server.FinishProcessing(settle)
 	if s.processingBarrierArmed.Load() {
 		s.processingBarrierOnce.Do(func() { close(s.finishProcessingEntered) })
 		<-s.releaseFinishProcessing
