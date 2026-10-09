@@ -2022,6 +2022,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
+	// A turn starting ends any needs_response quiet period still running:
+	// whichever boundary this turn rests on, the older rest no longer applies.
+	s.restGeneration++
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
