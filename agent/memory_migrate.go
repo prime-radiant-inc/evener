@@ -68,9 +68,8 @@ func memoryYAMLField(key, value string) string {
 // other byte of the page is kept. Keys are found as YAML reads them (quoted,
 // or with a space before the colon); a block that does not parse gains the
 // line at its end and stays as unreadable as it was. Valid frontmatter that
-// can't take a key line, a flow mapping or a block ended by "...", is
-// returned as it is, since the line would break it or start a second
-// document.
+// would not read the line back as its key, such as a flow mapping or a block
+// with a "..." document end, is returned as it is.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
 	text := string(raw)
@@ -78,10 +77,7 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !ok {
 		return []byte("---\n" + line + "---\n" + text)
 	}
-	keys, extendable := memoryFrontmatterKeyLines(block)
-	if !extendable {
-		return raw
-	}
+	keys := memoryFrontmatterKeyLines(block)
 	lines := slices.Collect(strings.Lines(block))
 	var kept []string
 	replaced := false
@@ -114,34 +110,38 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !replaced {
 		kept = append(kept, line)
 	}
-	return []byte("---\n" + strings.Join(kept, "") + "---\n" + body)
+	edited := strings.Join(kept, "")
+	// Checked by reading back rather than predicted: the line can break a
+	// flow mapping, or land after a document end YAML never reads past.
+	var before, after map[string]any
+	if yaml.Unmarshal([]byte(block), &before) == nil {
+		if yaml.Unmarshal([]byte(edited), &after) != nil {
+			return raw
+		}
+		if _, set := after[key]; !set {
+			return raw
+		}
+	}
+	return []byte("---\n" + edited + "---\n" + body)
 }
 
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
-// block-style frontmatter mapping to the key as YAML reads it. extendable
-// reports whether a key line can be added at the block's end: it can to a
-// block mapping, an empty or comment-only block, or a block that does not
-// parse; it can't to a block holding a "..." document end or valid YAML that
-// is not a block mapping.
-func memoryFrontmatterKeyLines(block string) (keys map[int]string, extendable bool) {
-	for line := range strings.Lines(block) {
-		if strings.TrimRight(line, " \t\r\n") == "..." {
-			return nil, false
-		}
-	}
+// block-style frontmatter mapping to the key as YAML reads it, or is nil when
+// the block is not one.
+func memoryFrontmatterKeyLines(block string) map[int]string {
 	var doc yaml.Node
 	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
-		return nil, true
+		return nil
 	}
 	mapping := doc.Content[0]
 	if mapping.Kind != yaml.MappingNode || mapping.Style&yaml.FlowStyle != 0 {
-		return nil, false
+		return nil
 	}
-	keys = make(map[int]string, len(mapping.Content)/2)
+	keys := make(map[int]string, len(mapping.Content)/2)
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
 		keys[mapping.Content[i].Line-1] = mapping.Content[i].Value
 	}
-	return keys, true
+	return keys
 }
 
 var (

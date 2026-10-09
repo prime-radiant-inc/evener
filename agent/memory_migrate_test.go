@@ -59,6 +59,8 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 			"---\n{description: d}\n---\nx\n"},
 		{"leaves a block ended by ... as it is", "---\ndescription: d\n...\n---\nx\n", "by: s1\n",
 			"---\ndescription: d\n...\n---\nx\n"},
+		{"leaves a block ended by ... and a comment as it is", "---\ndescription: d\n... # end\n---\nx\n", "by: s1\n",
+			"---\ndescription: d\n... # end\n---\nx\n"},
 		{"a block that does not parse gains the line", "---\ndescription: a: b\n---\nx\n", "by: s1\n",
 			"---\ndescription: a: b\nby: s1\n---\nx\n"},
 		{"a key-like line inside a block scalar is not a key", "---\nnote: |\n  description: no\ndescription: old\n---\n", "description: new\n",
