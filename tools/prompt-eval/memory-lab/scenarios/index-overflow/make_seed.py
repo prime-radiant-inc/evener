@@ -8,13 +8,15 @@ MEMORY.md (so a build from before the generated index also gets an index) and
 the scenario's tag-reuse check in step. The checks themselves live in memcheck.py. Run it from anywhere after editing it:
 
     python3 scenarios/index-overflow/make_seed.py
+    python3 scenarios/index-overflow/make_seed.py --filler 999 --out scenarios/index-overflow-1k
 
-It rewrites seed/ and scenario.json next to itself, then run ./memory-lab check.
+It rewrites seed/ and scenario.json in --out (default: next to itself), then run
+./memory-lab check. --filler sets how many pages sit in front of the target; the
+index-overflow-1k scenario is the same task with 999 of them.
 """
-import datetime, itertools, json, os, shutil
+import argparse, datetime, itertools, json, os, shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SEED = os.path.join(HERE, "seed")
 FILLER = 119  # plus the target page: 120 pages
 NEWEST = datetime.date(2026, 9, 30)
 
@@ -38,7 +40,7 @@ TARGET = {
     "tags": ["coupons", "pricing"],
     "updated": "2026-03-02",
     "body": "Only the largest coupon percent applies to a cart; coupons never stack or compound.\n\n"
-            "**Why:** finance ruled on 2026-03-02 that stacked coupons let carts reach zero.\n\n"
+            "**Why:** finance ruled on {updated} that stacked coupons let carts reach zero.\n\n"
             "**How to apply:** a function applying several coupons takes the largest percent and calls ApplyCoupon once.\n",
 }
 
@@ -51,29 +53,36 @@ def page(title, description, tags, updated, body):
             f"updated: {updated}\nby: seed-fixture\n---\n# {title}\n\n{body}")
 
 
-def seed_pages():
+def seed_pages(filler=FILLER):
     """The seed's pages, newest first, the target last."""
     pages = []
-    for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), FILLER), 1):
+    for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), filler), 1):
         description = TOPICS[tag].format(n=n)
         pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
                       "description": description, "tags": [tag] if n % 4 or tag == "tests" else [tag, "tests"],
                       "updated": (NEWEST - datetime.timedelta(days=n - 1)).isoformat(),
                       "body": description + ".\n"})
-    return pages + [TARGET]
+    # The target stays the oldest page however many fillers sit in front of it.
+    updated = min(datetime.date.fromisoformat(TARGET["updated"]), NEWEST - datetime.timedelta(days=filler)).isoformat()
+    return pages + [{**TARGET, "updated": updated, "body": TARGET["body"].format(updated=updated)}]
 
 
 def main():
-    shutil.rmtree(SEED, ignore_errors=True)
-    os.makedirs(SEED)
-    pages = seed_pages()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--filler", type=int, default=FILLER, help="pages before the target (default %(default)s)")
+    ap.add_argument("--out", default=HERE, help="scenario dir to write (default: this one)")
+    args = ap.parse_args()
+    seed = os.path.join(args.out, "seed")
+    shutil.rmtree(seed, ignore_errors=True)
+    os.makedirs(seed)
+    pages = seed_pages(args.filler)
     for p in pages:
-        dest = os.path.join(SEED, p["path"])
+        dest = os.path.join(seed, p["path"])
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "w") as f:
             f.write(page(p["title"], p["description"], p["tags"], p["updated"], p["body"]))
     # Newest first, as the generated index orders them; the target is last, past 8 KiB.
-    with open(os.path.join(SEED, "MEMORY.md"), "w") as f:
+    with open(os.path.join(seed, "MEMORY.md"), "w") as f:
         f.write("# Project memory\n\n")
         for p in pages:
             f.write(f"- [{p['title']}]({p['path']}) — {p['description']}\n")
@@ -89,7 +98,7 @@ def main():
         "go test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
     )
     scenario = {
-        "arms": ["on"],
+        "arms": ["on", "off"],
         "fixture_from": "migration",
         "stages": [{
             "name": "B",
@@ -107,7 +116,7 @@ def main():
             ],
         }],
     }
-    with open(os.path.join(HERE, "scenario.json"), "w") as f:
+    with open(os.path.join(args.out, "scenario.json"), "w") as f:
         json.dump(scenario, f, indent=2)
         f.write("\n")
 

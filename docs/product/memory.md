@@ -71,18 +71,24 @@ written: the agent checks that a file, function, command or setting a note names
 still exists before relying on it, and follows a recorded decision or rule
 unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint, decision or unfinished
-work (saved to project memory), and when the agent learns
+done, when the partner states a project plan, constraint or decision (saved to
+project memory), and when the agent learns
 something the hard way that is not written down. Partner-stated
 facts are saved before the work they shape, because complying with them does
-not carry them to the next session. The Finishing guidance and the result
+not carry them to the next session. A constraint is something about the
+project that stays true on its own; a hold that lasts until the partner lifts
+it is a sign-off for this conversation, and an instruction scoped to this work
+(such as which model to use for some steps of a plan) is not a standing
+preference, so neither is saved. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
 done. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
 fact with its reason and how to apply it, with a frontmatter description that
 says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
 paths, test counts, review verdicts) stay out of
-personal and project memory. A changed fact is rewritten in place. When the
+personal and project memory, as do approvals, sign-offs, authorizations and
+where a plan or task stands: memory never records permission, because a later
+session would act on a grant nobody gave it. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
 ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
@@ -182,7 +188,9 @@ runtime-maintained change log.
 The bundled `gardening-memory` skill is explicitly activated through
 `use_skill`. It supports small editorial passes: check evidence, correct
 contradictions, remove duplicates, split sprawling pages, fix descriptions and
-tags, merge pages that share tags, and delete stale pages. It does not activate automatically or run background work.
+tags, merge pages that share tags, delete stale pages, and remove recorded
+approvals, plan status and progress while keeping any durable fact on the same
+page. It does not activate automatically or run background work.
 
 ## Generated index
 
