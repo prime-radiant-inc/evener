@@ -213,6 +213,31 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 	}
 }
 
+// A pending question upgrades only an open, idle session: a settle that
+// finds the session still processing, or closed, leaves that state alone.
+func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
+	t.Parallel()
+	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+	sess.armAwaitingAtSettle(true, false)
+	if got := sess.State(); got != SessionProcessing {
+		t.Fatalf("state = %q, want processing left alone", got)
+	}
+	sess.Close()
+	sess.armAwaitingAtSettle(true, false)
+	if got := sess.State(); got != SessionClosed {
+		t.Fatalf("state = %q after close, want closed", got)
+	}
+}
+
 // User steering a Stop parked is not work: nothing runs it until the person
 // acts, so steering parked during the quiet period doesn't stop the rest
 // from arming.
