@@ -7,17 +7,9 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// memoryIndexNotes tells each memory tool what it does with MEMORY.md at the
-// scope root, which Evener generates from the pages' frontmatter. Search
-// needs no note: it searches files, and the index is not one.
-var memoryIndexNotes = map[string]string{
-	"memory_read":   " Reading MEMORY.md at the scope root returns the whole generated index.",
-	"memory_write":  memoryIndexReadOnlyNote,
-	"memory_edit":   memoryIndexReadOnlyNote,
-	"memory_delete": memoryIndexReadOnlyNote,
-}
-
-const memoryIndexReadOnlyNote = " MEMORY.md at the scope root is generated from page frontmatter and can't be changed; edit a page's description or tags instead."
+// MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
+// at a memory scope's root, which Evener generates from the pages.
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
 
 // MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
 func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
@@ -26,8 +18,14 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	props := base.Parameters["properties"].(map[string]any)
 	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
-	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description + memoryIndexNotes[name]
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
+}
+
+func DefMemoryRead() llm.ToolDefinition {
+	read := DefReadFile()
+	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	return MemoryDefinition(read, "memory_read")
 }
 
 func DefMemoryDelete() llm.ToolDefinition {
