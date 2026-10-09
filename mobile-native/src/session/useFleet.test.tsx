@@ -22,8 +22,8 @@ vi.mock("expo-sqlite/kv-store", () => ({
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
 const failing = fleetSession("local:fail", { title: "Fix retry loop", state: "errored", updated_at: at(5) });
-const read = fleetSession("local:read", { title: "Read already", state: "awaiting", updated_at: at(8) });
-const unread = fleetSession("local:unread", { title: "Not read yet", state: "awaiting", updated_at: at(9) });
+const read = fleetSession("local:read", { title: "Read already", state: "idle", updated_at: at(8) });
+const unread = fleetSession("local:unread", { title: "Not read yet", state: "idle", updated_at: at(9) });
 const fleet: FleetShape = {
 	live: [failing, read, unread],
 	needsYou: [failing],

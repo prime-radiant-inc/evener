@@ -37,8 +37,8 @@ The web rail shows its Running spinner; the phone Board classifies the parent
 as Working, using its existing pulse meter in Live and static mark elsewhere.
 This applies to quiet parents and nonblocking warnings, including mixed running
 and failed children. Questions and approvals keep their attention presentation,
-and so, in the web rail, does an awaiting rest after a turn that ended on
-`needs_response`, since it waits on a person the same way.
+and so does an awaiting rest after a turn that ended on `needs_response`, on the
+web rail and the phone Board alike, since it waits on a person the same way.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
 
@@ -52,7 +52,8 @@ The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
 Board bands. A new nonblocking Warning waits while live children run. A warning
 that remains alerts when the last child settles; one that clears first never
 alerts. Warnings carrying a pending question or approval remain immediately
-eligible. First-read and offline rules still apply. Combined banners, Needs you
+eligible. A `needs_response` rest alerts like a question, under the same In-app
+alerts switch as questions and approvals. First-read and offline rules still apply. Combined banners, Needs you
 counts and Next navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)

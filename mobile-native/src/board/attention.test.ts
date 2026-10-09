@@ -45,8 +45,10 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "awaiting", ask_pending: true }, true, false, "question"],
 		[{ state: "active" }, true, false, "approval"],
 		[{ state: "active" }, false, false, "working"],
-		[{ state: "awaiting" }, false, false, "finished"],
-		[{ state: "awaiting" }, false, true, "idle"],
+		// Awaiting without a question is a turn that ended on needs_response:
+		// it needs you, seen or not (#4093).
+		[{ state: "awaiting" }, false, false, "needsYou"],
+		[{ state: "awaiting" }, false, true, "needsYou"],
 		[{ state: "idle" }, false, false, "finished"],
 		[{ state: "idle", dormant: true }, false, false, "idle"],
 		[{ state: "ended" }, false, false, "shutDown"],
@@ -58,6 +60,7 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "active", approval_pending: true }, false, false, "approval"],
 		[{ state: "active", offline: true, approval_pending: true }, false, false, "shutDown"],
 		[{ state: "awaiting", ask_pending: true, approval_pending: true }, false, false, "question"],
+		[{ state: "awaiting", approval_pending: true }, false, false, "approval"],
 		[{ state: "errored", approval_pending: true }, false, false, "failed"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
@@ -98,7 +101,7 @@ describe("a row's Board state (spec 13.1)", () => {
 
 	it.each([
 		[{ state: "idle" }, false, false, "working"],
-		[{ state: "awaiting" }, false, true, "working"],
+		[{ state: "awaiting" }, false, true, "needsYou"],
 		[{ state: "idle", dormant: true }, false, false, "working"],
 		[{ state: "warning" }, false, false, "working"],
 		[{ state: "warning", ask_pending: true }, false, false, "warning"],
@@ -137,6 +140,7 @@ describe("a row's Board state (spec 13.1)", () => {
 	it.each([
 		["failed", "Failed"],
 		["question", "Question"],
+		["needsYou", "Needs you"],
 		["approval", "Approval"],
 		["warning", "Warning"],
 		["restartNeeded", "Restart needed"],
@@ -177,6 +181,7 @@ describe("Live bands (spec 7.1)", () => {
 	it.each([
 		["failed", "needsYou"],
 		["question", "needsYou"],
+		["needsYou", "needsYou"],
 		["approval", "needsYou"],
 		["warning", "needsYou"],
 		["restartNeeded", "needsYou"],
@@ -188,7 +193,7 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+	it("sorts Needs you by failed, then question, needs-your-reply or approval, then warning or restart-needed, then oldest first", () => {
 		// Every row is newer than each row in the bands below it, ages interleave
 		// within a band, and the rows arrive newest first: age order, arrival
 		// order and any merged or split band would each give a different sequence.
@@ -198,12 +203,17 @@ describe("Live bands (spec 7.1)", () => {
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
 			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
 			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			// A turn that ended on needs_response ranks with questions (#4093).
+			// It is the one exception to the rule above: the newest row of all,
+			// so only its band can place it ahead of the warnings and behind the
+			// failures.
+			row("n", { state: "awaiting", updated_at: at(9) }),
 			row("w-new", { state: "warning", updated_at: at(3) }),
 			row("r", { state: "restartRequired", updated_at: at(2) }),
 			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
 		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
-		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "n", "w-old", "r", "w-new"]);
 	});
 
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
@@ -254,9 +264,9 @@ describe("Live bands (spec 7.1)", () => {
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
 		const live = [
 			row("work-b", { state: "active", updated_at: at(1) }),
-			row("done-old", { state: "awaiting", updated_at: at(2) }),
+			row("done-old", { state: "idle", updated_at: at(2) }),
 			row("work-a", { state: "active", updated_at: at(40) }),
-			row("done-new", { state: "awaiting", updated_at: at(50) }),
+			row("done-new", { state: "idle", updated_at: at(50) }),
 			row("seen-old", { state: "idle", updated_at: at(3) }),
 			row("seen-new", { state: "idle", updated_at: at(4) }),
 		];
@@ -292,9 +302,9 @@ describe("Live bands (spec 7.1)", () => {
 	it("orders Finished and Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
 		const live = [
 			// Renamed lately, but its turn ended long ago.
-			row("done-renamed", { state: "awaiting", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
-			row("done-ended", { state: "awaiting", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
-			row("done-older-hub", { state: "awaiting", updated_at: at(20) }),
+			row("done-renamed", { state: "idle", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
+			row("done-ended", { state: "idle", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
+			row("done-older-hub", { state: "idle", updated_at: at(20) }),
 			row("seen-renamed", { state: "idle", updated_at: at(58), turn_ended_at: at(1) }),
 			row("seen-ended", { state: "idle", updated_at: at(2), turn_ended_at: at(40) }),
 			row("seen-garbled", { state: "idle", updated_at: at(5), turn_ended_at: "not a time" }),
@@ -310,9 +320,9 @@ describe("Live bands (spec 7.1)", () => {
 
 	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
 		const live = [
-			row("done-dated", { state: "awaiting", updated_at: at(10) }),
-			row("done-missing", { state: "awaiting" }),
-			row("done-garbled", { state: "awaiting", updated_at: "not a time" }),
+			row("done-dated", { state: "idle", updated_at: at(10) }),
+			row("done-missing", { state: "idle" }),
+			row("done-garbled", { state: "idle", updated_at: "not a time" }),
 			row("failed-dated", { state: "errored", updated_at: at(10) }),
 			row("failed-missing", { state: "errored" }),
 		];
@@ -379,6 +389,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
 		["failed", { word: "Failed", hue: "danger", text: "open the session to see what went wrong" }],
 		["question", { word: "Question", hue: "attention", text: "waiting for your answer" }],
+		["needsYou", { word: "Needs you", hue: "attention", text: "waiting for your reply" }],
 		["approval", { word: "Approval", hue: "attention", text: "waiting for your permission" }],
 		["warning", { word: "Warning", hue: "attention", text: "open the session to see it" }],
 		[

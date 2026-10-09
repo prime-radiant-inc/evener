@@ -142,6 +142,7 @@ describe("what alerts at all", () => {
 		alerts.offer(session("b", "question"));
 		alerts.offer(session("c", "approval"));
 		alerts.offer(session("d", "finished"));
+		alerts.offer(session("n", "needsYou"));
 		expect(alerts.getSnapshot().banner).toBeNull();
 		alerts.offer(session("e", "warning"));
 		alerts.offer(session("f", "restartNeeded"));

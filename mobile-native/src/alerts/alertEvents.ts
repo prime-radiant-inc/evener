@@ -1,18 +1,19 @@
 // Turns what the hub says into alerts (spec 13.3): a session that becomes
-// Failed, Question, Approval, Warning or Restart needed (from any other
+// Failed, Question, Needs you, Approval, Warning or Restart needed (from any other
 // state, another needs-you state included), a working session that finishes
 // its turn, and a hub notice that appears. A session that stays in one
 // needs-you state says nothing more, whatever it now asks: one alert is
 // great (Jesse, question 3). Each source's first read on a connection is
 // its baseline and alerts nothing (ruling 2), so opening the app never drops
 // a pile of banners on what the Board already shows.
-import { type BoardState, type LiveBands, whyLine } from "../board/attention";
+import { type BoardState, bandOf, type LiveBands, whyLine } from "../board/attention";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";
 
 export type SessionStates = ReadonlyMap<string, BoardState>;
 
-const NEEDS_YOU = new Set<BoardState>(["failed", "question", "approval", "warning", "restartNeeded"]);
+// The Board's Needs you band decides which states alert, so the two never disagree.
+const needsYou = (state: BoardState): boolean => bandOf(state) === "needsYou";
 
 export function detectSessionAlerts(
 	previous: SessionStates | null,
@@ -40,7 +41,7 @@ export function detectSessionAlerts(
 		const before = previous?.get(ref);
 		states.set(ref, item.state);
 		if (previous === null) continue;
-		if (NEEDS_YOU.has(item.state) && item.state !== before)
+		if (needsYou(item.state) && item.state !== before)
 			alerts.push({ kind: item.state as NeedsYouKind, ref, title, why: whyLine(item) });
 		else if (item.state === "finished" && before === "working")
 			alerts.push({ kind: "finished", ref, title, why: null });
@@ -53,7 +54,7 @@ export function detectSessionAlerts(
 		previous === null
 			? []
 			: [...previous]
-					.filter(([ref, before]) => NEEDS_YOU.has(before) && !NEEDS_YOU.has(states.get(ref) ?? "idle"))
+					.filter(([ref, before]) => needsYou(before) && !needsYou(states.get(ref) ?? "idle"))
 					.map(([ref]) => ref);
 	return { alerts, resolved, states };
 }

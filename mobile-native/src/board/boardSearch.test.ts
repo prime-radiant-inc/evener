@@ -265,9 +265,12 @@ describe("a search result's mark", () => {
 		expect(mark({ state: "active" })).toBe("working");
 	});
 
+	it("marks an awaiting session with no question Needs you, as the Board does", () => {
+		expect(mark({ state: "awaiting" })).toBe("needsYou");
+	});
+
 	it("leaves everything else unmarked, never Finished: a result has no seen state", () => {
 		expect(mark({ state: "idle" })).toBe("idle");
-		expect(mark({ state: "awaiting" })).toBe("idle");
 		expect(mark({ state: "somethingNew" })).toBe("idle");
 	});
 });
