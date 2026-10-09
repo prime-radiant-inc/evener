@@ -25,6 +25,7 @@ type memoryPage struct {
 	Unreadable     bool // the page's frontmatter did not parse
 	Tags           []string
 	Updated        string    // the YYYY-MM-DD stamp, "" when there is none
+	By             string    // the by: stamp, who last wrote the page; "" when there is none
 	ModTime        time.Time // orders a page that has no stamp
 }
 
@@ -136,6 +137,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	}
 	p.Tags = normalizeMemoryTags(doc.Meta["tags"])
 	p.Updated = memoryStampDate(doc.Meta["updated"])
+	p.By, _ = doc.Meta["by"].(string)
 	return p
 }
 

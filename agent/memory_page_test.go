@@ -21,7 +21,7 @@ func TestParseMemoryPage(t *testing.T) {
 	}{
 		{"full frontmatter", "cents.md",
 			"---\ndescription: Money is integer cents, never floats\ntags: [Money, formatting, money]\nevidence: file:shop/price.go:Format\nupdated: 2026-10-08\nby: s1\nextra: kept\n---\n# Integer cents\nPrices are cents.\n",
-			memoryPage{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08", ModTime: mod}},
+			memoryPage{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08", By: "s1", ModTime: mod}},
 		{"multi-line description collapses", "a.md",
 			"---\ndescription: |-\n  line one\n  line two\n---\nbody\n",
 			memoryPage{Path: "a.md", Title: "a", Description: "line one line two", HasDescription: true, ModTime: mod}},
