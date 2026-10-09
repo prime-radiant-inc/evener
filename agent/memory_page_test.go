@@ -194,13 +194,7 @@ func TestMatchMemoryNameCase(t *testing.T) {
 // kept as given.
 func TestListedMemoryPagePath(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	env, scope := newMemoryMigrateScope(t)
 	if err := os.MkdirAll(filepath.Join(scope, "Notes"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -209,12 +203,15 @@ func TestListedMemoryPagePath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// On a case-sensitive filesystem the differently cased paths name no file.
+	_, statErr := os.Stat(filepath.Join(scope, "FACT.md"))
+	caseInsensitive := statErr == nil
 	want := map[string]string{"fact.md": "fact.md", "Notes/x.md": "Notes/x.md", "new.md": "new.md", "New/y.md": "New/y.md"}
-	if _, err := os.Stat(filepath.Join(scope, "FACT.md")); err == nil {
-		want["Fact.md"], want["notes/X.md"] = "fact.md", "Notes/x.md"
-	} else {
-		// On a case-sensitive filesystem these name no file.
-		want["Fact.md"], want["notes/X.md"] = "Fact.md", "notes/X.md"
+	for rel, onDisk := range map[string]string{"Fact.md": "fact.md", "notes/X.md": "Notes/x.md"} {
+		want[rel] = rel
+		if caseInsensitive {
+			want[rel] = onDisk
+		}
 	}
 	for rel, listed := range want {
 		if got := listedMemoryPagePath(env, rel); got != listed {
