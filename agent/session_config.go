@@ -304,6 +304,9 @@ type SessionConfig struct {
 type testConfig struct {
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
+	// memoryRealBudget gives the memory boundary its production read budget
+	// instead of the long default tests get (see memoryBoundaryWait).
+	memoryRealBudget bool
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration

@@ -160,6 +160,11 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
 			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
 		), SessionAwaiting},
+		{"an attempt recovery reran under the same TurnID", in("t1",
+			user,
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")),
+		), SessionIdle},
 		{"needs response in an earlier input", append(
 			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
 			in("t2", user, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
