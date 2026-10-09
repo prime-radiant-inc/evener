@@ -33,6 +33,8 @@ import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
 import {
   bumpCacheEpochRow,
   deleteIndexedDatabase,
@@ -41,6 +43,7 @@ import {
 } from "./testing/stalledIndexedDB";
 import {
   clearCachedSessions,
+  installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
@@ -3013,5 +3016,92 @@ describe("cache privacy and history regressions", () => {
     fake.on("thread/read", echoingReadHandler());
     await expect.soft(threadsStore.getState().ensureThread("local:malformed")).resolves.toBeUndefined();
     expect.soft(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+});
+
+describe("exclusive entry transcript fixture route", () => {
+  it("routes only its selected ref around the legacy cache and accepts the current wire baseline", async () => {
+    const selected = "local:entry-selected";
+    const other = "local:ordinary";
+    const entryDatabase = "entry-transcript-fixture-test";
+    const legacy = cacheTestBed();
+    const legacyGet = vi.spyOn(legacy.adapter, "get");
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [
+            {
+              ...turnFixture("entry-baseline", "current source baseline"),
+              items: [
+                {
+                  ...turnFixture("entry-baseline", "current source baseline").items[0]!,
+                  transcriptKey: "entry-baseline-item",
+                  version: 1,
+                },
+              ],
+            },
+          ],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+
+      const current = threadsStore.getState().threads.get(selected)!;
+      requireConnectedClient("entry fixture notification").emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId: current.threadId,
+          bootGeneration: current.history!.bootGeneration,
+          epoch: current.history!.epoch,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-live", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "entry-live-item",
+              transcriptKey: "entry-live-item",
+              version: 1,
+              turnId: "entry-live",
+              text: "current live notification",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+
+      expect(legacyGet).not.toHaveBeenCalledWith(selected, expect.any(Number));
+      const identity: TranscriptResolvedIdentity = {
+        clientId: "fixture-client",
+        hostId: "fixture-host",
+        sessionId: `sess_${selected}`,
+        incarnation: "inc-1",
+      };
+      await expect(entryCache.getLatest(entryHistoryKey(identity), 10)).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ item: expect.objectContaining({ text: "current source baseline" }) }),
+          expect.objectContaining({ item: expect.objectContaining({ text: "current live notification" }) }),
+        ]),
+      );
+      expect(await cacheRecord(selected)).toBeUndefined();
+
+      await threadsStore.getState().ensureThread(other);
+      expect(legacyGet).toHaveBeenCalledWith(other, expect.any(Number));
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
   });
 });
