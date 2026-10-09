@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,18 +29,8 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, dir := t.TempDir(), t.TempDir()
-			for relative, body := range map[string]string{
-				"memory/personal/MEMORY.md":                 "opaque-memory-personal-3730",
-				"memory/projects/fixture-project/MEMORY.md": "opaque-memory-project-3730",
-			} {
-				path := filepath.Join(root, relative)
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			memorySeedPage(t, root, "personal", "fact.md", "opaque-memory-personal-3730")
+			memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-memory-project-3730")
 			adapter := &agenttest.FakeAdapter{
 				Provider: "openai",
 				PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {

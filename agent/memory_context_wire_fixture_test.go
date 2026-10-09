@@ -84,7 +84,17 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "unavailable"})
 	unavailableTurn, unavailableItem := capture(s, "project")
 
-	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Truncated: true, Content: strings.Repeat("x", 8192) + "..."})
+	var overflow []memoryPage
+	for i := range 200 {
+		tags := []string{"alpha"}
+		if i%4 == 0 {
+			tags = nil
+		}
+		overflow = append(overflow, memoryPage{Path: fmt.Sprintf("opaque-%03d.md", i), Title: fmt.Sprintf("opaque %03d", i),
+			Description: "opaque-description " + strings.Repeat("x", 64), HasDescription: true, Tags: tags, Updated: "2026-10-01"})
+	}
+	partial, full, truncated := projectMemoryIndex(overflow, memoryProjectionCap)
+	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Truncated: truncated, Content: partial, Index: full})
 	truncatedTurn, truncatedItem := capture(s, "project")
 
 	s.appendMemoryProjection(memoryProjection{Scope: "project", Status: "current", Content: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"})
@@ -113,8 +123,9 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 
 	// Another session's index change: the producer's change block, which lists
 	// only the added and removed lines and is not a full index observation.
-	changeBaseline := memoryIndexBaseline{status: "current", index: "opaque-change-kept\nopaque-change-removed\n"}
-	s.publishKnownMemoryIndex(changeBaseline, memoryProjection{Scope: "project", Status: "current", Content: "opaque-change-kept\nopaque-change-added\n"})
+	changeBaseline := memoryIndexBaseline{status: "current", index: "- opaque-change-kept\n- opaque-change-removed\n"}
+	changed := "- opaque-change-kept\n- opaque-change-added\n"
+	s.publishKnownMemoryIndex(changeBaseline, memoryProjection{Scope: "project", Status: "current", Content: changed, Index: changed})
 	changeTurn, changeItem := capture(s, "project")
 
 	// Another session changed one page this session read and removed another:
@@ -157,8 +168,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 			wantRaw: true, wantScope: "project", wantState: "revoked"},
 		{Case: "unavailable-project", Note: "The project index could not be read.", Item: unavailableItem,
 			wantRaw: true, wantScope: "project", wantState: "unavailable"},
-		{Case: "truncated-project", Note: "A current index past the 8192-byte cap: truncated true, content already cut.", Item: truncatedItem,
-			wantRaw: true, wantScope: "project", wantState: "current", wantTrunc: true, wantContent: strings.Repeat("x", 8192) + "..."},
+		{Case: "truncated-project", Note: "A current index whose pages do not all fit the 8192-byte projection: truncated true, the last line counts the pages not shown.", Item: truncatedItem,
+			wantRaw: true, wantScope: "project", wantState: "current", wantTrunc: true, wantContent: partial},
 		{Case: "quoted-project", Note: "A current index with newlines, quotes, an em dash, a tab and non-ASCII bytes.", Item: quotedItem,
 			wantRaw: true, wantScope: "project", wantState: "current", wantContent: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"},
 		{Case: "suffixed-session", Note: "A delegate's read-only view of its root session index: the producer appends the read-only suffix.", Item: suffixedItem,

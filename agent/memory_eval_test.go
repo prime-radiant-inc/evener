@@ -397,7 +397,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
 			root, workspace, scratch := t.TempDir(), t.TempDir(), t.TempDir()
 			memoryEvalWrite(t, filepath.Join(workspace, "visible.txt"), "opaque-visible-615")
-			memoryEvalWrite(t, filepath.Join(root, "wiki", "memory", "personal", "MEMORY.md"), "opaque-native-616")
+			memoryEvalWrite(t, filepath.Join(root, "wiki", "memory", "personal", "native.md"), "---\ndescription: opaque-native-616\n---\n")
 			b := &memoryEvalAdmission{}
 			b.beginStage(30, time.Now().Add(time.Minute))
 			var ioCount atomic.Int32
@@ -454,7 +454,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					memoryRequireResult(t, req, "read_transcript", "opaque-history-input-618")
 					n++
 					if !disabled {
-						return memoryEvalCall("memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"}), nil
+						return memoryEvalCall("memory_read", map[string]any{"scope": "personal", "file_path": "native.md"}), nil
 					}
 					return finalResponse("ordinary complete"), nil
 				default:
@@ -667,7 +667,7 @@ func TestMemoryEvalEpisodes(t *testing.T) {
 		} else if disabled {
 			steps = append(steps, memoryEvalCall("read_transcript", map[string]any{"transcript_ref": prior}))
 		} else {
-			steps = append(steps, memoryEvalCall("memory_read", map[string]any{"scope": "project", "file_path": "MEMORY.md"}))
+			steps = append(steps, memoryEvalCall("memory_read", map[string]any{"scope": "project", "file_path": "check.md"}))
 		}
 		if pair == "correction" && stage.name != "A" {
 			checker += " --current"
@@ -690,10 +690,10 @@ func main() {}
 		}
 		steps = append(steps, memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": source}), shell(checker))
 		if !disabled && stage.name == "A" {
-			steps = append(steps, memoryEvalCall("memory_write", map[string]any{"scope": "project", "file_path": "MEMORY.md", "content": "From the repository root run sh scripts/check.sh\n"}))
+			steps = append(steps, memoryEvalCall("memory_write", map[string]any{"scope": "project", "file_path": "check.md", "content": "---\ndescription: From the repository root run sh scripts/check.sh\n---\nFrom the repository root run sh scripts/check.sh\n"}))
 		}
 		if !disabled && pair == "correction" && stage.name == "B" {
-			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "MEMORY.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}))
+			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}))
 		}
 		steps = append(steps, finalResponse("opaque-episode-completion-631"))
 		n := 0

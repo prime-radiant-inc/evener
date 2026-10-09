@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"path"
 	"path/filepath"
 	"slices"
@@ -46,6 +47,56 @@ func isMemoryPagePath(rel string) bool {
 		return false
 	}
 	return !execenv.IsDotPath(rel)
+}
+
+// matchMemoryNameCase is the name in names equal to name, else the only one
+// equal to it ignoring case, since on a case-insensitive filesystem a name's
+// case need not match the file's. An ambiguous or missing name matches
+// nothing.
+func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
+	var match string
+	folded := 0
+	for candidate := range names {
+		if candidate == name {
+			return candidate, true
+		}
+		if strings.EqualFold(candidate, name) {
+			match = candidate
+			folded++
+		}
+	}
+	if folded != 1 {
+		return "", false
+	}
+	return match, true
+}
+
+// listedMemoryPagePath is the slash path the scope lists the file at rel
+// under, which on a case-insensitive filesystem can differ from rel's case:
+// rel with each segment in its directory's case (matchMemoryNameCase). From
+// the first directory that can't be listed, such as one a write is about to
+// create, the rest of rel stays as it is.
+func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
+	listed := ""
+	segments := strings.Split(rel, "/")
+	for i, segment := range segments {
+		entries, err := env.ListDirectory(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)), 1)
+		if err != nil {
+			return path.Join(append([]string{listed}, segments[i:]...)...)
+		}
+		names := func(yield func(string) bool) {
+			for _, entry := range entries {
+				if !yield(entry.Name) {
+					return
+				}
+			}
+		}
+		if match, ok := matchMemoryNameCase(segment, names); ok {
+			segment = match
+		}
+		listed = path.Join(listed, segment)
+	}
+	return listed
 }
 
 // splitMemoryFrontmatter splits text into its frontmatter block and body
@@ -224,14 +275,22 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 			continue
 		}
 		raw, err := env.ReadFileRaw(filepath.Join(root, entry.Name))
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			continue
-		case err != nil:
-			pages = append(pages, filenameMemoryPage(rel, entry.ModTime))
-		default:
-			pages = append(pages, parseMemoryPage(rel, raw, entry.ModTime))
+		if page, ok := memoryPageFromRead(rel, raw, err, entry.ModTime); ok {
+			pages = append(pages, page)
 		}
 	}
 	return pages, nil
+}
+
+// memoryPageFromRead is the index entry for a read of the page at rel that
+// returned raw and err, reporting false when the page does not exist. A page
+// that cannot be read is its filename entry.
+func memoryPageFromRead(rel string, raw []byte, err error, modTime time.Time) (memoryPage, bool) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return memoryPage{}, false
+	case err != nil:
+		return filenameMemoryPage(rel, modTime), true
+	}
+	return parseMemoryPage(rel, raw, modTime), true
 }

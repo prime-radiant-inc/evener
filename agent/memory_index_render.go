@@ -31,10 +31,14 @@ func sortedMemoryPages(pages []memoryPage) []memoryPage {
 	return sorted
 }
 
+// memoryTitleEscaper escapes a title for its index link, so the title's
+// closing "](" is the line's first unescaped one (memoryIndexLineFor).
+var memoryTitleEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
+
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- [%s](%s) — %s", p.Title, p.Path, p.Description)
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), p.Path, p.Description)
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}
@@ -45,6 +49,43 @@ func memoryIndexLine(p memoryPage) string {
 		b.WriteString(" (updated " + p.Updated + ")")
 	}
 	return b.String()
+}
+
+// memoryIndexLineFor reports whether line is the index line of the page at
+// rel: its leading link "- [Title](rel) — ". The title ends at its first
+// unescaped "](" (memoryIndexLine escapes "\\" and "]" in titles), and the
+// path is matched whole from there, so neither a link inside the title nor
+// one quoted in the description is read as this line's page.
+func memoryIndexLineFor(line, rel string) bool {
+	title, ok := strings.CutPrefix(line, "- [")
+	if !ok {
+		return false
+	}
+	link := "](" + rel + ") — "
+	for i := 0; i < len(title); i++ {
+		switch {
+		case title[i] == '\\':
+			i++
+		case strings.HasPrefix(title[i:], "]("):
+			return strings.HasPrefix(title[i:], link)
+		}
+	}
+	return false
+}
+
+// patchMemoryIndex is index's page lines with the line of the page at rel
+// replaced by line, or dropped when line is "": "" when no page line is left.
+func patchMemoryIndex(index, rel, line string) string {
+	var kept []string
+	for _, existing := range memoryIndexLines(index) {
+		if !memoryIndexLineFor(existing, rel) {
+			kept = append(kept, existing+"\n")
+		}
+	}
+	if line != "" {
+		kept = append(kept, line+"\n")
+	}
+	return strings.Join(kept, "")
 }
 
 // memoryTagCounts counts pages per tag; a page counts once under each tag.
@@ -115,16 +156,18 @@ func renderMemoryIndex(pages []memoryPage) string {
 
 // projectMemoryIndex is the index as projected into context within limit
 // bytes: the whole index when it fits; otherwise the header, the newest lines
-// that fit, and a closing line counting the pages left out.
-func projectMemoryIndex(pages []memoryPage, limit int) (string, bool) {
+// that fit, and a closing line counting the pages left out. full is the whole
+// index, rendered in the same pass.
+func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, truncated bool) {
 	sorted, prefix, lines := memoryIndexParts(pages)
+	full = prefix + strings.Join(lines, "")
 	sizes := make([]int, len(sorted)+1) // sizes[k]: prefix plus the first k lines
 	sizes[0] = len(prefix)
 	for i, line := range lines {
 		sizes[i+1] = sizes[i] + len(line)
 	}
 	if sizes[len(sorted)] <= limit {
-		return prefix + strings.Join(lines, ""), false
+		return full, full, false
 	}
 	// Only a k whose first k lines fit can also hold the closing line.
 	k := 0
@@ -134,8 +177,8 @@ func projectMemoryIndex(pages []memoryPage, limit int) (string, bool) {
 	for ; k >= 0; k-- {
 		closing := memoryNotShownLine(sorted[k:]) + "\n"
 		if sizes[k]+len(closing) <= limit {
-			return prefix + strings.Join(lines[:k], "") + closing, true
+			return prefix + strings.Join(lines[:k], "") + closing, full, true
 		}
 	}
-	return runetrim.Cut(prefix+memoryNotShownLine(sorted)+"\n", limit), true
+	return runetrim.Cut(prefix+memoryNotShownLine(sorted)+"\n", limit), full, true
 }
