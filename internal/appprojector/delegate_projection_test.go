@@ -4,12 +4,132 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
+
+// A settled reported packet carries the bounded preview, and the logical owner
+// is the nearest ancestor session when the frame names one, else the owner.
+func TestDelegateProjection_ReportPreviewAndLogicalOwner(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	direct := delegateProjectionFixture()
+	direct.OwnerSessionID = "root"
+	direct.PacketKind = string(activitybound.PacketReported)
+	direct.Terminal = true
+	direct.Message = json.RawMessage(`"the short report"`)
+	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", direct)))
+	if params.Delegate.LogicalOwnerSessionID != "root" {
+		t.Fatalf("direct child logical owner = %q, want root", params.Delegate.LogicalOwnerSessionID)
+	}
+	if params.Delegate.ReportPreview != "the short report" || params.Delegate.ReportPreviewTruncated {
+		t.Fatalf("direct child preview = %q truncated=%v", params.Delegate.ReportPreview, params.Delegate.ReportPreviewTruncated)
+	}
+	if params.Delegate.ProjectionRevision != direct.ProjectionRevision {
+		t.Fatalf("projection revision = %d, want %d", params.Delegate.ProjectionRevision, direct.ProjectionRevision)
+	}
+
+	// A deeper descendant's nearest ancestor session is AncestorSessionIDs[0].
+	p2 := NewAppEventProjector("root", "local:root")
+	deep := delegateProjectionFixture()
+	deep.DelegateID = "dlg_deep"
+	deep.OwnerSessionID = "root"
+	deep.AncestorSessionIDs = []string{"mid"}
+	deep.ProjectionRevision = 8
+	params2 := requireDelegateProjection(t, p2.Project(delegateProjectionEvent("root", deep)))
+	if params2.Delegate.LogicalOwnerSessionID != "mid" {
+		t.Fatalf("descendant logical owner = %q, want mid", params2.Delegate.LogicalOwnerSessionID)
+	}
+}
+
+// The preview is bounded and truncated with the shared helper, and the frame's
+// prose fields are capped exactly as the read caps them.
+func TestDelegateProjection_BoundsPreviewAndProseWithSharedHelper(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.PacketKind = string(activitybound.PacketReported)
+	data.Terminal = true
+	data.Message = json.RawMessage(`"` + strings.Repeat("界", activitybound.MaxDelegateProseRunes*2) + `"`)
+	data.Task = strings.Repeat("t", activitybound.MaxDelegateProseRunes+50)
+	data.Description = strings.Repeat("d", activitybound.MaxDelegateProseRunes+50)
+	data.Model = strings.Repeat("m", activitybound.MaxLabelRunes+50)
+	data.Worktree = &events.DelegateWorktreeData{
+		Path:    strings.Repeat("p", activitybound.MaxDelegateProseRunes+50),
+		Branch:  strings.Repeat("b", activitybound.MaxLabelRunes+50),
+		HeadSHA: strings.Repeat("h", activitybound.MaxLabelRunes+50),
+	}
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+
+	wantPreview, wantTruncated := activitybound.ReportPreview(data.Message)
+	if got.ReportPreview != wantPreview || got.ReportPreviewTruncated != wantTruncated {
+		t.Fatalf("preview drift from the shared helper: got %q/%v want %q/%v", got.ReportPreview, got.ReportPreviewTruncated, wantPreview, wantTruncated)
+	}
+	if got.ReportPreview != strings.Repeat("界", activitybound.MaxDelegateProseRunes-1)+"…" || !got.ReportPreviewTruncated {
+		t.Fatalf("preview not truncated to the prose cap: runes=%d truncated=%v", len([]rune(got.ReportPreview)), got.ReportPreviewTruncated)
+	}
+	for name, field := range map[string]string{"task": got.Task, "description": got.Description, "model": got.Model} {
+		limit := activitybound.MaxDelegateProseRunes
+		if name == "model" {
+			limit = activitybound.MaxLabelRunes
+		}
+		if len([]rune(field)) != limit {
+			t.Fatalf("%s = %d runes, want %d", name, len([]rune(field)), limit)
+		}
+	}
+	if got.Worktree == nil || len([]rune(got.Worktree.Path)) != activitybound.MaxDelegateProseRunes || len([]rune(got.Worktree.Branch)) != activitybound.MaxLabelRunes || len([]rune(got.Worktree.HeadSHA)) != activitybound.MaxLabelRunes {
+		t.Fatalf("worktree strings not bounded: %+v", got.Worktree)
+	}
+}
+
+// An open run still owns its predecessor's packet, so it carries no preview.
+func TestDelegateProjection_OpenRunHasNoPreview(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.PacketKind = string(activitybound.PacketReported)
+	data.Message = json.RawMessage(`"stale report"`)
+	data.Terminal = false
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	if got.ReportPreview != "" || got.ReportPreviewTruncated {
+		t.Fatalf("open run carried a preview: %q/%v", got.ReportPreview, got.ReportPreviewTruncated)
+	}
+}
+
+// The new fields merge as ordinary revision-ordered fields: a stale frame never
+// rewrites them, and a newer frame replaces them.
+func TestMergeAppwireDelegateInfo_NewFieldsFollowRevision(t *testing.T) {
+	current := appwire.EvenerDelegateInfo{
+		DelegateID: "dlg", ProjectionRevision: 9, LogicalOwnerSessionID: "mid",
+		ReportPreview: "newer", ReportPreviewTruncated: true, LatestActivityAt: "2026-08-15T01:00:00Z",
+	}
+	stale := appwire.EvenerDelegateInfo{
+		DelegateID: "dlg", ProjectionRevision: 8, LogicalOwnerSessionID: "other",
+		ReportPreview: "older", LatestActivityAt: "2026-08-15T02:00:00Z",
+	}
+	merged, changed := mergeAppwireDelegateInfo(current, stale)
+	if !changed {
+		t.Fatal("a later activity time should still publish")
+	}
+	if merged.ReportPreview != "newer" || merged.LogicalOwnerSessionID != "mid" || !merged.ReportPreviewTruncated {
+		t.Fatalf("stale frame rewrote the new fields: %+v", merged)
+	}
+	if merged.LatestActivityAt != stale.LatestActivityAt {
+		t.Fatalf("latest activity = %q, want max %q", merged.LatestActivityAt, stale.LatestActivityAt)
+	}
+
+	newer := stale
+	newer.ProjectionRevision = 10
+	newer.ReportPreview = "newest"
+	merged, changed = mergeAppwireDelegateInfo(current, newer)
+	if !changed || merged.ReportPreview != "newest" || merged.LogicalOwnerSessionID != "other" {
+		t.Fatalf("newer frame did not replace the fields: %+v changed=%v", merged, changed)
+	}
+}
 
 func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testing.T) {
 	p := NewAppEventProjector("child", "local:child")

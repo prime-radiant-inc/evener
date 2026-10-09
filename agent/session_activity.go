@@ -63,7 +63,9 @@ func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivi
 		return nil, err
 	}
 	read := &sessionActivityRead{scope: scope, index: index, root: root, stateDir: s.stateDir, rootID: rootID, budget: activityMaxWorkUnits, bytes: 4 << 20}
-	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "live"}
+	// ReportPreview advertises the producer capability the push design gates the
+	// no-read delegate merge on (appwire.SessionActivityContext.ReportPreview).
+	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "live", ReportPreview: true}
 	if controller == nil {
 		read.context.AncestryKnown = true
 		return read.withBoundedContext()
@@ -137,7 +139,9 @@ func retainedActivityRead(ctx context.Context, stateDir, sessionID string, param
 		return nil, err
 	}
 	read := &sessionActivityRead{scope: scope, index: index, stateDir: stateDir, rootID: rootID, budget: activityMaxWorkUnits, bytes: 4 << 20}
-	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "retained", AncestryKnown: id == rootID}
+	// The retained loader is a producer too, so it authors the same capability
+	// the live read and the delegate frame carry.
+	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "retained", AncestryKnown: id == rootID, ReportPreview: true}
 	if id != rootID {
 		read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates)
 		if !read.context.AncestryKnown {

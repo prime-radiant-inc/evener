@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/invariant"
@@ -453,14 +454,22 @@ func goalState(data *events.GoalStateData) *appwire.GoalState {
 }
 
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {
+	// The frame's prose is bounded with the same helper the activity read uses,
+	// so a merge into a loaded row can never widen what the read capped. Task,
+	// Description, Reason, Error and NotResumableReason share the delegate prose
+	// cap; Model and the worktree branch/head use the shorter label cap, matching
+	// the read row.
 	out := appwire.EvenerDelegateInfo{
 		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
 		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
 		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
-		Reason: data.Reason, Error: data.Error, Terminal: data.Terminal, Resumable: data.Resumable, NeedsAttention: data.NeedsAttention, NotResumableReason: data.NotResumableReason,
-		RunGeneration: data.RunGeneration, ProjectionRevision: data.ProjectionRevision, Task: data.Task, Description: data.Description, AgentType: data.AgentType,
+		Reason: activitybound.Truncate(data.Reason, activitybound.MaxDelegateProseRunes), Error: activitybound.Truncate(data.Error, activitybound.MaxDelegateProseRunes),
+		Terminal: data.Terminal, Resumable: data.Resumable, NeedsAttention: data.NeedsAttention,
+		NotResumableReason: activitybound.Truncate(data.NotResumableReason, activitybound.MaxDelegateProseRunes),
+		RunGeneration:      data.RunGeneration, ProjectionRevision: data.ProjectionRevision,
+		Task: activitybound.Truncate(data.Task, activitybound.MaxDelegateProseRunes), Description: activitybound.Truncate(data.Description, activitybound.MaxDelegateProseRunes), AgentType: data.AgentType,
 		RequestedModel: data.RequestedModel, ResolvedProfileID: data.ResolvedProfileID, ResolvedModel: data.ResolvedModel,
-		Model: data.Model, ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
+		Model: activitybound.Truncate(data.Model, activitybound.MaxLabelRunes), ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
 		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
 		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: cloneInt64Pointer(data.RunningForMS),
 		QuietForMS: cloneInt64Pointer(data.QuietForMS), DurationMS: cloneInt64Pointer(data.DurationMS), PacketKind: data.PacketKind,
@@ -471,6 +480,19 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		ExhaustionResumable: cloneBoolPointer(data.ExhaustionResumable), DelegationAllowance: data.DelegationAllowance,
 		ParentWatchGranted: data.ParentWatchGranted,
 	}
+	// The logical owner is the nearest ancestor session when there is one, else
+	// the physical root. It is the same value sessionActivityDelegateOwner
+	// derives from the durable tree, but the runtime already put it on the frame.
+	out.LogicalOwnerSessionID = data.OwnerSessionID
+	if len(data.AncestorSessionIDs) > 0 {
+		out.LogicalOwnerSessionID = data.AncestorSessionIDs[0]
+	}
+	// A settled reported packet carries the same bounded preview the read
+	// projects. An open run still owns its predecessor's packet, so only the
+	// reported kind with a terminal run qualifies.
+	if data.PacketKind == activitybound.PacketReported && data.Terminal && len(data.Message) > 0 {
+		out.ReportPreview, out.ReportPreviewTruncated = activitybound.ReportPreview(data.Message)
+	}
 	if data.Usage != nil {
 		out.Usage = &appwire.EvenerUsage{
 			InputTokens: data.Usage.InputTokens, OutputTokens: data.Usage.OutputTokens,
@@ -479,8 +501,10 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 	}
 	if data.Worktree != nil {
 		out.Worktree = &appwire.JobActivityWorktree{
-			Path: data.Worktree.Path, Branch: data.Worktree.Branch, HeadSHA: data.Worktree.HeadSHA,
-			Ahead: data.Worktree.Ahead, Dirty: data.Worktree.Dirty,
+			Path:    activitybound.Truncate(data.Worktree.Path, activitybound.MaxDelegateProseRunes),
+			Branch:  activitybound.Truncate(data.Worktree.Branch, activitybound.MaxLabelRunes),
+			HeadSHA: activitybound.Truncate(data.Worktree.HeadSHA, activitybound.MaxLabelRunes),
+			Ahead:   data.Worktree.Ahead, Dirty: data.Worktree.Dirty,
 		}
 	}
 	return out

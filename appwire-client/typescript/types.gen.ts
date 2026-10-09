@@ -527,6 +527,14 @@ export interface EvenerDelegateInfo {
   runGeneration: number;
   delegateId: string;
   ownerSessionId: string;
+  /**
+   * LogicalOwnerSessionID is the session whose activity rows scope this
+   * delegate: the nearest ancestor session (AncestorSessionIDs[0]) when there
+   * is one, else OwnerSessionID. OwnerSessionID is always the physical root, so
+   * a session-scoped client buckets its own children from a descendant's by
+   * this field.
+   */
+  logicalOwnerSessionId?: string;
   rootSessionId: string;
   childSessionId: string;
   transcriptRef: string;
@@ -543,6 +551,14 @@ export interface EvenerDelegateInfo {
   needsAttention: boolean;
   notResumableReason?: string;
   projectionRevision: number;
+  /**
+   * ReportPreview is the settled current run's reported text, capped at 4096
+   * Unicode code points including an ellipsis when truncated. Absent while the
+   * run is open, for an error-only or unreported outcome, and for a prior
+   * generation once a new run has started.
+   */
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   task?: string;
   description?: string;
   agentType?: string;
@@ -3166,6 +3182,16 @@ export interface SessionActivityContext {
   ancestryKnown: boolean;
   epoch: string;
   availability: string;
+  /**
+   * ReportPreview is a per-response capability, authored by the producer that
+   * built the rows: true when this source pushes the bounded report preview on
+   * evener/delegate/updated, so a client may merge a settled report without
+   * re-reading the collection. An older producer omits it, and the client keeps
+   * the read. It is deliberately not on appwire.FeatureSet, which is the
+   * client-facing connection's own hardcoded constant and says nothing about a
+   * remote or local source's capabilities.
+   */
+  reportPreview?: boolean;
 }
 
 export interface SessionActivityCounts {
@@ -3232,6 +3258,12 @@ export interface SessionDelegate {
    * RunGeneration identifies the current activation; zero means no run has started.
    */
   runGeneration: number;
+  /**
+   * ProjectionRevision is the same aggregate projection revision the
+   * evener/delegate/updated frame carries. It is an ordering key (a read row
+   * seeds the client's merge order), not display data.
+   */
+  projectionRevision: number;
   /**
    * ReportPreview is the settled current run's reported text, capped at 4096
    * Unicode code points including an ellipsis when truncated.
