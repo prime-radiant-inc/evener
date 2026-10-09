@@ -210,3 +210,31 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 		t.Fatalf("state = %q, want awaiting while the question is pending", got)
 	}
 }
+
+// User steering a Stop parked is not work: nothing runs it until the person
+// acts, so it keeps no needs_response rest from arming, at the settle or when
+// the quiet period ends.
+func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error { snapshot.SteeringHeld = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	sess.steeringQueue = append(sess.steeringQueue, steeringMessage{Text: "parked", Source: events.SteeringSourceUser})
+	sess.mu.Unlock()
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting: parked steering is not work", got)
+	}
+}

@@ -701,13 +701,16 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 }
 
 // restAwaiting moves the session to awaiting if the rest numbered generation
-// can still arm, and reports whether it did. Queued input and user steering
-// are read again under the same hold as the transition, since neither starts
-// a turn the moment it arrives.
+// can still arm, and reports whether it did. Queued input and runnable user
+// steering are read again under the same hold as the transition, since
+// neither starts a turn the moment it arrives. Steering a Stop parked is not
+// runnable, as in hasRunnableUserSteering; the held flag lives in the client
+// mutation store, so it is read before s.mu.
 func (s *Session) restAwaiting(generation uint64) bool {
+	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.hasPendingUserSteeringLocked() {
+	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || (!steeringHeld && s.hasPendingUserSteeringLocked()) {
 		return false
 	}
 	s.state = SessionAwaiting
