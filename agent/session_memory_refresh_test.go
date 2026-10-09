@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -374,7 +375,7 @@ func (r *stalledMemoryRefresh) stalledBoundary(t *testing.T) *memoryIndexFlight 
 	done := make(chan struct{})
 	go func() { r.boundary(); close(done) }()
 	<-r.started
-	r.clk.Advance(memoryBoundaryBudget)
+	r.clk.Advance(250 * time.Millisecond)
 	<-done
 	r.s.memoryMu.Lock()
 	defer r.s.memoryMu.Unlock()
