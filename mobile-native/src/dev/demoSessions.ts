@@ -1373,8 +1373,8 @@ const WORKING_SESSION_QUESTION: Question[] = [
 // A staged event (demoFleet.ts's steps) as the session's thread shows it, so
 // a banner opens a session that agrees with its Board row: a failure ends the
 // running turn in an error, an approval waits on a sandbox escalation inside
-// it, and a finish ends it with the ball in your court (a session that
-// finished without asking rests idle, as THREAD_STATUS says).
+// it, and a finish ends it without asking, so it rests idle (as
+// THREAD_STATUS says).
 export function stageFleetState(thread: Thread, state: "failed" | "approval" | "yourmove", now: number): void {
 	if (state === "approval") {
 		thread.evener.pendingEscalations = [
