@@ -84,7 +84,7 @@ def main():
         "go test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
     )
     scenario = {
-        "arms": ["on"],
+        "arms": ["on", "off"],
         "fixture_from": "migration",
         "stages": [{
             "name": "B",
