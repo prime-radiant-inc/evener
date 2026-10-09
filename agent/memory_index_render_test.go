@@ -138,3 +138,54 @@ func TestProjectMemoryIndexOversizedHeader(t *testing.T) {
 		t.Fatalf("truncated=%t len=%d", truncated, len(content))
 	}
 }
+
+// Patching a page's line matches only each line's leading link: a description
+// that quotes another page's link shape is not that page's line.
+func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {
+	t.Parallel()
+	other := "- [Other](other.md) — see [x](x.md) — for the rule"
+	index := "Tags: a (1)\n- [X](x.md) — old\n" + other + "\n"
+	got, count := patchMemoryIndex(index, "x.md", "- [X](x.md) — new")
+	if want := "- [Other](other.md) — see [x](x.md) — for the rule\n- [X](x.md) — new\n"; got != want || count != 2 {
+		t.Fatalf("patched %q (%d lines), want %q", got, count, want)
+	}
+	if got, count := patchMemoryIndex(got, "x.md", ""); got != other+"\n" || count != 1 {
+		t.Fatalf("delete patched %q (%d lines)", got, count)
+	}
+}
+
+// An index line's page path comes from its leading link, even when the title
+// itself contains ") — ".
+func TestMemoryIndexLinePath(t *testing.T) {
+	t.Parallel()
+	for line, want := range map[string]string{
+		"- [A) — b](x.md) — desc":                                                 "x.md",
+		"- [X](x.md) — see [y](y.md) — note":                                      "x.md",
+		memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}): "s/p.md",
+		"Tags: a (1)": "",
+	} {
+		if got := memoryIndexLinePath(line); got != want {
+			t.Fatalf("%q: got %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A written page's path takes the case the scope lists it under, so a write
+// to Fact.md on a case-insensitive filesystem patches fact.md's line.
+func TestCanonicalMemoryPageName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		base  string
+		names []string
+		want  string
+	}{
+		{"Fact.md", []string{"fact.md", "other.md"}, "fact.md"},
+		{"fact.md", []string{"fact.md", "Fact.md"}, "fact.md"},
+		{"Fact.md", []string{"fact.md", "FACT.md"}, "Fact.md"},
+		{"new.md", []string{"other.md"}, "new.md"},
+	} {
+		if got := canonicalMemoryPageName(tc.base, tc.names); got != tc.want {
+			t.Fatalf("%s in %v: got %q, want %q", tc.base, tc.names, got, tc.want)
+		}
+	}
+}

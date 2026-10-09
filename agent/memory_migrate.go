@@ -180,26 +180,6 @@ func legacyIndexPage(target string) (string, bool) {
 	return page, true
 }
 
-// resolveLegacyIndexPage is the listed page a legacy link names: the exact
-// path, else the only listed path equal to it ignoring case, since on a
-// case-insensitive filesystem a link's case need not match the page's.
-// An ambiguous or missing link resolves to nothing.
-func resolveLegacyIndexPage(link string, listed map[string]bool) (string, bool) {
-	if listed[link] {
-		return link, true
-	}
-	var match string
-	for page := range listed {
-		if strings.EqualFold(page, link) {
-			if match != "" {
-				return "", false
-			}
-			match = page
-		}
-	}
-	return match, match != ""
-}
-
 // legacyIndexEntry is one line of a hand-written index: the page path it
 // links to and the description it gives that page.
 type legacyIndexEntry struct {
@@ -294,7 +274,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		entries := parseLegacyMemoryIndex(string(raw))
 		for _, exact := range []bool{true, false} {
 			for _, entry := range entries {
-				page, ok := resolveLegacyIndexPage(entry.Link, isListed)
+				page, ok := matchMemoryNameCase(entry.Link, maps.Keys(isListed))
 				if _, taken := descriptions[page]; ok && !taken && (entry.Link == page) == exact {
 					descriptions[page] = entry.Description
 				}

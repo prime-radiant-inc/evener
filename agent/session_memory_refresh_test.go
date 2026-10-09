@@ -1278,3 +1278,123 @@ func TestMemoryRefreshOwnPageWriteAfterUnavailableDeliversFullIndex(t *testing.T
 		t.Fatalf("contexts=%d last=%q, want the full index after the unavailable one", got, text)
 	}
 }
+
+// The session's own page write patches its baseline with that page's line
+// only: pages another session added or deleted since the last boundary still
+// reach the next turn as change lines, and the own page is not echoed.
+func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	gone := memorySeedPage(t, root, "personal", "gone.md", "opaque-gone")
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(llm.Request) llm.Response {
+			// Another session changes the scope after this turn's boundary.
+			memorySeedPage(t, root, "personal", "other.md", "opaque-other")
+			if err := os.Remove(gone); err != nil {
+				t.Fatal(err)
+			}
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(req llm.Request) llm.Response {
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("next")
+		},
+	))
+	for range 3 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{`+ "- [other](other.md) — opaque-other`, `- "- [gone](gone.md) — opaque-gone`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("delta lacks %q: %s", want, delta)
+		}
+	}
+	if strings.Contains(delta, "opaque-mine") || strings.Contains(delta, "opaque-kept") {
+		t.Fatalf("delta echoes the own page or an unchanged line: %s", delta)
+	}
+}
+
+// A session that cannot write, edit and delete memory never migrates: its
+// projection renders the pages as they are, with fallback descriptions, and
+// neither writes a page nor moves the hand-written index.
+func TestMemoryReadOnlySessionDoesNotMigrate(t *testing.T) {
+	t.Parallel()
+	for _, denied := range []string{"memory_write", "memory_edit", "memory_delete"} {
+		t.Run(denied, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			scope := filepath.Join(root, "memory", "personal")
+			if err := os.MkdirAll(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			const legacy = "- [Cents](cents.md) — opaque-legacy-description\n"
+			writeMemoryPage(t, root, "MEMORY.md", legacy)
+			writeMemoryPage(t, root, "cents.md", "# Cents\n")
+			var text string
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+				text = latestMemoryContext(req, "personal")
+				return finalResponse("observed")
+			}))
+			s.reg.Remove(denied)
+			refreshModelFacingCaches(s)
+			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+				t.Fatal(err)
+			}
+			display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+			if !ok || !strings.Contains(display.Content, "- [Cents](cents.md) — Cents (no description)") {
+				t.Fatalf("projection=%+v ok=%t", display, ok)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "cents.md")); err != nil || string(raw) != "# Cents\n" {
+				t.Fatalf("cents.md=%q, %v", raw, err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "MEMORY.md")); err != nil || string(raw) != legacy {
+				t.Fatalf("MEMORY.md=%q, %v", raw, err)
+			}
+		})
+	}
+}
+
+// On a case-insensitive filesystem a write or delete naming a page in
+// another case is still the session's own: the page's listed line is
+// patched, so neither the write nor the delete is echoed back.
+func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-cased-1")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "FACT.md")); err != nil {
+		t.Skip("the filesystem is case-sensitive")
+	}
+	nextTurn := func(after string) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the %s carries %d memory contexts, want only the first full index", after, got)
+			}
+			return finalResponse("next")
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "Fact.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Fact.md", "content": "---\ndescription: opaque-cased-2\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		nextTurn("write"),
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "Fact.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		nextTurn("delete"),
+	))
+	for _, input := range []string{"write", "next", "delete", "next"} {
+		if _, err := s.ProcessInput(context.Background(), input, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

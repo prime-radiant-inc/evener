@@ -47,6 +47,39 @@ func memoryIndexLine(p memoryPage) string {
 	return b.String()
 }
 
+// memoryIndexLinePath is the page path in an index line's leading link
+// "- [Title](path) — ", or "": the text from the line's first "](" to the
+// first ") — " after it. A title containing ") — " ends before the "](", and
+// a description quoting another page's link comes after the path, so neither
+// is read as this line's path.
+func memoryIndexLinePath(line string) string {
+	_, afterTitle, ok := strings.Cut(line, "](")
+	if !ok {
+		return ""
+	}
+	path, _, ok := strings.Cut(afterTitle, ") — ")
+	if !ok {
+		return ""
+	}
+	return path
+}
+
+// patchMemoryIndex is index's page lines with the line of the page at rel
+// replaced by line, or dropped when line is "", and how many page lines
+// that leaves.
+func patchMemoryIndex(index, rel, line string) (patched string, count int) {
+	var kept []string
+	for _, existing := range memoryIndexLines(index) {
+		if memoryIndexLinePath(existing) != rel {
+			kept = append(kept, existing+"\n")
+		}
+	}
+	if line != "" {
+		kept = append(kept, line+"\n")
+	}
+	return strings.Join(kept, ""), len(kept)
+}
+
 // memoryTagCounts counts pages per tag; a page counts once under each tag.
 func memoryTagCounts(pages []memoryPage) (counts map[string]int, untagged int) {
 	counts = make(map[string]int)

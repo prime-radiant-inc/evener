@@ -62,8 +62,9 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 const memoryIndexFile = "MEMORY.md"
 
 // memoryIndexBaseline is the index the session already knows for a scope:
-// the whole rendered index of a current scope, or that the session's own
-// write left the scope with no pages.
+// the whole rendered index of a current scope, with the session's own page
+// writes patched in, or that the scope has no pages. Its page lines are
+// compared as a set, so their order carries no meaning.
 type memoryIndexBaseline struct {
 	status, index string
 }
@@ -110,12 +111,18 @@ type memoryEnvironmentFlight struct {
 	err  error
 }
 
-// renderMemoryScope migrates a hand-written index if one remains, then
-// renders the scope's pages into p: "current", or "missing" when the scope
-// has no pages. A failed migration never blocks the rendering; the next one
-// retries it. A failed listing leaves p as it was.
-func renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
-	_ = migrateMemoryScope(env)
+// renderMemoryScope migrates a hand-written index if one remains and the
+// session can write memory (memorySaveInstructionsEnabled), then renders the
+// scope's pages into p: "current", or "missing" when the scope has no pages.
+// Migration edits existing pages and removes the root MEMORY.md, so it needs
+// the same write, edit and delete access the save instructions do; any other
+// session renders the pages as they are, with fallback descriptions, until a
+// writing session migrates. A failed migration never blocks the rendering;
+// the next one retries it. A failed listing leaves p as it was.
+func (s *Session) renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
+	if s.memorySaveInstructionsEnabled() {
+		_ = migrateMemoryScope(env)
+	}
 	pages, err := listMemoryPages(env)
 	if err != nil {
 		return err
@@ -339,7 +346,7 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p, nil
 	}
-	_ = renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
+	_ = s.renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
 		if record, ok := readMemoryPageRecord(env, page); ok {
@@ -368,42 +375,53 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 }
 
 // recordOwnMemoryWrite makes what the session wrote, edited or deleted what
-// it knows: the scope's index is rendered again and becomes its baseline,
-// and a page it read gets its new record. Neither is echoed back.
+// it knows: the written page's index line is patched into the scope's
+// baseline, and a page it read gets its new record. Neither is echoed back.
+// Both come from one read of the page at listed, the slash path the scope
+// lists it at (listedMemoryPagePath), which names the same file as file.
 //
-// Both are read back through env. Another session writing between this
-// session's write and the read-back is folded in unseen until the file
-// changes again or a compaction or resume delivers the index in full; the
-// race is accepted as rare and cheap.
-func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, file string) {
-	adopt := s.memoryOwnWriteSetsBaseline(scope)
-	var rendered memoryProjection
-	var err error
-	if adopt {
-		if err = s.beforeMemoryIO(scope, "record"); err == nil {
-			err = renderMemoryScope(env, &rendered)
-		}
-	}
-	s.recordOwnMemoryIndex(scope, adopt, rendered, err)
+// Only the written page is read back, so a page another session added,
+// changed or deleted since the last boundary stays out of the baseline and
+// still reaches the next boundary as a change. Another session writing this
+// same page between this session's write and the read-back is folded in
+// unseen until the page changes again or a compaction or resume delivers the
+// index in full; the race is accepted as rare and cheap.
+func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, file, listed string) {
+	adopt := s.memoryOwnWriteSetsBaseline(scope) && isMemoryPagePath(listed)
 	s.memoryMu.Lock()
 	_, tracked := s.memoryReadPages[scope][file]
 	s.memoryMu.Unlock()
-	if !tracked {
-		return
-	}
+	// ioErr is the pre-I/O hook refusing the read, which forgets what the
+	// session knew; a failed read itself is judged like any page read.
 	var raw []byte
-	if err = s.beforeMemoryIO(scope, "record"); err == nil {
-		raw, err = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), file))
+	var ioErr, readErr error
+	if adopt || tracked {
+		if ioErr = s.beforeMemoryIO(scope, "record"); ioErr == nil {
+			raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)))
+		}
 	}
-	s.recordMemoryContent(scope, file, raw, err, false)
+	var line string
+	if adopt && ioErr == nil {
+		if page, exists := memoryPageFromRead(listed, raw, readErr, time.Time{}); exists {
+			line = memoryIndexLine(page)
+		}
+	}
+	s.recordOwnMemoryIndex(scope, adopt, listed, line, ioErr)
+	if tracked {
+		err := ioErr
+		if err == nil {
+			err = readErr
+		}
+		s.recordMemoryContent(scope, file, raw, err, false)
+	}
 }
 
 // memoryOwnWriteSetsBaseline reports whether the session's own write to scope
-// makes the scope's new rendering its baseline: when it already has one, or
-// when the last projection found the scope missing, so the model knows it
-// held nothing before the write. After any other state, such as unavailable,
-// the model never saw the index; the scope stays unknown and the next
-// boundary delivers it in full.
+// is patched into a baseline: the one it already has, or an empty one when
+// the last projection found the scope missing, so the model knows it held
+// nothing before the write. After any other state, such as unavailable, the
+// model never saw the index; the scope stays unknown and the next boundary
+// delivers it in full.
 func (s *Session) memoryOwnWriteSetsBaseline(scope string) bool {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
@@ -411,12 +429,13 @@ func (s *Session) memoryOwnWriteSetsBaseline(scope string) bool {
 	return known || s.memoryLastProjected[scope].Status == "missing"
 }
 
-// recordOwnMemoryIndex records the session's own write to scope. A read
-// already in flight started before the write, so its result is discarded.
-// When adopt (memoryOwnWriteSetsBaseline) holds, rendered becomes the index
-// the session knows; a failed rendering forgets the scope, so the next
-// boundary delivers it in full.
-func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rendered memoryProjection, err error) {
+// recordOwnMemoryIndex records the session's own write of the page at rel in
+// scope. A read already in flight started before the write, so its result is
+// discarded. When adopt holds, line (the page's index line, or "" when it no
+// longer exists) replaces the page's old line in the baseline; a scope left
+// with no page lines is missing. A failed read-back forgets the scope, so the
+// next boundary delivers it in full.
+func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rel, line string, err error) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if flight := s.memoryIndexFlights[scope]; flight != nil {
@@ -425,14 +444,16 @@ func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rendered memory
 	if !adopt {
 		return
 	}
-	switch {
-	case err != nil:
+	if err != nil {
 		delete(s.memoryBaseline, scope)
-	case rendered.Status == "missing":
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
-	default:
-		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: rendered.Index})
+		return
 	}
+	index, count := patchMemoryIndex(s.memoryBaseline[scope].index, rel, line)
+	if count == 0 {
+		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
+		return
+	}
+	s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "current", index: index})
 }
 
 // recordMemoryContent records raw, the result of reading page file (err when
