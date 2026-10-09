@@ -35,10 +35,24 @@ func sortedMemoryPages(pages []memoryPage) []memoryPage {
 // closing "](" is the line's first unescaped one (memoryIndexLineFor).
 var memoryTitleEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
 
+// memoryAngleEscaper escapes a path written as an angle-bracket link
+// destination, where "<" and ">" may appear only escaped.
+var memoryAngleEscaper = strings.NewReplacer(`<`, `\<`, `>`, `\>`)
+
+// memoryLinkTarget is rel as its index link's destination. A path a bare
+// Markdown destination can't hold (whitespace, a parenthesis, a leading "<")
+// goes in angle brackets, so the link still names the whole path.
+func memoryLinkTarget(rel string) string {
+	if !strings.ContainsAny(rel, " \t()") && !strings.HasPrefix(rel, "<") {
+		return rel
+	}
+	return "<" + memoryAngleEscaper.Replace(rel) + ">"
+}
+
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), p.Path, p.Description)
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), p.Description)
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}
@@ -61,7 +75,7 @@ func memoryIndexLineFor(line, rel string) bool {
 	if !ok {
 		return false
 	}
-	link := "](" + rel + ") — "
+	link := "](" + memoryLinkTarget(rel) + ") — "
 	for i := 0; i < len(title); i++ {
 		switch {
 		case title[i] == '\\':
