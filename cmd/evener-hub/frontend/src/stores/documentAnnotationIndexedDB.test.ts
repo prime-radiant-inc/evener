@@ -2881,3 +2881,144 @@ it("expires when full coverage arrives after an initial prefix observation", asy
 
   await evidenceGrowthExpiry(f, fresh, full.lease, "growth-prefix-op", docContent(`${SOURCE}changed\n`, "rev-B"));
 });
+
+// After a full rev-A acceptance, a compatible revision-less prefix is accepted and
+// becomes the retained local accepted source. A changed full read started while an
+// older operation's append already holds the stores must install suppression
+// BEFORE any await, at the append's last abortable boundary. This isolates the
+// retained local evidence inside one real repository instance; no adapter
+// recreation is involved.
+it.each(["draft", "recovery"] as const)(
+  "cancels a pending append when a changed full read starts after a compatible prefix on %s backing",
+  async (backing) => {
+    let f: Awaited<ReturnType<typeof fixture>>;
+    let ticket: ReadTicket;
+    let changed: Promise<ReadOutcome> | undefined;
+    let startRead = false;
+    f = await fixture(`local-guard-${backing}`, {
+      onAppendReadsIssued: () => {
+        if (startRead) {
+          startRead = false;
+          changed = observeRead(f.repo.acceptRead(ticket, docContent(`${SOURCE}changed\n`, "rev-B")));
+        }
+      },
+    });
+    // Join and validate the started observed read even when an assertion exits
+    // the case early; a rejection is an outcome, not a value.
+    cleanupAfterTest(async () => {
+      if (changed) expectResolvedRead(await changed);
+    });
+    const enqueue = vi.spyOn(f.outbox, "enqueueIntent");
+    const resend = vi.spyOn(f.outbox, "resendRecovery");
+    const update = vi.spyOn(f.outbox, "updateRecoveryInput");
+
+    // Select the real recovery backing without seeding or consuming another draft,
+    // and complete every real preparation BEFORE the preservation baseline.
+    if (backing === "recovery") f.source.setActiveRecoveryId("rec-1");
+    const preparation = await f.source.prepareAnnotation();
+    if (!preparation) throw new Error("missing preparation");
+
+    // op-1 stays pending: it is the operation under test.
+    const operationBefore = (
+      await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+    ).find((row) => row.operationKey === f.operationKey);
+    if (!operationBefore) throw new Error("fixture operation row missing");
+
+    // A genuinely accepted compatible prefix leaves only partial local evidence,
+    // in the SAME epoch as op-1.
+    const prefix = await f.repo.acceptRead(
+      await f.repo.beginRead(f.document),
+      docContent(SOURCE.slice(0, 10), undefined, true),
+    );
+    expect(prefix.state).toBe("accepted");
+    if (prefix.state !== "accepted") throw new Error("prefix not accepted");
+    expect(prefix.lease.epoch).toBe(operationBefore.epoch);
+
+    // Preservation baselines captured after every real setup step.
+    const ordinary = await f.drafts.load(f.key);
+    const recovery = await f.outbox.getRecovery("rec-1");
+    const baselineAttachment = recovery?.attachments[0];
+    if (!baselineAttachment) throw new Error("fixture recovery attachment missing");
+    expect(baselineAttachment).toMatchObject(attachmentIdentity);
+    expect(await blobBytes(baselineAttachment.blob)).toEqual(new Uint8Array([1]));
+    const snapshot = f.source.getSnapshot();
+    const generationBefore = f.source.getLocalGeneration();
+    const backingBefore = f.source.getRuntimeBacking();
+    const tokenBefore = f.source.getDraftToken();
+
+    // Next genuine ticket BEFORE starting handoff.
+    ticket = await f.repo.beginRead(f.document);
+
+    startRead = true;
+    const handedOff = await f.repo.handoff(f.document, "op-1");
+    if (!changed) throw new Error("changed read never started");
+    const changedResult = expectResolvedRead(await changed);
+
+    // Soft assertions so the unchanged backing/source evidence is still reported
+    // when the boundary guard is absent and the append wrongly commits.
+    expect.soft(handedOff.state).toBe("cancelled");
+    expect.soft(changedResult.state).toBe("expiry-pending");
+    expect.soft(await f.drafts.load(f.key)).toEqual(ordinary);
+    expect.soft((await f.drafts.load(f.key))?.token.sessionRevision).toBe(ordinary?.token.sessionRevision);
+    expect.soft(await f.outbox.getRecovery("rec-1")).toEqual(recovery);
+    expect.soft(f.source.getSnapshot()).toEqual(snapshot);
+    expect.soft(f.source.getLocalGeneration()).toBe(generationBefore);
+    expect.soft(f.source.getRuntimeBacking()).toEqual(backingBefore);
+    expect.soft(f.source.getDraftToken()).toEqual(tokenBefore);
+    const boundaryAttachment = (await f.outbox.getRecovery("rec-1"))?.attachments[0];
+    if (boundaryAttachment) expect.soft(await blobBytes(boundaryAttachment.blob)).toEqual(new Uint8Array([1]));
+    expect.soft(enqueue).not.toHaveBeenCalled();
+    expect.soft(resend).not.toHaveBeenCalled();
+    expect.soft(update).not.toHaveBeenCalled();
+
+    // Complete the real expiry only through its genuine returned receipt, which is
+    // required: a missing receipt must fail, never silently skip completion.
+    if (changedResult.state !== "expiry-pending" || !changedResult.receipt) {
+      throw new Error("changed read did not return a genuine expiry receipt");
+    }
+    await f.repo.finishExpiry(changedResult.receipt);
+
+    // Fresh rows after actual expiry: no old-operation append, terminal
+    // cancellation, payload deletion, and every backing/source value unchanged.
+    expect
+      .soft(
+        (await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).find(
+          (row) => row.operationKey === f.operationKey,
+        )?.state,
+      )
+      .toBe("cancelled");
+    expect
+      .soft(
+        (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+          (row) => row.payloadKey === f.operationKey,
+        ),
+      )
+      .toBe(false);
+    expect
+      .soft((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId))
+      .not.toContain("op-1");
+    const ordinaryAfterExpiry = await f.drafts.load(f.key);
+    const recoveryAfterExpiry = await f.outbox.getRecovery("rec-1");
+    expect.soft(ordinaryAfterExpiry).toEqual(ordinary);
+    expect.soft(recoveryAfterExpiry).toEqual(recovery);
+    const expiryAttachment = recoveryAfterExpiry?.attachments[0];
+    expect.soft(expiryAttachment).toMatchObject(attachmentIdentity);
+    if (expiryAttachment) expect.soft(await blobBytes(expiryAttachment.blob)).toEqual(new Uint8Array([1]));
+    expect.soft(f.source.getSnapshot()).toEqual(snapshot);
+    expect.soft(f.source.getLocalGeneration()).toBe(generationBefore);
+    expect.soft(f.source.getRuntimeBacking()).toEqual(backingBefore);
+    expect.soft(f.source.getDraftToken()).toEqual(tokenBefore);
+
+    // Final cancelled replay: fresh rows and the same source values must hold again.
+    expect.soft((await f.repo.handoff(f.document, "op-1")).state).toBe("cancelled");
+    expect.soft(await f.drafts.load(f.key)).toEqual(ordinary);
+    expect.soft(await f.outbox.getRecovery("rec-1")).toEqual(recovery);
+    const replayAttachment = (await f.outbox.getRecovery("rec-1"))?.attachments[0];
+    expect.soft(replayAttachment).toMatchObject(attachmentIdentity);
+    if (replayAttachment) expect.soft(await blobBytes(replayAttachment.blob)).toEqual(new Uint8Array([1]));
+    expect.soft(f.source.getSnapshot()).toEqual(snapshot);
+    expect.soft(f.source.getLocalGeneration()).toBe(generationBefore);
+    expect.soft(f.source.getRuntimeBacking()).toEqual(backingBefore);
+    expect.soft(f.source.getDraftToken()).toEqual(tokenBefore);
+  },
+);
