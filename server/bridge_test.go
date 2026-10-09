@@ -274,6 +274,28 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	}
 }
 
+// A status that settles outside any turn (a needs_response rest arming
+// awaiting after its quiet period) becomes the session's stored state.
+func TestBridge_StatusSettledSetsState(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	srv.SetState("idle")
+	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
+
+	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
+	close(evs)
+	<-done
+
+	if got := srv.GetStatus().State; got != "awaiting" {
+		t.Errorf("state: got %q, want awaiting", got)
+	}
+}
+
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)

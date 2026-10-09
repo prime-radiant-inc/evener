@@ -630,23 +630,58 @@ func (s *Session) recomputeRestoredState(divergenceTurn int) {
 // SessionIdle, so interrupt/failure paths (which never reach the settle) and
 // closed sessions are untouched.
 func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+	s.mu.Lock()
+	s.restGeneration++
+	generation := s.restGeneration
+	s.mu.Unlock()
+	if s.askPendingCount() > 0 {
+		s.restAwaiting(generation)
+		return
+	}
+	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
+		return
+	}
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	target := SessionAwaiting
-	if s.askPendingCount() == 0 {
-		if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
-			return
-		}
-		target = settleTerminalState(hadOutput, goalKicked,
-			s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.autonomyInFlight())
-	}
-	if target != SessionAwaiting {
+	moves := func() bool { return s.QueueDepth() > 0 || s.hasRunnableUserSteering() }
+	if settleTerminalState(hadOutput, goalKicked, moves(), s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
-	s.mu.Lock()
-	if s.state == SessionIdle && !s.closingOrClosedLocked() {
-		s.state = SessionAwaiting
+	// A needs_response rest waits out a quiet period first, so a session that
+	// ends a turn and starts the next one at once never flickers to awaiting.
+	// The timer re-checks everything the settle checked: a newer settle, a new
+	// turn, a close, or work that arrived in the meantime leaves it idle.
+	delay := needsResponseQuietPeriodDefault
+	if override := s.cfg.testOnly.needsResponseQuietPeriod; override != nil {
+		delay = *override
 	}
-	s.mu.Unlock()
+	rest := func() {
+		if moves() || s.autonomyInFlight() || !s.restAwaiting(generation) {
+			return
+		}
+		s.emit(events.EventStatusSettled, events.StatusSettledData{State: s.WireState()})
+	}
+	if delay <= 0 {
+		rest()
+		return
+	}
+	s.sclock().AfterFunc(delay, rest)
 }
+
+// restAwaiting moves an idle session to awaiting, unless a newer settle ran
+// since the one numbered generation or the session is closing. It reports
+// whether it did.
+func (s *Session) restAwaiting(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.restGeneration != generation || s.state != SessionIdle || s.closingOrClosedLocked() {
+		return false
+	}
+	s.state = SessionAwaiting
+	return true
+}
+
+// needsResponseQuietPeriodDefault is how long a turn that ended on
+// needs_response rests idle before it rests awaiting.
+const needsResponseQuietPeriodDefault = 5 * time.Second

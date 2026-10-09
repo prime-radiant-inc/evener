@@ -213,6 +213,12 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
+	case events.EventStatusSettled:
+		d, ok := ev.Data.(events.StatusSettledData)
+		if !ok || d.State == "" {
+			return nil
+		}
+		return func(s *Server) { s.status.State = d.State }
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {

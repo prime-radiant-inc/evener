@@ -35,7 +35,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

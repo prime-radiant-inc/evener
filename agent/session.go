@@ -635,6 +635,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restGeneration counts drain-loop settles. A needs_response rest arms
+	// awaiting only if no newer settle ran during its quiet period. Guarded by
+	// s.mu.
+	restGeneration uint64
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has

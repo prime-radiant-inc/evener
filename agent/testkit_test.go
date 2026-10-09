@@ -39,9 +39,20 @@ type sessionOpts struct {
 	cfg             SessionConfig
 	cfgSet          bool
 	skipGitSnapshot bool
+	immediateRest   bool
 }
 
 type sessionOpt func(*sessionOpts)
+
+// withImmediateRest drops the needs_response quiet period, so a turn that
+// ended on needs_response rests awaiting at the settle itself.
+func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateRest = true } }
+
+// immediateRestConfig is testConfig with the needs_response quiet period
+// dropped, for tests that build a SessionConfig literal.
+func immediateRestConfig() testConfig {
+	return testConfig{needsResponseQuietPeriod: new(time.Duration)}
+}
 
 // withClient supplies a client whose main provider adapters are already
 // configured. The builder may still add its dedicated session-namer adapter.
@@ -117,6 +128,9 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	}
 	if o.skipGitSnapshot {
 		cfg.testOnly.skipGitSnapshot = true
+	}
+	if o.immediateRest {
+		cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
 	}
 	sess, err := NewSession(o.client, profile, execenv.NewLocalExecutionEnvironment(o.dir), cfg)
 	if err != nil {

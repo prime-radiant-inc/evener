@@ -135,6 +135,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		p.runningTurnID = ""
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
+	case events.EventStatusSettled:
+		// A resting session's state moved outside any turn (a needs_response
+		// rest arming awaiting after its quiet period); it maps as a
+		// SessionStart state does.
+		return []AppNotification{p.threadStatus(openThreadStatus(eventData[events.StatusSettledData](event.Data).State))}
 	case events.EventGoalUpdated:
 		data := eventData[events.GoalUpdatedData](event.Data)
 		var state *appwire.GoalState

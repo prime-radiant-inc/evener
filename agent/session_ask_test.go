@@ -1242,7 +1242,7 @@ func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
-	sess := newSession(t, withAdapter(f))
+	sess := newSession(t, withAdapter(f), withImmediateRest())
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -4216,7 +4216,7 @@ func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testin
 			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
