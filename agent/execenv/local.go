@@ -1878,6 +1878,8 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 			if !ent.IsDir() {
 				if info, err := ent.Info(); err == nil {
 					de.Size = info.Size()
+					de.ModTime = info.ModTime()
+					de.IsRegular = info.Mode().IsRegular()
 					if info.Mode()&0o111 != 0 {
 						de.IsExec = true
 					}

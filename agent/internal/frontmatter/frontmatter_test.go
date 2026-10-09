@@ -180,3 +180,23 @@ func TestParse_DelimiterInBody(t *testing.T) {
 		t.Errorf("Body = %q, want %q", doc.Body, want)
 	}
 }
+
+func TestSplit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, raw, block, body string
+		ok                     bool
+	}{
+		{"complete", "---\na: 1\n---\nbody\n", "a: 1\n", "body\n", true},
+		{"no opening", "body\n", "", "body\n", false},
+		{"no closing", "---\na: 1\n", "", "---\na: 1\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			block, body, ok := Split(tc.raw)
+			if block != tc.block || body != tc.body || ok != tc.ok {
+				t.Fatalf("Split=%q,%q,%v want %q,%q,%v", block, body, ok, tc.block, tc.body, tc.ok)
+			}
+		})
+	}
+}

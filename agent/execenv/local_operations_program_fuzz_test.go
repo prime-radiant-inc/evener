@@ -174,6 +174,12 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 	if _, err := env.ListDirectory("missing", 1); err == nil {
 		t.Fatal("ListDirectory missing path unexpectedly succeeded")
 	}
+	// Modification times differ between runs; the trace compares the rest.
+	for _, list := range [][]DirEntry{shallow, deep} {
+		for i := range list {
+			list[i].ModTime = time.Time{}
+		}
+	}
 	trace.Lists = append(trace.Lists, shallow, deep)
 
 	for i, name := range []string{"order-a.txt", "order-b.txt", "order-new.txt"} {
