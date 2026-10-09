@@ -252,15 +252,14 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	}
 	defer release()
 	g := parseFileGrepArgs(forwarded)
+	target := filepath.Clean(stringArg(args, "path"))
+	if isMemoryIndexPath(target) {
+		// A search of the index itself finds nothing, but a bad pattern is
+		// still an error.
+		return "", execenv.CheckGrepPattern(g.pattern, g.caseInsensitive)
+	}
 	var skip func(rel string) bool
-	switch target := filepath.Clean(stringArg(args, "path")); {
-	case isMemoryIndexPath(target):
-		// A search of the index itself finds nothing, but still runs, over
-		// the scope with every file skipped, so an invalid pattern is
-		// reported. It walks the scope because the sandboxed grep searches
-		// only a directory.
-		g.path, skip = env.WorkingDirectory(), func(string) bool { return true }
-	case target == ".":
+	if target == "." {
 		skip = isMemoryIndexPath
 	}
 	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
