@@ -71,9 +71,9 @@ The existing machinery (`memoryIndexBaseline`, `memoryIndexLineChanges`, the 2 K
 - a page another session deleted shows as `- line`;
 - a description, tag or stamp change shows as `- old` and `+ new`.
 
-A session's own `memory_write`, `memory_edit` or `memory_delete` of any page re-renders the index after the write and makes that rendering the session's new baseline (today only a write to `MEMORY.md` does this), so its own change is never reported back to it.
+A session's own `memory_write`, `memory_edit` or `memory_delete` of any page reads that page back and patches the session's baseline: the page's old line is replaced by its new one, or dropped for a delete, so its own change is never reported back to it. Only that line changes, so pages other sessions changed since the last boundary still reach the next one as changes.
 
-Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn, own writes) and runs under the same off-loop read and 250 ms wait.
+Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn) and runs under the same off-loop read and 250 ms wait. An own write reads back only the page it wrote.
 
 ## Migration
 
