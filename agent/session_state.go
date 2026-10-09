@@ -183,11 +183,11 @@ func (s *Session) hasPendingStableSteering() bool {
 
 // autonomyInFlight reports whether autonomous work will move this session
 // without user input: pending job notifications, queued input, a pending
-// delegate report, or a working child subagent (hasWorkingSubagent; a warm
-// idle runtime does not count). Reads take each signal's own lock
-// sequentially — never nested — per the settle lock discipline (spec v5). A restored-but-unkicked goal is
-// deliberately NOT autonomy: nothing will move until the user acts, and amber
-// is what surfaces that stall.
+// delegate report, or a working child subagent (hasWorkingSubagent). Reads
+// take each signal's own lock sequentially — never nested — per the settle
+// lock discipline (spec v5). A restored-but-unkicked goal is deliberately NOT
+// autonomy: nothing will move until the user acts, and amber is what surfaces
+// that stall.
 func (s *Session) autonomyInFlight() bool {
 	if s.sessionWorkPending() {
 		return true
@@ -575,8 +575,8 @@ func (s *Session) isClosingOrClosed() bool {
 // turns return from ProcessInputKind before the settle), so turn outcome is
 // implied by reachability. awaiting arms only when the turn produced
 // user-visible output and nothing autonomous will move the session next.
-func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, autonomyPending bool) SessionState {
-	if !hadOutput || goalKicked || notifsPending || queuePending || autonomyPending {
+func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bool) SessionState {
+	if !hadOutput || goalKicked || queuePending || autonomyPending {
 		return SessionIdle
 	}
 	return SessionAwaiting
@@ -635,7 +635,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 			return
 		}
 		target = settleTerminalState(hadOutput, goalKicked,
-			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.autonomyInFlight())
+			s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.autonomyInFlight())
 	}
 	if target != SessionAwaiting {
 		return

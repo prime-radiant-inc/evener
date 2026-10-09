@@ -32,24 +32,23 @@ func newTestSessionForState(t *testing.T) *Session {
 func TestSettleTerminalState(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name                                                             string
-		hadOutput, goalKicked, notifsPending, queuePending, childrenLive bool
-		want                                                             SessionState
+		name                                                 string
+		hadOutput, goalKicked, queuePending, autonomyPending bool
+		want                                                 SessionState
 	}{
-		{"clean turn with output arms awaiting", true, false, false, false, false, SessionAwaiting},
-		{"no user-visible output stays idle", false, false, false, false, false, SessionIdle},
-		{"goal kick suppresses", true, true, false, false, false, SessionIdle},
-		{"pending notifications suppress", true, false, true, false, false, SessionIdle},
-		{"queued input suppresses", true, false, false, true, false, SessionIdle},
-		{"live children suppress", true, false, false, false, true, SessionIdle},
-		{"all suppressors at once", true, true, true, true, true, SessionIdle},
+		{"clean turn with output arms awaiting", true, false, false, false, SessionAwaiting},
+		{"no user-visible output stays idle", false, false, false, false, SessionIdle},
+		{"goal kick suppresses", true, true, false, false, SessionIdle},
+		{"queued input suppresses", true, false, true, false, SessionIdle},
+		{"autonomy in flight suppresses", true, false, false, true, SessionIdle},
+		{"all suppressors at once", true, true, true, true, SessionIdle},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := settleTerminalState(c.hadOutput, c.goalKicked, c.notifsPending, c.queuePending, c.childrenLive)
+			got := settleTerminalState(c.hadOutput, c.goalKicked, c.queuePending, c.autonomyPending)
 			if got != c.want {
-				t.Fatalf("settleTerminalState(%v,%v,%v,%v,%v) = %q, want %q",
-					c.hadOutput, c.goalKicked, c.notifsPending, c.queuePending, c.childrenLive, got, c.want)
+				t.Fatalf("settleTerminalState(%v,%v,%v,%v) = %q, want %q",
+					c.hadOutput, c.goalKicked, c.queuePending, c.autonomyPending, got, c.want)
 			}
 		})
 	}
@@ -197,16 +196,14 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	}
 }
 
-func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
+func TestWireState_RunningChildDoesNotMakeIdleParentActive(t *testing.T) {
 	t.Parallel()
 	parent := newTestSessionForState(t)
 	child := newTestSessionForState(t)
-	parent.subagents.mu.Lock()
-	parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
-	parent.subagents.mu.Unlock()
+	parent.subagents.track(&subagent{id: child.ID(), sess: child, running: true})
 
 	if got := parent.WireState(); got != string(SessionIdle) {
-		t.Fatalf("WireState with only live child = %q, want %q", got, SessionIdle)
+		t.Fatalf("WireState with only a running child = %q, want %q", got, SessionIdle)
 	}
 	if !parent.autonomyInFlight() {
 		t.Fatal("a running child must remain autonomy in flight for settle and restore")
@@ -233,9 +230,7 @@ func TestAutonomyInFlight_CountsOnlyWorkingChildren(t *testing.T) {
 			t.Parallel()
 			parent := newTestSessionForState(t)
 			child := newTestSessionForState(t)
-			parent.subagents.mu.Lock()
-			parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: tc.running, driving: tc.driving, finalizing: tc.finalizing, closed: tc.closed}
-			parent.subagents.mu.Unlock()
+			parent.subagents.track(&subagent{id: child.ID(), sess: child, running: tc.running, driving: tc.driving, finalizing: tc.finalizing, closed: tc.closed})
 			if got := parent.autonomyInFlight(); got != tc.want {
 				t.Fatalf("autonomyInFlight = %v, want %v", got, tc.want)
 			}
@@ -243,23 +238,35 @@ func TestAutonomyInFlight_CountsOnlyWorkingChildren(t *testing.T) {
 	}
 }
 
+// A child that has stopped finalizing locally still counts as work until its
+// finalize tail releases the delegate's finalization: its report may not have
+// reached the parent yet.
+func TestAutonomyInFlight_CountsChildInFinalizeTail(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	parent := newTestSessionForState(t)
+	parent.delegateController = c
+	child := newTestSessionForState(t)
+	child.owningDelegateID = "dlg_tail"
+	parent.subagents.track(&subagent{id: child.ID(), sess: child})
+	if parent.autonomyInFlight() {
+		t.Fatal("a warm idle child with no finalization counted as work")
+	}
+	c.mu.Lock()
+	c.live["dlg_tail"] = &delegateLiveState{runtime: child, finalizing: &delegateFinalization{delegateID: "dlg_tail", runtime: child, released: make(chan struct{})}}
+	c.mu.Unlock()
+	if !parent.autonomyInFlight() {
+		t.Fatal("a child in its finalize tail must count as work")
+	}
+}
+
 // A finished delegate whose runtime is still warm does not keep its parent
 // from resting awaiting after a needs_response turn (#4093).
 func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) {
 	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
-	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
 	child := newTestSessionForState(t)
-	sess.subagents.mu.Lock()
-	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
-	sess.subagents.mu.Unlock()
+	sess.subagents.track(&subagent{id: child.ID(), sess: child})
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -609,9 +616,7 @@ func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 	sess.state = SessionIdle
 	sess.mu.Unlock()
 	child := newTestSessionForState(t)
-	sess.subagents.mu.Lock()
-	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
-	sess.subagents.mu.Unlock()
+	sess.subagents.track(&subagent{id: child.ID(), sess: child})
 	const id = "delegate:dlg_x/delivery/1"
 	if ok, err := sess.appendDelegateNotificationDurably(id, `<delegate-notification delegate_id="dlg_x">done</delegate-notification>`); err != nil || !ok {
 		t.Fatalf("append delegate notification: %v %v", ok, err)
