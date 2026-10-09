@@ -273,19 +273,23 @@ note asking to fix the YAML.
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
 it moves the old index into the pages; on a case-sensitive filesystem every
-case variant is migrated. Each line that
-links to a page in the scope (`[text](path)` or a bare `path.md`) gives that
-page a description: the rest of the line, with the link, list markers and
-separators stripped. A linked page that exists and has no description gets it;
-a page that already has one keeps it, and a page whose frontmatter can't take
-it is left alone (the backup keeps its line). The first line naming a page
-wins. Migration does not stamp. Each old index is then renamed to a
-`.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
-numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
-that fails to write does not stop the others, but leaves the old index in
-place. A failed migration never blocks rendering; the next rendering retries.
-Other sessions render the pages as they are, with fallback descriptions, until
-a writing session migrates.
+case variant is migrated. Each line that links to a page in the scope
+(`[text](path)` or a bare `path.md`) gives that page a description: the rest of
+the line, with the link, list markers and separators stripped. A bare path
+counts only when nothing path-like follows `.md` (`a.md.txt` and `a.md/x` name
+no page). A link whose letter case differs from a page's names that page when
+exactly one page matches it ignoring case. A linked page that exists and has no
+description gets it; a page that already has one keeps it, and a page whose
+frontmatter can't take it is left alone (the backup keeps its line). The first
+line naming a page wins, except that within one index a link in the page's
+exact case wins over an earlier line naming it in another case; an earlier
+index wins over a later one. Migration does not stamp. Each old index is then
+renamed to a `.MEMORY.md.pre-generated` backup, a dot name that is never a page
+or searched, numbered `.2`, `.3` and so on when taken, so no backup is
+overwritten. A page that fails to write does not stop the others, but leaves
+the old index in place. A failed migration never blocks rendering; the next
+rendering retries. Other sessions render the pages as they are, with fallback
+descriptions, until a writing session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
