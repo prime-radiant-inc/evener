@@ -26,6 +26,14 @@ const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
 // overwritten when that file is migrated too.
+//
+// The name is checked, then renamed onto, and execenv has no rename that
+// refuses to replace. That is safe between migrators: concurrent runs list the
+// same indexes and rename them in the same order, so of two runs picking one
+// name for one index only one rename finds its source and the other gets
+// fs.ErrNotExist. A backup is lost only if an older build writes MEMORY.md
+// again between one run's rename and another's earlier check; that window is
+// accepted, since the lost index's descriptions are already in its pages.
 func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) string {
 	backup := filepath.Join(root, memoryLegacyIndexBackup)
 	for n := 2; env.FileExists(backup); n++ {
@@ -228,7 +236,8 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 // backup name (see freeMemoryBackupPath). It is idempotent and needs no
 // lock: concurrent runs write the same descriptions, skip pages that have
 // one, and the run that finds the index already renamed is done. A linked
-// target that can't be read (missing, a directory, a refused symlink) is
+// target that can't be read (missing, a directory, a refused symlink), or
+// whose frontmatter does not parse or can't take the description in place, is
 // skipped. A page that fails to write does not stop the others; any failed
 // write, or failing to read or rename the index, returns an error and leaves
 // the index in place, so the next run finishes the job.
@@ -237,11 +246,17 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 // write is tiny; a concurrent edit landing in it would be overwritten, which is
 // accepted.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
-	root := env.WorkingDirectory()
 	legacies, err := legacyMemoryIndexes(env)
 	if err != nil || len(legacies) == 0 {
 		return err
 	}
+	return migrateLegacyMemoryIndexes(env, legacies)
+}
+
+// migrateLegacyMemoryIndexes is migrateMemoryScope's work for the root
+// indexes legacyMemoryIndexes found, in that order.
+func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies []string) error {
+	root := env.WorkingDirectory()
 	// Only regular page files are read or written; a FIFO, directory or
 	// symlink named like a page is not listed and so is skipped.
 	listed, err := listMemoryPages(env)
@@ -259,6 +274,10 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	descriptions := make(map[string]string)
 	for _, legacy := range legacies {
 		raw, err := env.ReadFileRaw(legacy)
+		if errors.Is(err, fs.ErrNotExist) {
+			// A concurrent run renamed it after the listing, so it is migrated.
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -287,6 +306,12 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 			continue
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
+		// Frontmatter the editor can't extend in place (a flow mapping, a block
+		// ended by "...") would no longer read back; such a page is left as it
+		// is, like one whose frontmatter does not parse.
+		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
+			continue
+		}
 		// WriteFileRaw keeps an existing file's mode, so the 0o644 applies only to
 		// new files, which migration never creates.
 		if err := env.WriteFileRaw(abs, described, 0o644); err != nil {

@@ -389,3 +389,66 @@ func migrateLinkCase(t *testing.T, index, want string) {
 		t.Fatalf("notes.md=%q, %v", raw, err)
 	}
 }
+
+// Frontmatter the field editor can't extend in place (a flow mapping, a
+// block ended by "...") is left as it is, like unreadable frontmatter, rather
+// than written into a page that no longer reads.
+func TestMigrateMemoryScopeLeavesFrontmatterItCannotExtend(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	pages := map[string]string{
+		"flow.md":  "---\n{tags: [a]}\n---\nbody\n",
+		"ended.md": "---\ntags: [a]\n...\n---\nbody\n",
+	}
+	for rel, body := range pages {
+		if parsed := parseMemoryPage(rel, []byte(body), time.Time{}); parsed.Unreadable || parsed.HasDescription {
+			t.Fatalf("%s should read, with no description: %+v", rel, parsed)
+		}
+		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte("- [f](flow.md) — flow\n- [e](ended.md) — ended\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range pages {
+		if raw, err := os.ReadFile(filepath.Join(scope, rel)); err != nil || string(raw) != body {
+			t.Fatalf("%s=%q, %v; want it unchanged", rel, raw, err)
+		}
+	}
+}
+
+// An index a concurrent run renamed after the listing is already migrated:
+// the others still migrate and the run succeeds.
+func TestMigrateLegacyMemoryIndexesSkipsAnIndexRenamedMeanwhile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	if err := os.WriteFile(filepath.Join(scope, "memory.md"), []byte("- [a](a.md) — from the index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "a.md"), []byte("body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(scope, "MEMORY.renamed-meanwhile.md")
+	if err := migrateLegacyMemoryIndexes(env, []string{gone, filepath.Join(scope, "memory.md")}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, "a.md")); err != nil || string(raw) != "---\ndescription: from the index\n---\nbody\n" {
+		t.Fatalf("a.md=%q, %v", raw, err)
+	}
+}
