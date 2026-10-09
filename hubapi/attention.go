@@ -100,9 +100,9 @@ func StateWord(state string, askPending bool) string {
 // approval, or an awaiting turn that ended on needs_response, #4093), or
 // everything else in the tier (0: a warning or a restart). Callers sort
 // NeedsYou rows by this band descending, then by recency within a band.
-// Meaningful only for the needs-you tier
-// (errored/awaiting/warning states, plus sessions a pending approval
-// promotes); callers outside that tier should not invoke it. An approval
+// Meaningful only for the needs-you tier (errored, awaiting, warning and
+// restartRequired states, plus sessions a pending approval promotes);
+// callers outside that tier should not invoke it. An approval
 // blocks mid-turn, so its session still reports "active" and only
 // approvalPending can place it; pass false where the caller has no approval
 // information. Both flags are ignored when state is "errored" (errored

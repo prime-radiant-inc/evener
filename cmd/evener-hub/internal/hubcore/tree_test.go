@@ -2204,8 +2204,9 @@ func fuzzScenarioNeedsYou_AskPendingSharesTheNeedsResponseBand(t *testing.T) {
 // fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
 // ordering (principle 1, section 7.1): failed first, then the sessions blocked
 // on a person, questions, approvals and needs_response rows together and
-// oldest waiting first (#4093). The approval's session keeps reporting "active" (the
-// escalation blocks mid-turn), so only its ApprovalPending can place it.
+// oldest waiting first (#4093). The approval's session keeps reporting
+// "active" (the escalation blocks mid-turn), so only its ApprovalPending can
+// place it.
 func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
