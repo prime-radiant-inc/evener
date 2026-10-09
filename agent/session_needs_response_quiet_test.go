@@ -216,7 +216,7 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 }
 
 // A pending question upgrades only an open, idle session: a settle that
-// finds the session still processing, or closed, leaves that state alone.
+// finds the session still processing, or closing, leaves that state alone.
 func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
 	t.Parallel()
 	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
@@ -233,10 +233,15 @@ func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
 	if got := sess.State(); got != SessionProcessing {
 		t.Fatalf("state = %q, want processing left alone", got)
 	}
-	sess.Close()
+	// A retiring session is closing while its state still reads idle, so
+	// only the closing check keeps the settle from upgrading it.
+	sess.mu.Lock()
+	sess.state = SessionIdle
+	sess.closing = true
+	sess.mu.Unlock()
 	sess.armAwaitingAtSettle(true, false)
-	if got := sess.State(); got != SessionClosed {
-		t.Fatalf("state = %q after close, want closed", got)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q while closing, want idle left alone", got)
 	}
 }
 
