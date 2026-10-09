@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,19 @@ import (
 // memoryLegacyIndexBackup is where migration keeps a scope's hand-written
 // index. Its dot name keeps it out of the pages and out of memory_search.
 const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
+
+// freeMemoryBackupPath is the first backup name in root that names nothing:
+// memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
+// older Evener build can write MEMORY.md again after migration; numbering
+// keeps the first backup, the one holding the original index, from being
+// overwritten when that file is migrated too.
+func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) string {
+	backup := filepath.Join(root, memoryLegacyIndexBackup)
+	for n := 2; env.FileExists(backup); n++ {
+		backup = filepath.Join(root, memoryLegacyIndexBackup+"."+strconv.Itoa(n))
+	}
+	return backup
+}
 
 // memoryYAMLField encodes one frontmatter line, quoting value as YAML needs.
 func memoryYAMLField(key, value string) string {
@@ -179,7 +193,7 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 			return err
 		}
 	}
-	if err := env.RenamePath(legacy, filepath.Join(root, memoryLegacyIndexBackup)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := env.RenamePath(legacy, freeMemoryBackupPath(env, root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil

@@ -108,7 +108,6 @@ func TestMigrateMemoryScope(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(scope, "dir.md"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	write(memoryLegacyIndexBackup, "an earlier backup is replaced\n")
 
 	want := map[string]string{
 		"plain.md": "---\ndescription: plain page gets this\n---\n# Plain\nbody\n",
@@ -138,5 +137,35 @@ func TestMigrateMemoryScope(t *testing.T) {
 			t.Fatalf("%s: %v", run, err)
 		}
 		check(run)
+	}
+}
+
+// A hand-written MEMORY.md that reappears after migration (an older Evener
+// build writing it again) is migrated again into the next free backup name;
+// the first backup is never overwritten.
+func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	indexes := []string{"- [a](a.md) — first index\n", "- [b](b.md) — recreated index\n", "- [c](c.md) — third index\n"}
+	backups := []string{memoryLegacyIndexBackup, memoryLegacyIndexBackup + ".2", memoryLegacyIndexBackup + ".3"}
+	for i, index := range indexes {
+		if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrateMemoryScope(env); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+		for j, backup := range backups[:i+1] {
+			raw, err := os.ReadFile(filepath.Join(scope, backup))
+			if err != nil || string(raw) != indexes[j] {
+				t.Fatalf("run %d: %s=%q, %v", i+1, backup, raw, err)
+			}
+		}
 	}
 }
