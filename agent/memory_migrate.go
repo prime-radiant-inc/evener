@@ -66,8 +66,11 @@ func memoryYAMLField(key, value string) string {
 // only top-level entry for its key, replacing an existing one and the lines of
 // its value, or adding it at the end of the block, or adding a block. Every
 // other byte of the page is kept. Keys are found as YAML reads them (quoted,
-// or with a space before the colon); a block YAML can't read as a mapping
-// gains the line at its end.
+// or with a space before the colon); a block that does not parse gains the
+// line at its end and stays as unreadable as it was. Valid frontmatter that
+// can't take a key line, a flow mapping or a block ended by "...", is
+// returned as it is, since the line would break it or start a second
+// document.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
 	text := string(raw)
@@ -75,7 +78,10 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !ok {
 		return []byte("---\n" + line + "---\n" + text)
 	}
-	keys := memoryFrontmatterKeyLines(block)
+	keys, extendable := memoryFrontmatterKeyLines(block)
+	if !extendable {
+		return raw
+	}
 	lines := slices.Collect(strings.Lines(block))
 	var kept []string
 	replaced := false
@@ -112,45 +118,30 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 }
 
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
-// block-style frontmatter mapping to the key as YAML reads it, or is nil when
-// the block is not one.
-func memoryFrontmatterKeyLines(block string) map[int]string {
-	var doc yaml.Node
-	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
-		return nil
-	}
-	mapping := doc.Content[0]
-	if mapping.Kind != yaml.MappingNode || mapping.Style&yaml.FlowStyle != 0 {
-		return nil
-	}
-	keys := make(map[int]string, len(mapping.Content)/2)
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keys[mapping.Content[i].Line-1] = mapping.Content[i].Value
-	}
-	return keys
-}
-
-// memoryFrontmatterTakesFields reports whether setMemoryFrontmatterField can
-// add a key line to raw's frontmatter without breaking valid YAML: there is
-// no block, or it holds only comments, or it is a block mapping with no "..."
-// document end, after which an added line would start a second document. A
-// block that already fails to parse can take the line too; it stays as
-// unreadable as it was.
-func memoryFrontmatterTakesFields(raw []byte) bool {
-	block, _, ok := splitMemoryFrontmatter(string(raw))
-	if !ok {
-		return true
-	}
+// block-style frontmatter mapping to the key as YAML reads it. extendable
+// reports whether a key line can be added at the block's end: it can to a
+// block mapping, an empty or comment-only block, or a block that does not
+// parse; it can't to a block holding a "..." document end or valid YAML that
+// is not a block mapping.
+func memoryFrontmatterKeyLines(block string) (keys map[int]string, extendable bool) {
 	for line := range strings.Lines(block) {
 		if strings.TrimRight(line, " \t\r\n") == "..." {
-			return false
+			return nil, false
 		}
 	}
 	var doc yaml.Node
 	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
-		return true
+		return nil, true
 	}
-	return memoryFrontmatterKeyLines(block) != nil
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode || mapping.Style&yaml.FlowStyle != 0 {
+		return nil, false
+	}
+	keys = make(map[int]string, len(mapping.Content)/2)
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keys[mapping.Content[i].Line-1] = mapping.Content[i].Value
+	}
+	return keys, true
 }
 
 var (
@@ -320,11 +311,12 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
-		// ended by "...") would no longer read back; such a page is left as it
-		// is, like one whose frontmatter does not parse, and the index is still
-		// renamed. Keeping the index for it instead would retry every run until
-		// someone rewrites the page. The description stays recoverable in the
-		// backup, and the page renders with its fallback description meanwhile.
+		// ended by "...") comes back without the description; such a page is
+		// left as it is, like one whose frontmatter does not parse, and the
+		// index is still renamed. Keeping the index for it instead would retry
+		// every run until someone rewrites the page. The description stays
+		// recoverable in the backup, and the page renders with its fallback
+		// description meanwhile.
 		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
 			continue
 		}

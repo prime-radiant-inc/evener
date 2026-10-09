@@ -55,6 +55,12 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 			"---\ntags: [c]\nk: 1\n---\n"},
 		{"keeps a comment that ends the replaced value", "---\nnote: x\n# about keep\nkeep: 1\n---\n", "note: y\n",
 			"---\nnote: y\n# about keep\nkeep: 1\n---\n"},
+		{"leaves a flow mapping as it is", "---\n{description: d}\n---\nx\n", "by: s1\n",
+			"---\n{description: d}\n---\nx\n"},
+		{"leaves a block ended by ... as it is", "---\ndescription: d\n...\n---\nx\n", "by: s1\n",
+			"---\ndescription: d\n...\n---\nx\n"},
+		{"a block that does not parse gains the line", "---\ndescription: a: b\n---\nx\n", "by: s1\n",
+			"---\ndescription: a: b\nby: s1\n---\nx\n"},
 		{"a key-like line inside a block scalar is not a key", "---\nnote: |\n  description: no\ndescription: old\n---\n", "description: new\n",
 			"---\nnote: |\n  description: no\ndescription: new\n---\n"},
 	} {
