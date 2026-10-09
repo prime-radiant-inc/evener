@@ -681,11 +681,10 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
-// Why a root session's communicate call ends its turn (offered only where
-// someone can answer the session): done (nothing waits
+// Why a root session's communicate call ends its turn: done (nothing waits
 // on the human partner), needs_response (the agent cannot go on until its
 // human partner answers or acts), or waiting_on_work (work the agent started
-// will wake it).
+// will wake it). Offered only where someone can answer the session.
 const (
 	CommunicateEndReasonDone          = "done"
 	CommunicateEndReasonNeedsResponse = "needs_response"
