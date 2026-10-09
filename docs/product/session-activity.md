@@ -52,8 +52,8 @@ The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
 Board bands. A new nonblocking Warning waits while live children run. A warning
 that remains alerts when the last child settles; one that clears first never
 alerts. Warnings carrying a pending question or approval remain immediately
-eligible. A `needs_response` rest alerts like a question, under the same
-switch. First-read and offline rules still apply. Combined banners, Needs you
+eligible. A `needs_response` rest alerts like a question, under the same In-app
+alerts switch as questions and approvals. First-read and offline rules still apply. Combined banners, Needs you
 counts and Next navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)

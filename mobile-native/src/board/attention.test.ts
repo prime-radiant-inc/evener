@@ -204,6 +204,9 @@ describe("Live bands (spec 7.1)", () => {
 			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
 			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
 			// A turn that ended on needs_response ranks with questions (#4093).
+			// It is the one exception to the rule above: the newest row of all,
+			// so only its band can place it ahead of the warnings and behind the
+			// failures.
 			row("n", { state: "awaiting", updated_at: at(9) }),
 			row("w-new", { state: "warning", updated_at: at(3) }),
 			row("r", { state: "restartRequired", updated_at: at(2) }),
