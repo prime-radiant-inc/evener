@@ -270,11 +270,12 @@ func memoryFrontmatterKeyLines(block string) map[int]string {
 }
 
 var (
-	// A link's destination is bare, or in angle brackets (memoryLinkTarget's
+	// A link's destination is bare, holding parentheses only in balanced
+	// pairs one deep ("a(b).md"), or in angle brackets (memoryLinkTarget's
 	// form for a path with spaces or parentheses) with backslash escapes.
 	// The title may hold backslash escapes, such as the "\]" memoryIndexLine
 	// writes for a "]" in a title.
-	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|([^)\s]+))\)`)
+	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|((?:[^()\s]|\([^()\s]*\))+))\)`)
 	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
@@ -316,12 +317,13 @@ func trimLegacyIndexDescription(rest string) string {
 // fragment. Migration takes the first one listed. A target naming no local
 // Markdown page gives none.
 func legacyIndexPages(target string) []string {
-	if strings.Contains(target, "://") {
-		return nil
-	}
 	beforeFragment, _, _ := strings.Cut(target, "#")
 	var pages []string
 	for _, candidate := range []string{target, beforeFragment} {
+		// A URL names no page; a fragment may hold one ("notes.md#http://x").
+		if strings.Contains(candidate, "://") {
+			continue
+		}
 		page := path.Clean(candidate)
 		if filepath.IsLocal(page) && path.Ext(page) == ".md" && isMemoryPagePath(page) && !slices.Contains(pages, page) {
 			pages = append(pages, page)

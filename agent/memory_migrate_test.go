@@ -110,6 +110,8 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- [spaced](<my notes (old).md>) — a path in angle brackets\n" +
 		"- [escaped](<x \\<y\\>.md>) — angle brackets escaped inside one\n" +
 		"- [[WIP\\] Fix](wip.md)\n" +
+		"- [paren](a(b).md) — balanced parentheses in a bare destination\n" +
+		"- [frag](notes.md#http://example) — a fragment holding a URL\n" +
 		"- [](quiet.md)\n" +
 		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
@@ -125,6 +127,8 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"my notes (old).md":  "a path in angle brackets",
 		"x <y>.md":           "angle brackets escaped inside one",
 		"wip.md":             "[WIP] Fix",
+		"a(b).md":            "balanced parentheses in a bare destination",
+		"notes.md":           "a fragment holding a URL",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
