@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,12 +34,16 @@ func TestListMemoryScopePages(t *testing.T) {
 	}
 	want := []MemoryScopePage{
 		{Path: "a.md", Description: "alpha one", HasDescription: true, Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
-		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true},
-		{Path: "crlf.md", Description: "--- " + memoryNoDescription},
+		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true, Tags: []string{}},
+		{Path: "crlf.md", Description: "--- " + memoryNoDescription, Tags: []string{}},
 		{Path: "plain.md", Description: "no description " + memoryNoDescription, Frontmatter: true, Tags: []string{"x"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+	// A page with no tags encodes them as an empty list, never null.
+	if raw, err := json.Marshal(got[1].Tags); err != nil || string(raw) != "[]" {
+		t.Fatalf("bad.md tags encoded as %s (%v), want []", raw, err)
 	}
 }
 
@@ -59,5 +64,25 @@ func TestListMemoryScopePagesNeedsAnExistingDirectory(t *testing.T) {
 	}
 	if _, err := ListMemoryScopePages(file); err == nil {
 		t.Fatal("want an error for a scope that is a file")
+	}
+}
+
+// A relative scope directory is read relative to the working directory.
+func TestListMemoryScopePagesReadsARelativeDirectory(t *testing.T) {
+	parent := t.TempDir()
+	scope := filepath.Join(parent, "scope")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "a.md"), []byte("---\ndescription: d\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	got, err := ListMemoryScopePages("scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "a.md" {
+		t.Fatalf("got %+v, want a.md", got)
 	}
 }

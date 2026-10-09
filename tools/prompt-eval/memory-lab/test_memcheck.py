@@ -4,7 +4,7 @@
 The tests build the real bin/memscope helper (go build) into a temp dir once, so
 memcheck's checks run on pages exactly as evener reads them; how evener parses
 frontmatter is tested in package agent."""
-import contextlib, glob, io, os, subprocess, sys, tempfile, unittest
+import contextlib, glob, io, json, os, subprocess, sys, tempfile, unittest
 
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +68,23 @@ class IndexLines(Root):
 
     def test_page_without_a_description_has_no_index_line_to_measure(self):
         self.put("projects/p/a.md", "# " + "t" * 300 + "\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_symlinked_scope_and_root_index_are_not_read(self):
+        # Evener's listing skips symlinks, so neither is part of the memory.
+        self.put("elsewhere/a.md", "---\ndescription: " + "y" * 201 + "\n---\n")
+        self.put("elsewhere/long.md", "- " + "z" * 250 + "\n")
+        self.put("personal/ok.md", "---\ndescription: short\n---\n")
+        memory = os.path.join(self.root, "evener", "memory")
+        os.makedirs(os.path.join(memory, "projects"))
+        os.symlink(os.path.join(memory, "elsewhere"), os.path.join(memory, "projects", "linked"))
+        os.symlink(os.path.join(memory, "elsewhere", "long.md"), os.path.join(memory, "personal", "MEMORY.md"))
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_scope_under_a_symlinked_directory_is_not_read(self):
+        self.put("elsewhere/p/a.md", "---\ndescription: " + "y" * 201 + "\n---\n")
+        memory = os.path.join(self.root, "evener", "memory")
+        os.symlink(os.path.join(memory, "elsewhere"), os.path.join(memory, "projects"))
         self.assertEqual(self.run_cmd("index-lines"), 0)
 
     def test_glob_characters_in_the_state_root_are_literal(self):
@@ -134,6 +151,25 @@ class NewPages(Root):
         with self.assertRaises(SystemExit) as cm:
             self.run_cmd("new-pages")
         self.assertIn("go build -o bin/memscope", str(cm.exception.code))
+
+    def test_stale_helper_exits_with_how_to_rebuild_it(self):
+        self.put("projects/p/a.md", "---\ndescription: d\n---\n")
+        scope = os.path.join(self.root, "evener", "memory", "projects", "p")
+        built = memcheck.MEMSCOPE
+        self.addCleanup(setattr, memcheck, "MEMSCOPE", built)
+        full = {"path": "a.md", "description": "d", "has_description": True, "frontmatter": True,
+                "unreadable": False, "by": ""}
+        # A memscope built before a field existed leaves it out; one built
+        # before tags were always a list emits null for none.
+        for page in ({"path": "a.md", "description": "d"}, {**full, "tags": None}):
+            stale = os.path.join(self.root, "stale-memscope")
+            with open(stale, "w") as f:
+                f.write("#!/bin/sh\ncat <<'EOF'\n" + json.dumps({scope: [page]}) + "\nEOF\n")
+            os.chmod(stale, 0o755)
+            memcheck.MEMSCOPE = stale
+            with self.assertRaises(SystemExit) as cm:
+                self.run_cmd("new-pages")
+            self.assertIn("go build -o bin/memscope", str(cm.exception.code))
 
 
 class SeedProblems(Root):

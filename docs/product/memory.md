@@ -253,8 +253,11 @@ omitted when no page has tags. Lines run newest `updated` first. A page with no
 `updated` sorts by its modification time's UTC date and shows no date; an
 `updated` that is neither a YAML date nor a `YYYY-MM-DD` string is ignored.
 Ties order by path. The title is the page's first heading, else its filename
-without extension; `[tags]` and `(updated …)` are left out when empty. A scope
-with no pages has the `missing` state.
+without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
+or `\` in a title is backslash-escaped. A path holding whitespace, a
+parenthesis or a backslash, or starting with `<`, is written in angle brackets
+(`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
+the link names the whole path. A scope with no pages has the `missing` state.
 
 When the rendering passes the 8 KiB projection budget, the projection keeps the
 header, then the newest lines that fit, then one closing line such as
@@ -270,7 +273,9 @@ counts the rest." after its `memory_read` route.
 
 **Reading and writing it.** `memory_read` of `MEMORY.md` at the scope root renders the whole index with no size cap, paged by `offset` and
 `limit`, or returns `This scope has no pages yet.` `memory_search` skips a
-root `MEMORY.md`, including a hand-written one not yet migrated. `memory_write`,
+root `MEMORY.md`, including a hand-written one not yet migrated; a search
+naming it returns nothing, but an invalid pattern or malformed glob braces are
+still an error. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
@@ -292,14 +297,19 @@ parse gets its own note asking to fix the YAML.
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
 it moves the old index into the pages; on a case-sensitive filesystem every
 case variant is migrated. Each line that links to a page in the scope
-(`[text](path)` or a bare `path.md`) gives that page a description: the rest of
-the line, with the link, list markers and separators stripped. A bare path
+(`[text](path)`, `[text](<path>)` with backslash escapes, or a bare `path.md`)
+gives that page a description: the rest of the line, with the link, list
+markers and separators stripped, or the link text when the rest is empty. A
+link target names the listed page it spells whole, else the page before its
+`#` fragment, so `a#b.md` can be a page so named and `cents.md#rule` is
+`cents.md`. A bare path
 counts only when nothing path-like follows `.md` (`a.md.txt` and `a.md/x` name
 no page). A link whose letter case differs from a page's names that page when
 exactly one page matches it ignoring case. A linked page that exists and has no
 description gets it; a page that already has one keeps it, and a page whose
 frontmatter can't take it is left alone (the backup keeps its line). The first
-line naming a page wins, except that within one index a link in the page's
+line giving a page a description wins (a line naming it with nothing to say
+claims nothing), except that within one index a link in the page's
 exact case wins over an earlier line naming it in another case. Across indexes,
 the one named exactly `MEMORY.md` is read first, and an earlier index wins over
 a later one. Migration does not stamp. Each old index is then moved to a

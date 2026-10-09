@@ -121,13 +121,13 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 		return p
 	}
 	text := string(raw)
+	// Parse reads the block Split finds, so its body is Split's even when
+	// the YAML fails. Frontmatter is the block's presence, not its parsed
+	// value: a block holding only a YAML null parses to no metadata.
+	_, body, hasBlock := splitMemoryFrontmatter(text)
 	doc, err := frontmatter.Parse(text)
-	body := doc.Body
-	if err != nil {
-		p.Unreadable = true
-		_, body, _ = splitMemoryFrontmatter(text)
-	}
-	p.Frontmatter = err != nil || doc.Meta != nil
+	p.Unreadable = err != nil
+	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
 	if heading != "" {
 		p.Title = heading
@@ -182,13 +182,15 @@ func firstMarkdownHeading(body string) string {
 }
 
 // fenceRun returns the leading run of three or more backticks or tildes in
-// line, which opens or closes a code fence, or "".
+// line, which opens or closes a code fence, or "". A backtick run followed by
+// another backtick on the line is no fence (CommonMark: a backtick fence's
+// info string holds no backtick), so "```a`b" is inline code.
 func fenceRun(line string) string {
 	if line == "" || (line[0] != '`' && line[0] != '~') {
 		return ""
 	}
 	run := line[:len(line)-len(strings.TrimLeft(line, line[:1]))]
-	if len(run) < 3 {
+	if len(run) < 3 || (run[0] == '`' && strings.Contains(line[len(run):], "`")) {
 		return ""
 	}
 	return run

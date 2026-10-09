@@ -243,15 +243,17 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 		return nil, err
 	}
 	defer release()
+	g := parseFileGrepArgs(forwarded)
 	target := filepath.Clean(stringArg(args, "path"))
 	if isMemoryIndexPath(target) {
-		return "", nil
+		// A search of the index itself finds nothing, but bad arguments are
+		// still an error.
+		return "", execenv.CheckGrepArgs(g.pattern, g.glob, g.caseInsensitive)
 	}
 	var skip func(rel string) bool
 	if target == "." {
 		skip = isMemoryIndexPath
 	}
-	g := parseFileGrepArgs(forwarded)
 	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {

@@ -270,7 +270,13 @@ func memoryFrontmatterKeyLines(block string) map[int]string {
 }
 
 var (
-	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\(([^)\s]+)\)`)
+	// A link's destination is bare, holding parentheses only in balanced
+	// pairs one deep ("a(b).md"), or in angle brackets (memoryLinkTarget's
+	// form for a path with spaces or parentheses) with backslash escapes.
+	// The title may hold backslash escapes, such as the "\]" memoryIndexLine
+	// writes for a "]" in a title.
+	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|((?:[^()\s]|\([^()\s]*\))+))\)`)
+	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
 
@@ -305,37 +311,61 @@ func trimLegacyIndexDescription(rest string) string {
 	return strings.Trim(rest, legacyIndexTrim)
 }
 
-// legacyIndexPage turns a link target into a page path in the scope, or
-// reports false for anything that is not a local Markdown page.
-func legacyIndexPage(target string) (string, bool) {
-	target, _, _ = strings.Cut(target, "#")
-	if strings.Contains(target, "://") {
-		return "", false
+// legacyIndexPages turns a link target into the page paths in the scope it
+// may name, the whole target first, then the target before a "#" fragment:
+// "a#b.md" can be a page so named, and "a.md#rule.md" can be a.md with a
+// fragment. Migration takes the first one listed. A target naming no local
+// Markdown page gives none.
+func legacyIndexPages(target string) []string {
+	beforeFragment, _, _ := strings.Cut(target, "#")
+	var pages []string
+	for _, candidate := range []string{target, beforeFragment} {
+		// A URL names no page; a fragment may hold one ("notes.md#http://x").
+		if strings.Contains(candidate, "://") {
+			continue
+		}
+		page := path.Clean(candidate)
+		if filepath.IsLocal(page) && path.Ext(page) == ".md" && isMemoryPagePath(page) && !slices.Contains(pages, page) {
+			pages = append(pages, page)
+		}
 	}
-	page := path.Clean(target)
-	if !filepath.IsLocal(page) || path.Ext(page) != ".md" || !isMemoryPagePath(page) {
-		return "", false
-	}
-	return page, true
+	return pages
 }
 
-// legacyIndexEntry is one line of a hand-written index: the page path it
-// links to and the description it gives that page.
+// legacyIndexEntry is one line of a hand-written index: the page paths it may
+// link to (legacyIndexPages) and the description it gives that page.
 type legacyIndexEntry struct {
-	Link, Description string
+	Links       []string
+	Description string
+}
+
+// legacyIndexLinkPage is the listed page that the first of links naming one
+// resolves to (matchMemoryNameCase), and whether that link spells it exactly.
+func legacyIndexLinkPage(links []string, listed map[string]bool) (page string, exact, ok bool) {
+	for _, link := range links {
+		if page, ok := matchMemoryNameCase(link, maps.Keys(listed)); ok {
+			return page, link == page, true
+		}
+	}
+	return "", false, false
 }
 
 // parseLegacyMemoryIndex reads a hand-written MEMORY.md: for each line naming
 // a page, by a Markdown link or a bare path ending in .md, the description
-// the rest of the line gives it, in line order. The first line naming a page
-// wins.
+// the rest of the line gives it, in line order. The first line giving a page
+// a description wins; a line that names it with nothing to say claims nothing.
 func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	var out []legacyIndexEntry
 	seen := make(map[string]bool)
 	for line := range strings.SplitSeq(index, "\n") {
 		var target, text, rest string
 		if m := legacyIndexLink.FindStringSubmatchIndex(line); m != nil {
-			text, target = line[m[2]:m[3]], line[m[4]:m[5]]
+			text = legacyIndexEscape.ReplaceAllString(line[m[2]:m[3]], "$1")
+			if m[4] >= 0 {
+				target = legacyIndexEscape.ReplaceAllString(line[m[4]:m[5]], "$1")
+			} else {
+				target = line[m[6]:m[7]]
+			}
 			rest = line[:m[0]] + line[m[1]:]
 		} else if m := legacyIndexBarePageMatch(line); m != nil {
 			target = line[m[2]:m[3]]
@@ -343,8 +373,8 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 		} else {
 			continue
 		}
-		page, ok := legacyIndexPage(target)
-		if !ok || seen[page] {
+		links := legacyIndexPages(target)
+		if len(links) == 0 || seen[links[0]] {
 			continue
 		}
 		source := trimLegacyIndexDescription(rest)
@@ -352,8 +382,8 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 			source = text
 		}
 		if description := strings.Join(strings.Fields(source), " "); description != "" {
-			out = append(out, legacyIndexEntry{Link: page, Description: description})
-			seen[page] = true
+			out = append(out, legacyIndexEntry{Links: links, Description: description})
+			seen[links[0]] = true
 		}
 	}
 	return out
@@ -416,8 +446,8 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		entries := parseLegacyMemoryIndex(string(raw))
 		for _, exact := range []bool{true, false} {
 			for _, entry := range entries {
-				page, ok := matchMemoryNameCase(entry.Link, maps.Keys(isListed))
-				if _, taken := descriptions[page]; ok && !taken && (entry.Link == page) == exact {
+				page, spelled, ok := legacyIndexLinkPage(entry.Links, isListed)
+				if _, taken := descriptions[page]; ok && !taken && spelled == exact {
 					descriptions[page] = entry.Description
 				}
 			}
@@ -446,13 +476,13 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
-		// ended by "...") comes back without the description; such a page is
-		// left as it is, like one whose frontmatter does not parse, and the
-		// index is still moved. Keeping the index for it instead would retry
-		// every run until someone rewrites the page. The description stays
-		// recoverable in the backup, and the page renders with its fallback
-		// description meanwhile.
-		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
+		// ended by "...") comes back unchanged, as the editor checks by
+		// reading the page back; such a page is left as it is, like one whose
+		// frontmatter does not parse, and the index is still moved. Keeping
+		// the index for it instead would retry every run until someone
+		// rewrites the page. The description stays recoverable in the backup,
+		// and the page renders with its fallback description meanwhile.
+		if bytes.Equal(described, body) {
 			continue
 		}
 		// WriteFileRaw keeps an existing file's mode, so the 0o644 applies only to

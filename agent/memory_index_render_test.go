@@ -187,6 +187,30 @@ func TestProjectMemoryIndexCapsTheHeaderAloneWhenEveryPageFits(t *testing.T) {
 	}
 }
 
+// A path that a bare Markdown link destination can't hold (a space, a
+// parenthesis, a leading "<") is written in angle brackets, with any angle
+// bracket inside it escaped; any other path is written as it is.
+func TestMemoryIndexLineLinkTarget(t *testing.T) {
+	t.Parallel()
+	for rel, want := range map[string]string{
+		"notes/a.md":     "notes/a.md",
+		"a<b>.md":        "a<b>.md",
+		"my notes.md":    "<my notes.md>",
+		"tab\there.md":   "<tab\there.md>",
+		"cents (old).md": "<cents (old).md>",
+		"half).md":       "<half).md>",
+		"<x> y.md":       `<\<x\> y.md>`,
+		"<lead.md":       `<\<lead.md>`,
+		`a \> b.md`:      `<a \\\> b.md>`,
+		`a\>b.md`:        `<a\\\>b.md>`,
+	} {
+		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
+		if wantLine := "- [T](" + want + ") — d"; line != wantLine {
+			t.Fatalf("%q: got %q, want %q", rel, line, wantLine)
+		}
+	}
+}
+
 // Patching a page's line matches only each line's leading link: a description
 // that quotes another page's link shape is not that page's line.
 func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {
@@ -222,6 +246,8 @@ func TestMemoryIndexLineFor(t *testing.T) {
 		{memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}), "s/p.md", true},
 		{"- [X](x.md.bak) — d", "x.md", false},
 		{"Tags: a (1)", "a", false},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "my notes (old).md", true},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "old).md", false},
 	} {
 		if got := memoryIndexLineFor(tc.line, tc.rel); got != tc.want {
 			t.Fatalf("%q for %q: got %t, want %t", tc.line, tc.rel, got, tc.want)
