@@ -189,9 +189,9 @@ func TestMatchMemoryNameCase(t *testing.T) {
 	}
 }
 
-// A path naming an existing file takes the spelling its scope lists, every
-// segment of it, on a case-insensitive filesystem; a path naming no file is
-// kept as given.
+// Each segment of a path takes the spelling its directory lists, matched
+// ignoring case on any filesystem; a segment its directory doesn't list, and
+// everything below it, is kept as given.
 func TestListedMemoryPagePath(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
@@ -203,15 +203,10 @@ func TestListedMemoryPagePath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// On a case-sensitive filesystem the differently cased paths name no file.
-	_, statErr := os.Stat(filepath.Join(scope, "FACT.md"))
-	caseInsensitive := statErr == nil
-	want := map[string]string{"fact.md": "fact.md", "Notes/x.md": "Notes/x.md", "new.md": "new.md", "New/y.md": "New/y.md"}
-	for rel, onDisk := range map[string]string{"Fact.md": "fact.md", "notes/X.md": "Notes/x.md"} {
-		want[rel] = rel
-		if caseInsensitive {
-			want[rel] = onDisk
-		}
+	want := map[string]string{
+		"fact.md": "fact.md", "Notes/x.md": "Notes/x.md",
+		"Fact.md": "fact.md", "notes/X.md": "Notes/x.md",
+		"new.md": "new.md", "New/y.md": "New/y.md",
 	}
 	for rel, listed := range want {
 		if got := listedMemoryPagePath(env, rel); got != listed {
