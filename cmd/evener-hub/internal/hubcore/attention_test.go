@@ -121,6 +121,10 @@ func fuzzScenarioDeriveAttention_CarriesNeedsResponse(t *testing.T) {
 		{"pending question", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}, false},
 		{"plain reply", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusIdle}, false},
 		{"pending approval", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true}, false},
+		{"approval over a needs_response rest", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingEscalation: true}, true},
+		{"failure", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusSystemError}, false},
+		{"warning", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusWarning}, false},
+		{"restart required", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusRestartRequired}, false},
 	} {
 		entries, _ := DeriveAttention(metas, []LiveEntry{tc.live}, nil)
 		if got := entries["01A"].NeedsResponse; got != tc.want {
@@ -210,10 +214,10 @@ func fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip(t *testing.T) {
 	}
 }
 
-// fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip: a warning that
-// settles into a needs_response rest stays needs_you with no ask, so only the
-// needs_response flag moves; a client keyed on it must hear it, and a session
-// that goes away clears it.
+// fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip: level and ask can
+// hold still while needs_response moves (a warning settling into the rest), so
+// the hub reports the flip like an ask or approval flip, and a session that
+// goes away clears it. The web fires only when a session enters the tier.
 func fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip(t *testing.T) {
 	var got []appwire.AttentionChangedPayload
 	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })

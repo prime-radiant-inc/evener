@@ -1,4 +1,4 @@
-import { approvalWaiting, type NavigationSessionSummary } from "@evener/appwire-client";
+import { approvalWaiting, type NavigationSessionSummary, needsResponseRest } from "@evener/appwire-client";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
@@ -45,8 +45,7 @@ export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[]
       level,
       askPending: row.ask_pending === true,
       approvalPending,
-      // The hub's AttentionEntry.NeedsResponse rule, for rows.
-      needsResponse: row.state === "awaiting" && row.ask_pending !== true,
+      needsResponse: needsResponseRest(row.state, row.ask_pending === true),
     });
   }
   return snapshot;

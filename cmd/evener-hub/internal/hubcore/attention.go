@@ -102,9 +102,7 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 			Level:           level,
 			AskPending:      le.PendingAsk,
 			ApprovalPending: le.PendingEscalation,
-			// Awaiting with no question is the needs_response rest
-			// (hubapi.StateWord's "Needs you").
-			NeedsResponse: state == "awaiting" && !le.PendingAsk,
+			NeedsResponse:   hubapi.NeedsResponse(state, le.PendingAsk),
 		}
 		if m, ok := meta(le.SessionID); ok {
 			e.Title = nodeTitle(m, nodeKind(m))
