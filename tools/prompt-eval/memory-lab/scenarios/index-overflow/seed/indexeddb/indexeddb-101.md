@@ -1,5 +1,5 @@
 ---
-description: IndexedDB store 101 keeps records as plain JSON, never class instances
+description: "IndexedDB store 101 keeps records as plain JSON, never class instances"
 tags: [indexeddb]
 updated: 2026-06-22
 by: seed-fixture

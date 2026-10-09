@@ -1,5 +1,5 @@
 ---
-description: Pricing rule 77: totals are computed in integer cents
+description: "Pricing rule 77: totals are computed in integer cents"
 tags: [pricing]
 updated: 2026-07-16
 by: seed-fixture

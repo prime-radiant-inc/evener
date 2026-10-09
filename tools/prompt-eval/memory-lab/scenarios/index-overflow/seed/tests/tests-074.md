@@ -1,5 +1,5 @@
 ---
-description: Test helper 74 builds catalogs with prices in cents
+description: "Test helper 74 builds catalogs with prices in cents"
 tags: [tests]
 updated: 2026-07-19
 by: seed-fixture

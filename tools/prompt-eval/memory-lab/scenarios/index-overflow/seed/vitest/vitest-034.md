@@ -1,5 +1,5 @@
 ---
-description: Vitest run 34 needs --pool=forks when worker 34 crashes on teardown
+description: "Vitest run 34 needs --pool=forks when worker 34 crashes on teardown"
 tags: [vitest]
 updated: 2026-08-28
 by: seed-fixture

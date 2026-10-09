@@ -44,7 +44,10 @@ TARGET = {
 
 
 def page(title, description, tags, updated, body):
-    return (f"---\ndescription: {description}\ntags: [{', '.join(tags)}]\n"
+    # Quoted: a bare description with ": " in it ("Cart rule 7: ...") is invalid YAML, and the
+    # generated index shows such a page as "(frontmatter unreadable)" with no date, which sorts
+    # it first and puts the target in plain view.
+    return (f"---\ndescription: {json.dumps(description)}\ntags: [{', '.join(tags)}]\n"
             f"updated: {updated}\nby: seed-fixture\n---\n# {title}\n\n{body}")
 
 

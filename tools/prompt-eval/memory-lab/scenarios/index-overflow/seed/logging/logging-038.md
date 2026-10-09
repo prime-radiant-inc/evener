@@ -1,5 +1,5 @@
 ---
-description: Log field 38 uses snake_case keys through log/slog
+description: "Log field 38 uses snake_case keys through log/slog"
 tags: [logging]
 updated: 2026-08-24
 by: seed-fixture

@@ -1,5 +1,5 @@
 ---
-description: Pricing rule 88: totals are computed in integer cents
+description: "Pricing rule 88: totals are computed in integer cents"
 tags: [pricing, tests]
 updated: 2026-07-05
 by: seed-fixture

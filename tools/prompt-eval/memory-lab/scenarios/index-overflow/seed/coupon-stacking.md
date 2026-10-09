@@ -1,5 +1,5 @@
 ---
-description: A cart's coupons never stack: only the largest percent applies
+description: "A cart's coupons never stack: only the largest percent applies"
 tags: [coupons, pricing]
 updated: 2026-03-02
 by: seed-fixture

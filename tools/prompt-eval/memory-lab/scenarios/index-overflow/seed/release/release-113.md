@@ -1,5 +1,5 @@
 ---
-description: Release step 113 tags only after main CI is green on the merge commit
+description: "Release step 113 tags only after main CI is green on the merge commit"
 tags: [release]
 updated: 2026-06-10
 by: seed-fixture

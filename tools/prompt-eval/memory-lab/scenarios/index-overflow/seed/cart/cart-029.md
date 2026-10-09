@@ -1,5 +1,5 @@
 ---
-description: Cart rule 29: line quantities are whole numbers
+description: "Cart rule 29: line quantities are whole numbers"
 tags: [cart]
 updated: 2026-09-02
 by: seed-fixture

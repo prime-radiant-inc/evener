@@ -1,5 +1,5 @@
 ---
-description: Log field 16 uses snake_case keys through log/slog
+description: "Log field 16 uses snake_case keys through log/slog"
 tags: [logging, tests]
 updated: 2026-09-15
 by: seed-fixture

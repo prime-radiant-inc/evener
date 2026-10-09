@@ -1,5 +1,5 @@
 ---
-description: Catalog rule 61: SKUs are lowercase with no spaces
+description: "Catalog rule 61: SKUs are lowercase with no spaces"
 tags: [catalog]
 updated: 2026-08-01
 by: seed-fixture

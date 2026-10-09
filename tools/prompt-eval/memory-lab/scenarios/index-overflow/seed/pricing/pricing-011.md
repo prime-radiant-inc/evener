@@ -1,5 +1,5 @@
 ---
-description: Pricing rule 11: totals are computed in integer cents
+description: "Pricing rule 11: totals are computed in integer cents"
 tags: [pricing]
 updated: 2026-09-20
 by: seed-fixture

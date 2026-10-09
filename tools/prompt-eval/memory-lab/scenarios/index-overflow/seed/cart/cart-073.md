@@ -1,5 +1,5 @@
 ---
-description: Cart rule 73: line quantities are whole numbers
+description: "Cart rule 73: line quantities are whole numbers"
 tags: [cart]
 updated: 2026-07-20
 by: seed-fixture

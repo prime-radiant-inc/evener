@@ -1,5 +1,5 @@
 ---
-description: Vitest run 111 needs --pool=forks when worker 111 crashes on teardown
+description: "Vitest run 111 needs --pool=forks when worker 111 crashes on teardown"
 tags: [vitest]
 updated: 2026-06-12
 by: seed-fixture

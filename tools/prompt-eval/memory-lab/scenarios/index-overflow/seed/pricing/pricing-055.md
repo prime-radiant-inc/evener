@@ -1,5 +1,5 @@
 ---
-description: Pricing rule 55: totals are computed in integer cents
+description: "Pricing rule 55: totals are computed in integer cents"
 tags: [pricing]
 updated: 2026-08-07
 by: seed-fixture

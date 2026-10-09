@@ -1,5 +1,5 @@
 ---
-description: Cart rule 40: line quantities are whole numbers
+description: "Cart rule 40: line quantities are whole numbers"
 tags: [cart, tests]
 updated: 2026-08-22
 by: seed-fixture
