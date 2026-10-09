@@ -728,7 +728,10 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // wins, because a recovery reopen reruns an input under the same TurnID and
 // the rerun's own accepted call is the one live settled on. A history
 // without turn ids predates end_reason, so only the decisive round is read
-// there. Rounds a mid-input compaction dropped can still differ from live.
+// there. Rounds a mid-input compaction dropped can still differ from live,
+// and so can a rerun that fails without accepting a communicate: it reads
+// the earlier attempt's reason, but the session publishes systemError either
+// way.
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
 	turnID := history[toolResultsIdx].TurnID
 	for j := toolResultsIdx; j >= 0; j-- {

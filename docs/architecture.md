@@ -238,13 +238,15 @@ posted questions, regardless of the communicate's own end-turn value. `ask_user`
 interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
 branch never applies to a delegate.
 
-A root's `communicate` also takes `end_reason`, read only when `end_turn=true`: `done` (the
-default), `needs_response`, or `waiting_on_work`. It is recorded with the message
+A root someone can answer (the sessions that get `ask_user`) also takes `end_reason` on
+`communicate`, read only when `end_turn=true`: `done` (the default), `needs_response`, or
+`waiting_on_work`. It is recorded with the message
 (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on `done` or
 `waiting_on_work` rests idle. One that ends on `needs_response` rests awaiting, unless
-autonomous work (a live child, a pending notification, queued input, a goal kick) will move
-the session first. The settle reads the first turn-ending call the input accepted, and restore
-derives the same state from the transcript. Delegates never see the parameter.
+autonomous work (a working child, a pending delegate report, a pending notification, queued
+input, a goal kick) will move the session first; a finished child's warm runtime does not
+count. The settle reads the first turn-ending call the input accepted, and restore derives the
+same state from the transcript. Delegates and headless roots never see the parameter.
 
 ### The repeated-call breaker
 
