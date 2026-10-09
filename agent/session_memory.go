@@ -757,16 +757,21 @@ func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 
 // memoryBoundaryBudget is how long a boundary waits for index reads before it
 // projects a scope whose read has not finished as unavailable.
-const memoryBoundaryBudget = 250 * time.Millisecond
+// memoryTestBoundaryBudget replaces it under `go test`, long enough that only
+// a genuine hang reaches it.
+const (
+	memoryBoundaryBudget     = 250 * time.Millisecond
+	memoryTestBoundaryBudget = 30 * time.Second
+)
 
 // memoryBoundaryWait is the boundary's read budget. Under `go test` it
 // defaults long: -race on a loaded runner can slow an index read past 250ms,
-// which would flake every test that asserts a projected index (#4108, #4110).
-// A test whose subject is the budget sets testOnly.memoryRealBudget to get the
-// production value. testing.Testing() is false outside `go test` binaries.
+// which would flake every test that asserts a projected index. A test whose
+// subject is the budget sets testOnly.memoryRealBudget to get the production
+// value. testing.Testing() is false outside `go test` binaries.
 func (s *Session) memoryBoundaryWait() time.Duration {
 	if testing.Testing() && !s.cfg.testOnly.memoryRealBudget {
-		return 30 * time.Second
+		return memoryTestBoundaryBudget
 	}
 	return memoryBoundaryBudget
 }

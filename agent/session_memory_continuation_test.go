@@ -57,11 +57,6 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 				MemoryStateRoot:             root,
 				MemoryProjectID:             "fixture-project",
 				OpenAIResponsesContinuation: "auto",
-				// The boundary waits for index reads only within a budget on the
-				// session clock; a read that misses it is projected unavailable.
-				// A fake clock never advances, so a slow read under -race still
-				// lands in the request.
-				clock: agenttest.NewFakeClock(),
 				testOnly: testConfig{responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 					llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 				}},
