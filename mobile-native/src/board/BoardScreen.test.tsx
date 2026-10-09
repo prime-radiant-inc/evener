@@ -4765,6 +4765,7 @@ it("opens a session from the menu's card without marking it through another hub'
 	act(() => host.openSession(menuItem(host, ref)));
 	await settleMicrotasks();
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
 });

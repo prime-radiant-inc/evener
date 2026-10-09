@@ -38,6 +38,7 @@ describe("the Board's memory per hub", () => {
 
 	it("forgets a hub's memories in memory and in storage, and keeps other hubs'", () => {
 		const markers = seenMarkers("hub-c");
+		markers.adoptEpoch([]);
 		const sections = foldedSections("hub-c");
 		const choice = organizeByPreference("hub-c");
 		const searches = recentSearches("hub-c");
@@ -64,7 +65,7 @@ describe("the Board's memory per hub", () => {
 		expect(foldedSections("hub-c")).not.toBe(sections);
 		expect(organizeByPreference("hub-c")).not.toBe(choice);
 		expect(recentSearches("hub-c")).not.toBe(searches);
-		expect(seenMarkers("hub-c").isSeen({ ref: "local:a" })).toBe(true);
+		expect(seenMarkers("hub-c").adopted).toBe(false);
 		expect(foldedSections("hub-c").isFolded("idle", true)).toBe(true);
 		expect(organizeByPreference("hub-c").get()).toBe("project-host");
 		expect(recentSearches("hub-c").list()).toEqual([]);

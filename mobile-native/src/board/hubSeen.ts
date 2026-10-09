@@ -36,9 +36,9 @@ type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen">
 // Per client object, so a reconnect to an upgraded hub tries again.
 const withoutSeenSet = new WeakSet<ConversationClientLike>();
 
-/** One hub's pending seen marks and the calls that carry them. Calls go one
- * at a time and in order, because the hub may handle two requests at once and
- * an older mark must never land after a newer one. The call is
+/** One hub's pending seen marks and the calls that carry them. The hub keeps
+ * the newest seen-through it is sent, so order can't undo a mark; calls go one
+ * at a time to keep the acknowledgement bookkeeping simple. The call is
  * idempotent, so a mark whose call failed in transit is simply sent again on
  * the next flush; there is no recovery journal. */
 export class HubSeenMarks {
