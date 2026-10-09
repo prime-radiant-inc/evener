@@ -57,8 +57,11 @@ func TestNeedsResponseRestsAwaitingAfterTheQuietPeriod(t *testing.T) {
 		t.Fatalf("state just before the quiet period ends = %q, want idle", got)
 	}
 	fake.Advance(time.Millisecond)
-	// TRIPWIRE: the timer fired during the advance; this only bounds a hang.
-	waitForCondition(t, 15*time.Second, "awaiting once the quiet period ends", func() bool { return sess.State() == SessionAwaiting })
+	// Drain waits for the timer's callback to finish, announcement included.
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state once the quiet period ends = %q, want awaiting", got)
+	}
 	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
 		t.Fatalf("status settled events = %v, want one awaiting", got)
 	}
@@ -179,5 +182,31 @@ func TestNeedsResponseCloseInsideTheQuietPeriodNeverArms(t *testing.T) {
 	fake.Drain()
 	if got := sess.State(); got == SessionAwaiting {
 		t.Fatalf("state = %q after close, want not awaiting", got)
+	}
+}
+
+// A pending question rests awaiting at the settle even with input queued
+// behind it: queued input can't answer the question, and the drain ladder
+// holds it until a reply does.
+func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
+	t.Parallel()
+	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Settle again from idle with a message queued, as a human-note carrier
+	// round that left the question pending would.
+	sess.mu.Lock()
+	sess.state = SessionIdle
+	sess.mu.Unlock()
+	if err := sess.Enqueue(ctx, "later"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	sess.armAwaitingAtSettle(true, false)
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting while the question is pending", got)
 	}
 }

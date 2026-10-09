@@ -636,7 +636,13 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	generation := s.restGeneration
 	s.mu.Unlock()
 	if s.askPendingCount() > 0 {
-		s.restAwaiting(generation)
+		// Only the answer resolves a pending question; queued input waits
+		// behind it, so nothing else is read here.
+		s.mu.Lock()
+		if s.restStillPendingLocked(generation) {
+			s.state = SessionAwaiting
+		}
+		s.mu.Unlock()
 		return
 	}
 	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
@@ -669,6 +675,12 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		if !s.restStillPending(generation) || moves() || s.autonomyInFlight() {
 			return
 		}
+		// restMu orders this rest against a turn starting (processOneInput
+		// takes it before advancing restGeneration): either the turn starts
+		// first and the rest no longer arms, or the rest's announcement is on
+		// the event feed before anything the turn emits.
+		s.restMu.Lock()
+		defer s.restMu.Unlock()
 		if s.restAwaiting(generation) {
 			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
 		}
