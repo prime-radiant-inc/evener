@@ -504,41 +504,20 @@ func TestServerAppWireQueuedClosedSessionEndClosesThePublishedExecution(t *testi
 func TestServerAppWireStatusSettledDuringATurnIsNotPublished(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_settled_late")
-	client := dialServerAppWire(t, srv)
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_settled_late", Subscribe: true}); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
 	srv.SetProcessingTurn("next-turn")
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_late", Data: events.StatusSettledData{State: "awaiting"}}, nil)
-	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_settled_late"})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if read.Thread.Status.Type != appwire.ThreadStatusActive {
-		t.Fatalf("read status = %q, want the running turn's active", read.Thread.Status.Type)
+	if read := readThreadOverWire(t, srv, "local:th_settled_late"); read.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("read status = %q, want the running turn's active", read.Status.Type)
 	}
 	srv.SetProcessing(false)
 
-	// TRIPWIRE: in-process transport; a second only bounds a hang.
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case notification := <-client.Notifications():
-			if notification.Method != appwire.NotifyThreadStatusChanged {
-				continue
-			}
-			var params appwire.ThreadStatusChangedParams
-			if err := json.Unmarshal(notification.Params, &params); err != nil {
-				t.Fatalf("decode status: %v", err)
-			}
-			if params.Status.Type == appwire.ThreadStatusAwaiting {
-				t.Fatal("subscriber received the stale awaiting over the running turn")
-			}
-			if params.Status.Type == appwire.ThreadStatusIdle {
-				return
-			}
-		case <-deadline:
-			t.Fatal("subscriber received no idle status after the turn ended")
+	statuses := statusNotifications(t, srv, "th_settled_late")
+	for _, status := range statuses {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the stale awaiting over the running turn: %+v", statuses)
 		}
+	}
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("statuses = %+v, want the turn's end to settle idle", statuses)
 	}
 }

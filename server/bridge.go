@@ -184,8 +184,7 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 // state, or the session already closed, and closed wins. The caller holds
 // s.mu.
 func (s *Server) restingStatusSupersededLocked() bool {
-	return s.processing || s.appReservedTurnID != "" || s.appPendingStableTurnID != "" ||
-		s.status.State == string(agent.SessionClosed)
+	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {

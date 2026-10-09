@@ -279,17 +279,7 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 func TestBridge_StatusSettledSetsState(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetState("idle")
-	evs := make(chan events.SessionEvent, 10)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		Bridge(srv, evs)
-	}()
-
-	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
-	close(evs)
-	<-done
+	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}})
 
 	if got := srv.GetStatus().State; got != "awaiting" {
 		t.Errorf("state: got %q, want awaiting", got)
@@ -302,17 +292,7 @@ func TestBridge_StatusSettledDuringATurnIsIgnored(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)
 	srv.SetState("active")
-	evs := make(chan events.SessionEvent, 10)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		Bridge(srv, evs)
-	}()
-
-	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
-	close(evs)
-	<-done
+	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}})
 
 	if got := srv.GetStatus().State; got != "active" {
 		t.Errorf("state: got %q, want the running turn's active", got)
@@ -323,18 +303,10 @@ func TestBridge_StatusSettledDuringATurnIsIgnored(t *testing.T) {
 // never reopens it: closed wins.
 func TestBridge_StatusSettledAfterCloseIsIgnored(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	evs := make(chan events.SessionEvent, 10)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		Bridge(srv, evs)
-	}()
-
-	evs <- events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "s1", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}
-	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
-	close(evs)
-	<-done
+	feedBridge(srv,
+		events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "s1", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}},
+		events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}},
+	)
 
 	if got := srv.GetStatus().State; got != "closed" {
 		t.Errorf("state: got %q, want closed", got)
@@ -346,17 +318,7 @@ func TestBridge_StatusSettledAfterCloseIsIgnored(t *testing.T) {
 func TestBridge_StatusSettledIgnoresAStateThatIsNotARest(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetState("idle")
-	evs := make(chan events.SessionEvent, 10)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		Bridge(srv, evs)
-	}()
-
-	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "bogus"}}
-	close(evs)
-	<-done
+	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "bogus"}})
 
 	if got := srv.GetStatus().State; got != "idle" {
 		t.Errorf("state: got %q, want idle kept", got)
