@@ -73,10 +73,9 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 		}
 		kept = append(kept, existing)
 	}
+	// splitMemoryFrontmatter's block is empty or ends in a newline, so the
+	// line can be appended as it is.
 	if !replaced {
-		if n := len(kept); n > 0 && !strings.HasSuffix(kept[n-1], "\n") {
-			kept[n-1] += "\n"
-		}
 		kept = append(kept, line)
 	}
 	return []byte("---\n" + strings.Join(kept, "") + "---\n" + body)
@@ -222,10 +221,8 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	if err != nil {
 		return err
 	}
-	needsDescription := make(map[string]bool, len(listed))
 	isListed := make(map[string]bool, len(listed))
 	for _, p := range listed {
-		needsDescription[p.Path] = !p.HasDescription && !p.Unreadable
 		isListed[p.Path] = true
 	}
 	// Each link resolves to a listed page; within one index a link naming the
@@ -252,9 +249,6 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	}
 	var writeErrs []error
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
-		if !needsDescription[page] {
-			continue
-		}
 		abs := filepath.Join(root, filepath.FromSlash(page))
 		body, err := env.ReadFileRaw(abs)
 		if err != nil {
@@ -262,6 +256,8 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 			// scope still finishes.
 			continue
 		}
+		// A page that has a description keeps it; one whose frontmatter does not
+		// parse is left as it is.
 		if parsed := parseMemoryPage(page, body, time.Time{}); parsed.HasDescription || parsed.Unreadable {
 			continue
 		}
