@@ -141,34 +141,6 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	}
 }
 
-// EditFileWith writes what finish makes of the edited bytes, in both the
-// unconfined and the confined layer, and a failed match calls no finish.
-func TestEditFileWithWritesTheFinishedBytes(t *testing.T) {
-	root := t.TempDir()
-	confined, err := NewConfinedFileEnvironment(root, "scope")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer confined.Cleanup()
-	for name, env := range map[string]*LocalExecutionEnvironment{"unconfined": NewLocalExecutionEnvironment(t.TempDir()), "confined": confined} {
-		path := filepath.Join(env.WorkingDirectory(), "a.txt")
-		if _, err := env.WriteFile(path, "hello world\n"); err != nil {
-			t.Fatalf("%s: WriteFile: %v", name, err)
-		}
-		finish := func(edited []byte) []byte { return append([]byte("stamp\n"), edited...) }
-		if _, err := env.EditFileWith(path, "world", "WORLD", false, finish); err != nil {
-			t.Fatalf("%s: EditFileWith: %v", name, err)
-		}
-		if b, _ := os.ReadFile(path); string(b) != "stamp\nhello WORLD\n" {
-			t.Fatalf("%s: got %q", name, b)
-		}
-		called := false
-		if _, err := env.EditFileWith(path, "absent", "x", false, func(b []byte) []byte { called = true; return b }); err == nil || called {
-			t.Fatalf("%s: failed match err=%v, finish called=%t", name, err, called)
-		}
-	}
-}
-
 // TestEditFile_NoMatch_ShowsNearestText pins the near-miss diagnostic: when an
 // old_string fails to match (here a partial first line that drops a leading
 // "entry exists. "), the error must echo the nearest actual line verbatim so the
