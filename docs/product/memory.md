@@ -279,8 +279,12 @@ still an error. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
-ordinary page. Deleting a page needs no index repair; its line is gone from the
-next rendering.
+ordinary page. `memory_write` and `memory_edit` of a path holding an ASCII
+control character other than tab, such as a newline, are refused too: "memory
+path holds a control character, such as a newline; choose a name without one".
+No index line can link to such a path. `memory_delete` still takes one, so a
+file named that way outside the tools can be removed. Deleting a page needs no
+index repair; its line is gone from the next rendering.
 
 **Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
 counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so

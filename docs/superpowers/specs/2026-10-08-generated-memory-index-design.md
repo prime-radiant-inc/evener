@@ -62,6 +62,7 @@ Tags: formatting (3), money (2), vitest (6)
 - When `memory_write` or `memory_edit` writes a `.md` page, Evener sets `updated` and `by` in the frontmatter of the bytes the tool writes, creating a frontmatter block if there is none. Every other byte of the page is preserved. The stamps go into the tool's one write: a separate read-modify-write after it could write back content another session had already replaced or deleted. A failed write writes nothing.
 - If the written page has no `description`, the tool result appends one line: `This page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter.`
 - `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused: `MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead.`
+- `memory_write` and `memory_edit` of a path holding an ASCII control character other than tab are refused: `memory path holds a control character, such as a newline; choose a name without one`. `memory_delete` still takes such a path.
 - `memory_delete` of a page needs no index repair: its line disappears from the next rendering.
 
 ## Per-turn updates and own writes
