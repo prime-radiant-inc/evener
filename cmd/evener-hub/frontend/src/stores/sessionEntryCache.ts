@@ -92,6 +92,27 @@ function encodedBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
+type SessionMetadataPayload = Pick<
+  TranscriptHistoryMetaRow,
+  "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion"
+>;
+
+function sessionMetadataPayload(
+  row: TranscriptHistoryMetaRow | TranscriptSessionMetadata,
+): SessionMetadataPayload | undefined {
+  const { requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion } = row;
+  if (
+    requestedRefs === undefined &&
+    resolvedIdentity === undefined &&
+    savedAt === undefined &&
+    accessedAt === undefined &&
+    formatVersion === undefined
+  ) {
+    return undefined;
+  }
+  return { requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion };
+}
+
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
   if (!left || !right) return left ? -1 : right ? 1 : 0;
   return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
@@ -284,6 +305,14 @@ export class SessionEntryCache {
       const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
       historyBytes += coverageResult.byteDelta;
       aggregateBytes += coverageResult.byteDelta;
+      if (batch.sessionMetadata) {
+        const previousPayload = sessionMetadataPayload(historyMeta);
+        const nextPayload = sessionMetadataPayload(batch.sessionMetadata);
+        const previousBytes = previousPayload ? encodedBytes(previousPayload) : 0;
+        const nextBytes = nextPayload ? encodedBytes(nextPayload) : 0;
+        historyBytes += nextBytes - previousBytes;
+        aggregateBytes += nextBytes - previousBytes;
+      }
       metaStore.put({
         ...historyMeta,
         ...batch.sessionMetadata,

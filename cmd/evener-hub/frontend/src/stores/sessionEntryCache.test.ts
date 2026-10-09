@@ -979,6 +979,203 @@ it("stores requested aliases separately from resolved identity with typed sessio
   await expect(cache.getSessionMetadata(historyKey)).resolves.toEqual(metadata);
 });
 
+it("accounts exact session metadata bytes across histories, replacement, item-only writes, and abort", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const identity = (sessionId: string) => ({
+    clientId: "client",
+    hostId: "host",
+    sessionId,
+    incarnation: "boot-1",
+  });
+  const metadata = (sessionId: string, ref: string, savedAt: number): TranscriptSessionMetadata => {
+    const resolvedIdentity = identity(sessionId);
+    return {
+      historyKey: entryHistoryKey(resolvedIdentity),
+      requestedRefs: [{ clientId: "client", ref }],
+      resolvedIdentity,
+      savedAt,
+      accessedAt: savedAt + 1,
+      formatVersion: 1,
+    };
+  };
+  const payload = (value: TranscriptSessionMetadata) => ({
+    requestedRefs: value.requestedRefs,
+    resolvedIdentity: value.resolvedIdentity,
+    savedAt: value.savedAt,
+    accessedAt: value.accessedAt,
+    formatVersion: value.formatVersion,
+  });
+  const alpha = metadata("session-alpha", "alias://短", 100);
+  const beta = metadata("session-beta", "session://beta", 200);
+  const alphaBytes = independentJsonBytes(payload(alpha));
+  const betaBytes = independentJsonBytes(payload(beta));
+  await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: alpha });
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: alphaBytes,
+    aggregateBytes: alphaBytes,
+  });
+
+  await cache.commitBatch({ historyKey: beta.historyKey, clearEpoch: 0, items: [], sessionMetadata: beta });
+  await expect(cache.getByteTotals(beta.historyKey)).resolves.toEqual({
+    historyBytes: betaBytes,
+    aggregateBytes: alphaBytes + betaBytes,
+  });
+
+  const grown = metadata("session-alpha", "alias://a much longer 名称", 300);
+  const grownBytes = independentJsonBytes(payload(grown));
+  await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: grown });
+  await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(grown);
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: grownBytes,
+    aggregateBytes: grownBytes + betaBytes,
+  });
+
+  const item = {
+    historyKey: alpha.historyKey,
+    transcriptKey: "item-alpha",
+    position: { entry: 1, item: 0 },
+    version: 1,
+    item: { id: "item-alpha", turnId: "turn-alpha", type: "assistant", text: "item-only" },
+  };
+  const storedItem = { ...item, positionSub: 0 };
+  const itemBytes = independentJsonBytes(storedItem);
+  await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [item] });
+  await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(grown);
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: grownBytes + itemBytes,
+    aggregateBytes: grownBytes + betaBytes + itemBytes,
+  });
+
+  await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: grown });
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: grownBytes + itemBytes,
+    aggregateBytes: grownBytes + betaBytes + itemBytes,
+  });
+
+  const shrunk = metadata("session-alpha", "alias://ø", 400);
+  const shrunkBytes = independentJsonBytes(payload(shrunk));
+  await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: shrunk });
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: shrunkBytes + itemBytes,
+    aggregateBytes: shrunkBytes + betaBytes + itemBytes,
+  });
+
+  const beforeAbortMetadata = await cache.getSessionMetadata(alpha.historyKey);
+  const beforeAbortTotals = await cache.getByteTotals(alpha.historyKey);
+  const candidateMetadata = metadata("session-alpha", "alias://abort replacement", 500);
+  const candidate = {
+    historyKey: alpha.historyKey,
+    transcriptKey: "aborted-item",
+    position: { entry: 2, item: 0 },
+    version: 2,
+    item: { id: "aborted-item", turnId: "turn-alpha", type: "assistant", text: "must roll back" },
+  };
+  const transact = IDBDatabase.prototype.transaction;
+  let transactionToAbort: IDBTransaction | undefined;
+  const staged: Array<{ store: string; value: unknown }> = [];
+  const put = IDBObjectStore.prototype.put;
+  let held: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let pulsing = true;
+  let markHeld!: () => void;
+  const requestHeld = new Promise<void>((resolve) => {
+    markHeld = resolve;
+  });
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const opened = transact.apply(this, args);
+    if (opened.mode === "readwrite" && opened.objectStoreNames.contains(ENTRY_META_STORE)) {
+      transactionToAbort = opened;
+    }
+    return opened;
+  });
+  const pulse = (store: IDBObjectStore) => {
+    if (pulsing) store.count().addEventListener("success", () => pulse(store), { once: true });
+  };
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["put"]>
+  ) {
+    const request = put.apply(this, args);
+    staged.push({ store: this.name, value: args[0] });
+    if (
+      !held &&
+      this.name === ENTRY_META_STORE &&
+      (args[0] as { historyKey?: string }).historyKey === alpha.historyKey
+    ) {
+      held = holdIndexedDBEvent(request, "success");
+      request.addEventListener("success", () => {}, { once: true });
+      void held.reached.then(markHeld);
+      pulse(this);
+    }
+    return request;
+  });
+
+  let settled = false;
+  const pending = cache
+    .commitBatch({
+      historyKey: alpha.historyKey,
+      clearEpoch: 0,
+      items: [candidate],
+      sessionMetadata: candidateMetadata,
+    })
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  try {
+    const state = await Promise.race([requestHeld.then(() => "held" as const), pending.then(() => "settled" as const)]);
+    expect(state).toBe("held");
+    expect(transactionToAbort).toBeDefined();
+    expect(settled).toBe(false);
+    expect(staged).toContainEqual({
+      store: ENTRY_ITEM_STORE,
+      value: expect.objectContaining({ transcriptKey: "aborted-item" }),
+    });
+    expect(staged).toContainEqual({
+      store: ENTRY_META_STORE,
+      value: expect.objectContaining({ requestedRefs: candidateMetadata.requestedRefs }),
+    });
+    transactionToAbort?.abort();
+  } finally {
+    pulsing = false;
+    try {
+      transactionToAbort?.abort();
+    } catch {
+      // The transaction may already have completed or aborted.
+    }
+    held?.release();
+    vi.restoreAllMocks();
+    await pending.catch(() => {});
+  }
+
+  await expect(pending).resolves.toMatchObject({ outcome: "failed" });
+  await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(beforeAbortMetadata);
+  await expect(cache.getLatest(alpha.historyKey, 10)).resolves.toEqual([item]);
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual(beforeAbortTotals);
+
+  const afterAbortBytes = independentJsonBytes(payload(candidateMetadata));
+  await expect(
+    cache.commitBatch({
+      historyKey: alpha.historyKey,
+      clearEpoch: 0,
+      items: [candidate],
+      sessionMetadata: candidateMetadata,
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+  const candidateItemBytes = independentJsonBytes({ ...candidate, positionSub: 0 });
+  await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(candidateMetadata);
+  await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
+    historyBytes: afterAbortBytes + itemBytes + candidateItemBytes,
+    aggregateBytes: afterAbortBytes + betaBytes + itemBytes + candidateItemBytes,
+  });
+});
+
 it("refuses a pre-Clear batch after real Clear and allows a fresh epoch write", async () => {
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
