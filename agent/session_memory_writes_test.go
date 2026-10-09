@@ -234,4 +234,14 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	if got := search(map[string]any{"path": "MEMORY.md"}); got != "" {
 		t.Fatalf("search of the root index itself: %q", got)
 	}
+	// Naming the index still checks the pattern.
+	if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "personal", "pattern": "[", "path": "memory.md"}); !res.IsError {
+		t.Fatalf("invalid pattern over the root index answered %+v", res)
+	}
+	if err := os.Remove(filepath.Join(scope, "MEMORY.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := search(map[string]any{"path": "Memory.md"}); got != "" {
+		t.Fatalf("search of a missing root index: %q", got)
+	}
 }

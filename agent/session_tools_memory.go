@@ -251,15 +251,18 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 		return nil, err
 	}
 	defer release()
-	target := filepath.Clean(stringArg(args, "path"))
-	if isMemoryIndexPath(target) {
-		return "", nil
-	}
+	g := parseFileGrepArgs(forwarded)
 	var skip func(rel string) bool
-	if target == "." {
+	switch target := filepath.Clean(stringArg(args, "path")); {
+	case isMemoryIndexPath(target):
+		// A search of the index itself finds nothing, but still runs, over
+		// the scope with every file skipped, so an invalid pattern is
+		// reported. It walks the scope because the sandboxed grep searches
+		// only a directory.
+		g.path, skip = env.WorkingDirectory(), func(string) bool { return true }
+	case target == ".":
 		skip = isMemoryIndexPath
 	}
-	g := parseFileGrepArgs(forwarded)
 	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
