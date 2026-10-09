@@ -172,18 +172,18 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
-	if ev.Kind == events.EventStatusSettled && s.restingStatusSupersededLocked() {
+	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
 		return
 	}
 	effect(s)
 }
 
-// restingStatusSupersededLocked reports whether a resting status that settled
+// settledStatusSupersededLocked reports whether a resting status that settled
 // outside any turn (EventStatusSettled) arrives too late to describe the
 // session: a turn is running or about to run, and its own end restates the
 // state, or the session already closed, and closed wins. The caller holds
 // s.mu.
-func (s *Server) restingStatusSupersededLocked() bool {
+func (s *Server) settledStatusSupersededLocked() bool {
 	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }
 

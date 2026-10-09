@@ -521,3 +521,18 @@ func TestServerAppWireStatusSettledDuringATurnIsNotPublished(t *testing.T) {
 		t.Fatalf("statuses = %+v, want the turn's end to settle idle", statuses)
 	}
 }
+
+// A quiet-period timer that fires after the session closed must not reopen it
+// on the wire: no awaiting frame follows the closing SESSION_END.
+func TestServerAppWireStatusSettledAfterCloseIsNotPublished(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_settled_closed")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_settled_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_closed", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+
+	for _, status := range statusNotifications(t, srv, "th_settled_closed") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting after the session closed: %+v", status)
+		}
+	}
+}
