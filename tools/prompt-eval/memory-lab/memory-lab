@@ -932,29 +932,32 @@ def line(g):
     return f"{g['version']:6} {g['arm']:3} {g['scenario']:22} {os.path.basename(g['trial'])} {g['stage']} exit={g['exit']}{cap} tools={g['tool_calls']} mem={mem} | {checks}{error}"
 
 
-def print_pass_rates(grades):
-    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+def pass_counts(grades, stage_checks=True):
+    """{(scenario, stage, check, version, arm): [passed, total]} over each grade's checks, plus
+    "used memory" and "not capped" when stage_checks. An errored stage counts as a failure."""
     agg = {}
     for g in grades:
         ran = not g.get("error")
-        for k, v in list(g["checks"].items()) + [("used memory", bool(g["memory_calls"])), ("not capped", ran and not g["rounds_capped"])]:
-            key = (g["scenario"], g["stage"], k, g["version"], g["arm"])
-            a = agg.setdefault(key, [0, 0])
-            a[0] += v
+        extra = [("used memory", bool(g["memory_calls"])), ("not capped", ran and not g["rounds_capped"])] if stage_checks else []
+        for k, v in list(g["checks"].items()) + extra:
+            a = agg.setdefault((g["scenario"], g["stage"], k, g["version"], g["arm"]), [0, 0])
+            a[0] += bool(v)
             a[1] += 1
-    for (s, st, k, v, arm), (p, n) in sorted(agg.items()):
+    return agg
+
+
+def print_pass_rates(grades):
+    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+    for (s, st, k, v, arm), (p, n) in sorted(pass_counts(grades).items()):
         print(f"{s:22} {st} {k:28} {v:6} {arm:3} {p}/{n}")
 
 
 def arm_deltas(grades):
     """{(scenario, stage, check, version): (passed on, n on, passed off, n off)} for every check run
-    in both arms. Counts match the pass-rate table: an errored stage is a failure."""
+    in both arms, counted as the pass-rate table counts them."""
     agg = {}
-    for g in grades:
-        for k, v in g["checks"].items():
-            a = agg.setdefault((g["scenario"], g["stage"], k, g["version"]), {}).setdefault(g["arm"], [0, 0])
-            a[0] += bool(v)
-            a[1] += 1
+    for (s, st, k, v, arm), counts in pass_counts(grades, stage_checks=False).items():
+        agg.setdefault((s, st, k, v), {})[arm] = counts
     return {key: (*arms["on"], *arms["off"]) for key, arms in agg.items() if "on" in arms and "off" in arms}
 
 
@@ -972,7 +975,8 @@ def arm_costs(grades):
 
 def print_arm_deltas(grades):
     """Memory on minus off, for scenarios that declare both arms. An off arm writes no memory, so
-    memory checks fail there by construction: read the delta on behavior checks."""
+    memory checks are settled there by construction (an "absent" check passes, any other fails):
+    read the delta on behavior checks."""
     deltas, costs = arm_deltas(grades), arm_costs(grades)
     if deltas:
         print("\n== memory on minus off (scenario stage check version: on off delta)")

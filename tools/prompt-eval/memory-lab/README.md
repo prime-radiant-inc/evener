@@ -60,7 +60,7 @@ The lab runs real models with your configured provider credentials, so it is nev
   "Please don't change anything; just answer. You didn't save X to memory. Did you consider it, and what led you not to?"
 ```
 
-For scenarios that declare `"arms": ["on", "off"]` (`off` runs every stage with `--disable-memory`), `report` and `run` also print memory on minus off per check and version, and each arm's mean tool calls and seconds over the stages that ran. `feedback`, `many-facts`, `fact-changes`, `polluted-seed`, `long-project`, `index-overflow` and `recall-seeded` declare both. An off arm writes no memory, so its memory checks fail by construction: read the delta on behavior and held-out checks.
+For scenarios that declare `"arms": ["on", "off"]` (`off` runs every stage with `--disable-memory`), `report` and `run` also print memory on minus off per check and version, and each arm's mean tool calls and seconds over the stages that ran. An off arm writes no memory, so its memory checks are settled by construction (an `absent` check passes, any other fails): read the delta on behavior and held-out checks.
 
 `ask` resumes the stage's root session, by the id recorded in its `grade.json`, and asks it a question. For a stage that resumed an earlier one, that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
 - "I converted the constraint into an action, satisfied it, and checked it off."
