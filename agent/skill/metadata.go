@@ -48,7 +48,13 @@ func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
 // Markdown heading, a list item, a bare "---", or prose does not qualify, so a
 // body that merely contains a "---" rule is not mistaken for frontmatter.
 func looksLikeFrontmatterStart(data []byte) bool {
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for len(data) > 0 {
+		line := data
+		if at := bytes.IndexByte(data, '\n'); at >= 0 {
+			line, data = data[:at], data[at+1:]
+		} else {
+			data = nil
+		}
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) == 0 {
 			continue
@@ -123,16 +129,14 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 	if !bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
 		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
 	}
-	if !bytes.Contains(data[len(skillFrontmatterDelimiter):], []byte(skillFrontmatterDelimiter)) {
-		return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
-	}
 
 	document, err := frontmatter.Parse(string(data))
 	if err != nil {
 		return invalidFrontmatter("skill frontmatter is not valid YAML", fmt.Errorf("parsing skill frontmatter: %w", err))
 	}
 	if document.Meta == nil {
-		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
+		// An opening delimiter with no whole-line closing one.
+		return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
 	}
 	descriptor.Meta.Metadata = cloneMetadata(document.Meta)
 

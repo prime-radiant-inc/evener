@@ -14,18 +14,13 @@ import (
 // "---\n" glued to the end of a value or indented inside a block scalar is not
 // mistaken for the close.
 func closingLineDelimiter(rest string) int {
-	offset := 0
-	for {
-		at := strings.Index(rest[offset:], delimiter)
-		if at < 0 {
-			return -1
-		}
-		at += offset
-		if at == 0 || rest[at-1] == '\n' {
-			return at
-		}
-		offset = at + 1
+	if strings.HasPrefix(rest, delimiter) {
+		return 0
 	}
+	if at := strings.Index(rest, "\n"+delimiter); at >= 0 {
+		return at + 1
+	}
+	return -1
 }
 
 // Document holds the parsed frontmatter metadata and the remaining Markdown body.
