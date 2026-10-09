@@ -1,5 +1,5 @@
 import type { SessionActivityCollection } from "@evener/appwire-client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../widgets";
 import { useActivityViewCurrent } from "./ActivityViewport";
 
@@ -32,9 +32,18 @@ export function ActivityPageBoundary({
 }: ActivityPageBoundaryProps) {
   const element = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+  // A background refresh of the collection must present nothing: only a page
+  // this control actually asked for shows the loading label and disables it.
+  const [pagePending, setPagePending] = useState(false);
   const currentVisibility = useRef(false);
   const observedRows = useRef(rows);
   const isCurrent = useActivityViewCurrent();
+  const admit = useCallback(() => {
+    setPagePending(true);
+    return Promise.resolve(loadMore(resource))
+      .catch(() => {})
+      .finally(() => setPagePending(false));
+  }, [loadMore, resource]);
   useEffect(() => {
     observedRows.current = rows;
     currentVisibility.current = false;
@@ -64,7 +73,7 @@ export function ActivityPageBoundary({
     if (!isCurrent() || !enabled || !hasMore || loading || error || permanent) return;
     if (!restore && !(visible && currentVisibility.current)) return;
     const admitPage = () => {
-      if (isCurrent() && observedRows.current === rows) void loadMore(resource);
+      if (isCurrent() && observedRows.current === rows) void admit();
     };
     if (!restore) {
       admitPage();
@@ -74,12 +83,12 @@ export function ActivityPageBoundary({
     // Yield between fresh pages; failures remain the shared store's concern.
     const timer = setTimeout(admitPage, 100);
     return () => clearTimeout(timer);
-  }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource, isCurrent, restore, rows]);
+  }, [enabled, visible, hasMore, loading, error, permanent, admit, isCurrent, restore, rows]);
   if (!hasMore) return null;
   return (
     <div ref={element}>
-      <Button variant="quiet" size="sm" disabled={loading || permanent} onClick={() => void loadMore(resource)}>
-        {loading ? `Loading ${label}…` : `Load more ${label}`}
+      <Button variant="quiet" size="sm" disabled={pagePending || permanent} onClick={() => void admit()}>
+        {pagePending ? `Loading ${label}…` : `Load more ${label}`}
       </Button>
     </div>
   );

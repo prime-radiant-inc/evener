@@ -604,7 +604,10 @@ subtree summary (for the Agents count) by explicit ref, so side-by-side panes
 retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
-while the shared store retains and retries an interrupted continuation. When a
+while the shared store retains and retries an interrupted continuation. The
+boundary control reports only a page it asked for: a background refresh of the
+collection changes neither its label nor its disabled state, so a refresh the
+user did not request presents nothing. When a
 collection's last observer leaves, the store drops that collection's read in
 flight and any demand queued or walking behind it, explicit loads included, so
 a store another holder keeps alive takes in no late page for a view that has
