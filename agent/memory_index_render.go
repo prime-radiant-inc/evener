@@ -36,8 +36,9 @@ func sortedMemoryPages(pages []memoryPage) []memoryPage {
 var memoryTitleEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
 
 // memoryAngleEscaper escapes a path written as an angle-bracket link
-// destination, where "<" and ">" may appear only escaped.
-var memoryAngleEscaper = strings.NewReplacer(`<`, `\<`, `>`, `\>`)
+// destination, where "<" and ">" may appear only escaped, and so a backslash
+// already in the path is escaped too.
+var memoryAngleEscaper = strings.NewReplacer(`\`, `\\`, `<`, `\<`, `>`, `\>`)
 
 // memoryLinkTarget is rel as its index link's destination. A path a bare
 // Markdown destination can't hold (whitespace, a parenthesis, a leading "<")

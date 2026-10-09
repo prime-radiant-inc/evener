@@ -153,6 +153,7 @@ func TestMemoryIndexLineLinkTarget(t *testing.T) {
 		"half).md":       "<half).md>",
 		"<x> y.md":       `<\<x\> y.md>`,
 		"<lead.md":       `<\<lead.md>`,
+		`a \> b.md`:      `<a \\\> b.md>`,
 	} {
 		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
 		if wantLine := "- [T](" + want + ") — d"; line != wantLine {
