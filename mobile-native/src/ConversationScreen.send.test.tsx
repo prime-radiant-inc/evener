@@ -2810,7 +2810,7 @@ it("retries a note that failed to save once, on its own, without needing a recon
 			attempts += 1;
 			if (attempts === 1) {
 				// Fail a timer turn late, as a real dropped request does: the
-				// retry then lands after any fixed number of turns (#4119).
+				// retry then lands after settle()'s one timer turn (#4119).
 				await new Promise((resolve) => setTimeout(resolve, 0));
 				throw new Error("offline");
 			}
