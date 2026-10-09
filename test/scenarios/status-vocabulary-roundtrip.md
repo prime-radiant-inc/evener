@@ -1,7 +1,7 @@
 # status-vocabulary-roundtrip: attainable status states map across sidebar and TUI
 
 **What this covers**: Track A §1 (status vocabulary & icons) and §2
-(ask-tiering). The live steps verify that attainable your-move and
+(ask-tiering). The live steps verify that attainable needs-you and
 question-waiting states map to the web rail's `Needs you` category while the
 title HoverCard preserves the detailed state and the TUI keeps its dashboard
 and session-header wording. A deterministic gate pins the complete
@@ -100,7 +100,7 @@ in the context card.
 ## Expected
 
 - **Step 2 (exact, browser-free)**: every object sharing the session's `ref`
-  reports the **same** `state` and the same `ask_pending`. For the your-move
+  reports the **same** `state` and the same `ask_pending`. For the needs-you
   state that is `state:"awaiting"`, `ask_pending:false` on all copies.
   Falsification: two rows for one session disagree on either field — that is
   the reader being unable to tell which listing is stale.
@@ -108,13 +108,13 @@ in the context card.
   (2 for a live session in a project), and every entry in `indicators` is
   `Needs you`. Falsification: the two rendered rows carry different status
   categories, or a row's category contradicts step 2's wire value.
-- **Step 4**: the `EVENER / SESSION` header's badge line reads `● YOUR MOVE`.
+- **Step 4**: the `EVENER / SESSION` header's badge line reads `● NEEDS YOU`.
 - **Step 5 (ask-pending)**: step 2's wire rows all flip to
   `ask_pending:true`; every rail row retains the `Needs you` indicator, the
   hovered context card reads `Question waiting`, the TUI header badge reads
   `● QUESTION WAITING`, and the TUI dashboard row for this session carries the `◆` marker
   (`cmd/evener-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
-  still reads "your move" while another says "question waiting".
+  still reads "needs you" while another says "question waiting".
 - **Step 6**: the deterministic mapping includes
   `StateWord("errored", false) == "Error"` (`hubapi/attention.go:58-79`).
   This pins vocabulary only; it does not claim this scenario produced a live
