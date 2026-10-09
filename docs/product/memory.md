@@ -196,8 +196,10 @@ the same file on macOS's default filesystem.
 **What counts as a page.** Every regular file under the scope root, in
 subdirectories too, except a path with a segment starting with `.` (the rule
 `memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
-skipped, as scope confinement already refuses them. Only `.md` files are parsed
-for frontmatter. Any other file, or a page that cannot be read, renders with its
+skipped, as scope confinement already refuses them. The listing goes 64 levels
+deep (`memoryPageWalkDepth`), so a file below 63 nested directories is not
+listed: it never appears in the index and migration never describes it. Only
+`.md` files are parsed for frontmatter. Any other file, or a page that cannot be read, renders with its
 filename as the description and no `(no description)` marker.
 
 **Page format.** A page starts with YAML frontmatter, parsed with
@@ -270,8 +272,8 @@ page whose stamps would not change (same session, same day) is not rewritten.
 Frontmatter Evener can't safely edit in place is left unstamped. A
 failed write is not stamped. A stamp that fails to write does not fail the call;
 the result carries a note saying so, ahead of the notes below. A written page
-with no description gets a note asking for one, and a page whose frontmatter does not parse gets its own
-note asking to fix the YAML.
+with no description gets a note asking for one, and a page whose frontmatter
+does not parse gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
