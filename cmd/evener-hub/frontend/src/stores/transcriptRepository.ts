@@ -15,6 +15,7 @@ import {
   mergeTranscriptTurnVersioned,
   pruneBackgroundHistoryBodies,
   type ThreadItem,
+  type ThreadItemPosition,
   type ThreadModel,
   type ThreadReadResponse,
   type TurnModel,
@@ -54,13 +55,30 @@ export interface TranscriptReaderResult {
   model?: ThreadModel;
   status: TranscriptReaderStatus;
   boundary?: number;
+  before?: ThreadItemPosition;
   olderCursor?: string;
 }
 
 export interface TranscriptReader {
   openLocal(limit: number): Promise<TranscriptReaderResult>;
   getSnapshot(): ThreadModel | undefined;
+  /** @internal Reports retained body ownership without exposing payloads. */
+  getRetentionSnapshotForTesting(): { openingModelRetained: boolean; pendingPayloadCount: number };
   dispose(): void;
+}
+
+interface ReaderOpeningState {
+  model?: ThreadModel;
+  pendingRows: TranscriptItemRow<CachedSessionItem>[];
+  boundary: number;
+  committedBoundary?: string;
+  acceptedCoverageBoundary?: string;
+  readId?: string;
+  continuityId?: string;
+  committedSnapshot?: number;
+  sourceRevision: number;
+  hadPendingWrites: boolean;
+  authorityValid: boolean;
 }
 
 /** Owns real wire acceptance, publication, local writes and attached readers for one binding. */
@@ -72,6 +90,7 @@ export class TranscriptRepository {
   readonly #pending = new Map<string, TranscriptItemRow<CachedSessionItem>>();
   #model: ThreadModel | undefined;
   #boundary = 0;
+  #sourceRevision = 0;
   #readerCount = 0;
   #coverageBoundary: string | undefined;
   #coverageReadId: string | undefined;
@@ -80,6 +99,9 @@ export class TranscriptRepository {
   #coverageEnd: { entry: number; item: number; sub?: number } | null = null;
   #representedSnapshot = 0;
   #committedCoverageBoundary: string | undefined;
+  #committedCoverageSnapshot: number | undefined;
+  #committedCoverageReadId: string | undefined;
+  #committedCoverageContinuityId: string | undefined;
   #seedSnapshot: number | undefined;
   #seedAuthorityInvalid = false;
   #recoveryNeeded = false;
@@ -157,6 +179,19 @@ export class TranscriptRepository {
         })();
     if (candidate === before) return false;
     this.#model = candidate;
+    const previousHistory = before?.history;
+    const acceptedHistory = candidate.history;
+    if (
+      !previousHistory ||
+      !acceptedHistory ||
+      previousHistory.bootGeneration !== acceptedHistory.bootGeneration ||
+      previousHistory.epoch !== acceptedHistory.epoch ||
+      previousHistory.incarnation !== acceptedHistory.incarnation ||
+      previousHistory.invalidatedAtGeneration !== undefined ||
+      previousHistory.failed !== undefined
+    ) {
+      this.#sourceRevision++;
+    }
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
     this.#coverageBoundary = request.boundary;
     this.#coverageReadId = request.readId;
@@ -232,6 +267,7 @@ export class TranscriptRepository {
     this.#model = next;
     this.#boundary++;
     const authorityBlocked = next.history?.invalidatedAtGeneration !== undefined || next.history?.failed !== undefined;
+    if (authorityBlocked) this.#sourceRevision++;
     const rows = authorityBlocked ? [] : this.#notificationRows(notification);
     const history =
       notification.method === "history/updated" ? (notification.params as { snapshot: { length: number } }) : undefined;
@@ -276,38 +312,64 @@ export class TranscriptRepository {
     let active = true;
     this.#readerCount++;
     const lifetime = this.#binding.lifetime;
-    const openingBoundary = this.#boundary;
-    const openingModel = this.#model;
-    const committedBoundary = this.#committedCoverageBoundary;
-    const acceptedCoverageBoundary = this.#coverageBoundary;
-    const pendingAtAttachment = [...this.#pending.values()];
-    const hadPendingWritesAtAttachment = this.#writes.size > 0;
-    const authorityWasValidAtAttachment = !this.#recoveryNeeded && !this.#seedAuthorityInvalid;
+    const captureOpeningState = (): ReaderOpeningState => ({
+      model: this.#model,
+      pendingRows: [...this.#pending.values()],
+      boundary: this.#boundary,
+      committedBoundary: this.#committedCoverageBoundary,
+      acceptedCoverageBoundary: this.#coverageBoundary,
+      readId: this.#committedCoverageReadId,
+      continuityId: this.#committedCoverageContinuityId,
+      committedSnapshot: this.#committedCoverageSnapshot,
+      sourceRevision: this.#sourceRevision,
+      hadPendingWrites: this.#writes.size > 0,
+      authorityValid: !this.#recoveryNeeded && !this.#seedAuthorityInvalid,
+    });
+    let openingState: ReaderOpeningState | undefined = captureOpeningState();
+    const releaseOpeningState = (state: ReaderOpeningState) => {
+      state.model = undefined;
+      state.pendingRows.length = 0;
+      if (openingState === state) openingState = undefined;
+    };
     let latest = this.#model;
     const unlisten = this.subscribe(() => {
       latest = this.#model;
     });
     return {
       getSnapshot: () => latest,
+      getRetentionSnapshotForTesting: () => ({
+        openingModelRetained: openingState?.model !== undefined,
+        pendingPayloadCount: openingState?.pendingRows.length ?? 0,
+      }),
       openLocal: async (limit) => {
         if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
+        let cut = openingState;
+        if (!cut) {
+          cut = captureOpeningState();
+          openingState = cut;
+        }
         try {
-          const modelAtOpen = openingModel ?? this.#model;
-          const hasModelAtAttachment = openingModel !== undefined;
-          const openingCutBoundary = hasModelAtAttachment ? openingBoundary : this.#boundary;
-          const coverageBoundary = hasModelAtAttachment ? committedBoundary : this.#committedCoverageBoundary;
-          const acceptedBoundaryAtOpen = hasModelAtAttachment ? acceptedCoverageBoundary : this.#coverageBoundary;
-          const pendingAtOpen = hasModelAtAttachment ? pendingAtAttachment : [...this.#pending.values()];
-          const hadPendingWritesAtOpen = hasModelAtAttachment ? hadPendingWritesAtAttachment : this.#writes.size > 0;
-          const authorityValidAtOpen = hasModelAtAttachment
-            ? authorityWasValidAtAttachment
-            : !this.#recoveryNeeded && !this.#seedAuthorityInvalid;
-          const window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, coverageBoundary);
-          if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
-          const current = modelAtOpen;
+          const openingCutBoundary = cut.boundary;
+          const coverageBoundary = cut.committedBoundary;
+          const acceptedBoundaryAtOpen = cut.acceptedCoverageBoundary;
+          const sourceRevisionAtOpen = cut.sourceRevision;
+          // Suffix certificates are mutable per readId. Resolve the latest real
+          // certificate and prove that it covers this reader's fixed cut.
+          let window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, coverageBoundary);
+          const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
+          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+            return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
+          }
+          if (!window.complete && coverageBoundary !== undefined) {
+            window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
+          }
+          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+            return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
+          }
+          const current = cut.model ?? this.#model;
           if (!current) return { status: window.complete ? "stale" : "recovery-needed" };
           const rowsByKey = new Map<string, TranscriptItemRow<unknown>>();
-          for (const row of [...window.rows, ...pendingAtOpen]) {
+          for (const row of [...window.rows, ...cut.pendingRows]) {
             const held = rowsByKey.get(row.transcriptKey);
             if (!held || held.version <= row.version) rowsByKey.set(row.transcriptKey, row);
           }
@@ -315,8 +377,14 @@ export class TranscriptRepository {
             comparePosition(left.position, right.position),
           );
           const boundedRows = limit === 0 ? [] : localRows.slice(-limit);
-          const restored = await this.#restoreWindow(current, boundedRows);
-          if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
+          const restored = await this.#restoreWindow(
+            current,
+            boundedRows,
+            () => active && this.#acceptsLifetime(lifetime) && authorityCurrent(),
+          );
+          if (!restored || !active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+            return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
+          }
           // A racing accepted model wins by item version; the stale query only fills absent slots.
           latest =
             this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
@@ -327,32 +395,37 @@ export class TranscriptRepository {
             this.#seedSnapshot === undefined ||
             (certifiedSnapshot !== undefined && certifiedSnapshot >= this.#seedSnapshot);
           const pendingCutCovered =
-            !hadPendingWritesAtOpen ||
+            !cut.hadPendingWrites ||
             (acceptedBoundaryAtOpen !== undefined && acceptedBoundaryAtOpen !== coverageBoundary);
           const status =
             window.complete &&
             !window.stale &&
+            ((cut.readId === undefined && this.#seedSnapshot !== undefined) ||
+              this.#coversOpeningCut(window.coverage, cut.readId, cut.continuityId, cut.committedSnapshot)) &&
             seedCovered &&
             pendingCutCovered &&
-            authorityValidAtOpen &&
+            cut.authorityValid &&
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded
               ? "current"
               : "recovery-needed";
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
-          const localOlderBoundary =
+          const localBefore =
             oldestReturned && certifiedStart && comparePosition(certifiedStart, oldestReturned) < 0
-              ? `entry:${oldestReturned.entry}:${oldestReturned.item}:${oldestReturned.sub ?? 0}`
+              ? oldestReturned
               : undefined;
           return {
             model: latest ?? current,
             status,
             boundary: this.#boundary,
-            olderCursor: localOlderBoundary ?? window.serverCursor ?? current.olderCursor,
+            ...(localBefore ? { before: localBefore } : {}),
+            olderCursor: window.serverCursor ?? current.olderCursor,
           };
         } catch {
           return { model: latest, status: "recovery-needed", boundary: this.#boundary };
+        } finally {
+          releaseOpeningState(cut);
         }
       },
       dispose: () => {
@@ -361,6 +434,7 @@ export class TranscriptRepository {
         this.#readerCount--;
         unlisten();
         latest = undefined;
+        if (openingState) releaseOpeningState(openingState);
         this.#reclaimBackgroundModel();
       },
     };
@@ -527,7 +601,11 @@ export class TranscriptRepository {
     };
   }
 
-  async #restoreWindow(seed: ThreadModel, rows: readonly TranscriptItemRow<unknown>[]): Promise<ThreadModel> {
+  async #restoreWindow(
+    seed: ThreadModel,
+    rows: readonly TranscriptItemRow<unknown>[],
+    isCurrent: () => boolean,
+  ): Promise<ThreadModel | undefined> {
     const byTurn = new Map<string, ItemModel[]>();
     for (const row of rows) {
       const item = decodeTranscriptItem(row.item as CachedSessionItem);
@@ -541,6 +619,7 @@ export class TranscriptRepository {
     const turns = new Map(seed.turns.map((turn) => [turn.id, turn]));
     for (const [turnId, items] of byTurn) {
       const cached = await this.#cache.getTurn(this.#binding.historyKey, turnId);
+      if (!isCurrent()) return undefined;
       const held = turns.get(turnId);
       if (!cached && !held) continue;
       const incoming: TurnModel = cached
@@ -595,10 +674,36 @@ export class TranscriptRepository {
     return { ...held, turns: [...turns.values()] };
   }
 
+  #coversOpeningCut(
+    coverage: readonly import("./sessionCacheSchema").TranscriptCoverageRow[],
+    readId: string | undefined,
+    continuityId: string | undefined,
+    representedSnapshot: number | undefined,
+  ): boolean {
+    if (!readId || representedSnapshot === undefined) return false;
+    const baseline = coverage.find((row) => row.kind === "read" && row.readId === readId);
+    if (!baseline) return false;
+    if (baseline.representedSnapshot >= representedSnapshot) return true;
+    if (!continuityId) return false;
+    return coverage.some(
+      (row) =>
+        row.kind === "suffix" &&
+        row.readId === readId &&
+        row.continuityId === continuityId &&
+        row.representedSnapshot >= representedSnapshot,
+    );
+  }
+
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       if (outcome.outcome === "committed") {
-        if (batch.coverage) this.#committedCoverageBoundary = batch.coverage.boundary;
+        if (batch.coverage) {
+          this.#committedCoverageBoundary = batch.coverage.boundary;
+          this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
+          this.#committedCoverageReadId = batch.coverage.readId;
+          this.#committedCoverageContinuityId =
+            batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
+        }
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }

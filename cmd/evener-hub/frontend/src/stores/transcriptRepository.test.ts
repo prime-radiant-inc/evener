@@ -114,6 +114,30 @@ function readMany(count: number): ThreadReadResponse {
   return response;
 }
 
+function historyUpdate(label: string, entry: number): AnyNotification {
+  return {
+    method: "history/updated",
+    params: {
+      ref,
+      threadId,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length: entry },
+      items: [
+        {
+          type: "agentMessage",
+          id: `item-${label}`,
+          transcriptKey: `item-${label}`,
+          turnId: "turn_1",
+          position: { entry, item: 0 },
+          version: entry,
+          text: label,
+        },
+      ],
+    },
+  } as AnyNotification;
+}
+
 function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], lifetime = 1, seedModel?: ThreadModel) {
   return new TranscriptRepository(cache, {
     ref,
@@ -836,7 +860,7 @@ it("opens the latest window after repeated committed live appends pass the initi
       .map((item) => item.text)
       .filter(Boolean),
   ).toEqual(Array.from({ length: 40 }, (_, index) => `live row ${index + 51}`));
-  expect(opened.olderCursor).toBe("entry:51:0:0");
+  expect(opened.before).toEqual({ entry: 51, item: 0 });
   await expect(fixture.cache.getCoverage(historyKey, "suffix:read-repeated-suffix")).resolves.toMatchObject({
     representedSnapshot: 8_504,
     end: { entry: 90 },
@@ -1244,7 +1268,7 @@ it("opens a retained A/B boundary while B's real cache write is still pending", 
 });
 
 it.each(["server cursor present", "no server cursor"] as const)(
-  "returns an older boundary tied to the first omitted local row with %s",
+  "returns a before position separately from the server cursor with %s",
   async (cursorCase) => {
     const fixture = createEntryCacheFixture();
     fixtures.push(fixture);
@@ -1262,7 +1286,10 @@ it.each(["server cursor present", "no server cursor"] as const)(
     expect(localWindow.rows.map((row) => row.transcriptKey)).toEqual(
       Array.from({ length: 40 }, (_, index) => `item-${index + 6}`),
     );
-    expect(opened.olderCursor).toBe("entry:6:0:0");
+    expect(opened.before).toEqual({ entry: 6, item: 0 });
+    expect(opened.olderCursor).toBe(
+      cursorCase === "server cursor present" ? "opaque-server-cursor-before-row-1" : undefined,
+    );
     reader.dispose();
     owner.dispose();
   },
@@ -1282,6 +1309,163 @@ it("attaches a reader to an already-mounted model by reference without reconstru
   reader.dispose();
   owner.dispose();
 });
+
+it.each(["open after C commits", "query held before transaction"] as const)(
+  "opens the fixed cut after a later same-continuity suffix replaces its certificate, %s",
+  async (holdPoint) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    owner.acceptRead(read("A", 1), { lifetime: 1, readId: "suffix-read", boundary: "suffix-A" });
+    await owner.settled();
+    owner.accept(historyUpdate("B", 2), { lifetime: 1 });
+    await owner.settled();
+
+    const reader = owner.attachReader();
+    const realQuery = fixture.cache.getLatestWindow.bind(fixture.cache);
+    let releaseQuery!: () => void;
+    let queryReached!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseQuery = resolve));
+    const reached = new Promise<void>((resolve) => (queryReached = resolve));
+    const querySpy =
+      holdPoint === "query held before transaction"
+        ? vi.spyOn(fixture.cache, "getLatestWindow").mockImplementation(async (...args) => {
+            queryReached();
+            await gate;
+            return realQuery(...args);
+          })
+        : undefined;
+    if (holdPoint === "open after C commits") {
+      owner.accept(historyUpdate("C", 3), { lifetime: 1 });
+      await owner.settled();
+    }
+    const opening = reader.openLocal(40);
+    if (holdPoint === "query held before transaction") {
+      await reached;
+      owner.accept(historyUpdate("C", 3), { lifetime: 1 });
+      await owner.settled();
+      releaseQuery();
+    }
+    querySpy?.mockRestore();
+
+    const opened = await opening;
+    expect(opened.status).toBe("current");
+    expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["A", "B", "C"]);
+    reader.dispose();
+    owner.dispose();
+  },
+);
+
+it.each(["same generation", "new boot after invalidation"] as const)(
+  "does not republish a held opening after authoritative %s replacement",
+  async (replacement) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    owner.acceptRead(read("retired A", 1), { lifetime: 1, readId: "retired-A", boundary: "retired-A-boundary" });
+    await owner.settled();
+    const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+    const reader = owner.attachReader();
+    const opening = reader.openLocal(40);
+    await queryHold.reached;
+    if (replacement === "new boot after invalidation") {
+      owner.accept(
+        {
+          method: "history/updated",
+          params: {
+            ref,
+            threadId,
+            bootGeneration: "2",
+            epoch: 1,
+            snapshot: { incarnation: identity.incarnation, length: 2 },
+            items: [],
+          },
+        } as AnyNotification,
+        { lifetime: 1 },
+      );
+      expect(owner.getSnapshot()?.history?.invalidatedAtGeneration).toBeDefined();
+    }
+    const newAuthority = read("replacement B", 2, "item-B");
+    newAuthority.bootGeneration = replacement === "same generation" ? "1" : "2";
+    newAuthority.epoch = 1;
+    newAuthority.requestGeneration = 1;
+    expect(
+      owner.acceptRead(newAuthority, {
+        lifetime: 1,
+        readId: `replacement-${replacement}`,
+        boundary: `replacement-${replacement}`,
+      }),
+    ).toBe(true);
+    queryHold.release();
+    const opened = await opening;
+
+    expect(opened.status).toBe("recovery-needed");
+    expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).not.toContain("retired A");
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["replacement B"]);
+    reader.dispose();
+    owner.dispose();
+  },
+);
+
+it.each(["before open", "during lookup", "after lookup"] as const)(
+  "releases opening model and pending payload ownership %s and supports a fresh repeated open",
+  async (disposalPoint) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const seed = hydrateThread(readMany(45), ref, 101);
+    const owner = new TranscriptRepository(fixture.cache, {
+      ref,
+      threadId,
+      historyKey,
+      identity,
+      clearEpoch: 0,
+      lifetime: 2,
+      seedModel: seed,
+      seedAuthority: {
+        trustedCurrentSource: true,
+        bootGeneration: seed.history!.bootGeneration,
+        epoch: seed.history!.epoch,
+        incarnation: seed.history!.incarnation ?? "",
+        snapshotLength: seed.history!.length,
+      },
+      now: () => 100,
+    });
+    const writeGate = gateEntryCommit(fixture.cache, "item-pending");
+    owner.accept(historyUpdate("pending", 46), { lifetime: 2 });
+    await writeGate.reached;
+    const reader = owner.attachReader();
+    expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: true, pendingPayloadCount: 1 });
+
+    if (disposalPoint === "before open") {
+      reader.dispose();
+      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+    } else if (disposalPoint === "during lookup") {
+      const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+      const opening = reader.openLocal(40);
+      await queryHold.reached;
+      reader.dispose();
+      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      queryHold.release();
+      await opening;
+    } else {
+      const opened = await reader.openLocal(40);
+      expect(opened.model).toBeDefined();
+      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      const repeated = await reader.openLocal(40);
+      expect(repeated.model?.turns.flatMap((turn) => turn.items).some((item) => item.text === "pending")).toBe(true);
+      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      reader.dispose();
+    }
+    writeGate.release();
+    await owner.settled();
+    owner.dispose();
+  },
+);
 
 it("drops the seed reference from binding ownership after reader disposal and write settlement", async () => {
   const fixture = createEntryCacheFixture();
