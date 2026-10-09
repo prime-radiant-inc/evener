@@ -187,6 +187,9 @@ interface SuppressionEntry {
 interface ReadState {
   ticket: ReadTicket;
   accepted?: { lease: AcceptedSourceLease; content: DocFileContent };
+  // Every comparable observation accepted for the current accepted epoch is kept
+  // so an entry-time comparison sees richer prior evidence, not only the latest.
+  observations: DocFileContent[];
 }
 
 // A confirmed suppressed epoch whose durable fence did not commit. Retained in
@@ -207,6 +210,33 @@ function epochIdentity(lease: AcceptedSourceLease): string {
 
 function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoch: string): string {
   return JSON.stringify([documentKey, namespaceIncarnation, epoch]);
+}
+
+// True when the current content is a definite change against ANY retained
+// comparable observation. A change is definite only relative to something that
+// was actually observed, never to a synthesized text/revision pair; missing or
+// inconclusive evidence alone is not a change. Shared by the local entry guard
+// and the durable validation so both keep one comparison policy.
+function contentChangedAgainst(observations: DocFileContent[], content: DocFileContent): boolean {
+  return observations.some(
+    (observation) =>
+      compareDisplayedSources(
+        {
+          source: observation.text,
+          evidence: {
+            wholeRevision: observation.revision,
+            fingerprint: displayedFingerprint(observation.text, observation.truncated),
+          },
+        },
+        {
+          source: content.text,
+          evidence: {
+            wholeRevision: content.revision,
+            fingerprint: displayedFingerprint(content.text, content.truncated),
+          },
+        },
+      ).changed,
+  );
 }
 
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
@@ -367,7 +397,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     this.#issuedReads.set(ticket.requestId, { documentKey, readGeneration: issuedGeneration });
     // Remember the completed current ticket in the same synchronous continuation,
     // carrying the prior completed accepted source for the full document key.
-    this.#readStates.set(documentKey, { ticket, accepted: this.#readStates.get(documentKey)?.accepted });
+    const prior = this.#readStates.get(documentKey);
+    this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
     this.#options.onReadBoundary?.({ phase: "ticket-remembered", ticket });
     this.#notifyStorageSuccess();
     return ticket;
@@ -387,22 +418,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const previous = remembered?.accepted;
     let provisional: string | undefined;
     if (remembered?.ticket.requestId === ticket.requestId && previous) {
-      const changed = compareDisplayedSources(
-        {
-          source: previous.content.text,
-          evidence: {
-            wholeRevision: previous.content.revision,
-            fingerprint: displayedFingerprint(previous.content.text, previous.content.truncated),
-          },
-        },
-        {
-          source: content.text,
-          evidence: {
-            wholeRevision: content.revision,
-            fingerprint: displayedFingerprint(content.text, content.truncated),
-          },
-        },
-      ).changed;
+      const changed = contentChangedAgainst(remembered.observations, content);
       if (changed) {
         const identity = epochIdentity(previous.lease);
         const entry = this.#suppressedEpochs.get(identity);
@@ -451,29 +467,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // inconclusive evidence alone never expires notes.
         const currentEpoch = head?.epoch;
         const retained = currentEpoch
-          ? (
-              await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll())
-            ).filter((row) => row.documentKey === documentKey && row.epoch === currentEpoch)
+          ? (await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll()))
+              .filter((row) => row.documentKey === documentKey && row.epoch === currentEpoch)
+              .map((row) => row.content)
           : [];
-        const contentChanged = retained.some(
-          (observation) =>
-            compareDisplayedSources(
-              {
-                source: observation.content.text,
-                evidence: {
-                  wholeRevision: observation.content.revision,
-                  fingerprint: displayedFingerprint(observation.content.text, observation.content.truncated),
-                },
-              },
-              {
-                source: content.text,
-                evidence: {
-                  wholeRevision: content.revision,
-                  fingerprint: displayedFingerprint(content.text, content.truncated),
-                },
-              },
-            ).changed,
-        );
+        const contentChanged = contentChangedAgainst(retained, content);
         // A locally confirmed suppression keeps the current durable epoch dead even
         // when content reverts, so an unchanged reversion still fences instead of
         // resurrecting the old note.
@@ -522,7 +520,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // An unchanged acceptance is not a changed read: drop any provisional the
         // local comparison installed and record the completed acceptance.
         finishValidation(false);
-        this.#readStates.set(documentKey, { ticket, accepted: { lease: validation.lease, content } });
+        const prior = this.#readStates.get(documentKey);
+        const sameEpoch = prior?.accepted?.lease.epoch === validation.lease.epoch;
+        this.#readStates.set(documentKey, {
+          ticket,
+          accepted: { lease: validation.lease, content },
+          observations: sameEpoch ? [...(prior?.observations ?? []), content] : [content],
+        });
         return { state: "accepted", lease: validation.lease };
       }
       // A current changed read: confirm suppression BEFORE scheduling its fence,
@@ -531,7 +535,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       await this.#options.beforeExpiryFence?.(ticket);
       try {
         const fenced = await this.#fence(ticket.key, validation.namespaceIncarnation, validation.head.epoch, content);
-        this.#readStates.set(documentKey, { ticket, accepted: { lease: fenced.lease, content } });
+        // The replacement epoch starts with its own evidence, never inheriting the
+        // dead epoch's observations.
+        this.#readStates.set(documentKey, {
+          ticket,
+          accepted: { lease: fenced.lease, content },
+          observations: [content],
+        });
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
         if (error instanceof SupersededFenceError) return { state: "stale-ticket" };
