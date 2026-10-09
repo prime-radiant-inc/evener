@@ -191,26 +191,55 @@ func TestMigrateMemoryScope(t *testing.T) {
 	}
 }
 
+// memoryBackups is a scope's backups of hand-written indexes, by name.
+func memoryBackups(t *testing.T, scope string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backups := make(map[string]string)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), memoryLegacyIndexBackup) {
+			raw, err := os.ReadFile(filepath.Join(scope, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backups[entry.Name()] = string(raw)
+		}
+	}
+	return backups
+}
+
 // A hand-written MEMORY.md that reappears after migration (an older Evener
 // build writing it again) is migrated again into the next free backup name;
-// the first backup is never overwritten.
+// no backup is ever overwritten or removed. An index identical to an
+// existing backup adds none.
 func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
 	indexes := []string{"- [a](a.md) — first index\n", "- [b](b.md) — recreated index\n", "- [c](c.md) — third index\n"}
 	backups := []string{memoryLegacyIndexBackup, memoryLegacyIndexBackup + ".2", memoryLegacyIndexBackup + ".3"}
-	for i, index := range indexes {
+	// The fourth and fifth runs repeat earlier indexes and add no backup.
+	for i, index := range append(slices.Clone(indexes), indexes[0], indexes[1]) {
 		if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := migrateMemoryScope(env); err != nil {
 			t.Fatalf("run %d: %v", i+1, err)
 		}
-		for j, backup := range backups[:i+1] {
+		kept := min(i+1, len(backups))
+		for j, backup := range backups[:kept] {
 			raw, err := os.ReadFile(filepath.Join(scope, backup))
 			if err != nil || string(raw) != indexes[j] {
 				t.Fatalf("run %d: %s=%q, %v", i+1, backup, raw, err)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(scope, "MEMORY.md")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("run %d: MEMORY.md left in place: %v", i+1, err)
+		}
+		if n := len(memoryBackups(t, scope)); n != kept {
+			t.Fatalf("run %d: %d backups, want %d", i+1, n, kept)
 		}
 	}
 }

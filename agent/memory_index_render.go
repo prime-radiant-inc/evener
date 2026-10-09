@@ -118,72 +118,120 @@ func memoryTagCounts(pages []memoryPage) (counts map[string]int, untagged int) {
 	return counts, untagged
 }
 
-// memoryTagsHeader lists every tag with its page count, alphabetically, or
-// is "" when no page has tags.
-func memoryTagsHeader(pages []memoryPage) string {
+// memoryTagListBudget bounds, in bytes, the tags that a capped projection's
+// header and its "Not shown" line each list. A scope can have
+// hundreds of tags; listed in full they would push every page line out of
+// the projection. Each list keeps its most-used tags and counts the rest, so
+// the two together take about an eighth of the cap however many or long the
+// tags are. 512 bytes holds about 25 typical tags.
+const memoryTagListBudget = 512
+
+// topMemoryTags is the most-used tags in counts (ties by name), most-used
+// first, that fit memoryTagListBudget when each is written as part(tag)
+// followed by ", ", and how many tags it leaves out.
+func topMemoryTags(counts map[string]int, part func(tag string) string) (top []string, more int) {
+	tags := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {
+		return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
+	})
+	size := 0
+	for i, tag := range tags {
+		size += len(part(tag)) + len(", ")
+		if size > memoryTagListBudget {
+			return tags[:i], len(tags) - i
+		}
+	}
+	return tags, 0
+}
+
+// memoryTagParts is tags written as part(tag), then how many more tags a
+// capped list leaves out, when it leaves any.
+func memoryTagParts(tags []string, part func(tag string) string, more int) []string {
+	parts := make([]string, 0, len(tags)+1)
+	for _, tag := range tags {
+		parts = append(parts, part(tag))
+	}
+	if more > 0 {
+		parts = append(parts, "and "+pluralizedUnit(more, "more tag"))
+	}
+	return parts
+}
+
+// memoryTagsHeaderLine lists tags with their page counts, alphabetically, as
+// a line, or is "" when no page has tags. The whole index lists every tag. A
+// capped header, for a projection the whole index does not fit, lists only
+// the most-used tags within memoryTagListBudget, then how many more there
+// are.
+func memoryTagsHeaderLine(pages []memoryPage, capped bool) string {
 	counts, _ := memoryTagCounts(pages)
 	if len(counts) == 0 {
 		return ""
 	}
-	var parts []string
-	for _, tag := range slices.Sorted(maps.Keys(counts)) {
-		parts = append(parts, fmt.Sprintf("%s (%d)", tag, counts[tag]))
+	part := func(tag string) string { return fmt.Sprintf("%s (%d)", tag, counts[tag]) }
+	tags, more := slices.Sorted(maps.Keys(counts)), 0
+	if capped {
+		tags, more = topMemoryTags(counts, part)
+		slices.Sort(tags)
 	}
-	return "Tags: " + strings.Join(parts, ", ")
+	return "Tags: " + strings.Join(memoryTagParts(tags, part, more), ", ") + "\n"
 }
 
 // memoryNotShownLine closes a projection that leaves rest out: how many pages,
-// then their tags with counts, most common first, then the untagged count.
+// then their most-used tags with counts, most common first, within
+// memoryTagListBudget, then how many more tags there are, then the untagged
+// count.
 func memoryNotShownLine(rest []memoryPage) string {
 	counts, untagged := memoryTagCounts(rest)
-	tags := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {
-		return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
-	})
-	var parts []string
-	for _, tag := range tags {
-		parts = append(parts, fmt.Sprintf("%s %d", tag, counts[tag]))
-	}
+	part := func(tag string) string { return fmt.Sprintf("%s %d", tag, counts[tag]) }
+	tags, more := topMemoryTags(counts, part)
+	// parts is never empty: rest holds at least one page, which is either
+	// untagged or counted under a tag, listed or among the more.
+	parts := memoryTagParts(tags, part, more)
 	if untagged > 0 {
 		parts = append(parts, fmt.Sprintf("untagged %d", untagged))
 	}
 	return fmt.Sprintf("Not shown: %s (%s).", pluralizedUnit(len(rest), "page"), strings.Join(parts, ", "))
 }
 
-// memoryIndexParts is a scope's index in pieces: its pages newest first, the
-// tag header line ("" when no page has tags), and one line per page.
-func memoryIndexParts(pages []memoryPage) (sorted []memoryPage, prefix string, lines []string) {
+// memoryPageLines is a scope's pages newest first and one index line per
+// page.
+func memoryPageLines(pages []memoryPage) (sorted []memoryPage, lines []string) {
 	sorted = sortedMemoryPages(pages)
-	if header := memoryTagsHeader(sorted); header != "" {
-		prefix = header + "\n"
-	}
 	lines = make([]string, len(sorted))
 	for i, p := range sorted {
 		lines[i] = memoryIndexLine(p) + "\n"
 	}
-	return sorted, prefix, lines
+	return sorted, lines
 }
 
 // renderMemoryIndex is a scope's whole generated index: the tag header, then
 // one line per page, newest first. It is "" for a scope with no pages.
 func renderMemoryIndex(pages []memoryPage) string {
-	_, prefix, lines := memoryIndexParts(pages)
-	return prefix + strings.Join(lines, "")
+	sorted, lines := memoryPageLines(pages)
+	return memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
 }
 
 // projectMemoryIndex is the index as projected into context within limit
-// bytes: the whole index when it fits; otherwise the header, the newest lines
-// that fit, and a closing line counting the pages left out. full is the whole
-// index, rendered in the same pass.
+// bytes: the whole index when it fits; otherwise the capped tag header, the
+// newest lines that fit, and a closing line counting the pages left out. full
+// is the whole index, rendered in the same pass.
 func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, truncated bool) {
-	sorted, prefix, lines := memoryIndexParts(pages)
-	full = prefix + strings.Join(lines, "")
+	sorted, lines := memoryPageLines(pages)
+	full = memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
+	if len(full) <= limit {
+		return full, full, false
+	}
+	prefix := memoryTagsHeaderLine(sorted, true)
 	sizes := make([]int, len(sorted)+1) // sizes[k]: prefix plus the first k lines
 	sizes[0] = len(prefix)
 	for i, line := range lines {
 		sizes[i+1] = sizes[i] + len(line)
 	}
 	if sizes[len(sorted)] <= limit {
-		return full, full, false
+		// Every page is shown, so the projection is not truncated:
+		// truncated promises a closing line counting pages left out
+		// (memoryIndexPartial). The capped header says itself how many
+		// tags it leaves out.
+		return prefix + strings.Join(lines, ""), full, false
 	}
 	// Only a k whose first k lines fit can also hold the closing line.
 	k := 0

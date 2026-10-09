@@ -517,6 +517,21 @@ func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 // root; the destination's parents are created beneath its root fd. The rename is
 // a single renameat between the two checked directory fds.
 func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
+	return s.betweenWriteParents(tool, oldAbs, newAbs, unix.Renameat)
+}
+
+// link gives the file at oldAbs the second name newAbs, with the same
+// checks as rename. Unlike rename, it never replaces newAbs: an existing
+// newAbs fails with EEXIST, which matches fs.ErrExist.
+func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	return s.betweenWriteParents(tool, oldAbs, newAbs, func(oldParent int, oldLeaf string, newParent int, newLeaf string) error {
+		return unix.Linkat(oldParent, oldLeaf, newParent, newLeaf, 0)
+	})
+}
+
+// betweenWriteParents runs op on the checked parent fds and leaves of oldAbs
+// and newAbs, creating newAbs's parents beneath its root fd.
+func (s *sandboxFS) betweenWriteParents(tool, oldAbs, newAbs string, op func(oldParent int, oldLeaf string, newParent int, newLeaf string) error) error {
 	oldParent, oldLeaf, err := s.openWriteParent(tool, oldAbs, false)
 	if err != nil {
 		return err
@@ -527,7 +542,7 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(newParent) }()
-	return unix.Renameat(oldParent, oldLeaf, newParent, newLeaf)
+	return op(oldParent, oldLeaf, newParent, newLeaf)
 }
 
 // mkdirAll creates abs (and any missing parents) beneath a writable root.
@@ -590,7 +605,7 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 // root, and each subdirectory is re-opened beneath its parent's fd with
 // O_NOFOLLOW — never re-resolved from the root by a joined path. Masked entries
 // are skipped so a denylisted subtree is never enumerated.
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
@@ -600,7 +615,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 		return nil, err
 	}
 	var out []DirEntry
-	if err := s.walkDirFd(fd, "", abs, depth, &out); err != nil { // walkDirFd closes fd
+	if err := s.walkDirFd(fd, "", abs, depth, visibleOnly, &out); err != nil { // walkDirFd closes fd
 		return nil, err
 	}
 	return out, nil
@@ -609,8 +624,9 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // walkDirFd reads the entries of the directory referenced by dirFd (which it
 // closes), appends them to out, and recurses into real subdirectories beneath
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
-// absolute path of dirFd, used only to skip masked entries.
-func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
+// absolute path of dirFd, used only to skip masked entries. visibleOnly skips
+// dot entries, so a dot directory is never opened.
+func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry) error {
 	defer func() { _ = unix.Close(dirFd) }()
 	ents, err := secureReadDirEntries(dirFd)
 	if err != nil {
@@ -619,6 +635,9 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
 		name := ent.Name()
+		if visibleOnly && IsDotPath(name) {
+			continue
+		}
 		childAbs := filepath.Join(baseAbs, name)
 		if s.underMasked(childAbs) {
 			continue
@@ -649,7 +668,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
-			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, out); err != nil {
+			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, visibleOnly, out); err != nil {
 				return err
 			}
 		}

@@ -1625,6 +1625,12 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return e.EditFileWith(path, oldString, newString, replaceAll, nil)
+}
+
+// EditFileWith is EditFile, except that finish, when not nil, turns the
+// edited bytes into the bytes written, inside the same read and write.
+func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	var abs string
 	var b []byte
@@ -1678,11 +1684,15 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		s = strings.Replace(s, oldString, newString, 1)
 		n = 1
 	}
+	edited := []byte(s)
+	if finish != nil {
+		edited = finish(edited)
+	}
 	if sfs != nil {
-		if werr := sfs.writeFile("edit_file", abs, []byte(s), 0o644); werr != nil {
+		if werr := sfs.writeFile("edit_file", abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); werr != nil {
+	} else if werr := afero.WriteFile(e.filesystem(), abs, edited, 0o644); werr != nil {
 		return "", werr
 	}
 	plural := "s"
@@ -1851,6 +1861,16 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 // by name within each directory, nested names are prefixed with their relative
 // path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, false)
+}
+
+// ListVisibleDirectory is ListDirectory without dot entries. It never reads
+// a dot directory, so a large .git beneath path costs it nothing.
+func (e *LocalExecutionEnvironment) ListVisibleDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, true)
+}
+
+func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
 	}
@@ -1858,7 +1878,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDir("list_dir", e.resolve(path), depth)
+		return sfs.listDir("list_dir", e.resolve(path), depth, visibleOnly)
 	}
 	root := e.resolve(path)
 
@@ -1872,6 +1892,9 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
 			name := ent.Name()
+			if visibleOnly && IsDotPath(name) {
+				continue
+			}
 			relName := name
 			if relPrefix != "" {
 				relName = filepath.Join(relPrefix, name)

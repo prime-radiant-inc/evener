@@ -85,8 +85,9 @@ output. See [transcript tools](transcripts.md) for retention and unavailable
 artifact behavior. Artifact IDs are session-tree capabilities, not memory paths
 or permanent links. There is no memory-specific cursor or result envelope.
 An automatic index projection that does not fit its budget ends with a line
-counting the pages it leaves out; `memory_read` of `MEMORY.md` returns the
-whole index.
+counting the pages it leaves out, and its tag header and that line name only
+the most-used tags; `memory_read` of `MEMORY.md` returns the whole index with
+every tag.
 
 Deleting or editing active files does not remove old transcripts or retained
 artifacts. Forgetting requires searching and editing active copies and repairing

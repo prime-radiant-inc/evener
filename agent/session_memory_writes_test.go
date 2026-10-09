@@ -160,29 +160,29 @@ func TestMemoryReadRendersTheIndex(t *testing.T) {
 	}
 }
 
-// Stamping a page that already carries this session's stamps for today leaves
-// the file untouched, so its modification time stays.
-func TestMemoryStampSkipsAnUnchangedPage(t *testing.T) {
+// memory_edit applies its edit and sets the stamps in one write, and notes a
+// page the edit leaves with no description.
+func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: d\n---\n"}); res.IsError {
-		t.Fatal(res.Output)
-	}
 	page := filepath.Join(scope, "a.md")
-	old := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
-	if err := os.Chtimes(page, old, old); err != nil {
+	if err := os.MkdirAll(scope, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env, release, err := s.acquireMemoryEnvironment("personal")
-	if err != nil {
+	if err := os.WriteFile(page, []byte("---\ndescription: old fact\n---\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-	if notes := s.stampMemoryPage(env, "a.md"); notes != "" {
-		t.Fatalf("notes=%q", notes)
+	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "old fact", "new_string": "new fact"})
+	if res.IsError || strings.Contains(res.Output, "no description") {
+		t.Fatalf("%+v", res)
 	}
-	if info, err := os.Stat(page); err != nil || !info.ModTime().Equal(old) {
-		t.Fatalf("page rewritten: %v, %v", info.ModTime(), err)
+	want := "---\ndescription: new fact\n" + memoryOwnStamps(s) + "---\nbody\n"
+	if raw, _ := os.ReadFile(page); string(raw) != want {
+		t.Fatalf("got %q\nwant %q", raw, want)
+	}
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "description: new fact\n", "new_string": ""})
+	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) {
+		t.Fatalf("%+v", res)
 	}
 }
 
