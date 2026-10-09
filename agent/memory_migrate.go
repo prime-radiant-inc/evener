@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // memoryLegacyIndexBackup is where migration keeps a scope's hand-written
@@ -67,8 +68,9 @@ func memoryYAMLField(key, value string) string {
 // its value, or adding it at the end of the block, or adding a block. Every
 // other byte of the page is kept. Keys are found as YAML reads them (quoted,
 // or with a space before the colon); a block that does not parse gains the
-// line at its end and stays as unreadable as it was. Valid frontmatter that
-// would not read the line back as its key, such as a flow mapping or a block
+// line at its end and stays as unreadable as it was (frontmatter.Parse
+// reads only a mapping). Readable frontmatter that would not read the line
+// back as its key, such as a flow mapping or a block
 // with a "..." document end, is returned as it is.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
@@ -110,19 +112,17 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !replaced {
 		kept = append(kept, line)
 	}
-	edited := strings.Join(kept, "")
-	// Checked by reading back rather than predicted: the line can break a
-	// flow mapping, or land after a document end YAML never reads past.
-	var before, after map[string]any
-	if yaml.Unmarshal([]byte(block), &before) == nil {
-		if yaml.Unmarshal([]byte(edited), &after) != nil {
-			return raw
-		}
-		if _, set := after[key]; !set {
+	out := "---\n" + strings.Join(kept, "") + "---\n" + body
+	// Checked by reading the page back as pages are read, rather than
+	// predicted: the line can break a flow mapping, or land after a document
+	// end YAML never reads past.
+	if _, err := frontmatter.Parse(text); err == nil {
+		doc, err := frontmatter.Parse(out)
+		if _, set := doc.Meta[key]; err != nil || !set {
 			return raw
 		}
 	}
-	return []byte("---\n" + edited + "---\n" + body)
+	return []byte(out)
 }
 
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
