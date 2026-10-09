@@ -9,9 +9,10 @@
 // implements against actions.ts + the tree store's refresh().
 //
 // The rail is a TRIAGE surface. Broken is red, needs-you is yellow, and running
-// work is a grey spinner. Broken and blocked attention outrank work; plain
-// awaiting and warning yield to work already in flight. Idle and ended rows
-// have no indicator. The stable one-line rhythm keeps the
+// work is a grey spinner. Broken attention and anything waiting on a person
+// (a question, an approval, or an awaiting rest after a needs_response turn)
+// outrank work; a warning yields to work already in flight. Idle and ended
+// rows have no indicator. The stable one-line rhythm keeps the
 // title list scannable while the HoverCard preserves project, host, branch,
 // jobs, subagents, watches, tier, and age without permanent visual noise.
 //
@@ -31,7 +32,6 @@
 // with no hover to reveal them).
 
 import {
-  approvalWaiting,
   humanizeState,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
@@ -436,12 +436,15 @@ function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   if (presented === "errored") return "errored";
-  // Only blocked attention outranks work. Plain awaiting ("Your move") and a
-  // warning share the amber dot family, but running jobs remain what is happening.
+  // Only attention that waits on a person outranks work: a question, a turn
+  // that ended on needs_response (awaiting without a question, #4093), an
+  // approval (which displayState presents as awaiting), or a restart. A
+  // warning shares the amber dot family, but running jobs remain what is
+  // happening.
   const attentionOutranksWork =
-    session.state === "restartRequired" ||
-    ((session.state === "awaiting" || session.state === "warning") && session.ask_pending === true) ||
-    approvalWaiting(session.state, session.approval_pending === true);
+    presented === "awaiting" ||
+    presented === "restartRequired" ||
+    (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
     return "active";

@@ -3,13 +3,12 @@
 // reads, worded for a person rather than mapped to a broad Cadence family.
 // Pure functions, no imports.
 //
-// "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
-// attention.go, Track A §2 ask-tiering) already draws this same line for the
-// TUI and the older web surface - "Question waiting" when the agent is
-// genuinely blocked on an answer, "Your move" when a turn simply ended with
-// nothing further queued - because those are different urgencies wearing the
-// identical amber dot. Return values are lowercase so each presentation
-// surface can apply its own casing.
+// "awaiting" itself splits on askPending, as hubapi.StateWord (hubapi/
+// attention.go) does for the TUI and the older web surface: "Question
+// waiting" for a pending question, "Needs you" for a turn that ended on
+// needs_response (#4093). A plain reply rests idle and never reads awaiting.
+// Return values are lowercase so each presentation surface can apply its own
+// casing.
 //
 // "warning" gets its own word for the same reason (kata 59mx): StateWord
 // already gives it a dedicated "Warning", distinct from either awaiting
@@ -26,7 +25,7 @@ export function humanizeState(wireState: string, askPending: boolean, approvalPe
     case "active":
       return "working";
     case "awaiting":
-      return askPending ? "question waiting" : "your move";
+      return askPending ? "question waiting" : "needs you";
     case "restartRequired":
       return "restart required";
     case "warning":
