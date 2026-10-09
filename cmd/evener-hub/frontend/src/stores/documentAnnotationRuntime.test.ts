@@ -3,6 +3,7 @@
 // the same retained runtime for the first Send and every retry. The regression
 // that exercises the adapter alone lives in documentAnnotationIndexedDB.test.ts.
 import type { SaveReceipt } from "@evener/appwire-client";
+import { IDBObjectStore } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { REFERENCE } from "../panes/doc/testing/annotationFixtures";
 import {
@@ -20,6 +21,7 @@ import {
   ANNOTATION_PAYLOADS_STORE,
   type AnnotationOperationRow,
   type AnnotationPayloadRow,
+  COMPOSER_DRAFTS_STORE,
 } from "../stores/localCompositionSchema";
 
 it("coalesces each accepted retry reason, failed save retains immutable work", async () => {
@@ -364,4 +366,137 @@ it("invalidates failed work and disposal stops later storage and explicit retry 
     ),
   ).toBe(false);
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("already-applied");
+});
+
+// Fault the real target transaction at a specific database/store/mode boundary:
+// the real get is issued on the real transaction first, then that same
+// transaction is aborted, and the observed abort is awaited. This is the public
+// fake-indexeddb boundary, not a repository/source mock.
+function faultStoreRead(
+  databaseName: string,
+  store: string,
+  mode: IDBTransactionMode,
+): { abortObserved: Promise<void>; restore: () => void } {
+  const original = IDBObjectStore.prototype.get;
+  let resolveAbort: (() => void) | undefined;
+  const abortObserved = new Promise<void>((resolve) => {
+    resolveAbort = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["get"]>
+  ) {
+    const request = original.apply(this, args);
+    const transaction = this.transaction;
+    if (this.name === store && transaction.mode === mode && transaction.db.name === databaseName) {
+      transaction.addEventListener("abort", () => resolveAbort?.());
+      // Abort AFTER the real get has been issued on the real transaction.
+      queueMicrotask(() => {
+        try {
+          transaction.abort();
+        } catch {
+          // The transaction already settled.
+        }
+      });
+    }
+    return request;
+  });
+  return { abortObserved, restore: () => spy.mockRestore() };
+}
+
+// Review fix 2: a storage/preparation fault before append must not escape as a
+// rejection; the handoff must return pending/owner-unavailable and keep the
+// operation recoverable through the SAME retained runtime's storage-recovery path.
+it.each([
+  ["receipt read", ANNOTATION_OPERATIONS_STORE, "readonly"],
+  ["payload read", ANNOTATION_PAYLOADS_STORE, "readonly"],
+  ["source preparation", COMPOSER_DRAFTS_STORE, "readwrite"],
+] as const)("recovers a saved operation whose handoff %s faults", async (_boundary, store, mode) => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  const f = await fixture(`handoff-fault-${store}`, { onStorageSuccess: () => runtime?.storageSucceeded() });
+  // Settle the fixture's earlier op-1 first.
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(() => retainedRuntime.dispose());
+  const operation = await acceptedOperation(f.repo, f.document, "fault-id", "note", f.destination);
+  if (!(await retainedRuntime.save(operation))) throw new Error("initial save failed");
+  const ordinaryBefore = await f.drafts.load(f.key);
+  const recoveryBefore = await f.outbox.getRecovery("rec-1");
+  if (!ordinaryBefore || !recoveryBefore) throw new Error("fixture baseline rows missing");
+  const payloadsBefore = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+  const receiptsBefore = await rowsForTests<AnnotationOperationRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_OPERATIONS_STORE,
+  );
+  const enqueues = vi.spyOn(f.outbox, "enqueueIntent");
+  const resends = vi.spyOn(f.outbox, "resendRecovery");
+  // The real source must not publish while the handoff faults.
+  const snapshotBefore = f.source.getSnapshot();
+  const publication = vi.fn();
+  const unsubscribe = f.source.subscribe(publication);
+  cleanupAfterTest(() => unsubscribe());
+
+  const fault = faultStoreRead(f.databaseName, store, mode);
+  let outcome: unknown;
+  try {
+    outcome = await retainedRuntime.handoff(operation.lease.key, operation.operationId).then(
+      (result) => result,
+      (error: unknown) => error,
+    );
+    await fault.abortObserved;
+  } finally {
+    fault.restore();
+  }
+  // Soft so the missing automatic-recovery evidence below is still reached when
+  // this defect is present.
+  expect.soft(outcome).toEqual({ state: "pending", reason: "owner-unavailable" });
+  expect(f.source.getSnapshot()).toEqual(snapshotBefore);
+  expect(publication).not.toHaveBeenCalled();
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+  expect(await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).toEqual(
+    payloadsBefore,
+  );
+  expect(await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).toEqual(
+    receiptsBefore,
+  );
+
+  // An unrelated real successful storage operation drives the SAME runtime's
+  // storage-recovery path; no explicit foreground retry is used.
+  await f.repo.beginRead({ ...f.document, path: "RECOVERY.md" });
+  await retainedRuntime.whenIdle();
+
+  // Fresh complete values after recovery.
+  const noteReference = REFERENCE.replace('"Keep this scope."', '"note"');
+  const ordinaryRecovered = await f.drafts.load(f.key);
+  const recoveryRecovered = await f.outbox.getRecovery("rec-1");
+  const receiptsRecovered = await rowsForTests<AnnotationOperationRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_OPERATIONS_STORE,
+  );
+  const applied = receiptsRecovered.filter((row) => row.operationId === operation.operationId);
+  expect(applied).toHaveLength(1);
+  expect(applied[0]).toMatchObject({
+    state: "applied",
+    draftRevision: ordinaryBefore.token.sessionRevision + 1,
+  });
+  expect(ordinaryRecovered).toEqual({
+    ...ordinaryBefore,
+    text: `${ordinaryBefore.text}\n\n${noteReference}`,
+    token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+  });
+  expect(recoveryRecovered).toEqual(recoveryBefore);
+
+  // Replay is idempotent and leaves the recovered token and rows unchanged.
+  expect((await retainedRuntime.handoff(operation.lease.key, operation.operationId)).state).toBe("already-applied");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryRecovered);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryRecovered);
+  expect(await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).toEqual(
+    receiptsRecovered,
+  );
+  expect(enqueues).not.toHaveBeenCalled();
+  expect(resends).not.toHaveBeenCalled();
 });

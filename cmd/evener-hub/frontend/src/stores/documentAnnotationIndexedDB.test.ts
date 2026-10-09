@@ -8,6 +8,8 @@ import {
   type ComposerMention,
   type DestinationProvenance,
   type DocumentKey,
+  displayedFingerprint,
+  type PreparedAnnotation,
   type ReadTicket,
 } from "@evener/appwire-client";
 import { IDBDatabase } from "fake-indexeddb";
@@ -2654,4 +2656,94 @@ it("keeps local consumer reads working with no BroadcastChannel", async () => {
   expect(views.filter((view) => view.operation.operationId === "no-channel-id").map((view) => view.operation)).toEqual([
     operation,
   ]);
+});
+
+// Review fix 1: an inconclusive read must not erase the epoch's original
+// comparison evidence, so a later definite change still fences the old epoch.
+it("retains the original comparison baseline across an inconclusive truncated read", async () => {
+  const f = await fixture("baseline-retention");
+  const ordinaryBefore = await f.drafts.load(f.key);
+  const recoveryBefore = await f.outbox.getRecovery("rec-1");
+  if (!ordinaryBefore || !recoveryBefore) throw new Error("fixture baseline rows missing");
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId)).toContain("op-1");
+
+  // A compatible truncated prefix with no revision is not a change: it must be
+  // accepted and must NOT expire op-1.
+  const prefix = await f.repo.acceptRead(
+    await f.repo.beginRead(f.document),
+    docContent(SOURCE.slice(0, 10), undefined, true),
+  );
+  expect(prefix.state).toBe("accepted");
+  if (prefix.state !== "accepted") throw new Error("prefix not accepted");
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId)).toContain("op-1");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+
+  // Current-display save control: the prefix acceptance carries a genuine valid
+  // lease with a literal capture of the accepted prefix display ("First" at
+  // 1:1-1:5), so retaining only the old display evidence cannot pass.
+  expect(SOURCE).toBe("First occurrence: same\n\nOther context for a second occurrence is nearby: same\n");
+  const prefixOperation: PreparedAnnotation = {
+    operationId: "prefix-control",
+    lease: prefix.lease,
+    destination: f.destination,
+    note: "prefix note",
+    capture: {
+      evidence: { fingerprint: displayedFingerprint(SOURCE.slice(0, 10), true) },
+      sourceRange: { start: 0, end: 5 },
+      start: { line: 1, column: 1 },
+      endInclusive: { line: 1, column: 5 },
+      selectedRenderedText: "First",
+      contextBefore: "",
+      contextAfter: " occu",
+      mappingId: "prefix-map",
+      displayedSnapshotId: prefix.lease.displayedSnapshotId,
+    },
+  };
+  expect((await f.repo.saveAnnotation(prefixOperation)).operationId).toBe("prefix-control");
+
+  // Close the original adapter before the replacement, then use the replacement
+  // for every post-expiry call. targetFor resolves the real still-alive original
+  // source, so target absence cannot mask missing expiry.
+  f.repo.close();
+  const replacement = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => f.source,
+  });
+  cleanupAfterTest(() => replacement.close());
+
+  // The later definite full change must fence the surviving epoch.
+  const changed = await replacement.acceptRead(
+    await replacement.beginRead(f.document),
+    docContent(`${SOURCE}changed\n`, "rev-B"),
+  );
+  expect(changed.state).toBe("expiry-pending");
+  if (changed.state !== "expiry-pending" || !changed.receipt) throw new Error("changed read did not fence");
+  await replacement.finishExpiry(changed.receipt);
+
+  const listed = (await replacement.listAnnotations(f.document)).map((view) => view.operation.operationId);
+  expect(listed).not.toContain("op-1");
+  expect(listed).not.toContain("prefix-control");
+  expect((await replacement.handoff(f.document, "op-1")).state).toBe("cancelled");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+  expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+});
+
+// Review fix 1, revision variant: an intervening revision-less read must not
+// erase the original revision evidence.
+it("expires when a revision-less read intervenes before a definite revision change", async () => {
+  const f = await fixture("baseline-revision");
+  // The fixture head already holds the full SOURCE at rev-A.
+  expect((await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"))).state).toBe(
+    "accepted",
+  );
+  // The same full text WITHOUT a revision is compatible, not a change.
+  expect((await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, undefined))).state).toBe(
+    "accepted",
+  );
+  // The same text at a DEFINITE new revision must expire the old epoch.
+  const changed = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-B"));
+  expect(changed.state).toBe("expiry-pending");
 });
