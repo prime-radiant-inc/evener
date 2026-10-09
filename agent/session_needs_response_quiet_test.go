@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,7 +17,11 @@ import (
 func newQuietPeriodSession(t *testing.T, steps ...func(llm.Request) llm.Response) (*Session, *agenttest.FakeClock) {
 	t.Helper()
 	fake := agenttest.NewFakeClock()
-	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{clock: fake}))
+	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		clock:            fake,
+	}))
 	return sess, fake
 }
 
@@ -101,6 +107,7 @@ func TestNeedsResponseRestartInsideTheQuietPeriodNeverArms(t *testing.T) {
 func TestAskRestsAwaitingWithoutAQuietPeriod(t *testing.T) {
 	t.Parallel()
 	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) })
+	evs, mu, done := collectEvents(sess)
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -109,5 +116,85 @@ func TestAskRestsAwaitingWithoutAQuietPeriod(t *testing.T) {
 	}
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state = %q, want awaiting at once for a pending question", got)
+	}
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if got := statusSettledStates(*evs); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none: SESSION_END carries a question's rest", got)
+	}
+}
+
+// A turn stopped inside the quiet period ends that question's wait: the
+// earlier turn's timer must not rest the session awaiting afterwards.
+func TestNeedsResponseStoppedTurnInsideTheQuietPeriodNeverArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t,
+		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+		func(llm.Request) llm.Response { return llm.Response{} },
+	)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(time.Second)
+	// The second turn is cancelled before it settles, as a Stop would.
+	stopped, stop := context.WithCancel(ctx)
+	stop()
+	if _, err := sess.ProcessInput(stopped, "blue", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped turn err = %v, want context.Canceled", err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got == SessionAwaiting {
+		t.Fatalf("state = %q, want not awaiting: the stopped turn moved past the question", got)
+	}
+}
+
+// Work that arrives during the quiet period moves the session on its own, so
+// the rest stays idle when the timer fires.
+func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.enqueueJobNotification(jobNotification{JobID: "job_late"})
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle with a notification pending", got)
+	}
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if got := statusSettledStates(*evs); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
+
+// A session closed during the quiet period never rests awaiting.
+func TestNeedsResponseCloseInsideTheQuietPeriodNeverArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got == SessionAwaiting {
+		t.Fatalf("state = %q after close, want not awaiting", got)
 	}
 }

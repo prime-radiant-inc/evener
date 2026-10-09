@@ -175,6 +175,14 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	effect(s)
 }
 
+// restingStatusSupersededLocked reports whether a turn is running or about to
+// run, so a resting status that settled outside any turn (EventStatusSettled)
+// arrives too late to describe the session. The turn's own end restates its
+// state. The caller holds s.mu.
+func (s *Server) restingStatusSupersededLocked() bool {
+	return s.processing || s.appReservedTurnID != "" || s.appPendingStableTurnID != ""
+}
+
 func sessionEventClosesSession(ev events.SessionEvent) bool {
 	if ev.Kind != events.EventSessionEnd {
 		return false
@@ -218,7 +226,11 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		if !ok || d.State == "" {
 			return nil
 		}
-		return func(s *Server) { s.status.State = d.State }
+		return func(s *Server) {
+			if !s.restingStatusSupersededLocked() {
+				s.status.State = d.State
+			}
+		}
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {

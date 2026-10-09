@@ -363,6 +363,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
+		supersededRestingStatus := event.Kind == events.EventStatusSettled && s.restingStatusSupersededLocked()
 		if started, ok := event.Data.(events.ExecutionStartedData); ok && started.TurnID != "" && started.TurnID == s.appPendingStableTurnID {
 			// The execution SetProcessingTurn published has started, so a
 			// terminal status from the input before it must not be replayed
@@ -406,7 +407,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// synchronously with the session loop. The projector's execution
 			// statuses reach the bridge later, and one from an execution that
 			// ended would land over the next one's active status.
-			if item.Method == appwire.NotifyThreadStatusChanged && isExecutionBoundary(event) {
+			if item.Method == appwire.NotifyThreadStatusChanged && (isExecutionBoundary(event) || supersededRestingStatus) {
 				continue
 			}
 			// A queued terminal event can end the input before an execution

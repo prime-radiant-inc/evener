@@ -296,6 +296,29 @@ func TestBridge_StatusSettledSetsState(t *testing.T) {
 	}
 }
 
+// A settled resting status that reaches the bridge once the next turn is
+// already running is stale: the running turn's state stands.
+func TestBridge_StatusSettledDuringATurnIsIgnored(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	srv.SetProcessing(true)
+	srv.SetState("active")
+	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
+
+	evs <- events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}}
+	close(evs)
+	<-done
+
+	if got := srv.GetStatus().State; got != "active" {
+		t.Errorf("state: got %q, want the running turn's active", got)
+	}
+}
+
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)
