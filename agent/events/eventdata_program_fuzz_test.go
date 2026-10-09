@@ -119,6 +119,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{PromptLoadedData{Label: text, Size: n}, EventPromptLoaded},
 		{RoundTimings{Round: n}, EventRoundTimings},
 		{TurnEndedData{TurnDurationMS: int64(n)}, EventTurnEnded},
+		{StatusSettledData{State: text}, EventStatusSettled},
 		{TurnStartedData{TurnID: text}, EventTurnStarted},
 		{ModelRetryData{Attempt: n, MaxAttempts: n, Message: text, Model: text}, EventModelRetry},
 		{GoalContinuationData{Text: text}, EventGoalContinuation},
