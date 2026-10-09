@@ -926,7 +926,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range postResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
-				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
+				// Keep the tool state: a turn-ending communicate's records the
+				// end reason restore reads (endedOnNeedsResponse).
+				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true, ToolState: res.ToolState}
 			}
 		}
 		for _, m := range postResult.UserMessages {
@@ -1515,7 +1517,7 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
-			if s.offersCommunicateEndReason() {
+			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
 			}
 			if s.memorySaveInstructionsEnabled() {

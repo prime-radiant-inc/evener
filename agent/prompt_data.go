@@ -94,7 +94,7 @@ type promptData struct {
 	HasAskUser bool
 
 	// HasEndReason gates the end_reason guidance: true exactly when the
-	// session's communicate takes end_reason, i.e. a root session.
+	// session's communicate takes end_reason, i.e. a root someone can answer.
 	HasEndReason bool
 
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session

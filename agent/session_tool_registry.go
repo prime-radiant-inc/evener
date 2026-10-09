@@ -48,7 +48,7 @@ type toolDeps struct {
 	resultToolName func() string
 
 	// offersEndReason reports that communicate takes end_reason
-	// (Session.offersCommunicateEndReason).
+	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
 
 	// cmdTimeouts is a live getter for the default and max shell command
@@ -114,7 +114,7 @@ type toolDeps struct {
 	// canonicalization, for delegate structured_result capture. Nil means the
 	// call carried no explicit structured output; an explicit JSON null is
 	// passed as json.RawMessage("null"), which is non-nil and therefore present.
-	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
+	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any, endReason string) bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when
@@ -351,7 +351,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
-		offersEndReason:        s.offersCommunicateEndReason(),
+		offersEndReason:        s.hasHumanPartnerToAsk(),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
@@ -469,7 +469,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerCommunicateTool(reg, deps)
 	// ask_user is root-only and interactive-only (spec §7 point 1): invisible,
 	// not merely disabled, when nobody can answer and in every subagent.
-	if !s.cfg.noOneToAsk() && !s.isSubagentSession() {
+	if s.hasHumanPartnerToAsk() {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)

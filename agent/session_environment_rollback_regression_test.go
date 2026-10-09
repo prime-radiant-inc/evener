@@ -764,8 +764,15 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	// Two scripted responses: the turn that emits the environment, and the one
-	// the refused input must never make.
-	sess := newTestSessionForEnvctx(t, withSteps(countingFinalResponses(&requests, 2)...))
+	// the refused input must never make. The first ends on needs_response, so
+	// the session rests awaiting rather than the idle a refusal would report
+	// by default.
+	steps := countingFinalResponses(&requests, 2)
+	steps[0] = func(llm.Request) llm.Response {
+		requests.Add(1)
+		return endReasonResponse("ok", "needs_response")
+	}
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
 	if requests.Load() != 1 {
 		t.Fatalf("model requests after the first turn = %d, want 1", requests.Load())
@@ -793,9 +800,9 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	}
 	// No turn ran in this call, so the session is still in whatever the previous
 	// one left it — awaiting, for this fixture — and the emission has to say so
-	// rather than report the idle a settled turn would have reached.
+	// rather than report idle.
 	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionAwaiting) {
-		t.Fatalf("session-end state = %q, want the %q an untouched pending question leaves", end.State, SessionAwaiting)
+		t.Fatalf("session-end state = %q, want the %q the needs_response turn left", end.State, SessionAwaiting)
 	}
 }
 

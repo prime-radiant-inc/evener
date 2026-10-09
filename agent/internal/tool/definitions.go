@@ -684,7 +684,8 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 // Why a root session's communicate call ends its turn: done (nothing waits
 // on the human partner), needs_response (the agent cannot go on until its
 // human partner answers or acts), or waiting_on_work (work the agent started
-// will wake it).
+// will wake it). Offered only where someone can answer the session; only
+// needs_response rests the session awaiting.
 const (
 	CommunicateEndReasonDone          = "done"
 	CommunicateEndReasonNeedsResponse = "needs_response"
@@ -696,8 +697,8 @@ const (
 var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
 
 // WithCommunicateEndReason returns a copy of a communicate definition that
-// also offers end_reason. Only a root session gets it: a delegate's resting
-// state never asks for a person.
+// also offers end_reason. Only a root someone can answer gets it: nobody
+// responds to a delegate's or a headless root's resting state.
 func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
@@ -707,7 +708,7 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	props["end_reason"] = map[string]any{
 		"type":        "string",
 		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you, so your human partner need not act.",
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
 	}
 	def.Parameters = params
 	return def
