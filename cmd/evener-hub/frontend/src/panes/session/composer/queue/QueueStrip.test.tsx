@@ -12,6 +12,11 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import {
+  type BrowserDraftRepository,
+  browserDraftKey,
+  createBrowserDraftRepository,
+} from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
 import type {
   MutationOutboxRecord,
@@ -24,6 +29,7 @@ import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
+import { type ComposerSourceState, createComposerSourceState } from "../sourceState";
 import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
@@ -104,6 +110,9 @@ async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread>
 function defaultProps(overrides: Partial<Parameters<typeof QueueStrip>[0]> = {}) {
   return {
     ref: "ref_a",
+    // The approved cutover makes a real source the base contract for every
+    // browser submission, so the shared fixture always supplies one.
+    source: stripBaseSource,
     getComposerText: () => ({ text: "composer text", attachments: undefined, hasPending: false }),
     onRestoreToComposer: vi.fn(),
     onEditRecovery: vi.fn(),
@@ -346,19 +355,369 @@ function DrainBusyHarness(overrides: Partial<Parameters<typeof QueueStrip>[0]> =
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetToastStoreForTests();
+  stripBaseSource = await drainSource();
 });
 
-afterEach(() => {
+// A real browser source over this test's own IndexedDB factory, so a drain's
+// submission preparation, durable enqueue and guarded cleanup run for real
+// instead of through the wrapper's no-source branch.
+interface StripSourceFixture {
+  source: ComposerSourceState;
+  repository: BrowserDraftRepository;
+  outbox: MutationOutboxIndexedDB;
+}
+const stripSourceFixtures: StripSourceFixture[] = [];
+let stripBaseSource: ComposerSourceState;
+
+async function drainSource(ref = "ref_a"): Promise<ComposerSourceState> {
+  const repository = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+  const outbox = new MutationOutboxIndexedDB();
+  const source = createComposerSourceState(ref, { repository, key: browserDraftKey(ref), outbox });
+  stripSourceFixtures.push({ source, repository, outbox });
+  await source.ready();
+  return source;
+}
+
+afterEach(async () => {
+  // A source-bearing drain's submission is tracked whole; join it before the
+  // next test replaces the client, so a delayed dispatch cannot reach it.
+  await flushPendingTurnsProjectionForTests();
+  for (const fixture of stripSourceFixtures.splice(0).reverse()) {
+    await fixture.source.whenSettled();
+    fixture.source.dispose();
+    fixture.repository.close();
+    fixture.outbox.close();
+  }
   cleanup();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+// One call-through hold before the selected resend opens its real transaction.
+// A separate adapter can commit a durable competitor while the caller waits.
+class HeldStripResendStorage extends MutationOutboxIndexedDB {
+  readonly entered: Promise<void>;
+  private enter: () => void = () => {};
+  private releaseGate: () => void = () => {};
+  private readonly gate: Promise<void>;
+  private targetId: string | undefined;
+  constructor(options: ConstructorParameters<typeof MutationOutboxIndexedDB>[0]) {
+    super(options);
+    this.entered = new Promise((resolve) => {
+      this.enter = resolve;
+    });
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+  arm(id: string): void {
+    this.targetId = id;
+  }
+  release(): void {
+    this.targetId = undefined;
+    this.releaseGate();
+  }
+  override async resendRecovery(...args: Parameters<MutationOutboxIndexedDB["resendRecovery"]>) {
+    if (args[0] === this.targetId) {
+      this.targetId = undefined;
+      this.enter();
+      await this.gate;
+    }
+    return super.resendRecovery(...args);
+  }
+}
+
+test("a QueueStrip recovery drain refuses a stale durable token without dispatch or success cleanup", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-stale-recovery-drain";
+  const key = browserDraftKey("ref_a");
+  const resources: Array<() => void> = [];
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let storage: HeldStripResendStorage | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => repository.close());
+    storage = new HeldStripResendStorage({ indexedDB: factory, databaseName });
+    const heldStorage = storage;
+    resources.push(() => heldStorage.close());
+    const observerRepository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => observerRepository.close());
+    const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => observerStorage.close());
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const input = [{ type: "text" as const, text: "recovery payload" }];
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      optimisticDisplay: { method: "turn/start", input },
+      attachments: [],
+      composerText: "recovery payload",
+      composerMentions: [],
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: heldStorage });
+      await source.ready();
+      source.setActiveRecoveryId(original.clientMutationId);
+      source.updateText("recovery payload");
+      source.updateSelectionMeta({ text: "recovery payload", skillNames: [], mentions: [] });
+    });
+    const mountedSource = source as ComposerSourceState;
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        activeTurnId: "turn_1",
+        queue: { revision: 1, depth: 1, ids: ["queued-1"], texts: ["queued sentinel"], preview: ["queued sentinel"] },
+      },
+    });
+    applied(fake, "turn/drainAsSteer");
+    const onDrainSuccess = vi.fn();
+    const onDrainBusyChange = vi.fn();
+    const view = renderStrip(
+      defaultProps({
+        source: mountedSource,
+        activeRecoveryId: original.clientMutationId,
+        getComposerText: () => ({
+          text: "recovery payload",
+          attachments: [],
+          hasPending: false,
+          skillNames: [],
+          mentions: [],
+        }),
+        onDrainSuccess,
+        onDrainBusyChange,
+      }),
+    );
+    unmount = view.unmount;
+    await flushPendingTurnsProjectionForTests();
+    const beforeOrdinary = await observerRepository.load(key);
+    const beforeRecovery = await observerStorage.getRecovery(original.clientMutationId);
+    if (!beforeOrdinary || !beforeRecovery) throw new Error("missing initial rows");
+    const beforeSnapshot = mountedSource.getSnapshot();
+    const beforeOutbox = await observerStorage.listOutbox("ref_a");
+    const beforeOptimistic = await observerStorage.listOptimistic("ref_a");
+    const beforeRpc = fake.calls.filter((call) =>
+      ["turn/start", "turn/queue", "turn/steer", "turn/drainAsSteer"].includes(call.method),
+    );
+    storage.arm(original.clientMutationId);
+    let competitorRow: NonNullable<Awaited<ReturnType<typeof observerRepository.load>>> | undefined;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      await heldStorage.entered;
+      const competitor = await observerRepository.commitEdit(
+        key,
+        beforeOrdinary.token,
+        { text: "competing ordinary", skillNames: [], mentions: [] },
+        () => true,
+      );
+      expect(competitor.state).toBe("committed");
+      if (competitor.state !== "committed") throw new Error("competitor did not commit");
+      expect(competitor.draft.token.sessionRevision).toBe(beforeOrdinary.token.sessionRevision + 1);
+      competitorRow = competitor.draft;
+      heldStorage.release();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () => {
+      expect(await observerRepository.load(key)).toEqual(competitorRow);
+    });
+    await attempt(async () => {
+      expect(await observerStorage.getRecovery(original.clientMutationId)).toEqual(beforeRecovery);
+    });
+    await attempt(async () => {
+      expect(await observerStorage.listOutbox("ref_a")).toEqual(beforeOutbox);
+    });
+    await attempt(async () => {
+      expect(await observerStorage.listOptimistic("ref_a")).toEqual(beforeOptimistic);
+    });
+    await attempt(() => {
+      expect(
+        fake.calls.filter((call) =>
+          ["turn/start", "turn/queue", "turn/steer", "turn/drainAsSteer"].includes(call.method),
+        ),
+      ).toEqual(beforeRpc);
+    });
+    await attempt(() => {
+      expect(mountedSource.getSnapshot()).toEqual(beforeSnapshot);
+    });
+    await attempt(() => {
+      expect(onDrainSuccess).not.toHaveBeenCalled();
+    });
+    // Outcome-independent completion: both accepted and refused paths end busy.
+    await attempt(() => {
+      expect(onDrainBusyChange.mock.calls).toEqual([[true], [false]]);
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await attempt(() => {
+      storage?.release();
+    });
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+      });
+    });
+    await attempt(() => {
+      act(() => {
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    for (const close of resources.splice(0).reverse()) await attempt(close);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "strip resend checkpoint failed");
+});
+
+class HeldStripDiscardStorage extends MutationOutboxIndexedDB {
+  readonly entered: Promise<void>;
+  private enter: () => void = () => {};
+  private releaseGate: () => void = () => {};
+  private readonly gate: Promise<void>;
+  private targetId: string | undefined;
+  constructor(options: ConstructorParameters<typeof MutationOutboxIndexedDB>[0]) {
+    super(options);
+    this.entered = new Promise((resolve) => {
+      this.enter = resolve;
+    });
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+  arm(id: string): void {
+    this.targetId = id;
+  }
+  release(): void {
+    this.targetId = undefined;
+    this.releaseGate();
+  }
+  override async discardRecovery(...args: Parameters<MutationOutboxIndexedDB["discardRecovery"]>) {
+    if (args[0] === this.targetId) {
+      this.targetId = undefined;
+      this.enter();
+      await this.gate;
+    }
+    return super.discardRecovery(...args);
+  }
+}
+
+test("a QueueStrip recovery dismiss refuses a stale durable token and preserves both rows", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-stale-recovery-dismiss";
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const observerRepository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const storage = new HeldStripDiscardStorage({ indexedDB: factory, databaseName });
+  const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected", "stop refused");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: storage });
+      await source.ready();
+    });
+    const mountedSource = source as ComposerSourceState;
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const view = renderStrip(defaultProps({ source: mountedSource }));
+    unmount = view.unmount;
+    await flushPendingTurnsProjectionForTests();
+    const beforeOrdinary = await observerRepository.load(key);
+    const beforeRecovery = await observerStorage.getRecovery(original.clientMutationId);
+    if (!beforeOrdinary || !beforeRecovery) throw new Error("missing initial dismiss rows");
+    expect(beforeOrdinary.token.sessionRevision).toBe(2);
+    const beforeSnapshot = mountedSource.getSnapshot();
+    const beforeOutbox = await observerStorage.listOutbox("ref_a");
+    const beforeOptimistic = await observerStorage.listOptimistic("ref_a");
+    const beforeRpc = fake.calls.filter((call) => call.method.startsWith("turn/"));
+    storage.arm(original.clientMutationId);
+    let competitorRow: NonNullable<Awaited<ReturnType<typeof observerRepository.load>>> | undefined;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      await storage.entered;
+      const competitor = await observerRepository.commitEdit(
+        key,
+        beforeOrdinary.token,
+        { text: "competing ordinary", skillNames: [], mentions: [] },
+        () => true,
+      );
+      expect(competitor.state).toBe("committed");
+      if (competitor.state !== "committed") throw new Error("dismiss competitor did not commit");
+      expect(competitor.draft.token.sessionRevision).toBe(3);
+      competitorRow = competitor.draft;
+      storage.release();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () => expect(await observerRepository.load(key)).toEqual(competitorRow));
+    await attempt(async () =>
+      expect(await observerStorage.getRecovery(original.clientMutationId)).toEqual(beforeRecovery),
+    );
+    await attempt(async () => expect(await observerStorage.listOutbox("ref_a")).toEqual(beforeOutbox));
+    await attempt(async () => expect(await observerStorage.listOptimistic("ref_a")).toEqual(beforeOptimistic));
+    await attempt(() => expect(fake.calls.filter((call) => call.method.startsWith("turn/"))).toEqual(beforeRpc));
+    await attempt(() => expect(mountedSource.getSnapshot()).toEqual(beforeSnapshot));
+    // This joins refusal and acceptance alike, then proves the surviving row's
+    // own busy lock was released without waiting for any RPC to start.
+    await attempt(() => expect(isDisabled(screen.getByRole("button", { name: "Dismiss" }))).toBe(false));
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    storage.release();
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    observerStorage.close();
+    storage.close();
+    observerRepository.close();
+    repository.close();
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "strip dismiss checkpoint failed");
 });
 
 describe("visibility", () => {
@@ -1984,8 +2343,9 @@ describe("optimistic pending queue rows", () => {
     renderStrip(defaultProps());
 
     await act(async () => {
-      await submitWithPendingTracking({ ref: "ref_a", text: "not yet confirmed", onFailure: () => {} }, () =>
-        threadsStore.getState().queue("ref_a", "not yet confirmed"),
+      await submitWithPendingTracking(
+        { ref: "ref_a", text: "not yet confirmed", source: stripBaseSource, onFailure: () => {} },
+        () => threadsStore.getState().queue("ref_a", "not yet confirmed"),
       );
     });
 
@@ -2018,7 +2378,13 @@ describe("optimistic pending queue rows", () => {
 
     await act(async () => {
       await submitWithPendingTracking(
-        { ref: "ref_a", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
+        {
+          ref: "ref_a",
+          text: "",
+          skillNames: [" pkg:probe ", "pkg:probe"],
+          source: stripBaseSource,
+          onFailure: () => {},
+        },
         () => threadsStore.getState().queue("ref_a", "", undefined, [" pkg:probe ", "pkg:probe"]),
       );
     });
@@ -2122,7 +2488,10 @@ describe("drain-as-steer affordance", () => {
     }));
     const onDrainSuccess = vi.fn();
     renderStrip(
-      defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
+      defaultProps({
+        getComposerText: () => ({ text: "my current draft", hasPending: false }),
+        onDrainSuccess,
+      }),
     );
 
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
@@ -2217,7 +2586,11 @@ describe("drain-as-steer affordance", () => {
         projectionState: "reflected",
       },
     }));
-    renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
+    renderStrip(
+      defaultProps({
+        getComposerText: () => ({ text: "my current draft", hasPending: true }),
+      }),
+    );
 
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {

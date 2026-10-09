@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import type { PendingTurnsDraftPort } from "@evener/appwire-client/state/mutation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import {
+  type BrowserDraftRepository,
+  browserDraftKey,
+  createBrowserDraftRepository,
+} from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
+import { COMPOSER_DRAFTS_STORE } from "../../../../stores/localCompositionSchema";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
@@ -16,7 +24,9 @@ import {
   threadsStore,
 } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
-import { readComposerDraft, writeComposerDraft } from "../draft";
+import { readComposerDraft, readDraftRevision } from "../draft";
+import type { SkillEditorValue } from "../skillDocument";
+import { type ComposerSourceState, createComposerSourceState } from "../sourceState";
 import {
   discardRecoveryPendingTurn,
   pendingTurnEntries,
@@ -24,6 +34,7 @@ import {
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
+  subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   useBlockedMutationEntries,
@@ -34,6 +45,40 @@ import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
 } from "./testing/flushPendingTurnsProjection";
+
+// Observe the port installed by the real browser module. Every constructor
+// still calls the package implementation with its original arguments.
+const installedDraftPorts = vi.hoisted(() => ({ ports: [] as PendingTurnsDraftPort[] }));
+vi.mock("@evener/appwire-client/state/mutation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@evener/appwire-client/state/mutation")>();
+  return {
+    ...actual,
+    createPendingTurnsStore: ((...args: Parameters<typeof actual.createPendingTurnsStore>) => {
+      installedDraftPorts.ports.push(args[0].draft);
+      return actual.createPendingTurnsStore(...args);
+    }) as typeof actual.createPendingTurnsStore,
+  };
+});
+
+test("the installed browser draft port reads the runtime projection and refuses synchronous durable cleanup", async () => {
+  const value: SkillEditorValue = { text: "literal /same", skillNames: [], mentions: [] };
+  const { source, repository } = await browserSource("ref_a", {}, value);
+  const port = installedDraftPorts.ports.find((candidate) => candidate.readComposerDraft === readComposerDraft);
+  if (!port) throw new Error("The real browser draft port was not installed");
+  const key = browserDraftKey("ref_a");
+  const before = await repository.load(key);
+  expect(before).toMatchObject(value);
+  expect(port.readComposerDraft("ref_a")).toEqual(value);
+  expect(port.readDraftRevision("ref_a")).toBe(readDraftRevision("ref_a"));
+  const remove = vi.spyOn(localStorage, "removeItem");
+  const put = vi.spyOn(localStorage, "setItem");
+  expect(() => port.clearDraft("ref_a")).toThrow("Browser settlement requires settleDraft");
+  expect(source.getSnapshot()).toMatchObject(value);
+  expect(port.readComposerDraft("ref_a")).toEqual(value);
+  expect(await repository.load(key)).toEqual(before);
+  expect(remove).not.toHaveBeenCalled();
+  expect(put).not.toHaveBeenCalled();
+});
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -90,6 +135,16 @@ async function connectSkillCapable(): Promise<FakeClient> {
   });
 }
 
+// Skill AND command selections must be advertised for a full-value send.
+async function connectFullSelection(): Promise<FakeClient> {
+  return connect({
+    evener: {
+      ...thread().evener,
+      capabilities: { ...thread().evener.capabilities, skillInput: true, commandInput: true },
+    },
+  });
+}
+
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
@@ -99,10 +154,45 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const fixture of browserSourceFixtures.splice(0).reverse()) {
+    await fixture.source.whenSettled();
+    fixture.source.dispose();
+    fixture.repository.close();
+    fixture.outbox.close();
+  }
   cleanup();
   vi.restoreAllMocks();
 });
+
+// A real browser source wired to the same IndexedDB database as the mutation
+// storage, so the wrapper's preparation, the durable enqueue and the guarded
+// cleanup all observe the same rows. Pass an existing adapter when the test
+// already owns the storage handle it asserts on.
+interface BrowserSourceFixture {
+  source: ComposerSourceState;
+  repository: BrowserDraftRepository;
+  outbox: MutationOutboxIndexedDB;
+}
+
+const browserSourceFixtures: BrowserSourceFixture[] = [];
+
+async function browserSource(
+  ref = "ref_a",
+  deps: { repository?: BrowserDraftRepository; outbox?: MutationOutboxIndexedDB } = {},
+  seed?: SkillEditorValue,
+): Promise<BrowserSourceFixture> {
+  const repository = deps.repository ?? createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+  const outbox = deps.outbox ?? new MutationOutboxIndexedDB();
+  // Seed BEFORE construction: the source auto-starts ready() and hydrates the
+  // durable row it finds, so a later seed would never become its token.
+  if (seed) await repository.seedDraft(browserDraftKey(ref), seed);
+  const source = createComposerSourceState(ref, { repository, key: browserDraftKey(ref), outbox });
+  const fixture = { source, repository, outbox };
+  browserSourceFixtures.push(fixture);
+  await source.ready();
+  return fixture;
+}
 
 test("the plain pendingTurnEntries read returns the same empty-array reference when nothing is pending", async () => {
   await connect();
@@ -140,8 +230,11 @@ test("usePendingTurnEntries returns the same entries array across a submittingRe
   // beginSubmission/endSubmission only touch submittingRefs - not outbox,
   // optimistic, submittedHere or the thread model this hook's entries
   // actually depend on - so the getSnapshot cache must not recompute here.
+  const { source } = await browserSource();
   await act(async () => {
-    await submitWithPendingTracking({ ref: "ref_a", text: "unrelated", onFailure: vi.fn() }, () => Promise.resolve());
+    await submitWithPendingTracking({ ref: "ref_a", text: "unrelated", source, onFailure: vi.fn() }, () =>
+      Promise.resolve(),
+    );
   });
 
   expect(pending.result.current).toBe(entriesBefore);
@@ -153,6 +246,8 @@ test("a committed submission releases its caller while recovery projection reads
   const fake = await connect();
   fake.on("turn/steer", () => new Promise<never>(() => undefined));
   await flushPendingTurnsProjectionForTests();
+  const repository = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+  const { source } = await browserSource("ref_a", { repository, outbox: storage });
   const getAll = IDBObjectStore.prototype.getAll;
   const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
   let firstRead: (() => void) | undefined;
@@ -170,13 +265,16 @@ test("a committed submission releases its caller while recovery projection reads
   });
   let accepted = false;
   const onFailure = vi.fn();
-  const submit = submitWithPendingTracking({ ref: "ref_a", text: "one send", onFailure }, () =>
+  const submit = submitWithPendingTracking({ ref: "ref_a", text: "one send", source, onFailure }, () =>
     threadsStore.getState().steer("ref_a", "one send"),
   ).then(() => {
     accepted = true;
   });
   try {
     await readStarted;
+    // The caller must be released while the recovery read is still held: awaiting
+    // the submission here resolves through the held read, which is the property.
+    await submit;
     expect(await storage.listOutbox()).toHaveLength(1);
     expect(accepted).toBe(true);
     expect(onFailure).not.toHaveBeenCalled();
@@ -466,8 +564,9 @@ test("a local commit failure reports the exact error and never creates optimisti
   const onFailure = vi.fn();
   const pending = renderHook(() => usePendingTurnEntries("ref_a"));
 
+  const { source } = await browserSource();
   await expect(
-    submitWithPendingTracking({ ref: "ref_a", text: "keep me", onFailure }, () => Promise.reject(failure)),
+    submitWithPendingTracking({ ref: "ref_a", text: "keep me", source, onFailure }, () => Promise.reject(failure)),
   ).rejects.toBe(failure);
 
   expect(onFailure).toHaveBeenCalledWith(failure);
@@ -524,34 +623,46 @@ test("the skillInput gate measures the names the wire would actually carry", asy
 });
 
 test("a committed submission clears a stored draft only when its text and selections both match", async () => {
-  writeComposerDraft("ref_a", { text: "with skills", skillNames: ["pkg:probe"] });
+  const { source, repository } = await browserSource("ref_a", {}, { text: "with skills", skillNames: ["pkg:probe"] });
   const onFailure = vi.fn();
 
-  await submitWithPendingTracking({ ref: "ref_a", text: "with skills", skillNames: ["pkg:probe"], onFailure }, () =>
-    Promise.resolve(),
+  await submitWithPendingTracking(
+    { ref: "ref_a", text: "with skills", skillNames: ["pkg:probe"], source, onFailure },
+    () => Promise.resolve(),
   );
 
   expect(onFailure).not.toHaveBeenCalled();
-  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
+  expect(await repository.load(browserDraftKey("ref_a"))).toMatchObject({ text: "", skillNames: [] });
 });
 
 test("a skill edit during a delayed commit keeps the stored draft", async () => {
-  writeComposerDraft("ref_a", { text: "patient", skillNames: ["pkg:probe"] });
+  const { source, repository } = await browserSource("ref_a", {}, { text: "patient", skillNames: ["pkg:probe"] });
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let performEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    performEntered = resolve;
+  });
   const onFailure = vi.fn();
   const submit = submitWithPendingTracking(
-    { ref: "ref_a", text: "patient", skillNames: ["pkg:probe"], onFailure },
-    () => held,
+    { ref: "ref_a", text: "patient", skillNames: ["pkg:probe"], source, onFailure },
+    async () => {
+      performEntered();
+      await held;
+    },
   );
 
-  writeComposerDraft("ref_a", { text: "patient", skillNames: ["pkg:other"] });
+  // The edit lands DURING the perform, after preparation finished.
+  await entered;
+  source.acceptEdit({ text: "patient", skillNames: ["pkg:other"] });
   release();
   await submit;
+  await source.whenSettled();
 
-  expect(readComposerDraft("ref_a")).toEqual({ text: "patient", skillNames: ["pkg:other"] });
+  expect(source.getSnapshot()).toMatchObject({ text: "patient", skillNames: ["pkg:other"] });
+  expect(await repository.load(browserDraftKey("ref_a"))).toMatchObject({ text: "patient", skillNames: ["pkg:other"] });
 });
 
 test("recovery update and resend carry skill selections in their durable input", async () => {
@@ -622,8 +733,9 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     releaseSubmit = resolve;
   });
 
+  const { source } = await browserSource();
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", text: "in flight", onFailure: () => undefined },
+    { ref: "ref_a", text: "in flight", source, onFailure: () => undefined },
     () => submitting,
   );
 
@@ -648,7 +760,9 @@ test.each<
   ["a Force stop's cancellation", ["outbox", "sequences"], (storage) => storage.cancelUnattempted("ref_a")],
   [
     "the dispatcher's receipt settlement",
-    ["outbox", "optimistic", "recovery"],
+    // settleReceipt opens the settlement scope: the three active record stores
+    // plus the two composition stores it advances in the same transaction.
+    ["outbox", "optimistic", "recovery", "composerDrafts", "annotationNamespaces"],
     (storage, clientMutationId) => storage.settleReceipt(clientMutationId, "reflected"),
   ],
 ])("a flush cannot settle while %s write is still in flight", async (_name, stores, write) => {
@@ -691,8 +805,9 @@ test("a flush that can never settle trips instead of hanging inside act", async 
   const stalled = new Promise<void>((resolve) => {
     releaseSubmit = resolve;
   });
+  const { source } = await browserSource();
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", text: "never settles", onFailure: () => undefined },
+    { ref: "ref_a", text: "never settles", source, onFailure: () => undefined },
     () => stalled,
   );
 
@@ -1254,4 +1369,789 @@ test("an authoritative assistant frame retires first-frame state by model identi
   });
   const awaiting = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
   expect(awaiting.result.current).toBe(false);
+});
+
+// The approved cutover appends a sixth listener argument carrying the original
+// SubmittedDraft and the actual settlement, so the source's own committed
+// listener can check the captured guard instead of re-deriving it. The current
+// wrapper calls only the five original arguments, so this boundary has no
+// coverage yet; the callback is cast to read the future context.
+test("a browser submission notifies its listener with the original submitted draft and settlement", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "writer-cutover-listener" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "writer-cutover-listener" });
+  const source = createComposerSourceState("ref_a", { repository, key, outbox });
+  const calls: Parameters<Parameters<typeof subscribeComposerSubmissionCommitted>[0]>[] = [];
+  const listener: Parameters<typeof subscribeComposerSubmissionCommitted>[0] = (...args) => {
+    calls.push(args);
+  };
+  const unsubscribe = subscribeComposerSubmissionCommitted(listener);
+  const onFailure = vi.fn();
+  try {
+    await source.ready();
+    source.acceptEdit({ text: "sent once", skillNames: [], mentions: [] });
+    await source.whenSettled();
+    await submitWithPendingTracking(
+      {
+        ref: "ref_a",
+        text: "sent once",
+        skillNames: [],
+        recoveryId: "recovery_1",
+        attachments: [],
+        source,
+        mentions: [],
+        onFailure,
+      },
+      () => Promise.resolve(),
+    );
+  } finally {
+    unsubscribe();
+    source.dispose();
+    outbox.close();
+    repository.close();
+  }
+  expect(onFailure).not.toHaveBeenCalled();
+  const last = calls.at(-1);
+  expect(last?.[1]).toBe("sent once");
+  expect(last?.[2]).toEqual([]);
+  expect(last?.[5]).toMatchObject({
+    submitted: { text: "sent once", skillNames: [] },
+    settlement: { cleared: true, draftUnchanged: true, persistence: "committed" },
+  });
+});
+
+// --- Remaining writer cutover: browser wrapper routes (RED) -----------------
+
+test("the browser wrapper settles the original source's durable draft through its async guard", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "writer-cutover-wrapper" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "writer-cutover-wrapper" });
+  const source = createComposerSourceState("ref_a", { repository, key, outbox });
+  try {
+    await source.ready();
+    source.acceptEdit({ text: "sent once", skillNames: [], mentions: [] });
+    await source.whenSettled();
+    const perform = vi.fn(() => Promise.resolve());
+    await submitWithPendingTracking(
+      { ref: "ref_a", text: "sent once", skillNames: [], source, mentions: [], onFailure: vi.fn() },
+      perform,
+    );
+    await source.whenSettled();
+    expect(perform).toHaveBeenCalledTimes(1);
+    // The wrapper must settle the ORIGINAL source against its durable row.
+    expect(await repository.load(key)).toMatchObject({ text: "", skillNames: [] });
+  } finally {
+    source.dispose();
+    outbox.close();
+    repository.close();
+  }
+});
+
+// Notification-alias case: while the source's preparation read is genuinely held
+// (an observed request entry, not a pre-released promise), the caller mutates its
+// own options object and every array including an existing mention object's own
+// properties. The wrapper's producer has not started, and the notification this
+// records must describe the original full value. Full preparation/newer-value
+// preservation is proved against the real Composer in Composer.integration.test.tsx.
+test("a browser submission notifies the ORIGINAL captured text, commands and mentions after the caller mutates them", async () => {
+  const original: SkillEditorValue = {
+    text: "original text",
+    skillNames: ["pkg:one"],
+    commandNames: ["cmd:one"],
+    mentions: [{ kind: "skill", name: "pkg:one", offset: 0 }],
+  };
+  const { source } = await browserSource("ref_a", {}, original);
+  const calls: Parameters<Parameters<typeof subscribeComposerSubmissionCommitted>[0]>[] = [];
+  const listener: Parameters<typeof subscribeComposerSubmissionCommitted>[0] = (...args) => {
+    calls.push(args);
+  };
+  const unsubscribe = subscribeComposerSubmissionCommitted(listener);
+  const get = IDBObjectStore.prototype.get;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let disarmed = false;
+  let entered!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  // Exact target: the source's own composerDrafts load for THIS ref's application
+  // key. compositionRevision.serializeSessionKey returns
+  // JSON.stringify([namespace.kind, namespace.origin, sessionRef]).
+  const expectedKey = JSON.stringify(["browser", location.origin, "ref_a"]);
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    if (!disarmed && !hold && this.name === COMPOSER_DRAFTS_STORE && args[0] === expectedKey) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => entered());
+    }
+    return request;
+  });
+  const perform = vi.fn(() => Promise.resolve());
+  const options = {
+    ref: "ref_a",
+    text: original.text,
+    skillNames: [...original.skillNames],
+    commandNames: [...(original.commandNames ?? [])],
+    mentions: [...(original.mentions ?? [])],
+    source,
+    onFailure: vi.fn(),
+  };
+  let submit: Promise<void> | undefined;
+  try {
+    submit = submitWithPendingTracking(options, perform);
+    await reached;
+    // The producer has not started while its preparation read is held.
+    expect(calls).toHaveLength(0);
+    expect(perform).not.toHaveBeenCalled();
+    // Mutate an EXISTING mention object's own properties, and the arrays.
+    options.text = "mutated text";
+    options.skillNames.push("pkg:two");
+    options.commandNames.push("cmd:two");
+    const mention = options.mentions[0];
+    if (!mention) throw new Error("expected a seeded mention");
+    mention.name = "mutated mention";
+    mention.offset = 99;
+    hold?.release();
+    await submit;
+  } finally {
+    // Disarm this hold and any future hold, and join the producer, even when an
+    // assertion above failed before the hold armed.
+    disarmed = true;
+    hold?.release();
+    await submit?.catch(() => undefined);
+    spy.mockRestore();
+    unsubscribe();
+  }
+  expect(perform).toHaveBeenCalledTimes(1);
+  const last = calls.at(-1);
+  expect(last?.[1]).toBe("original text");
+  expect(last?.[2]).toEqual(["pkg:one"]);
+  expect(last?.[4]).toEqual(["cmd:one"]);
+  expect(last?.[5]?.submitted).toMatchObject({
+    text: "original text",
+    skillNames: ["pkg:one"],
+    commandNames: ["cmd:one"],
+    mentions: [{ kind: "skill", name: "pkg:one", offset: 0 }],
+  });
+});
+
+// A nontrivial full value for the abort/retry scenarios: its text spells the
+// command and skill tokens the metadata references.
+const ABORT_ORIGINAL: SkillEditorValue = {
+  text: "run /cmd:one then /pkg:one",
+  skillNames: ["pkg:one"],
+  commandNames: ["cmd:one"],
+  mentions: [
+    { kind: "command", name: "cmd:one", offset: 4 },
+    { kind: "skill", name: "pkg:one", offset: 18 },
+  ],
+};
+const ABORT_LATER: SkillEditorValue = {
+  text: "later /cmd:two then /pkg:two",
+  skillNames: ["pkg:two"],
+  commandNames: ["cmd:two"],
+  mentions: [
+    { kind: "command", name: "cmd:two", offset: 6 },
+    { kind: "skill", name: "pkg:two", offset: 20 },
+  ],
+};
+
+// A real ordinary accepted enqueue whose guarded cleanup aborts at the supported
+// beforeCommit("clearSubmitted") transaction boundary. The ORIGINAL capture's
+// full value, token, local snapshot and durable row must survive for a manual
+// low-level retry.
+test("an ordinary cleanup abort keeps the original capture, token and row for a manual retry", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  let faultArmed = false;
+  let faultHits = 0;
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    beforeCommit: (operation) => {
+      if (faultArmed && operation === "clearSubmitted") {
+        faultHits += 1;
+        throw new Error("draft storage unavailable");
+      }
+    },
+  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(storage);
+  const { source } = await browserSource("ref_a", { repository, outbox: storage }, ABORT_ORIGINAL);
+  const fake = await connectFullSelection();
+  let rpcCount = 0;
+  // Releasable response gate created BEFORE submission can dispatch; a late
+  // handler awaits the same already-releasable gate.
+  const rpcGate = deferred<void>();
+  fake.on("turn/start", async (params) => {
+    rpcCount += 1;
+    await rpcGate.promise;
+    return {
+      turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  // Call-through observation of the REAL settlement: capture argument AND result.
+  const settleCalls: Parameters<typeof source.settleDraft>[0][] = [];
+  const settleResults: Awaited<ReturnType<typeof source.settleDraft>>[] = [];
+  const realSettle = source.settleDraft.bind(source);
+  const settleSpy = vi.spyOn(source, "settleDraft").mockImplementation(async (captured) => {
+    settleCalls.push(captured);
+    const result = await realSettle(captured);
+    settleResults.push(result);
+    return result;
+  });
+  const onFailure = vi.fn();
+  const perform = vi.fn(async () => {
+    await threadsStore
+      .getState()
+      .send(
+        "ref_a",
+        ABORT_ORIGINAL.text,
+        undefined,
+        ABORT_ORIGINAL.skillNames,
+        ABORT_ORIGINAL.commandNames,
+        ABORT_ORIGINAL.mentions,
+      );
+    // Arm only once the accepted enqueue has committed; cleanup runs next.
+    faultArmed = true;
+  });
+  try {
+    await submitWithPendingTracking(
+      {
+        ref: "ref_a",
+        text: ABORT_ORIGINAL.text,
+        skillNames: ABORT_ORIGINAL.skillNames,
+        commandNames: ABORT_ORIGINAL.commandNames,
+        mentions: ABORT_ORIGINAL.mentions,
+        source,
+        onFailure,
+      },
+      perform,
+    );
+    await vi.waitFor(() => expect(rpcCount).toBe(1));
+    expect(faultHits).toBe(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+    const captured = settleCalls[0];
+    expect(captured).toBeDefined();
+    // The REAL settlement result of the aborted cleanup.
+    expect(settleResults[0]).toMatchObject({ cleared: false, persistence: "pending" });
+    const row = await repository.load(key);
+    expect(row).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    expect(row?.token).toEqual(captured?.settlementGuard?.token);
+    expect(source.getSnapshot()).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    const reopened = createBrowserDraftRepository({ indexedDB: factory });
+    try {
+      const reopenedRow = await reopened.load(key);
+      expect(reopenedRow).toMatchObject({
+        text: ABORT_ORIGINAL.text,
+        skillNames: ABORT_ORIGINAL.skillNames,
+        commandNames: ABORT_ORIGINAL.commandNames,
+        mentions: ABORT_ORIGINAL.mentions,
+      });
+      expect(reopenedRow?.token).toEqual(captured?.settlementGuard?.token);
+    } finally {
+      reopened.close();
+    }
+
+    // Manual low-level retry of the ORIGINAL capture: no new perform/enqueue/RPC.
+    faultArmed = false;
+    expect(await source.settleDraft(captured!)).toMatchObject({ cleared: true, persistence: "committed" });
+    await source.whenSettled();
+    const emptyRow = await repository.load(key);
+    expect(emptyRow).toMatchObject({ text: "", skillNames: [] });
+    // The cleared row carries no command/mention metadata (absent, not []).
+    expect(emptyRow?.commandNames).toBeUndefined();
+    expect(emptyRow?.mentions).toBeUndefined();
+    const emptySnapshot = source.getSnapshot();
+    expect(emptySnapshot).toMatchObject({ text: "", skillNames: [], commandNames: [] });
+    expect(emptySnapshot.mentions).toBeUndefined();
+    const reopenedEmpty = createBrowserDraftRepository({ indexedDB: factory });
+    try {
+      const reopenedEmptyRow = await reopenedEmpty.load(key);
+      expect(reopenedEmptyRow).toMatchObject({ text: "", skillNames: [] });
+      expect(reopenedEmptyRow?.commandNames).toBeUndefined();
+      expect(reopenedEmptyRow?.mentions).toBeUndefined();
+      expect(reopenedEmptyRow?.token).toEqual(emptyRow?.token);
+    } finally {
+      reopenedEmpty.close();
+    }
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(rpcCount).toBe(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+  } finally {
+    // Disable future fault/hold arming, release the gate, join the tracked
+    // submission and accepted saves, THEN restore the spy.
+    faultArmed = false;
+    rpcGate.resolve();
+    await source.whenSettled();
+    await flushPendingTurnsProjectionForTests();
+    settleSpy.mockRestore();
+  }
+});
+
+// A FRESH aborted ordinary submission whose newer full edit is held BEFORE its
+// durable put, so the ORIGINAL durable value/token still exist at the retry
+// boundary. The manual retry of the original capture must be refused by live
+// ownership, then the newer save is released and joined.
+test("a competing full edit revokes the still-pending original cleanup capture", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  let faultArmed = false;
+  let faultHits = 0;
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    beforeCommit: (operation) => {
+      if (faultArmed && operation === "clearSubmitted") {
+        faultHits += 1;
+        throw new Error("draft storage unavailable");
+      }
+    },
+  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(storage);
+  const { source } = await browserSource("ref_a", { repository, outbox: storage }, ABORT_ORIGINAL);
+  const fake = await connectFullSelection();
+  let rpcCount = 0;
+  const rpcGate = deferred<void>();
+  fake.on("turn/start", async (params) => {
+    rpcCount += 1;
+    await rpcGate.promise;
+    return {
+      turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const settleCalls: Parameters<typeof source.settleDraft>[0][] = [];
+  const settleResults: Awaited<ReturnType<typeof source.settleDraft>>[] = [];
+  const realSettle = source.settleDraft.bind(source);
+  const settleSpy = vi.spyOn(source, "settleDraft").mockImplementation(async (captured) => {
+    settleCalls.push(captured);
+    const result = await realSettle(captured);
+    settleResults.push(result);
+    return result;
+  });
+  const onFailure = vi.fn();
+  const perform = vi.fn(async () => {
+    await threadsStore
+      .getState()
+      .send(
+        "ref_a",
+        ABORT_ORIGINAL.text,
+        undefined,
+        ABORT_ORIGINAL.skillNames,
+        ABORT_ORIGINAL.commandNames,
+        ABORT_ORIGINAL.mentions,
+      );
+    faultArmed = true;
+  });
+  const get = IDBObjectStore.prototype.get;
+  const expectedKey = JSON.stringify(["browser", location.origin, "ref_a"]);
+  let saveHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let saveSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let disarmed = false;
+  try {
+    await submitWithPendingTracking(
+      {
+        ref: "ref_a",
+        text: ABORT_ORIGINAL.text,
+        skillNames: ABORT_ORIGINAL.skillNames,
+        commandNames: ABORT_ORIGINAL.commandNames,
+        mentions: ABORT_ORIGINAL.mentions,
+        source,
+        onFailure,
+      },
+      perform,
+    );
+    await vi.waitFor(() => expect(rpcCount).toBe(1));
+    expect(faultHits).toBe(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+    const captured = settleCalls[0];
+    expect(captured).toBeDefined();
+    expect(settleResults[0]).toMatchObject({ cleared: false, persistence: "pending" });
+    expect(source.getSnapshot()).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    const abortRow = await repository.load(key);
+    expect(abortRow).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    expect(abortRow?.token).toEqual(captured?.settlementGuard?.token);
+    const abortReopened = createBrowserDraftRepository({ indexedDB: factory });
+    try {
+      const abortReopenedRow = await abortReopened.load(key);
+      expect(abortReopenedRow).toMatchObject({
+        text: ABORT_ORIGINAL.text,
+        skillNames: ABORT_ORIGINAL.skillNames,
+        commandNames: ABORT_ORIGINAL.commandNames,
+        mentions: ABORT_ORIGINAL.mentions,
+      });
+      expect(abortReopenedRow?.token).toEqual(captured?.settlementGuard?.token);
+    } finally {
+      abortReopened.close();
+    }
+
+    // Hold the NEWER save BEFORE its put: target its own composerDrafts read, so
+    // the ORIGINAL durable value/token are what a fresh read still sees.
+    let entered!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    saveSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = get.apply(this, args);
+      if (!disarmed && !saveHold && this.name === COMPOSER_DRAFTS_STORE && args[0] === expectedKey) {
+        saveHold = holdIndexedDBEvent(request, "success");
+        void saveHold.reached.then(() => entered());
+      }
+      return request;
+    });
+    source.acceptEdit(ABORT_LATER);
+    await reached;
+    // The newer save has not issued its put: old durable value/token survive.
+    const heldRow = await repository.load(key);
+    expect(heldRow).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    expect(heldRow?.token).toEqual(captured?.settlementGuard?.token);
+
+    // Manual retry of the ORIGINAL capture is refused by live ownership. The
+    // abort fault is DISARMED first, so a rolled-back clear cannot explain the
+    // refusal: the explicit committed refusal and the single fault hit do.
+    faultArmed = false;
+    expect(await source.settleDraft(captured!)).toMatchObject({
+      cleared: false,
+      draftUnchanged: false,
+      persistence: "committed",
+    });
+    expect(faultHits).toBe(1);
+    // Immediately after the refusal, while the newer save is still held, the
+    // original durable value/token survive and the newer local value is visible.
+    const afterRefusalRow = await repository.load(key);
+    expect(afterRefusalRow).toMatchObject({
+      text: ABORT_ORIGINAL.text,
+      skillNames: ABORT_ORIGINAL.skillNames,
+      commandNames: ABORT_ORIGINAL.commandNames,
+      mentions: ABORT_ORIGINAL.mentions,
+    });
+    expect(afterRefusalRow?.token).toEqual(captured?.settlementGuard?.token);
+    expect(source.getSnapshot()).toMatchObject({
+      text: ABORT_LATER.text,
+      skillNames: ABORT_LATER.skillNames,
+      commandNames: ABORT_LATER.commandNames,
+      mentions: ABORT_LATER.mentions,
+    });
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(rpcCount).toBe(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+
+    // Release and join the newer save, then prove the complete newer value.
+    saveHold?.release();
+    await source.whenSettled();
+    expect(source.getSnapshot()).toMatchObject({
+      text: ABORT_LATER.text,
+      skillNames: ABORT_LATER.skillNames,
+      commandNames: ABORT_LATER.commandNames,
+      mentions: ABORT_LATER.mentions,
+    });
+    expect(await repository.load(key)).toMatchObject({
+      text: ABORT_LATER.text,
+      skillNames: ABORT_LATER.skillNames,
+      commandNames: ABORT_LATER.commandNames,
+      mentions: ABORT_LATER.mentions,
+    });
+    const laterRow = await repository.load(key);
+    expect(laterRow).toMatchObject({
+      text: ABORT_LATER.text,
+      skillNames: ABORT_LATER.skillNames,
+      commandNames: ABORT_LATER.commandNames,
+      mentions: ABORT_LATER.mentions,
+    });
+    const reopened = createBrowserDraftRepository({ indexedDB: factory });
+    try {
+      const reopenedLaterRow = await reopened.load(key);
+      expect(reopenedLaterRow).toMatchObject({
+        text: ABORT_LATER.text,
+        skillNames: ABORT_LATER.skillNames,
+        commandNames: ABORT_LATER.commandNames,
+        mentions: ABORT_LATER.mentions,
+      });
+      expect(reopenedLaterRow?.token).toEqual(laterRow?.token);
+    } finally {
+      reopened.close();
+    }
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(rpcCount).toBe(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+  } finally {
+    // Disable future hold/fault arming, release the save hold and gate, join the
+    // tracked submission and accepted saves, THEN restore spies.
+    disarmed = true;
+    faultArmed = false;
+    saveHold?.release();
+    rpcGate.resolve();
+    await source.whenSettled();
+    await flushPendingTurnsProjectionForTests();
+    saveSpy?.mockRestore();
+    settleSpy.mockRestore();
+  }
+});
+
+// The same real transaction abort on a PLAIN ordinary submission (no recovery
+// shape) must also reach observers once the cleanup is pending. The ordinary
+// branch returns before notifying, so this is the pending-notification gap.
+test("an ordinary cleanup transaction abort still notifies observers as pending", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  let faultArmed = false;
+  let faultHits = 0;
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    beforeCommit: (operation) => {
+      if (faultArmed && operation === "clearSubmitted") {
+        faultHits += 1;
+        throw new Error("draft storage unavailable");
+      }
+    },
+  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(storage);
+  const { source } = await browserSource(
+    "ref_a",
+    { repository, outbox: storage },
+    { text: "plain text", skillNames: [] },
+  );
+  const fake = await connect();
+  // Releasable response gate created before submission can dispatch.
+  const rpcGate = deferred<void>();
+  fake.on("turn/start", async (params) => {
+    await rpcGate.promise;
+    return {
+      turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const calls: Parameters<Parameters<typeof subscribeComposerSubmissionCommitted>[0]>[] = [];
+  const listener: Parameters<typeof subscribeComposerSubmissionCommitted>[0] = (...args) => {
+    calls.push(args);
+  };
+  const unsubscribe = subscribeComposerSubmissionCommitted(listener);
+  const onFailure = vi.fn();
+  const perform = vi.fn(async () => {
+    await threadsStore.getState().send("ref_a", "plain text");
+    faultArmed = true;
+  });
+  try {
+    await submitWithPendingTracking({ ref: "ref_a", text: "plain text", skillNames: [], source, onFailure }, perform);
+    expect(faultHits).toBe(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+    expect(await repository.load(key)).toMatchObject({ text: "plain text", skillNames: [] });
+    expect(source.getSnapshot()).toMatchObject({ text: "plain text" });
+    const last = calls.at(-1);
+    expect(last?.[5]?.settlement).toMatchObject({ cleared: false, persistence: "pending" });
+  } finally {
+    // Disable future fault arming, release the gate, join the tracked submission
+    // and accepted saves, THEN unsubscribe.
+    faultArmed = false;
+    rpcGate.resolve();
+    await source.whenSettled();
+    await flushPendingTurnsProjectionForTests();
+    unsubscribe();
+  }
+});
+
+// An eligible ordinary send clears the durable row through the guarded path
+// exactly once; only a reopened adapter proves the row is durably empty rather
+// than merely absent from local state.
+test("an eligible ordinary cleanup clears the durable row exactly once", async () => {
+  const { source, repository } = await browserSource("ref_a", {}, { text: "cleared once", skillNames: [] });
+  const key = browserDraftKey("ref_a");
+  const put = IDBObjectStore.prototype.put;
+  let draftWrites = 0;
+  const putSpy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === COMPOSER_DRAFTS_STORE) draftWrites += 1;
+    return put.apply(this, args);
+  });
+  try {
+    await submitWithPendingTracking(
+      { ref: "ref_a", text: "cleared once", skillNames: [], source, onFailure: vi.fn() },
+      () => Promise.resolve(),
+    );
+  } finally {
+    putSpy.mockRestore();
+  }
+  expect(draftWrites).toBe(1);
+  expect(await repository.load(key)).toMatchObject({ text: "", skillNames: [] });
+  source.dispose();
+  await source.whenSettled();
+  const reopened = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+  try {
+    expect(await reopened.load(key)).toMatchObject({ text: "", skillNames: [] });
+  } finally {
+    reopened.close();
+  }
+});
+
+async function seededGuardRow(databaseName: string) {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  const drafts = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  await drafts.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  setMutationStorageForTests(outbox);
+  const input = [{ type: "text" as const, text: "original" }];
+  const record = await outbox.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    composerText: "original",
+  });
+  await outbox.transferToRecovery(record.clientMutationId, "rejected");
+  await refreshPendingTurnsProjection("ref_a");
+  return { factory, key, drafts, outbox, record };
+}
+
+// Each operation runs on its OWN freshly seeded row, so a destructive op cannot
+// delete the row a later op expects to exercise its guard against.
+test.each(["update", "discard", "resend"] as const)(
+  "a wrapper %s refuses a wrong-session guard and preserves the recovery and ordinary rows",
+  async (operation) => {
+    const { key, drafts, outbox, record } = await seededGuardRow(`writer-cutover-guard-${operation}`);
+    try {
+      // Precondition: the explicit seeded content is present and readable.
+      expect((await outbox.getRecovery(record.clientMutationId))?.composerText).toBe("original");
+      const beforeOrdinary = await drafts.load(key);
+      if (!beforeOrdinary) throw new Error("expected the seeded ordinary row");
+      const guard = {
+        key: browserDraftKey("ref_a", "https://elsewhere.test"),
+        token: { namespaceIncarnation: "wrong", sessionRevision: 0 },
+        stillAuthorized: () => true,
+      };
+      if (operation === "update") {
+        const update = updateRecoveryPendingTurn as unknown as (...args: unknown[]) => Promise<boolean>;
+        const updated = await update(
+          record.clientMutationId,
+          "ref_a",
+          "edited while guarded",
+          [],
+          undefined,
+          undefined,
+          undefined,
+          guard,
+        );
+        expect(updated).toBe(false);
+      } else if (operation === "discard") {
+        const discard = discardRecoveryPendingTurn as unknown as (...args: unknown[]) => Promise<boolean>;
+        expect(await discard(record.clientMutationId, "ref_a", undefined, guard)).toBe(false);
+      } else {
+        // resendRecoveryPendingTurn declares Promise<boolean> (record !== undefined).
+        const resend = resendRecoveryPendingTurn as unknown as (...args: unknown[]) => Promise<boolean>;
+        expect(
+          await resend(
+            record.clientMutationId,
+            "ref_a",
+            "send",
+            "resent while guarded",
+            [],
+            undefined,
+            undefined,
+            undefined,
+            guard,
+          ),
+        ).toBe(false);
+      }
+      // This operation's own row survives, and the ordinary token is untouched.
+      expect((await outbox.getRecovery(record.clientMutationId))?.composerText).toBe("original");
+      expect((await drafts.load(key))?.token).toEqual(beforeOrdinary.token);
+    } finally {
+      outbox.close();
+      drafts.close();
+    }
+  },
+);
+
+test("a wrapper update forwards matching ordinary consumption in the same revision", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  const drafts = createBrowserDraftRepository({ indexedDB: factory, databaseName: "writer-cutover-consume" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "writer-cutover-consume" });
+  setMutationStorageForTests(outbox);
+  try {
+    await drafts.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const input = [{ type: "text" as const, text: "recovery" }];
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/start",
+      payload: { input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await outbox.transferToRecovery(record.clientMutationId, "rejected");
+    const before = await drafts.load(key);
+    if (!before) throw new Error("expected an ordinary row");
+    const consumption = {
+      token: before.token,
+      value: { text: "ordinary", skillNames: [], mentions: [] },
+      stillOwnsValue: () => true,
+    };
+    const update = updateRecoveryPendingTurn as unknown as (...args: unknown[]) => Promise<boolean>;
+    await update(
+      record.clientMutationId,
+      "ref_a",
+      "edited",
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      consumption,
+    );
+    const after = await drafts.load(key);
+    expect(after).toMatchObject({ text: "", skillNames: [] });
+    expect(after?.token.sessionRevision).toBe(before.token.sessionRevision + 1);
+  } finally {
+    outbox.close();
+    drafts.close();
+  }
 });

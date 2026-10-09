@@ -12,12 +12,14 @@ import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
+import { browserDraftKey } from "../../../../stores/browserDraftRepository";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { retryBlockedBySnapshot, threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { ComposerSourceState } from "../sourceState";
 import {
   discardRecoveryPendingTurn,
   type PendingTurnEntry,
@@ -51,6 +53,9 @@ const CLASS = {
 // util).
 export interface QueueStripProps {
   ref: string;
+  // The original composer source, so a drain submits and settles through the
+  // same durable source contract as the Composer's own submit.
+  source: ComposerSourceState;
   // Returns the composer's CURRENT text/attachments/hasPending at the moment
   // the drain affordance is used - drainAsSteer atomically appends this to
   // the queue before draining the whole thing into the active turn as one
@@ -189,6 +194,7 @@ function editDisabledReason(opts: {
 
 export function QueueStrip({
   ref: sessionRef,
+  source,
   getComposerText,
   onRestoreToComposer,
   activeRecoveryId,
@@ -396,11 +402,13 @@ export function QueueStrip({
           attachments,
           skillNames,
           commandNames,
+          source,
+          mentions,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
-        async () => {
+        async (submitted) => {
           if (activeRecoveryId) {
             wonRecoveryResend = await resendRecoveryPendingTurn(
               activeRecoveryId,
@@ -411,15 +419,19 @@ export function QueueStrip({
               skillNames,
               commandNames,
               mentions,
+              source.recoveryWriteGuard(submitted),
             );
-            return;
+            return wonRecoveryResend;
           }
           return threadsStore
             .getState()
             .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
         },
       );
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+      if (!wonRecoveryResend) {
+        toasts.push("info", "This message could not be resent; your draft is kept.");
+        return;
+      }
       onDrainSuccess();
     } catch {
       // Already reported via onFailure above; swallow so the rejection
@@ -467,9 +479,32 @@ export function QueueStrip({
   // projection unconditionally, so a record another surface already discarded
   // still leaves the strip instead of sitting there being counted as queued.
   async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
+    // Capture before any yield, never refresh destructive authority after a
+    // competitor commits while the original press is waiting.
+    const originalSource = source;
+    const token = Object.freeze({ ...originalSource.getDraftToken() });
+    const key = browserDraftKey(originalSource.ref);
+    const generation = originalSource.getLocalGeneration();
+    const backing = originalSource.getRuntimeBacking();
+    const replacementEpoch = originalSource.continuity.recoveryReplacementEpochRef.current;
+    const guard = Object.freeze({
+      key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
+      token,
+      stillAuthorized: () => {
+        const currentBacking = originalSource.getRuntimeBacking();
+        return (
+          originalSource.alive &&
+          originalSource.getLocalGeneration() === generation &&
+          originalSource.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
+          currentBacking.kind === backing.kind &&
+          (backing.kind !== "recovery" ||
+            (currentBacking.kind === "recovery" && currentBacking.recoveryId === backing.recoveryId))
+        );
+      },
+    });
     setRowBusy(record.clientMutationId, true);
     try {
-      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef);
+      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef, undefined, guard);
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {

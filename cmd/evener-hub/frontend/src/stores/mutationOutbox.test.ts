@@ -3,13 +3,25 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import { parseSkillDocument, skillAtomMentions } from "../panes/session/composer/skillDocument";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+
+// Node has no `location`; the outbox derives a recovery write's browser session
+// key from the ambient origin.
+let originalLocationDescriptor: PropertyDescriptor | undefined;
+beforeEach(() => {
+  originalLocationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", { value: { origin: "https://hub.test" }, configurable: true });
+});
+afterEach(() => {
+  if (originalLocationDescriptor) Object.defineProperty(globalThis, "location", originalLocationDescriptor);
+  else Reflect.deleteProperty(globalThis, "location");
+});
 
 // The outbox reads readiness off the same client lookup the dispatcher takes,
 // so these tests supply a ready client rather than a boolean flag.

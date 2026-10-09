@@ -19,7 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
-import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
+import type { SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
@@ -102,7 +102,26 @@ export function decodeSupportedComposerDraft(structured: string | null, legacy: 
 // v1 PLAIN-TEXT value is read as literal text with skillNames: []. The v1
 // value is never JSON-decoded to guess selections and no slash mention in it
 // is ever inferred as a selection - an old draft is exactly the text it was.
+// The runtime read projection: no durable write, one live value per ref,
+// published by the source that currently owns the visible draft. The owner id
+// lets a retiring source avoid erasing a newer same-ref source's value.
+const runtimeDrafts = new Map<string, { value: ComposerDraft; ownerId: string }>();
+
+export function publishRuntimeDraft(ref: string, value: ComposerDraft, ownerId: string): void {
+  runtimeDrafts.set(ref, { value, ownerId });
+}
+
+export function clearRuntimeDraft(ref: string, ownerId: string): void {
+  const entry = runtimeDrafts.get(ref);
+  if (entry !== undefined && entry.ownerId === ownerId) runtimeDrafts.delete(ref);
+}
+
 export function readComposerDraft(ref: string): ComposerDraft {
+  // A live source's projection is authoritative while it exists: it is the
+  // draft currently visible in the composer, updated from durable loads and
+  // accepted edits without a localStorage write.
+  const projected = runtimeDrafts.get(ref);
+  if (projected !== undefined) return projected.value;
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
     const decoded = decodeStructuredComposerDraft(structured);
@@ -117,54 +136,4 @@ export function readComposerDraft(ref: string): ComposerDraft {
 // (the dev harness's seeded panes, and tests reading back what they typed).
 export function readDraft(ref: string): string {
   return readComposerDraft(ref).text;
-}
-
-// Writes the whole structured draft as ONE atomic v2 record, then removes any
-// old v1 value (never the reverse order - a v2 write that crashed before the
-// v1 removal still leaves one readable draft behind). Blank text with no
-// selections removes the draft outright rather than storing an empty record -
-// a draft that would never send is never persisted. A selection is only ever
-// staged next to its own visible `/<name>` reference, so a record with names
-// and no text is not something the composer produces; one that arrives from an
-// older build is normalized on restore rather than trusted here.
-export function writeComposerDraft(ref: string, value: ComposerDraft): void {
-  markDraftEdited(ref);
-  try {
-    if (value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length) {
-      localStorage.removeItem(composerDraftStorageKey(ref));
-      localStorage.removeItem(draftStorageKey(ref));
-    } else {
-      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(value));
-      localStorage.removeItem(draftStorageKey(ref));
-    }
-  } catch {
-    // Best-effort: a full quota or Safari private-mode must never be fatal
-    // to the composer itself, only to draft persistence across reloads.
-  }
-}
-
-// Explicit atoms follow their visible labels across text edits. Names-only
-// drafts retain their selections independently of the prose.
-export function writeDraft(ref: string, value: string): void {
-  const current = readComposerDraft(ref);
-  writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
-}
-
-// clearDraft drops a ref's stored draft outright - called on every
-// successful send/steer/queue/drain (never on failure), mirroring the
-// legacy clearComposerDraftIfUnchanged convention.
-export function clearDraft(ref: string): void {
-  markDraftEdited(ref);
-  clearPersistedDraft(ref);
-}
-
-// Recovery persistence owns the text in IndexedDB. Removing its redundant
-// localStorage copy does not represent a new edit of that draft.
-export function clearPersistedDraft(ref: string): void {
-  try {
-    localStorage.removeItem(composerDraftStorageKey(ref));
-    localStorage.removeItem(draftStorageKey(ref));
-  } catch {
-    // See writeComposerDraft's own comment.
-  }
 }

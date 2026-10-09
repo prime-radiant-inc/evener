@@ -28,7 +28,8 @@ import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client"
 import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import type { Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Composer as ComposerView } from "../panes/session/composer/Composer";
 import { readDraft } from "../panes/session/composer/draft";
 import {
@@ -39,10 +40,27 @@ import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/q
 import { createTestComposerSource } from "../panes/session/testing/composerSource";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { conversationPaneLifetime } from "../shell/paneLifetime";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import * as browserDrafts from "./browserDraftRepository";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { activityContext, activitySummary } from "./sessionActivityTestUtils";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
+
+const createdRoots = vi.hoisted(() => ({ roots: [] as Root[] }));
+vi.mock("react-dom/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-dom/client")>();
+  return {
+    ...actual,
+    createRoot: (...args: Parameters<typeof actual.createRoot>) => {
+      const root = actual.createRoot(...args);
+      createdRoots.roots.push(root);
+      return root;
+    },
+  };
+});
 
 // React's concurrent root only runs act() without its "not configured" /
 // "not wrapped in act" diagnostics when this flag is set for the jsdom
@@ -223,6 +241,9 @@ function makeThread(instanceId: string, turnIds: string[]): Thread {
 
 interface RetirementClientFixture {
   draft(): string;
+  sourceId(): string;
+  durableDraft(): ReturnType<browserDrafts.BrowserDraftRepository["load"]>;
+  reopen(): Promise<void>;
   turnIDs(): string[];
   instanceId(): string;
   retire(): Promise<void>;
@@ -355,11 +376,16 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // Install the deterministic mutation boundary before anything can start the
   // singleton mutation runtime (connectionStore.connect below reaches
   // handleReady -> getMutationRuntime).
+  const databaseName = `retirement-mutations-${MUTATION_ID}`;
+  const repository = browserDrafts.createBrowserDraftRepository({ indexedDB: globalThis.indexedDB, databaseName });
+  // The helper still creates a real default source. Its default repository and
+  // the EXISTING mutation runtime must share this fixture's storage universe.
+  vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
   setMutationStorageForTests(
     new MutationOutboxIndexedDB({
       indexedDB: globalThis.indexedDB,
       createMutationId: () => nextMutationId,
-      databaseName: `retirement-mutations-${MUTATION_ID}`,
+      databaseName,
     }),
   );
 
@@ -381,9 +407,11 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 
   // Mount the real Composer (with ClientProvider) so the draft lifecycle is
   // live, then enter the unsent draft through the editor itself.
-  const { unmount } = render(
+  let source = createTestComposerSource(REF);
+  await act(async () => source.ready());
+  let view = render(
     <ClientProvider client={client}>
-      <ComposerView ref={REF} source={createTestComposerSource(REF)} focused={false} />
+      <ComposerView ref={REF} source={source} focused={false} />
     </ClientProvider>,
   );
 
@@ -395,10 +423,34 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
     replaceEditorText(draftEditor, DRAFT_TEXT);
   });
   await flushPendingTurnsProjectionForTests();
+  await act(async () => source.whenSettled());
 
   return {
     draft(): string {
       return readDraft(REF);
+    },
+
+    sourceId(): string {
+      return source.sourceId;
+    },
+
+    async durableDraft() {
+      await act(async () => source.whenSettled());
+      return repository.load(browserDrafts.browserDraftKey(REF));
+    },
+
+    async reopen(): Promise<void> {
+      view.unmount();
+      act(() => source.dispose());
+      await source.whenSettled();
+      source = createTestComposerSource(REF);
+      await act(async () => source.ready());
+      view = render(
+        <ClientProvider client={client}>
+          <ComposerView ref={REF} source={source} focused={false} />
+        </ClientProvider>,
+      );
+      await flushPendingTurnsProjectionForTests();
     },
 
     turnIDs(): string[] {
@@ -474,10 +526,13 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
     },
 
     async close(): Promise<void> {
-      unmount();
+      view.unmount();
+      act(() => source.dispose());
+      await source.whenSettled();
       cleanup();
       threadsStore.getState().releaseThread(REF);
       client.close();
+      repository.close();
     },
   };
 }
@@ -488,7 +543,9 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
+  createdRoots.roots.length = 0;
   globalThis.indexedDB = new IDBFactory();
+  browserDrafts.resetBrowserDraftRepositoryForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
@@ -500,6 +557,8 @@ afterEach(async () => {
     resetThreadsStoreForTests();
     resetPendingTurnsStoreForTests();
   });
+  vi.restoreAllMocks();
+  browserDrafts.resetBrowserDraftRepositoryForTests();
   globalThis.indexedDB = new IDBFactory();
 });
 
@@ -512,16 +571,26 @@ test("selected transcript and unsent draft survive source retirement", async () 
   try {
     const before = f.turnIDs();
     const draft = f.draft();
+    const durableBefore = await f.durableDraft();
+    expect(durableBefore).toMatchObject({ text: DRAFT_TEXT, skillNames: [] });
+    const oldSourceId = f.sourceId();
     // The pre-retirement read is answered from the retired generation...
     expect(f.instanceId()).toBe(INSTANCE_V1);
     await f.retire();
     expect(f.turnIDs()).toEqual(before);
     expect(f.draft()).toBe(draft);
+    expect(await f.durableDraft()).toEqual(durableBefore);
+    await f.reopen();
+    expect(f.sourceId()).not.toBe(oldSourceId);
+    expect(f.draft()).toBe(draft);
+    expect(f.turnIDs()).toEqual(before);
+    expect(await f.durableDraft()).toEqual(durableBefore);
     await f.send(draft, MUTATION_ID);
     const after = f.turnIDs();
     expect(new Set(after).size).toBe(after.length);
     expect(after.length).toBe(before.length + 1);
     expect(f.draft()).toBe("");
+    expect(await f.durableDraft()).toMatchObject({ text: "", skillNames: [] });
     // ...and the resync-triggered read genuinely rebound to the replacement
     // generation, so the turn above was accepted on INSTANCE_V2.
     expect(f.instanceId()).toBe(INSTANCE_V2);
@@ -529,3 +598,213 @@ test("selected transcript and unsent draft survive source retirement", async () 
     await f.close();
   }
 });
+
+test("the dev retirement harness commits its durable seed before publishing its actual session pane", async () => {
+  const repository = browserDrafts.getBrowserDraftRepository();
+  const seed = repository.seedDraft.bind(repository);
+  const fixtureText = "retirement harness unsent draft";
+  let fixtureCommitted = false;
+  vi.spyOn(repository, "seedDraft").mockImplementation(async (...args) => {
+    const result = await seed(...args);
+    if (args[0].sessionRef === REF && args[1].text === fixtureText && result.state === "committed")
+      fixtureCommitted = true;
+    return result;
+  });
+  const publications: boolean[] = [];
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    if (state.panes.some((pane) => pane.id === "retirement-harness")) publications.push(fixtureCommitted);
+  });
+  let socket: RetirementScriptedSocket | undefined;
+  // Only the WebSocket transport is substituted. The entry constructs its real
+  // AppwireClient and mounts its real Session with the published pane record.
+  vi.stubGlobal(
+    "WebSocket",
+    class extends RetirementScriptedSocket {
+      constructor() {
+        super();
+        socket = this;
+        this.on("thread/read", (_id, params) => ({
+          thread: makeThread(INSTANCE_V1, ["turn_fixture_1", "turn_fixture_2"]),
+          requestGeneration: (params as { requestGeneration?: number }).requestGeneration,
+        }));
+        this.on("evener/thread/activity/read", () => activitySummary(REF));
+        this.on("evener/thread/delegates/list", () => ({
+          context: activityContext(REF),
+          scope: "session",
+          delegates: [],
+          page: { complete: true, issues: [] },
+        }));
+        this.on("skills/list", () => ({ data: [] }));
+      }
+    },
+  );
+  const roots = createdRoots.roots;
+  const addedListeners = vi.spyOn(window, "addEventListener");
+  const url = window.location.href;
+  const htmlStyle = document.documentElement.style.cssText;
+  const bodyStyle = document.body.style.cssText;
+  const previousHarness = Object.getOwnPropertyDescriptor(window, "retirementHarness");
+  let harnessClient: AppwireClient | undefined;
+  const container = document.createElement("div");
+  container.id = "root";
+  document.body.append(container);
+  window.history.replaceState({}, "", `?hub=ws://retirement-test.local/rpc&ref=${encodeURIComponent(REF)}`);
+  try {
+    await act(async () => {
+      await import("../dev/retirementharness-entry");
+    });
+    harnessClient = connectionStore.getState().client as AppwireClient;
+    expect(harnessClient).toBeInstanceOf(AppwireClient);
+    if (!socket) throw new Error("The real dev harness did not construct its transport");
+    await act(async () => {
+      socket?.open();
+      await window.retirementHarness.ready;
+    });
+    await flushPendingTurnsProjectionForTests();
+    const pane = workspaceStore.getState().panes.find((record) => record.id === "retirement-harness");
+    if (!pane) throw new Error("Missing actual dev harness pane");
+    const source = conversationPaneLifetime(pane).composer;
+    if (!source) throw new Error("Missing actual dev harness source");
+    await act(async () => {
+      await source.ready();
+      await source.whenSettled();
+    });
+    expect(publications.length).toBeGreaterThan(0);
+    expect(publications.every(Boolean)).toBe(true);
+    expect(await repository.load(browserDrafts.browserDraftKey(REF))).toMatchObject({
+      text: fixtureText,
+      skillNames: [],
+    });
+    expect(source.getSnapshot().text).toBe(fixtureText);
+    expect(window.retirementHarness.errors()).toEqual([]);
+    expect(roots).toHaveLength(1);
+  } finally {
+    unsubscribe();
+    await act(async () => {
+      for (const root of roots) root.unmount();
+      resetWorkspaceStoreForTests();
+      harnessClient?.close();
+    });
+    for (const [type, listener, options] of addedListeners.mock.calls) {
+      if (type === "error" || type === "unhandledrejection") window.removeEventListener(type, listener, options);
+    }
+    container.remove();
+    document.documentElement.style.cssText = htmlStyle;
+    document.body.style.cssText = bodyStyle;
+    window.history.replaceState({}, "", url);
+    if (previousHarness) Object.defineProperty(window, "retirementHarness", previousHarness);
+    else Reflect.deleteProperty(window, "retirementHarness");
+    vi.unstubAllGlobals();
+  }
+});
+
+test.each(["conflict", "unavailable"] as const)(
+  "the dev retirement harness handles a real durable seed %s before publishing its session pane",
+  async (outcome) => {
+    const repository = browserDrafts.getBrowserDraftRepository();
+    const winner = { text: "existing retirement work /same", skillNames: [], mentions: [] };
+    if (outcome === "conflict") {
+      expect((await repository.seedDraft(browserDrafts.browserDraftKey(REF), winner)).state).toBe("committed");
+    } else {
+      vi.spyOn(indexedDB, "open").mockImplementation(() => {
+        throw new Error("fixture storage unavailable");
+      });
+    }
+    const seed = vi.spyOn(repository, "seedDraft");
+    let socket: RetirementScriptedSocket | undefined;
+    vi.stubGlobal(
+      "WebSocket",
+      class extends RetirementScriptedSocket {
+        constructor() {
+          super();
+          socket = this;
+          this.on("thread/read", (_id, params) => ({
+            thread: makeThread(INSTANCE_V1, ["turn_fixture_1", "turn_fixture_2"]),
+            requestGeneration: (params as { requestGeneration?: number }).requestGeneration,
+          }));
+          this.on("evener/thread/activity/read", () => activitySummary(REF));
+          this.on("evener/thread/delegates/list", () => ({
+            context: activityContext(REF),
+            scope: "session",
+            delegates: [],
+            page: { complete: true, issues: [] },
+          }));
+          this.on("skills/list", () => ({ data: [] }));
+        }
+      },
+    );
+    const addedListeners = vi.spyOn(window, "addEventListener");
+    const url = window.location.href;
+    const htmlStyle = document.documentElement.style.cssText;
+    const bodyStyle = document.body.style.cssText;
+    const previousHarness = Object.getOwnPropertyDescriptor(window, "retirementHarness");
+    const container = document.createElement("div");
+    container.id = "root";
+    document.body.append(container);
+    window.history.replaceState({}, "", `?hub=ws://retirement-test.local/rpc&ref=${encodeURIComponent(REF)}`);
+    let harnessClient: AppwireClient | undefined;
+    try {
+      // A query gives each side-effect entry its own module identity while its
+      // real stores and Session dependencies remain the same shared modules.
+      const entryPath = "../dev/retirementharness-entry.tsx";
+      await act(async () => {
+        await import(`${entryPath}?seed-outcome=${outcome}`);
+      });
+      harnessClient = connectionStore.getState().client as AppwireClient;
+      expect(harnessClient).toBeInstanceOf(AppwireClient);
+      if (!socket) throw new Error("The real dev harness did not construct its transport");
+      const ready = window.retirementHarness.ready.then(
+        () => ({ state: "ready" as const }),
+        (error: Error) => ({ state: "failed" as const, error }),
+      );
+      await act(async () => {
+        socket?.open();
+        await ready;
+      });
+      expect(seed).toHaveBeenCalled();
+      const fixtureResult = seed.mock.results[0];
+      if (!fixtureResult) throw new Error("The dev harness did not seed its literal fixture");
+      expect((await fixtureResult.value).state).toBe(outcome);
+      if (outcome === "conflict") {
+        expect(await ready).toEqual({ state: "ready" });
+        await flushPendingTurnsProjectionForTests();
+        const pane = workspaceStore.getState().panes.find((record) => record.id === "retirement-harness");
+        if (!pane) throw new Error("Missing actual dev harness pane");
+        const source = conversationPaneLifetime(pane).composer;
+        if (!source) throw new Error("Missing actual dev harness source");
+        await act(async () => {
+          await source.ready();
+          await source.whenSettled();
+        });
+        expect(source.getSnapshot().text).toBe(winner.text);
+        expect(await repository.load(browserDrafts.browserDraftKey(REF))).toMatchObject(winner);
+        expect(createdRoots.roots).toHaveLength(1);
+        expect(window.retirementHarness.errors()).toEqual([]);
+      } else {
+        expect(await ready).toMatchObject({
+          state: "failed",
+          error: new Error("Couldn't save the retirement fixture locally"),
+        });
+        expect(workspaceStore.getState().panes.some((pane) => pane.id === "retirement-harness")).toBe(false);
+        expect(createdRoots.roots).toEqual([]);
+        expect(container.querySelector('[role="textbox"]')).toBeNull();
+      }
+    } finally {
+      await act(async () => {
+        for (const root of createdRoots.roots) root.unmount();
+        resetWorkspaceStoreForTests();
+        harnessClient?.close();
+      });
+      for (const [type, listener, options] of addedListeners.mock.calls) {
+        if (type === "error" || type === "unhandledrejection") window.removeEventListener(type, listener, options);
+      }
+      container.remove();
+      document.documentElement.style.cssText = htmlStyle;
+      document.body.style.cssText = bodyStyle;
+      window.history.replaceState({}, "", url);
+      if (previousHarness) Object.defineProperty(window, "retirementHarness", previousHarness);
+      else Reflect.deleteProperty(window, "retirementHarness");
+      vi.unstubAllGlobals();
+    }
+  },
+);

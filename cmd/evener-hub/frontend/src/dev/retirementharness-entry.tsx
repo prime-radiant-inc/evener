@@ -15,7 +15,7 @@
 // over CDP. Values are read from real stores/rendered DOM, never maintained as
 // parallel expected state.
 import { createRoot } from "react-dom/client";
-import { readDraft, writeDraft } from "../panes/session/composer/draft";
+import { readDraft } from "../panes/session/composer/draft";
 
 // The harness writes a known draft after the thread loads so the
 // "draft survives retirement" assertion is non-trivial — it mirrors a user
@@ -31,6 +31,7 @@ import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client"
 import Session from "../panes/session/Session";
 import { ClientProvider } from "../shell/clientContext";
 import { workspaceStore } from "../shell/workspace";
+import { browserDraftKey, getBrowserDraftRepository } from "../stores/browserDraftRepository";
 import { connectionStore } from "../stores/connection";
 import { readMutationPersistence, subscribeMutationPersistence, threadsStore } from "../stores/threads";
 import {
@@ -99,8 +100,8 @@ client.onNotification((notification) => {
 
 // ---- Ready promise ---------------------------------------------------------
 
-// readyPromise resolves once the client is ready AND the initial thread/read
-// has populated the thread model. The runner awaits this before any assertion.
+// readyPromise resolves after connection, hydration, durable seed resolution
+// and pane publication. The runner awaits this before any assertion.
 let resolveReady: (() => void) | undefined;
 let rejectReady: ((err: Error) => void) | undefined;
 const readyPromise = new Promise<void>((resolve, reject) => {
@@ -115,8 +116,19 @@ async function boot() {
     initializeResult = await client.connect();
     // Populate the thread model through the real thread store.
     await threadsStore.getState().ensureThread(REF);
-    // Write the fixture draft so it is present before retirement.
-    writeDraft(REF, FIXTURE_DRAFT);
+    const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey(REF), {
+      text: FIXTURE_DRAFT,
+      skillNames: [],
+    });
+    switch (seeded.state) {
+      case "committed":
+      case "conflict":
+        // Open the existing winner on conflict, never overwrite it with a fixture.
+        mountSession();
+        break;
+      case "unavailable":
+        throw new Error("Couldn't save the retirement fixture locally");
+    }
     resolveReady?.();
   } catch (err) {
     rejectReady?.(err instanceof Error ? err : new Error(String(err)));
@@ -127,28 +139,33 @@ void boot();
 
 // ---- Mount -----------------------------------------------------------------
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("retirementharness.html is missing #root");
+function mountSession(): void {
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("retirementharness.html is missing #root");
 
-document.documentElement.style.height = "100%";
-document.body.style.height = "100%";
-document.body.style.margin = "0";
+  document.documentElement.style.height = "100%";
+  document.body.style.height = "100%";
+  document.body.style.margin = "0";
 
-rootEl.style.height = "100%";
-rootEl.style.display = "flex";
-rootEl.style.flexDirection = "column";
+  rootEl.style.height = "100%";
+  rootEl.style.display = "flex";
+  rootEl.style.flexDirection = "column";
 
-workspaceStore.setState({
-  panes: [{ id: "retirement-harness", type: "session", params: { ref: REF }, slot: "main" }],
-  focusedPaneId: "retirement-harness",
-});
-createRoot(rootEl).render(
-  <ClientProvider client={client}>
-    <div id="retirement-session-pane" style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <Session params={{ ref: REF }} paneId="retirement-harness" focused />
-    </div>
-  </ClientProvider>,
-);
+  workspaceStore.setState({
+    panes: [{ id: "retirement-harness", type: "session", params: { ref: REF }, slot: "main" }],
+    focusedPaneId: "retirement-harness",
+  });
+  createRoot(rootEl).render(
+    <ClientProvider client={client}>
+      <div
+        id="retirement-session-pane"
+        style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column" }}
+      >
+        <Session params={{ ref: REF }} paneId="retirement-harness" focused />
+      </div>
+    </ClientProvider>,
+  );
+}
 
 // ---- window.retirementHarness ---------------------------------------------
 
@@ -161,7 +178,7 @@ interface RetirementHarnessSnapshot {
 }
 
 interface RetirementHarness {
-  /** Resolves when the client is ready and the initial thread is hydrated. */
+  /** Resolves after hydration, durable seed resolution and pane publication. */
   ready: Promise<void>;
   /** Triggers daemon retirement via the fixture HTTP endpoint. */
   retire(): Promise<void>;

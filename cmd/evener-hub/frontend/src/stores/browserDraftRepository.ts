@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 import type {
   DraftBackingIdentity,
   DraftSessionToken,
@@ -170,7 +171,10 @@ function sameStrings(left: readonly string[] | undefined, right: readonly string
 
 // Absent and explicit-empty mentions are distinct editor values; a mismatch on
 // either side refuses. Elements compare by kind/name/offset.
-function sameMentions(left: SkillEditorValue["mentions"], right: SubmittedDraft["mentions"]): boolean {
+function sameMentions(
+  left: readonly ComposerMention[] | undefined,
+  right: readonly ComposerMention[] | undefined,
+): boolean {
   if (left === undefined || right === undefined) return left === right;
   return (
     left.length === right.length &&
@@ -186,12 +190,29 @@ function sameMentions(left: SkillEditorValue["mentions"], right: SubmittedDraft[
   );
 }
 
-function sameSubmittedValue(row: SessionRow, submitted: SubmittedDraft): boolean {
+// The full structured-value comparison two editor values share: text, skills,
+// commands and mentions compared field-for-field, with absent and explicit-empty
+// mentions kept distinct. Exported so the outbox can reuse it for guarded
+// ordinary consumption instead of duplicating the field rules.
+export function sameComposerValue(
+  left: {
+    text: string;
+    skillNames: readonly string[];
+    commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
+  },
+  right: {
+    text: string;
+    skillNames: readonly string[];
+    commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
+  },
+): boolean {
   return (
-    row.text === submitted.text &&
-    sameStrings(row.skillNames, submitted.skillNames) &&
-    sameStrings(row.commandNames, submitted.commandNames) &&
-    sameMentions(row.mentions, submitted.mentions)
+    left.text === right.text &&
+    sameStrings(left.skillNames, right.skillNames) &&
+    sameStrings(left.commandNames, right.commandNames) &&
+    sameMentions(left.mentions, right.mentions)
   );
 }
 
@@ -347,7 +368,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         if (!draftUnchanged || !submitted.stillOwnsEdit?.()) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
-        if (!sameSubmittedValue(row, submitted)) {
+        if (!sameComposerValue(row, submitted)) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
         const cleared = nextSessionRow(row, { text: "", skillNames: [] });
@@ -521,6 +542,23 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
 export function createBrowserDraftRepository(options: BrowserDraftRepositoryOptions = {}): BrowserDraftRepository {
   return new BrowserDraftRepositoryImpl(options);
+}
+
+// The one lazy module singleton every production browser writer shares, so the
+// source defaults and the annotation ports use the SAME repository instance.
+let browserDrafts: BrowserDraftRepository | undefined;
+export function getBrowserDraftRepository(): BrowserDraftRepository {
+  if (browserDrafts === undefined) browserDrafts = createBrowserDraftRepository();
+  return browserDrafts;
+}
+
+// Deliberate reset of the module singleton for tests that REPLACE the storage
+// universe (a new IndexedDB factory): the captured factory makes the old
+// singleton stale, so closing it alone is not a reset. Production never calls
+// this; it drops the singleton so the next accessor captures the new factory.
+export function resetBrowserDraftRepositoryForTests(): void {
+  browserDrafts?.close();
+  browserDrafts = undefined;
 }
 
 export function createBrowserDraftTransferRuntime(input: {

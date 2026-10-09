@@ -1,4 +1,5 @@
 import type { ComposerMention } from "@evener/appwire-client";
+import type { DraftSettlement, SubmittedDraft } from "@evener/appwire-client/state/mutation";
 import {
   awaitingFirstFrameSend,
   createMutationProjectionFence,
@@ -21,6 +22,7 @@ import type {
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
+import type { RecoveryOrdinaryConsumption, RecoveryWriteGuard } from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
@@ -36,7 +38,8 @@ import {
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
-import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
+import { readComposerDraft, readDraftRevision } from "../draft";
+import type { ComposerSourceState } from "../sourceState";
 import type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
@@ -55,7 +58,11 @@ const threadsPort: PendingTurnsThreadsPort = {
 const draftPort: PendingTurnsDraftPort = {
   readDraftRevision,
   readComposerDraft,
-  clearDraft,
+  // Browser settlement is ALWAYS the async per-call source hook; the legacy
+  // synchronous clear is intentionally unsupported, not a fallback writer.
+  clearDraft: () => {
+    throw new Error("Browser settlement requires settleDraft");
+  },
 };
 const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
@@ -229,6 +236,11 @@ export interface SubmitWithPendingTrackingOptions {
   skillNames?: readonly string[];
   commandNames?: readonly string[];
   recoveryId?: string;
+  // The original source (browser) captures and settles the durable draft. Every
+  // Composer/QueueStrip browser submission passes it; browser settlement is
+  // always this source's async per-call hook, never a fallback.
+  source: ComposerSourceState;
+  mentions?: readonly ComposerMention[];
   onFailure: (error: unknown) => void;
 }
 
@@ -244,6 +256,7 @@ type SubmissionCommittedListener = (
   skillNames: readonly string[],
   recovery?: RecoverySubmissionCommit,
   commandNames?: readonly string[],
+  context?: { submitted: SubmittedDraft; settlement: DraftSettlement },
 ) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
@@ -265,38 +278,69 @@ export function useComposerSubmitting(ref: string): boolean {
 // recovery tray, the draft UI) - neither of which the package names.
 export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
-  perform: () => Promise<void>,
+  perform: (submitted: SubmittedDraft) => Promise<unknown>,
 ): Promise<void> {
   const skillNames = [...(opts.skillNames ?? [])];
-  return runSubmission(
-    {
-      ref: opts.ref,
-      draftRevisionAtStart: readDraftRevision(opts.ref),
+  // The source captures the immutable payload BEFORE any wait; both `perform`
+  // and settlement are driven from that same submitted value.
+  const operation = (async () => {
+    const source = opts.source;
+    let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
+    let accepted = false;
+    const submitted: SubmittedDraft = await source.submissionDraft({
       text: opts.text,
       skillNames,
-      commandNames: opts.commandNames,
-      onFailure: opts.onFailure,
-    },
-    perform,
-    ({ cleared, draftUnchanged }) => {
-      if (!cleared && !opts.recoveryId) return;
-      for (const listener of submissionCommittedListeners) {
-        try {
-          listener(
-            opts.ref,
-            opts.text,
-            skillNames,
-            opts.recoveryId
-              ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
-              : undefined,
-            opts.commandNames,
-          );
-        } catch (error) {
-          console.error("Composer submission listener failed", error);
+      ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
+      ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
+    });
+    return runSubmission(
+      {
+        ...submitted,
+        ref: opts.ref,
+        onFailure: opts.onFailure,
+        settleDraft: async (
+          _ref: string,
+          captured: SubmittedDraft,
+        ): Promise<{ cleared: boolean; draftUnchanged: boolean }> => {
+          if (!accepted) return { cleared: false, draftUnchanged: false };
+          try {
+            settlement = await source.settleDraft(captured);
+          } catch {
+            // Retain pending cleanup; never relabel accepted input as failed.
+          }
+          return { cleared: settlement.cleared, draftUnchanged: settlement.draftUnchanged };
+        },
+      },
+      async () => {
+        accepted = (await perform(submitted)) !== false;
+      },
+      ({ draftUnchanged }) => {
+        if (!accepted) return;
+        // Notify from the immutable submitted capture for every ordinary and
+        // recovery outcome, including ordinary pending cleanup. The sixth
+        // argument always carries a defined submitted draft.
+        for (const listener of submissionCommittedListeners) {
+          try {
+            listener(
+              opts.ref,
+              submitted.text,
+              submitted.skillNames,
+              opts.recoveryId
+                ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
+                : undefined,
+              submitted.commandNames,
+              { submitted, settlement },
+            );
+          } catch (error) {
+            console.error("Composer submission listener failed", error);
+          }
         }
-      }
-    },
-  );
+      },
+    );
+  })();
+  // The source-bearing submission has preparation outside the runner and is
+  // tracked as a whole.
+  return trackProjectionWork(operation);
 }
 
 const NO_ENTRIES: PendingTurnEntry[] = [];
@@ -461,6 +505,8 @@ export function updateRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
+  consumeOrdinary?: RecoveryOrdinaryConsumption,
 ): Promise<boolean> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -474,6 +520,8 @@ export function updateRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        guard,
+        consumeOrdinary,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -485,8 +533,9 @@ export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   shouldDiscard?: () => boolean,
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
+  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard, guard));
 }
 
 export function resendRecoveryPendingTurn(
@@ -498,6 +547,7 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -512,6 +562,7 @@ export function resendRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        guard,
       );
       void refreshPendingTurnsProjection(ref);
       return record !== undefined;

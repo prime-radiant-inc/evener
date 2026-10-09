@@ -2,6 +2,7 @@ import type { SessionActivityContext, SessionActivitySummary, ThreadReadResponse
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { ActivitySidebar } from "../../shell/activitybar/ActivitySidebar";
@@ -10,6 +11,11 @@ import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import {
+  browserDraftKey,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../stores/browserDraftRepository";
 import { connectionStore } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -26,6 +32,8 @@ import "./index";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
+  globalThis.indexedDB = new IDBFactory();
+  resetBrowserDraftRepositoryForTests();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   resetThreadsStoreForTests();
@@ -136,6 +144,7 @@ test.each(["success", "failure"] as const)(
     const lifetime = conversationPaneLifetime(old);
     const source = lifetime.composer;
     if (!source) throw new Error("Missing original source");
+    await act(async () => source.ready());
     const attachments = renderHook(() => useAttachments(source.editor, source.attachments));
     act(() =>
       attachments.result.current.ingestFiles(
@@ -153,8 +162,12 @@ test.each(["success", "failure"] as const)(
     const replacement = conversationPaneLifetime(restored);
     const replacementSource = replacement.composer;
     if (!replacementSource) throw new Error("Missing restored source");
+    await act(async () => replacementSource.ready());
     const text = "new original [image 1]";
     replacementSource.editor.write(text, text.length);
+    await act(async () => replacementSource.whenSettled());
+    const durableBefore = await getBrowserDraftRepository().load(browserDraftKey("root"));
+    expect(durableBefore).toMatchObject({ text, skillNames: [] });
     mount();
     await scope("grandchild").findByRole("button", { name: "Open conversation" });
     await act(async () => {
@@ -168,6 +181,7 @@ test.each(["success", "failure"] as const)(
     expect(replacementSource.attachments.getState().items).toEqual([]);
     expect(readComposerDraft("root")).toEqual({ text, skillNames: [] });
     expect(replacementSource.getSnapshot().text).toBe(text);
+    expect(await getBrowserDraftRepository().load(browserDraftKey("root"))).toEqual(durableBefore);
     expect(workspaceStore.getState().panes[0]).toBe(restored);
     expect(getToasts()).toEqual([]);
   },

@@ -27,7 +27,15 @@
 // removePanel, is graceful on this double, which is exactly why the
 // pane-presence assertions are the ones that must carry the net).
 import type { DockviewApi } from "dockview-core";
-import { beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+  browserDraftKey,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../stores/browserDraftRepository";
+import { resetThreadsStoreForTests } from "../stores/threads";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { paneFor } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
@@ -67,7 +75,74 @@ function asDockviewApi(fake: FakeDockviewApi): DockviewApi {
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
+  resetBrowserDraftRepositoryForTests();
+  resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+});
+afterEach(() => {
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  resetBrowserDraftRepositoryForTests();
+});
+
+test("a same-ID restored layout hydrates the full durable draft without persisting or reusing its source identity", async () => {
+  const ref = "restore-structured";
+  const key = browserDraftKey(ref);
+  const repository = getBrowserDraftRepository();
+  const value = {
+    text: "🙂 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command" as const, name: "same", offset: 3 },
+      { kind: "skill" as const, name: "same", offset: 9 },
+    ],
+  };
+  expect(await repository.seedDraft(key, value)).toMatchObject({ state: "committed" });
+  const before = await repository.load(key);
+  expect(before).toMatchObject(value);
+  const old = { id: "same-pane", type: "session" as const, slot: "main" as const, params: { ref } };
+  workspaceStore.setState({ panes: [old], focusedPaneId: old.id });
+  const lifetime = conversationPaneLifetime(old);
+  const source = lifetime.composer;
+  if (!source) throw new Error("Missing original composer source");
+  await source.ready();
+  expect(source.getSnapshot()).toMatchObject(value);
+  const saved = {
+    grid: { root: { type: "branch", data: [] } },
+    panels: {
+      "same-pane": { id: old.id, contentComponent: "default", params: { paneType: "session", paneParams: { ref } } },
+    },
+  };
+  expect(JSON.stringify(saved)).not.toContain(source.sourceId);
+  resetWorkspaceStoreForTests();
+  const fake = new FakeDockviewApi();
+  fake.serialized = saved;
+  fake.fromJSONBehavior = () => {
+    fake.panels = [{ id: old.id, params: { paneType: "session", paneParams: { ref } } }];
+    fake.activePanel = { id: old.id };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+  const restored = workspaceStore.getState().panes[0];
+  if (!restored) throw new Error("Missing restored pane");
+  expect(restored).toEqual(old);
+  expect(restored).not.toBe(old);
+  const replacement = conversationPaneLifetime(restored);
+  const replacementSource = replacement.composer;
+  if (!replacementSource) throw new Error("Missing restored composer source");
+  await replacementSource.ready();
+  await Promise.all([source.whenSettled(), replacementSource.whenSettled()]);
+  expect(lifetime.alive).toBe(false);
+  expect(replacement.serial).not.toBe(lifetime.serial);
+  expect(replacementSource.sourceId).not.toBe(source.sourceId);
+  expect(replacementSource.getSnapshot()).toMatchObject(value);
+  expect(await repository.load(key)).toEqual(before);
+  expect(restored).not.toHaveProperty("sourceId");
+  expect(restored.params).not.toHaveProperty("sourceId");
+  expect(workspaceStore.getState().layoutJSON()).toBe(saved);
+  expect(JSON.stringify(workspaceStore.getState().layoutJSON())).not.toContain(replacementSource.sourceId);
 });
 
 describe("boot-time registration lets a persisted layout with lazy panes restore", () => {

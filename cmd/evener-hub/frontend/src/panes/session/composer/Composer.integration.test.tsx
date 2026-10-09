@@ -20,8 +20,17 @@ import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import {
+  browserDraftKey,
+  createBrowserDraftRepository,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../../stores/browserDraftRepository";
+import { serializeSessionKey } from "../../../stores/compositionRevision";
 import { connectionStore } from "../../../stores/connection";
+import { COMPOSER_DRAFTS_STORE, MUTATION_SEQUENCES_STORE } from "../../../stores/localCompositionSchema";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
@@ -38,10 +47,11 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
-import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
+import { composerDraftStorageKey, readComposerDraft, readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import { createComposerSourceState } from "./sourceState";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -183,6 +193,9 @@ async function mountComposer(
 beforeEach(() => {
   resetToastStoreForTests();
   globalThis.indexedDB = new IDBFactory();
+  // The storage universe is replaced above; drop the repository singleton so
+  // the next default source captures THIS factory, not a previous test's.
+  resetBrowserDraftRepositoryForTests();
   localStorage.clear();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
@@ -310,10 +323,15 @@ test("held acceptance preserves a same-text command edit through source Return",
     { kind: "command" as const, name: "same", offset: 3 },
     { kind: "skill" as const, name: "same", offset: 9 },
   ];
-  writeComposerDraft("root", { text, skillNames: ["same"], commandNames: ["same"], mentions });
-  const source = createTestComposerSource("root");
+  localStorage.setItem(
+    composerDraftStorageKey("root"),
+    JSON.stringify({ text, skillNames: ["same"], commandNames: ["same"], mentions }),
+  );
+  // Test storage must be installed BEFORE a default source starts (its
+  // initialization starts the shared runtime), or the strict setter rejects it.
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
+  const source = createTestComposerSource("root");
   const overrides = idleFocusThread("root");
   const fake = await mountComposer(
     "root",
@@ -439,7 +457,13 @@ test.each([
       };
     });
     await flushPendingTurnsProjectionForTests();
-    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    // An ordinary send ENQUEUEs (four stores); a recovery send RESENDs, which
+    // also advances the session row (six stores).
+    const hold = holdNextWriteTransaction(
+      recovery
+        ? ["outbox", "optimistic", "recovery", "sequences", "composerDrafts", "annotationNamespaces"]
+        : ["outbox", "optimistic", "recovery", "sequences"],
+    );
     try {
       await user.click(screen.getByRole("button", { name: "Send" }));
       await hold.reached;
@@ -518,7 +542,9 @@ test.each([
     };
   });
   const hold = holdNextWriteTransaction(
-    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+    pending === "recovery edit"
+      ? ["recovery", "composerDrafts", "annotationNamespaces"]
+      : ["outbox", "optimistic", "recovery", "sequences", "composerDrafts", "annotationNamespaces"],
   );
   try {
     let completion: Promise<void> | undefined;
@@ -591,6 +617,767 @@ test.each([
   } finally {
     hold.release();
   }
+});
+
+// Recovery activation through the real UI: the recovery update conditionally
+// consumes the ordinary row in the SAME transaction and advances exactly one
+// revision. Literal expected durable state is read through pre-opened
+// independent connections while the update's committed completion is held, then
+// re-read through fresh adapters after release and the whole-operation join.
+test("activating a recovery consumes the ordinary row atomically and advances one revision", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "recovery-activation";
+  const ref = "root";
+  const key = browserDraftKey(ref);
+  const failures: unknown[] = [];
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  const resources: Array<() => void> = [];
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  try {
+    const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => repository.close());
+    const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => outbox.close());
+    const observerRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => observerRepo.close());
+    const observerOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => observerOutbox.close());
+    setMutationStorageForTests(outbox);
+    // Cleanup for every resource is registered on creation, before the first
+    // seed await; both independent connections are pre-opened before any hold.
+    await repository.seedDraft(key, { text: "ordinary text", skillNames: [], mentions: [] });
+    await observerRepo.load(key);
+    const input = [{ type: "text" as const, text: "recover me" }];
+    const original = await outbox.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await outbox.transferToRecovery(original.clientMutationId, "rejected", "rejected reason");
+    // Create and await readiness inside act; mount outside (mountComposer flushes).
+    await act(async () => {
+      source = createComposerSourceState(ref, { repository, key, outbox });
+      await source.ready();
+    });
+    const mountedSource = source as ReturnType<typeof createComposerSourceState>;
+    await mountComposer(ref, {}, mountedSource);
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    // Settled pre-click rows.
+    const beforeOrdinary = await observerRepo.load(key);
+    const beforeRecovery = await observerOutbox.getRecovery(original.clientMutationId);
+    if (!beforeOrdinary || !beforeRecovery) throw new Error("missing pre-click rows");
+    expect(beforeOrdinary).toMatchObject({ text: "ordinary text", skillNames: [] });
+    expect(beforeOrdinary.commandNames).toBeUndefined();
+    expect(beforeOrdinary.mentions).toEqual([]);
+
+    const mergedText = "ordinary text\n\nrecover me";
+    // One literal whole-record expectation, defined before any held assertion.
+    const expectedRecovery = {
+      ...beforeRecovery,
+      payload: { ...(beforeRecovery.payload as object), input: [{ type: "text", text: mergedText }] },
+      optimisticDisplay: {
+        ...(beforeRecovery.optimisticDisplay as object),
+        input: [{ type: "text", text: mergedText }],
+      },
+      attachments: [],
+      composerText: mergedText,
+      composerMentions: [],
+    };
+
+    const row = await screen.findByText("recover me");
+    const li = row.closest("li");
+    if (!li) throw new Error("no recovery row");
+    hold = holdNextWriteTransaction(["recovery", "composerDrafts", "annotationNamespaces"]);
+    const localHold = hold;
+    try {
+      await act(async () => {
+        (within(li).getByRole("button", { name: "Edit message" }) as HTMLButtonElement).click();
+        await localHold.reached;
+      });
+      // Independently collected held oracles: one failing assertion cannot skip
+      // the revision or whole-record recovery checks through the shared attempt.
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary).toMatchObject({ text: "", skillNames: [] });
+      });
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary?.commandNames).toBeUndefined();
+      });
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary?.mentions).toBeUndefined();
+      });
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary?.key).toEqual(beforeOrdinary.key);
+      });
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary?.token.namespaceIncarnation).toBe(beforeOrdinary.token.namespaceIncarnation);
+      });
+      await attempt(async () => {
+        const heldOrdinary = await observerRepo.load(key);
+        expect(heldOrdinary?.token.sessionRevision).toBe(beforeOrdinary.token.sessionRevision + 1);
+      });
+      await attempt(async () => {
+        const heldRecovery = await observerOutbox.getRecovery(original.clientMutationId);
+        expect(heldRecovery).toEqual(expectedRecovery);
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    await attempt(async () => {
+      await act(async () => {
+        localHold.release();
+      });
+    });
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await mountedSource.whenSettled();
+      });
+    });
+
+    // Named settled ordinary capture after the whole-operation join; its literal
+    // fields are asserted independently, then a fresh same-database reopen must
+    // equal that capture and the same literal whole-recovery record.
+    let settledOrdinary: Awaited<ReturnType<typeof observerRepo.load>> | undefined;
+    await attempt(async () => {
+      settledOrdinary = await observerRepo.load(key);
+    });
+    await attempt(() => {
+      expect(settledOrdinary).toMatchObject({ text: "", skillNames: [] });
+    });
+    await attempt(() => {
+      expect(settledOrdinary?.commandNames).toBeUndefined();
+    });
+    await attempt(() => {
+      expect(settledOrdinary?.mentions).toBeUndefined();
+    });
+    const reopenedRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedRepo.close());
+    const reopenedOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedOutbox.close());
+    await attempt(async () => {
+      expect(await reopenedRepo.load(key)).toEqual(settledOrdinary);
+    });
+    await attempt(async () => {
+      expect(await reopenedOutbox.getRecovery(original.clientMutationId)).toEqual(expectedRecovery);
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await attempt(async () => {
+      await act(async () => {
+        hold?.release();
+      });
+    });
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+      });
+    });
+    await attempt(async () => {
+      await act(async () => {
+        source?.dispose();
+      });
+    });
+    for (const close of resources.splice(0).reverse()) await attempt(close);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "activation checkpoint failed");
+});
+
+// Activation/merge direction: with A already active, activating B writes the
+// full merged content into A (currentRecoveryId ?? selectedId) and removes the
+// now-redundant B, leaving A the active owner.
+test("merging a second recovery keeps the active owner and writes the full merged content", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "recovery-merge-direction";
+  const ref = "root";
+  const key = browserDraftKey(ref);
+  const failures: unknown[] = [];
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  const resources: Array<() => void> = [];
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  try {
+    const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => repository.close());
+    const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => outbox.close());
+    const observerRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => observerRepo.close());
+    const observerOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => observerOutbox.close());
+    setMutationStorageForTests(outbox);
+    await repository.seedDraft(key, { text: "ordinary text", skillNames: [], mentions: [] });
+    const seedRecovery = async (text: string): Promise<string> => {
+      const input = [{ type: "text" as const, text }];
+      const record = await outbox.enqueueIntent({
+        targetRef: ref,
+        method: "turn/start",
+        payload: { ref, input },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input },
+      });
+      await outbox.transferToRecovery(record.clientMutationId, "rejected", "rejected reason");
+      return record.clientMutationId;
+    };
+    // Seed BOTH recoveries before the mount, as the original fixture does.
+    const idA = await seedRecovery("recover A");
+    const idB = await seedRecovery("recover B");
+    // Create and await readiness inside act; mount outside (mountComposer flushes).
+    await act(async () => {
+      source = createComposerSourceState(ref, { repository, key, outbox });
+      await source.ready();
+    });
+    const mountedSource = source as ReturnType<typeof createComposerSourceState>;
+    await mountComposer(ref, {}, mountedSource);
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Settled post-mount pre-click boundary: capture the complete ordinary and
+    // both recovery records through the pre-opened independent adapters, and
+    // assert the plain-seed ordinary value before any activation.
+    const beforeA = await observerOutbox.getRecovery(idA);
+    const beforeB = await observerOutbox.getRecovery(idB);
+    const beforeOrdinary = await observerRepo.load(key);
+    if (!beforeA || !beforeB || !beforeOrdinary) throw new Error("missing pre-click rows");
+    expect(beforeOrdinary).toMatchObject({ text: "ordinary text", skillNames: [] });
+    expect(beforeOrdinary.commandNames).toBeUndefined();
+    expect(beforeOrdinary.mentions).toEqual([]);
+    expect(beforeA.payload).toMatchObject({ input: [{ type: "text", text: "recover A" }] });
+    expect(beforeB.payload).toMatchObject({ input: [{ type: "text", text: "recover B" }] });
+    const mergedText = "ordinary text\n\nrecover A\n\nrecover B";
+    // One literal whole-record expectation for A, from the settled capture.
+    const expectedA = {
+      ...beforeA,
+      payload: { ...(beforeA.payload as object), input: [{ type: "text", text: mergedText }] },
+      optimisticDisplay: {
+        ...(beforeA.optimisticDisplay as object),
+        input: [{ type: "text", text: mergedText }],
+      },
+      attachments: [],
+      composerText: mergedText,
+      composerMentions: [],
+    };
+    const rowA = (await screen.findByText("recover A")).closest("li");
+    const rowB = (await screen.findByText("recover B")).closest("li");
+    if (!rowA || !rowB) throw new Error("missing recovery rows");
+    const user = userEvent.setup();
+    await user.click(within(rowA).getByRole("button", { name: "Edit message" }));
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await user.click(within(rowB).getByRole("button", { name: "Edit message" }));
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // A stays active and carries the full merge; B is removed. Independent
+    // assertions so one failing check cannot skip the keeper or record checks.
+    await attempt(() => {
+      expect(mountedSource.getSnapshot().text).toBe(mergedText);
+    });
+    await attempt(() => {
+      expect(mountedSource.getSnapshot().activeRecoveryId).toBe(idA);
+    });
+    await attempt(async () => {
+      expect(await observerOutbox.getRecovery(idB)).toBeUndefined();
+    });
+    await attempt(async () => {
+      expect(await observerOutbox.getRecovery(idA)).toEqual(expectedA);
+    });
+    await attempt(async () => {
+      expect(await observerRepo.load(key)).toMatchObject({ text: "", skillNames: [] });
+    });
+    await attempt(async () => {
+      const ordinary = await observerRepo.load(key);
+      expect(ordinary?.commandNames).toBeUndefined();
+    });
+    await attempt(async () => {
+      const ordinary = await observerRepo.load(key);
+      expect(ordinary?.mentions).toBeUndefined();
+    });
+    // Named settled ordinary capture after the join, asserted literally, then a
+    // fresh same-database reopen compared to that capture and the whole record.
+    let settledOrdinary: Awaited<ReturnType<typeof observerRepo.load>> | undefined;
+    await attempt(async () => {
+      settledOrdinary = await observerRepo.load(key);
+    });
+    await attempt(() => {
+      expect(settledOrdinary).toMatchObject({ text: "", skillNames: [] });
+    });
+    await attempt(() => {
+      expect(settledOrdinary?.commandNames).toBeUndefined();
+    });
+    await attempt(() => {
+      expect(settledOrdinary?.mentions).toBeUndefined();
+    });
+    const reopenedRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedRepo.close());
+    const reopenedOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedOutbox.close());
+    await attempt(async () => {
+      expect(await reopenedRepo.load(key)).toEqual(settledOrdinary);
+    });
+    await attempt(async () => {
+      expect(await reopenedOutbox.getRecovery(idA)).toEqual(expectedA);
+    });
+    await attempt(async () => {
+      expect(await reopenedOutbox.getRecovery(idB)).toBeUndefined();
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await runRecoveryCaseCleanup({ attempt, getSource: () => source, resources });
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "merge checkpoint failed");
+});
+
+// Recovery-update abort: a real abort at the updateRecoveryInput transaction
+// boundary is reported through the existing error convention, while the durable
+// ordinary and recovery rows survive exactly as they were before activation.
+test("a recovery-update abort is reported and preserves the durable ordinary and recovery rows", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "recovery-update-abort";
+  const ref = "root";
+  const key = browserDraftKey(ref);
+  let faultArmed = true;
+  const failure = new Error("update aborted");
+  const failures: unknown[] = [];
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  const resources: Array<() => void> = [];
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  try {
+    const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => repository.close());
+    const outbox = new MutationOutboxIndexedDB({
+      indexedDB: factory,
+      databaseName,
+      beforeCommit: (operation) => {
+        if (faultArmed && operation === "updateRecoveryInput") throw failure;
+      },
+    });
+    resources.push(() => outbox.close());
+    const observerRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => observerRepo.close());
+    const observerOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => observerOutbox.close());
+    setMutationStorageForTests(outbox);
+    await repository.seedDraft(key, { text: "ordinary text", skillNames: [], mentions: [] });
+    const input = [{ type: "text" as const, text: "recover me" }];
+    const original = await outbox.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await outbox.transferToRecovery(original.clientMutationId, "rejected", "rejected reason");
+    // Create and await readiness inside act; mount outside (mountComposer flushes).
+    await act(async () => {
+      source = createComposerSourceState(ref, { repository, key, outbox });
+      await source.ready();
+    });
+    const mountedSource = source as ReturnType<typeof createComposerSourceState>;
+    await mountComposer(ref, {}, mountedSource);
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Settled post-mount pre-click boundary: capture the complete ordinary and
+    // recovery records through the pre-opened independent adapters, and assert
+    // the plain-seed ordinary value before the activating click.
+    const beforeOrdinary = await observerRepo.load(key);
+    const beforeRecovery = await observerOutbox.getRecovery(original.clientMutationId);
+    if (!beforeOrdinary || !beforeRecovery) throw new Error("missing pre-click rows");
+    expect(beforeOrdinary).toMatchObject({ text: "ordinary text", skillNames: [] });
+    expect(beforeOrdinary.commandNames).toBeUndefined();
+    expect(beforeOrdinary.mentions).toEqual([]);
+    const row = await screen.findByText("recover me");
+    const li = row.closest("li");
+    if (!li) throw new Error("no recovery row");
+    await userEvent.setup().click(within(li).getByRole("button", { name: "Edit message" }));
+    // The fault stays armed through the body join; cleanup disarms it.
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(() => {
+      expect(getToasts().some((toast) => toast.kind === "error" && toast.text.includes("update aborted"))).toBe(true);
+    });
+    // Rollback, not mere existence: the aborted activation wrote nothing, so both
+    // durable rows equal their settled pre-click records, ordinary token included.
+    await attempt(async () => {
+      expect(await observerRepo.load(key)).toEqual(beforeOrdinary);
+    });
+    await attempt(async () => {
+      expect(await observerOutbox.getRecovery(original.clientMutationId)).toEqual(beforeRecovery);
+    });
+    const reopenedRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedRepo.close());
+    const reopenedOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedOutbox.close());
+    await attempt(async () => {
+      expect(await reopenedRepo.load(key)).toEqual(beforeOrdinary);
+    });
+    await attempt(async () => {
+      expect(await reopenedOutbox.getRecovery(original.clientMutationId)).toEqual(beforeRecovery);
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await runRecoveryCaseCleanup({
+      attempt,
+      getSource: () => source,
+      resources,
+      disarm: () => {
+        faultArmed = false;
+      },
+    });
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "abort checkpoint failed");
+});
+
+// Shared teardown for the merge and abort cases: disarm any fault, join the
+// tracked recovery operation outside act, then settle and dispose the source in
+// two independent act-wrapped attempts so a rejected settlement still attempts
+// disposal exactly once, then close every adapter exactly once. Body and
+// cleanup errors share the caller's collection; the caller rethrows a sole
+// error unchanged, otherwise an AggregateError.
+async function runRecoveryCaseCleanup(args: {
+  attempt: (step: () => void | Promise<void>) => Promise<void>;
+  getSource: () => ReturnType<typeof createComposerSourceState> | undefined;
+  resources: Array<() => void>;
+  disarm?: () => void;
+}): Promise<void> {
+  if (args.disarm) await args.attempt(args.disarm);
+  await args.attempt(() => flushPendingTurnsProjectionForTests());
+  await args.attempt(async () => {
+    const source = args.getSource();
+    if (!source) return;
+    await act(async () => {
+      await source.whenSettled();
+    });
+  });
+  await args.attempt(async () => {
+    const source = args.getSource();
+    if (!source) return;
+    await act(async () => {
+      source.dispose();
+    });
+  });
+  for (const close of args.resources.splice(0).reverse()) await args.attempt(close);
+}
+
+// A one-shot, instance-local call-through gate on the real outbox's
+// resendRecovery for ONE selected recovery id. It records the exact received
+// arguments, signals entry BEFORE the original transaction opens, waits on a
+// controlled gate, then invokes the BOUND original method with those unchanged
+// arguments. Interception disables on the first matching call, so a later resend
+// is never gated. It neither injects the missing caller guard nor fabricates a
+// storage result; `completed` settles on either resolution or rejection.
+class GatedResendStorage extends MutationOutboxIndexedDB {
+  readonly entered: Promise<void>;
+  private markEntered: (() => void) | undefined;
+  private releaseGate: (() => void) | undefined;
+  private readonly gate: Promise<void>;
+  private targetId: string | null = null;
+  private armed = false;
+  private readonly received: Array<Parameters<MutationOutboxIndexedDB["resendRecovery"]>> = [];
+  constructor(options: ConstructorParameters<typeof MutationOutboxIndexedDB>[0]) {
+    super(options);
+    this.entered = new Promise((resolve) => {
+      this.markEntered = resolve;
+    });
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+  armFor(clientMutationId: string): void {
+    this.targetId = clientMutationId;
+    this.armed = true;
+  }
+  receivedArgs(): ReadonlyArray<Parameters<MutationOutboxIndexedDB["resendRecovery"]>> {
+    return this.received;
+  }
+  release(): void {
+    this.armed = false;
+    this.releaseGate?.();
+  }
+  override async resendRecovery(
+    ...args: Parameters<MutationOutboxIndexedDB["resendRecovery"]>
+  ): ReturnType<MutationOutboxIndexedDB["resendRecovery"]> {
+    if (!this.armed || args[0] !== this.targetId) return super.resendRecovery(...args);
+    // One-shot: stop intercepting before awaiting, so a later resend cannot block.
+    this.armed = false;
+    this.received.push(args);
+    this.markEntered?.();
+    await this.gate;
+    return super.resendRecovery(...args);
+  }
+}
+
+// A real Composer resend of an active recovery captures its authority before a
+// competing same-session ordinary commit, keeps it across the resend wait, and
+// refuses without successful local cleanup or outbox/optimistic/RPC effects.
+test("a recovery resend refuses after a competing same-session ordinary commit advances the durable token", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "recovery-resend-competitor";
+  const ref = "root";
+  const key = browserDraftKey(ref);
+  const failures: unknown[] = [];
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  const resources: Array<() => void> = [];
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  let releaseGate: (() => void) | undefined;
+  let releaseActivationHold: (() => void) | undefined;
+  let restoreObservers: (() => void) | undefined;
+  try {
+    const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => repository.close());
+    const gated = new GatedResendStorage({ indexedDB: factory, databaseName });
+    resources.push(() => gated.close());
+    releaseGate = () => gated.release();
+    const observerRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => observerRepo.close());
+    const observerOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => observerOutbox.close());
+    // Install the real runtime outbox BEFORE any mutation-runtime startup so the
+    // threads resend wrapper dispatches through this exact gated instance.
+    setMutationStorageForTests(gated);
+    await repository.seedDraft(key, { text: "ordinary text", skillNames: [], mentions: [] });
+    const input = [{ type: "text" as const, text: "recover me" }];
+    const original = await gated.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await gated.transferToRecovery(original.clientMutationId, "rejected", "rejected reason");
+    // Create and await readiness inside act; mount outside (mountComposer flushes).
+    await act(async () => {
+      source = createComposerSourceState(ref, { repository, key, outbox: gated });
+      await source.ready();
+    });
+    const mountedSource = source as ReturnType<typeof createComposerSourceState>;
+    // Observe the caller's actual submission capture without altering it; the
+    // original method is restored after the tracked work joins.
+    const originalSubmissionDraft = mountedSource.submissionDraft;
+    let capturedSubmission: Awaited<ReturnType<typeof mountedSource.submissionDraft>> | undefined;
+    mountedSource.submissionDraft = async (value) => {
+      const result = await originalSubmissionDraft.call(mountedSource, value);
+      capturedSubmission = result;
+      return result;
+    };
+    // Registered at installation so the failure-safe finally can always restore it.
+    restoreObservers = () => {
+      mountedSource.submissionDraft = originalSubmissionDraft;
+    };
+    const fake = await mountComposer(ref, {}, mountedSource);
+    await act(async () => {
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Activate the recovery row through the real UI so the next Send resends it.
+    const row = await screen.findByText("recover me");
+    const li = row.closest("li");
+    if (!li) throw new Error("no recovery row");
+    // Hold the activation's recovery write so its projection refresh lands
+    // inside act, not during the click's Testing Library window.
+    const activationHold = holdNextWriteTransaction(["recovery", "composerDrafts", "annotationNamespaces"]);
+    releaseActivationHold = () => activationHold.release();
+    await act(async () => {
+      (within(li).getByRole("button", { name: "Edit message" }) as HTMLButtonElement).click();
+      await activationHold.reached;
+      activationHold.release();
+      await mountedSource.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Settled pre-action boundary, AFTER activation: full local editor payload,
+    // generation/backing, ordinary token, full recovery, empty outbox/optimistic.
+    const preSnapshot = mountedSource.getSnapshot();
+    const preGeneration = mountedSource.getLocalGeneration();
+    const preBacking = mountedSource.getRuntimeBacking();
+    const preOrdinary = await observerRepo.load(key);
+    const preRecovery = await observerOutbox.getRecovery(original.clientMutationId);
+    if (!preOrdinary || !preRecovery) throw new Error("missing pre-action rows");
+    const preOutbox = await observerOutbox.listOutbox(ref);
+    const preOptimistic = await observerOutbox.listOptimistic(ref);
+    const preOutboundCalls = fake.calls.filter(
+      (call) => call.method === "turn/start" || call.method === "turn/queue" || call.method === "turn/steer",
+    );
+    gated.armFor(original.clientMutationId);
+    // The real RPC surface for a resent recovery: record an applied receipt for
+    // every route this fixture can produce. Nothing is fabricated into storage.
+    for (const method of ["turn/start", "turn/queue", "turn/steer"] as const) {
+      fake.on(method, (params) => {
+        return {
+          turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+          receipt: {
+            clientMutationId: params.clientMutationId,
+            disposition: "applied",
+            threadId: "thr_root",
+            projectionState: "reflected",
+          },
+        };
+      });
+    }
+    let expectedOrdinary: NonNullable<Awaited<ReturnType<typeof observerRepo.load>>> | undefined;
+    // One act window covers the whole accepted submission: the real Send, gate
+    // entry, the competing commit, the release, the settlement, and (when the
+    // caller accepted the stale resend) its real dispatch.
+    await act(async () => {
+      (screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).click();
+      await gated.entered;
+      await attempt(() => {
+        expect(gated.receivedArgs()).toHaveLength(1);
+      });
+      // The caller's capture predates the competitor: it holds the pre-resend
+      // settled token, not the token the competitor later advances.
+      await attempt(() => {
+        expect(capturedSubmission?.settlementGuard?.token.sessionRevision).toBe(preOrdinary.token.sessionRevision);
+      });
+      // The competing same-session ordinary commit. The resend's transaction has
+      // not opened, so a separate connection can finish and advance the token.
+      const gateRow = await observerRepo.load(key);
+      if (!gateRow) throw new Error("missing ordinary row at gate");
+      const competitor = await observerRepo.commitEdit(
+        key,
+        gateRow.token,
+        { text: "newer ordinary", skillNames: [], mentions: [] },
+        () => true,
+      );
+      expect(competitor.state).toBe("committed");
+      if (competitor.state !== "committed") throw new Error("competitor did not commit");
+      expect(competitor.draft.token.sessionRevision).toBe(gateRow.token.sessionRevision + 1);
+      expectedOrdinary = competitor.draft;
+      // Durable-only invalidation: the sender's local authority and its full
+      // editor payload are unchanged after the competitor, before release.
+      await attempt(() => {
+        expect(mountedSource.getLocalGeneration()).toBe(preGeneration);
+      });
+      await attempt(() => {
+        expect(mountedSource.getRuntimeBacking()).toEqual(preBacking);
+      });
+      await attempt(() => {
+        expect(mountedSource.getSnapshot()).toEqual(preSnapshot);
+      });
+      releaseGate?.();
+    });
+    // Join the captured call and all tracked projection/submission work OUTSIDE
+    // any enclosing act: the existing source-bearing tracked operation covers the
+    // real resend and its receipt rounds without requiring an RPC to occur.
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await mountedSource.whenSettled();
+      });
+    });
+    await attempt(() => flushPendingTurnsProjectionForTests());
+
+    // Desired refusal: recovery intact, the competing ordinary value survives, no
+    // newly queued/optimistic row, no new turn/start|turn/queue|turn/steer RPC,
+    // and no successful local cleanup.
+    await attempt(async () => {
+      expect(await observerOutbox.getRecovery(original.clientMutationId)).toEqual(preRecovery);
+    });
+    await attempt(async () => {
+      expect(await observerRepo.load(key)).toEqual(expectedOrdinary);
+    });
+    await attempt(async () => {
+      expect(await observerOutbox.listOutbox(ref)).toEqual(preOutbox);
+    });
+    await attempt(async () => {
+      expect(await observerOutbox.listOptimistic(ref)).toEqual(preOptimistic);
+    });
+    await attempt(() => {
+      const outbound = fake.calls.filter(
+        (call) => call.method === "turn/start" || call.method === "turn/queue" || call.method === "turn/steer",
+      );
+      expect(outbound).toEqual(preOutboundCalls);
+    });
+    await attempt(() => {
+      expect(mountedSource.getSnapshot()).toEqual(preSnapshot);
+    });
+    const reopenedRepo = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedRepo.close());
+    const reopenedOutbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+    resources.push(() => reopenedOutbox.close());
+    await attempt(async () => {
+      expect(await reopenedRepo.load(key)).toEqual(expectedOrdinary);
+    });
+    await attempt(async () => {
+      expect(await reopenedOutbox.getRecovery(original.clientMutationId)).toEqual(preRecovery);
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    // Failure-safe ownership: release the held activation completion and the
+    // resend gate, join the actual tracked operation on success OR failure,
+    // restore the observed methods BEFORE source disposal, then reuse the frozen
+    // cleanup helper. Each step is independently attempted.
+    await attempt(() => {
+      releaseActivationHold?.();
+    });
+    await attempt(() => {
+      releaseGate?.();
+    });
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(() => {
+      restoreObservers?.();
+    });
+    await runRecoveryCaseCleanup({
+      attempt,
+      getSource: () => source,
+      resources,
+      disarm: () => {
+        releaseActivationHold?.();
+        releaseGate?.();
+      },
+    });
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "resend competitor checkpoint failed");
 });
 
 test("a pending source image survives a Composer view remount without sending", async () => {
@@ -682,7 +1469,9 @@ test.each([
     } else if (action === "remove") {
       await userEvent.setup().click(screen.getByRole("button", { name: "Remove source.png" }));
     } else {
-      act(() => source.clearSubmittedAttachments([...source.attachments.getState().items]));
+      await act(async () => {
+        await source.clearSubmittedAttachments([...source.attachments.getState().items]);
+      });
     }
 
     expect.soft(editor.textContent).toBe(text);
@@ -1130,16 +1919,25 @@ test("a stalled capture read dispatches the steer directly and never fails close
   const reached = new Promise<void>((resolve) => {
     requestObserved = resolve;
   });
-  vi.spyOn(IDBObjectStore.prototype, "get").mockImplementationOnce(function (this: IDBObjectStore, ...args) {
+  let interceptedGets = 0;
+  vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
     const request = get.apply(this, args);
-    hold = holdIndexedDBEvent(request, "success");
-    void hold.reached.then(() => requestObserved?.());
-    const pulse = () => {
-      this.count().addEventListener("success", () => {
-        if (keepAlive) pulse();
-      });
-    };
-    pulse();
+    // The intended target is the click-time stop-epoch capture: the first read
+    // of THIS ref's sequence row (outbox.readStopEpoch reads SEQUENCE_STORE).
+    // The submission preparation reads composerDrafts/annotationNamespaces
+    // first, so a bare "next get" would hold an ordinary save instead; target
+    // the sequence store and key explicitly.
+    if (interceptedGets === 0 && this.name === MUTATION_SEQUENCES_STORE && args[0] === "ref_a") {
+      interceptedGets = 1;
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => requestObserved?.());
+      const pulse = () => {
+        this.count().addEventListener("success", () => {
+          if (keepAlive) pulse();
+        });
+      };
+      pulse();
+    }
     return request;
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1482,16 +2280,21 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
 
-test("a successful strip-triggered drain clears the composer's own text and draft", async () => {
+test("a successful strip-triggered drain clears the composer's own text and durable draft exactly once", async () => {
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
-      activeTurnId: "turn_1",
+  const source = createTestComposerSource("ref_a");
+  const fake = await mountComposer(
+    "ref_a",
+    {
+      evener: {
+        ref: "ref_a",
+        capabilities: FULL_CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+        activeTurnId: "turn_1",
+      },
     },
-  });
+    source,
+  );
   fake.on("turn/drainAsSteer", (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,
@@ -1501,11 +2304,50 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "dm");
-  await user.click(drainButton());
+  try {
+    const editor = textarea() as HTMLDivElement;
+    await user.type(editor, "dm");
+    // Drain the accepted typed edit BEFORE the durable pre-submit baseline.
+    await flushPendingTurnsProjectionForTests();
+    const key = browserDraftKey("ref_a");
+    const before = await getBrowserDraftRepository().load(key);
+    expect(before).toMatchObject({ text: "dm", skillNames: [] });
+    const beforeToken = before?.token;
+    expect(beforeToken).toBeDefined();
 
-  await waitFor(() => expect((textarea() as HTMLDivElement).textContent).toBe(""));
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
+    await user.click(drainButton());
+
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
+    await flushPendingTurnsProjectionForTests();
+    // The durable ordinary row is cleared through the real Composer drain path,
+    // advancing exactly one revision from the accepted edit, and an independent
+    // adapter proves it is durably empty (not merely locally empty).
+    await act(async () => {
+      const repository = getBrowserDraftRepository();
+      const cleared = await repository.load(key);
+      expect(cleared).toMatchObject({ text: "", skillNames: [] });
+      expect(cleared?.commandNames).toBeUndefined();
+      expect(cleared?.mentions).toBeUndefined();
+      expect(cleared?.token.namespaceIncarnation).toBe(beforeToken!.namespaceIncarnation);
+      expect(cleared?.token.sessionRevision).toBe(beforeToken!.sessionRevision + 1);
+      const reopened = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+      try {
+        const reopenedRow = await reopened.load(key);
+        expect(reopenedRow).toMatchObject({ text: "", skillNames: [] });
+        expect(reopenedRow?.commandNames).toBeUndefined();
+        expect(reopenedRow?.mentions).toBeUndefined();
+        expect(reopenedRow?.token).toEqual(cleared?.token);
+      } finally {
+        reopened.close();
+      }
+    });
+  } finally {
+    // Join accepted source saves and the started submission/storage chain before
+    // shared teardown, even if an earlier assertion failed.
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+  }
 });
 
 // Mirrors this file's own "text typed while a send is still in flight
@@ -1813,6 +2655,1000 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
 
+// A successful built-in invocation is an ordinary accepted submit too, so its
+// cleanup must go through the same guarded durable path as Send/Steer: the
+// ordinary row it committed must be cleared, not merely the local editor. The
+// current built-in success path clears local state and the legacy draft only,
+// leaving the durable row stale.
+test("a successful built-in send clears the durable ordinary row", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_builtin_durable");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "builtin-durable-row" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "builtin-durable-row" });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState("ref_builtin_durable", { repository, key, outbox });
+  try {
+    const ready = source.ready();
+    // Hydration's own seed write is held, so mount happens while the source's
+    // first publication is still pending; release it inside act.
+    await hold.reached;
+    const fake = await mountComposer("ref_builtin_durable", hydrationFocusThread("ref_builtin_durable"), source);
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+    const compact = deferred<Record<string, never>>();
+    fake.on("thread/compact/start", () => compact.promise);
+    const user = userEvent.setup();
+    const editor = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
+    await user.type(editor, "/compact");
+    await act(async () => {
+      await source.whenSettled();
+    });
+    // The accepted edit is durable before the built-in runs.
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    // Resolve the real RPC inside an act scope so its continuation (busy reset
+    // then clear) commits within React's work, not a fixed flush loop.
+    await act(async () => {
+      compact.resolve({});
+    });
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    // The durable row must be emptied by the guarded cleanup, not just the editor.
+    expect(await repository.load(key)).toMatchObject({ text: "", skillNames: [] });
+  } finally {
+    hold.release();
+    await act(async () => {
+      await source.whenSettled();
+      source.dispose();
+    });
+    outbox.close();
+    repository.close();
+  }
+});
+
+// One clean lifecycle for the built-in durable tests: a real injected source
+// whose hydration seed write is held until mount, so the Composer's first
+// publication happens inside act.
+async function withBuiltinDurable(
+  ref: string,
+  body: (ctx: {
+    fake: FakeClient;
+    editor: HTMLDivElement;
+    source: ReturnType<typeof createComposerSourceState>;
+    repository: ReturnType<typeof createBrowserDraftRepository>;
+    outbox: MutationOutboxIndexedDB;
+    key: ReturnType<typeof browserDraftKey>;
+    factory: IDBFactory;
+    gate: ReturnType<typeof deferred<void>>;
+    send: () => HTMLButtonElement;
+  }) => Promise<void>,
+): Promise<void> {
+  const factory = new IDBFactory();
+  const key = browserDraftKey(ref);
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: `builtin-durable-${ref}` });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: `builtin-durable-${ref}` });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState(ref, { repository, key, outbox });
+  // Pre-created response gate: exists before the submission can dispatch, so a
+  // late handler awaits a promise cleanup can still release.
+  const gate = deferred<void>();
+  let bodyError: unknown;
+  try {
+    const ready = source.ready();
+    await hold.reached;
+    const fake = await mountComposer(ref, hydrationFocusThread(ref), source);
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+    await body({
+      fake,
+      editor: screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement,
+      source,
+      repository,
+      outbox,
+      key,
+      factory,
+      gate,
+      send: () => screen.getByRole("button", { name: "Send" }) as HTMLButtonElement,
+    });
+  } catch (error) {
+    bodyError = error;
+  } finally {
+    // Disarm the hydration hold and release the gate. The builtin consumer can
+    // finish with either a preserved nonempty editor or a cleared empty editor
+    // (Send is disabled for empty content), so join the finite chain through an
+    // act flush + strict flush rather than an impossible Send-enabled predicate.
+    hold.release();
+    gate.resolve(undefined);
+    // Each cleanup step is attempted independently; every failure is collected
+    // so a rejecting settlement cannot skip disposal, and no error is dropped.
+    const cleanupErrors: unknown[] = [];
+    try {
+      await act(async () => {});
+      await flushPendingTurnsProjectionForTests();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await act(async () => {
+        await source.whenSettled();
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await act(async () => {
+        source.dispose();
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      outbox.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      repository.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    // The exact original error when it alone occurred; otherwise an aggregate
+    // holding the original plus every cleanup error.
+    if (bodyError !== undefined) cleanupErrors.unshift(bodyError);
+    if (cleanupErrors.length === 1) bodyError = cleanupErrors[0];
+    else if (cleanupErrors.length > 1) bodyError = new AggregateError(cleanupErrors, "builtin durable cleanup failed");
+  }
+  if (bodyError !== undefined) throw bodyError;
+}
+
+test("a failed built-in invocation preserves the durable ordinary row", async () => {
+  await withBuiltinDurable("ref_builtin_fail", async ({ fake, editor, source, repository, key, gate, send }) => {
+    let rpcCount = 0;
+    fake.on("thread/compact/start", async () => {
+      rpcCount += 1;
+      await gate.promise;
+      throw new Error("compact failed");
+    });
+    const user = userEvent.setup();
+    await user.type(editor, "/compact");
+    await act(async () => {
+      await source.whenSettled();
+    });
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+
+    await user.click(send());
+    // The builtin actually entered its RPC, and holds the composer busy.
+    await waitFor(() => expect(rpcCount).toBe(1));
+    expect(send().disabled).toBe(true);
+    // Release and observe the failure consumer completion (busy cleared).
+    await act(async () => {
+      gate.resolve(undefined);
+    });
+    await waitFor(() => expect(send().disabled).toBe(false));
+    await act(async () => {
+      await source.whenSettled();
+    });
+    // Actual failure feedback: runBuiltinCommand toasted the friendly error.
+    expect(getToasts().length).toBeGreaterThan(0);
+    // Failure leaves the draft and its durable row exactly as typed.
+    expect(editor.textContent).toBe("/compact");
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+  });
+});
+
+test("a built-in send whose RPC is held keeps a newer edit's durable value", async () => {
+  await withBuiltinDurable(
+    "ref_builtin_race",
+    async ({ fake, editor, source, repository, key, factory, gate, send }) => {
+      let rpcCount = 0;
+      fake.on("thread/compact/start", async () => {
+        rpcCount += 1;
+        await gate.promise;
+        return {};
+      });
+      const user = userEvent.setup();
+      await user.type(editor, "/compact");
+      await act(async () => {
+        await source.whenSettled();
+      });
+
+      await user.click(send());
+      // Actual RPC entry and held component busy BEFORE the newer edit.
+      await waitFor(() => expect(rpcCount).toBe(1));
+      expect(send().disabled).toBe(true);
+      // A newer full edit lands while the built-in RPC is still held.
+      await act(async () => {
+        replaceEditorText(editor, "/compact more");
+      });
+      await act(async () => {
+        await source.whenSettled();
+      });
+      // Release and observe the builtin consumer completion (busy cleared).
+      await act(async () => {
+        gate.resolve(undefined);
+      });
+      await waitFor(() => expect(send().disabled).toBe(false));
+      await act(async () => {
+        await source.whenSettled();
+      });
+      // The stale built-in cleanup must not erase the newer accepted value.
+      expect(editor.textContent).toBe("/compact more");
+      expect(source.getSnapshot()).toMatchObject({ text: "/compact more", skillNames: [], commandNames: [] });
+      const row = await repository.load(key);
+      expect(row).toMatchObject({ text: "/compact more", skillNames: [] });
+      expect(row?.commandNames).toBeUndefined();
+      expect(row?.mentions).toBeUndefined();
+      const reopened = createBrowserDraftRepository({
+        indexedDB: factory,
+        databaseName: "builtin-durable-ref_builtin_race",
+      });
+      try {
+        const reopenedRow = await reopened.load(key);
+        expect(reopenedRow).toMatchObject({ text: "/compact more", skillNames: [] });
+        expect(reopenedRow?.token).toEqual(row?.token);
+      } finally {
+        reopened.close();
+      }
+    },
+  );
+});
+
+// Helper regression probe: an early failure after real RPC entry but before any
+// newer edit must keep its own sentinel visible, and the helper must still
+// dispose/close after the finite builtin consumer completes. It also forces a
+// cleanup failure to prove every error is surfaced, not dropped.
+test("the builtin durable helper keeps an early failure visible and still cleans up", async () => {
+  const sentinel = new Error("early builtin sentinel");
+  const cleanupSentinel = new Error("cleanup closure failed");
+  let editorAtDispose = "unset";
+  let repositoryCloses = 0;
+  let outboxCloses = 0;
+  const thrown = await withBuiltinDurable(
+    "ref_builtin_probe",
+    async ({ fake, editor, source, repository, outbox, gate, send }) => {
+      // Call-through observations of the REAL lifecycle, not replacement cleanup.
+      const realDispose = source.dispose.bind(source);
+      vi.spyOn(source, "dispose").mockImplementation(() => {
+        editorAtDispose = editor.textContent ?? "";
+        realDispose();
+        throw cleanupSentinel;
+      });
+      const realRepositoryClose = repository.close.bind(repository);
+      vi.spyOn(repository, "close").mockImplementation(() => {
+        repositoryCloses += 1;
+        realRepositoryClose();
+      });
+      const realOutboxClose = outbox.close.bind(outbox);
+      vi.spyOn(outbox, "close").mockImplementation(() => {
+        outboxCloses += 1;
+        realOutboxClose();
+      });
+      let rpcCount = 0;
+      fake.on("thread/compact/start", async () => {
+        rpcCount += 1;
+        await gate.promise;
+        return {};
+      });
+      const user = userEvent.setup();
+      await user.type(editor, "/compact");
+      await act(async () => {
+        await source.whenSettled();
+      });
+      await user.click(send());
+      await waitFor(() => expect(rpcCount).toBe(1));
+      throw sentinel;
+    },
+  ).catch((error: unknown) => error);
+  // The successful handler cleared the unchanged editor before disposal, so the
+  // sentinel's clear was observed at the lifecycle boundary.
+  expect(editorAtDispose).toBe("");
+  expect(repositoryCloses).toBe(1);
+  expect(outboxCloses).toBe(1);
+  // Both errors are visible: the original sentinel and the cleanup failure.
+  expect(thrown).toBeInstanceOf(AggregateError);
+  const errors = (thrown as AggregateError).errors;
+  expect(errors).toContain(sentinel);
+  expect(errors).toContain(cleanupSentinel);
+});
+
+// Sanity: a single cleanup-free body error is thrown exactly, not aggregated.
+test("the builtin durable helper rethrows a lone body error unchanged", async () => {
+  const sentinel = new Error("lone builtin sentinel");
+  const thrown = await withBuiltinDurable("ref_builtin_probe_lone", async ({ fake, editor, source, gate, send }) => {
+    let rpcCount = 0;
+    fake.on("thread/compact/start", async () => {
+      rpcCount += 1;
+      await gate.promise;
+      return {};
+    });
+    const user = userEvent.setup();
+    await user.type(editor, "/compact");
+    await act(async () => {
+      await source.whenSettled();
+    });
+    await user.click(send());
+    await waitFor(() => expect(rpcCount).toBe(1));
+    throw sentinel;
+  }).catch((error: unknown) => error);
+  expect(thrown).toBe(sentinel);
+});
+
+// The REAL Composer submission path. The source's own two-store accepted-save
+// completion is held (sourceState.test.ts's preparation-window mechanism), so the
+// submission's preparation blocks on it: the producer has not run, a later full
+// accepted edit lands before release, and the ORIGINAL value is what reaches the
+// durable outbox while the later edit stays local and durably reopened.
+test("a real Composer send commits the original full value across a held accepted-save preparation", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "composer-capture" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "composer-capture" });
+  setMutationStorageForTests(outbox);
+  const original = {
+    text: "run /cmd:one then /pkg:one",
+    skillNames: ["pkg:one"],
+    commandNames: ["cmd:one"],
+    mentions: [
+      { kind: "command" as const, name: "cmd:one", offset: 4 },
+      { kind: "skill" as const, name: "pkg:one", offset: 18 },
+    ],
+  };
+  const later = {
+    text: "later /cmd:two then /pkg:two",
+    skillNames: ["pkg:two"],
+    commandNames: ["cmd:two"],
+    mentions: [
+      { kind: "command" as const, name: "cmd:two", offset: 6 },
+      { kind: "skill" as const, name: "pkg:two", offset: 20 },
+    ],
+  };
+  const source = createComposerSourceState("ref_a", { repository, key, outbox });
+  // Pre-create the controlled response gate BEFORE the submission, so a handler
+  // that enters after an early failure still awaits a real promise that cleanup
+  // can release unconditionally.
+  const gate = deferred<void>();
+  let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let bodyError: unknown;
+  try {
+    const ready = source.ready();
+    const fake = await mountComposer("ref_a", hydrationFocusThread("ref_a"), source);
+    await act(async () => {
+      await ready;
+      await source.whenSettled();
+    });
+    let outbound: Record<string, unknown> | undefined;
+    fake.on("turn/start", async (params) => {
+      outbound = params as unknown as Record<string, unknown>;
+      await gate.promise;
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thr_ref_a",
+          projectionState: "reflected",
+        },
+      };
+    });
+    // Hold the next two-store accepted save's completion: the submission's
+    // preparation drain awaits exactly this write.
+    hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+    await act(async () => {
+      source.acceptEdit(original);
+    });
+    await hold.reached;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    // Preparation is incomplete: the producer has not started.
+    expect(outbound).toBeUndefined();
+    expect(await outbox.listOutbox("ref_a")).toHaveLength(0);
+    // A later FULL accepted edit lands after preparation entry, before release.
+    await act(async () => {
+      source.acceptEdit(later);
+    });
+    await act(async () => {
+      hold?.release();
+      // The producer enters with its RPC still gated; assert both outbound
+      // boundaries while the durable row is present.
+      await vi.waitFor(() => expect(outbound).toBeDefined());
+      await vi.waitFor(async () => expect(await outbox.listOutbox("ref_a")).toHaveLength(1));
+    });
+    // The actual outbound wire input carries the ORIGINAL full value.
+    expect(outbound?.input).toEqual([
+      {
+        type: "text",
+        text: "run /cmd:one then /pkg:one",
+        mentions: [
+          { kind: "command", name: "cmd:one", offset: 4 },
+          { kind: "skill", name: "pkg:one", offset: 18 },
+        ],
+      },
+      { type: "skill", name: "pkg:one" },
+      { type: "command", name: "cmd:one" },
+    ]);
+    // The durable outbound row itself carries the ORIGINAL full input.
+    expect((await outbox.listOutbox("ref_a"))[0]?.payload.input).toEqual([
+      {
+        type: "text",
+        text: "run /cmd:one then /pkg:one",
+        mentions: [
+          { kind: "command", name: "cmd:one", offset: 4 },
+          { kind: "skill", name: "pkg:one", offset: 18 },
+        ],
+      },
+      { type: "skill", name: "pkg:one" },
+      { type: "command", name: "cmd:one" },
+    ]);
+    // Release the controlled response, then join the tracked submission with the
+    // project flush OUTSIDE an enclosing act (its documented outermost use).
+    await act(async () => {
+      gate.resolve();
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Real receipt/storage completion (the outbox row is settled and gone), then
+    // the rendered Composer completion: the Send control is enabled once its
+    // actionPending - including Composer's own busyAction - has cleared.
+    await act(async () => {
+      await vi.waitFor(async () => expect(await outbox.listOutbox("ref_a")).toHaveLength(0));
+      await waitFor(() =>
+        expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false),
+      );
+    });
+    // The later accepted full edit stays local and durably reopened, all fields.
+    expect(source.getSnapshot()).toMatchObject({
+      text: later.text,
+      skillNames: later.skillNames,
+      commandNames: later.commandNames,
+      mentions: later.mentions,
+    });
+    expect(await repository.load(key)).toMatchObject({
+      text: later.text,
+      skillNames: later.skillNames,
+      commandNames: later.commandNames,
+      mentions: later.mentions,
+    });
+    const reopened = createBrowserDraftRepository({ indexedDB: factory, databaseName: "composer-capture" });
+    try {
+      expect(await reopened.load(key)).toMatchObject({
+        text: later.text,
+        skillNames: later.skillNames,
+        commandNames: later.commandNames,
+        mentions: later.mentions,
+      });
+    } finally {
+      reopened.close();
+    }
+  } catch (error) {
+    bodyError = error;
+  } finally {
+    // Disarm the hold, release the response gate unconditionally, then join the
+    // tracked submission with the flush OUTSIDE act; source saves are joined by
+    // whenSettled, and disposal stays inside act.
+    hold?.release();
+    gate.resolve();
+    await flushPendingTurnsProjectionForTests();
+    await act(async () => {
+      await source.whenSettled();
+      source.dispose();
+    });
+    outbox.close();
+    repository.close();
+  }
+  if (bodyError !== undefined) throw bodyError;
+});
+
+function sendButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+}
+
+// A REAL read-fault seam for a draft row: forward the production `get`, and
+// once armed abort the real transaction whose read matches the target store and
+// serialized session key. The repository's own transactionCompletion then
+// rejects with the genuine IndexedDB abort - the request genuinely ran; no load
+// and no promise is mocked. One-shot, so the fault lands on exactly the named
+// boundary rather than an incidental later read.
+// `disable()` is TERMINAL: after it, arm() is inert and any armed state is
+// cleared, so cleanup cannot be surprised by a later beforeCommit arm.
+function armDraftRowReadAbort(targetKey: string) {
+  const get = IDBObjectStore.prototype.get;
+  let armed = false;
+  let disabled = false;
+  let hits = 0;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    if (armed && this.name === COMPOSER_DRAFTS_STORE && args[0] === targetKey) {
+      armed = false;
+      hits += 1;
+      request.addEventListener("success", () => this.transaction.abort());
+    }
+    return request;
+  });
+  return {
+    arm: () => {
+      if (disabled) return;
+      armed = true;
+    },
+    disarm: () => {
+      armed = false;
+    },
+    disable: () => {
+      disabled = true;
+      armed = false;
+    },
+    hits: () => hits,
+    restore: () => spy.mockRestore(),
+  };
+}
+
+// Join the tracked producer, then attempt EVERY cleanup step independently (a
+// rejecting step never skips a later one) and restore the test's observers
+// LAST. The sole error keeps its identity; several become an AggregateError.
+async function finishBuiltinCheckpoint(
+  source: ReturnType<typeof createComposerSourceState>,
+  hold: ReturnType<typeof holdNextWriteTransaction>,
+  disableFaults: () => void,
+  closeFixtures: Array<() => void>,
+  restoreObservers: Array<() => void>,
+  errors: unknown[],
+): Promise<void> {
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  // Disable future fault arming BEFORE releasing the hold or joining unfinished
+  // work: an early-failure cleanup can otherwise still trip a beforeCommit arm.
+  await attempt(disableFaults);
+  await attempt(async () => {
+    await act(async () => {
+      hold.release();
+      await source.whenSettled();
+    });
+  });
+  // The strict flush runs OUTSIDE any act scope.
+  await attempt(() => flushPendingTurnsProjectionForTests());
+  await attempt(async () => {
+    await act(async () => {
+      await source.whenSettled();
+    });
+  });
+  await attempt(async () => {
+    await act(async () => {
+      source.dispose();
+    });
+  });
+  for (const close of closeFixtures) await attempt(close);
+  for (const restore of restoreObservers) await attempt(restore);
+}
+
+// Narrow helper proof for the terminal-disable latch: once disabled, a later
+// arm() is inert, so a real matching read still completes without being
+// aborted. This is a helper-contract check, not a product case.
+test("armDraftRowReadAbort's disable is terminal: a later arm cannot fault a real read", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("ref_read_fault_disable");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "read-fault-disable" });
+  const fault = armDraftRowReadAbort(serializeSessionKey(key));
+  const errors: unknown[] = [];
+  try {
+    await repository.seedDraft(key, { text: "kept", skillNames: [] });
+    fault.disable();
+    fault.arm();
+    const row = await repository.load(key);
+    expect(row).toMatchObject({ text: "kept", skillNames: [] });
+    expect(fault.hits()).toBe(0);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    fault.disable();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    repository.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    fault.restore();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "read-fault disable proof cleanup failed");
+});
+
+// Finding 3a (source-review turn2212): the builtin preparation's post-drain
+// repository load can reject OUTSIDE the handler's try/finally, so busy state
+// is never reset and the fire-and-forget handleBuiltinSubmit rejects. The RPC
+// must never dispatch, the busy state must clear so the composer is usable, the
+// draft must survive, and the failure must be reported honestly.
+test("a builtin preparation storage failure sends no command, keeps the draft and clears busy", async () => {
+  const factory = new IDBFactory();
+  const ref = "ref_builtin_prep_fail";
+  const key = browserDraftKey(ref);
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "builtin-prep-fail" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "builtin-prep-fail" });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState(ref, { repository, key, outbox });
+  const readFault = armDraftRowReadAbort(serializeSessionKey(key));
+  let rpcCount = 0;
+  const errors: unknown[] = [];
+  try {
+    const ready = source.ready();
+    await hold.reached;
+    const fake = await mountComposer(ref, hydrationFocusThread(ref), source);
+    fake.on("thread/compact/start", () => {
+      rpcCount += 1;
+      return {};
+    });
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+    const user = userEvent.setup();
+    const editor = textarea() as HTMLDivElement;
+    await user.type(editor, "/compact");
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+
+    // Fail the REAL draft-row read during submission preparation, before any RPC.
+    readFault.arm();
+    await user.click(sendButton());
+    await waitFor(() => expect(readFault.hits()).toBeGreaterThanOrEqual(1));
+    readFault.disarm();
+    // hits() increments at request entry; join the tracked whole operation
+    // outside act so the terminal assertions observe producer completion.
+    await flushPendingTurnsProjectionForTests();
+    expect(rpcCount).toBe(0);
+    // Behavior under test: usable composer, kept draft, honest failure feedback.
+    expect(sendButton().disabled).toBe(false);
+    expect(editor.textContent).toBe("/compact");
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+    expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  } catch (error) {
+    errors.push(error);
+  }
+  await finishBuiltinCheckpoint(
+    source,
+    hold,
+    () => readFault.disable(),
+    [() => outbox.close(), () => repository.close()],
+    [() => readFault.restore()],
+    errors,
+  );
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "builtin preparation storage-failure test cleanup failed");
+});
+
+// Finding 3b (source-review turn2212): after an ACCEPTED builtin, settleDraft's
+// post-clear repository.load can reject; busy does clear, but the rejection
+// still escapes the fire-and-forget handleBuiltinSubmit. The accepted command
+// must not be resent, the durable clear must be real, and the failure must be
+// reported honestly. The escaping rejection stays a suite-level RED (vitest's
+// exit/Errors output is the established oracle for an uncaught rejection).
+test("a builtin settlement storage failure after acceptance does not resend the command or leave busy set", async () => {
+  const factory = new IDBFactory();
+  const ref = "ref_builtin_settle_fail";
+  const key = browserDraftKey(ref);
+  const readFault = armDraftRowReadAbort(serializeSessionKey(key));
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName: "builtin-settle-fail",
+    beforeCommit: (operation) => {
+      // The clear itself commits; arm the fault only for the read that follows.
+      if (operation === "clearSubmitted") readFault.arm();
+    },
+  });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "builtin-settle-fail" });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState(ref, { repository, key, outbox });
+  let rpcCount = 0;
+  const errors: unknown[] = [];
+  try {
+    const ready = source.ready();
+    await hold.reached;
+    const fake = await mountComposer(ref, hydrationFocusThread(ref), source);
+    // thread/compact/start takes only {ref} and answers with EmptyResponse;
+    // the command count is the behaviour under test here.
+    fake.on("thread/compact/start", () => {
+      rpcCount += 1;
+      return {};
+    });
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+    const user = userEvent.setup();
+    const editor = textarea() as HTMLDivElement;
+    await user.type(editor, "/compact");
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+
+    await user.click(sendButton());
+    await waitFor(() => expect(readFault.hits()).toBeGreaterThanOrEqual(1));
+    readFault.disarm();
+    // hits() increments at request entry; join the tracked whole operation
+    // outside act so the terminal assertions observe producer completion.
+    await flushPendingTurnsProjectionForTests();
+    // The accepted command ran exactly once and is never resent by the failure.
+    expect(rpcCount).toBe(1);
+    expect(sendButton().disabled).toBe(false);
+    // The durable clear committed before the failing read: an independent read
+    // proves the row is actually empty.
+    const reopened = createBrowserDraftRepository({ indexedDB: factory, databaseName: "builtin-settle-fail" });
+    try {
+      expect(await reopened.load(key)).toMatchObject({ text: "", skillNames: [] });
+    } finally {
+      reopened.close();
+    }
+    // Honest user-visible failure feedback from the existing toast convention.
+    expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  } catch (error) {
+    errors.push(error);
+  }
+  await finishBuiltinCheckpoint(
+    source,
+    hold,
+    () => readFault.disable(),
+    [() => outbox.close(), () => repository.close()],
+    [() => readFault.restore()],
+    errors,
+  );
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "builtin settlement storage-failure test cleanup failed");
+});
+
+// Finding 3 remaining obligation (reviewer turn2485): a REAL clearSubmitted
+// transaction failure does not reject - `browserDraftRepository.clearSubmitted`
+// catches it and RESOLVES `{cleared:false, persistence:"pending"}`, which
+// `sourceState.settleDraft` returns normally. handleBuiltinSubmit must inspect
+// that resolved pending result and report it honestly, distinct from a
+// deliberate committed veto, without resending the accepted command.
+test("a resolved pending builtin cleanup preserves the draft and reports it honestly", async () => {
+  const factory = new IDBFactory();
+  const ref = "ref_builtin_pending";
+  const key = browserDraftKey(ref);
+  let faultArmed = false;
+  let faultHits = 0;
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName: "builtin-pending",
+    beforeCommit: (operation) => {
+      if (faultArmed && operation === "clearSubmitted") {
+        faultHits += 1;
+        throw new Error("draft storage unavailable");
+      }
+    },
+  });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "builtin-pending" });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState(ref, { repository, key, outbox });
+  let rpcCount = 0;
+  const errors: unknown[] = [];
+  try {
+    const ready = source.ready();
+    await hold.reached;
+    const fake = await mountComposer(ref, hydrationFocusThread(ref), source);
+    fake.on("thread/compact/start", () => {
+      rpcCount += 1;
+      return {};
+    });
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+    const user = userEvent.setup();
+    const editor = textarea() as HTMLDivElement;
+    await user.type(editor, "/compact");
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+    expect(await repository.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+
+    // Fault the REAL clearSubmitted transaction after the command is accepted;
+    // the repository resolves a pending settlement rather than rejecting.
+    faultArmed = true;
+    await user.click(sendButton());
+    await waitFor(() => expect(faultHits).toBeGreaterThanOrEqual(1));
+    faultArmed = false;
+    // Join the tracked whole operation outside act before asserting.
+    await flushPendingTurnsProjectionForTests();
+
+    // The command ran exactly once and is never resent by the cleanup failure.
+    expect(rpcCount).toBe(1);
+    expect(sendButton().disabled).toBe(false);
+    // The accepted draft/value survives in the visible source.
+    expect(editor.textContent).toBe("/compact");
+    expect(source.getSnapshot()).toMatchObject({ text: "/compact", skillNames: [] });
+    // ...and in the durable row (independent reopen).
+    const reopened = createBrowserDraftRepository({ indexedDB: factory, databaseName: "builtin-pending" });
+    try {
+      expect(await reopened.load(key)).toMatchObject({ text: "/compact", skillNames: [] });
+    } finally {
+      reopened.close();
+    }
+    // Behavior under test: a resolved pending cleanup must be reported honestly
+    // through the existing error convention.
+    expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  } catch (error) {
+    errors.push(error);
+  }
+  await finishBuiltinCheckpoint(
+    source,
+    hold,
+    () => {
+      faultArmed = false;
+    },
+    [() => outbox.close(), () => repository.close()],
+    [],
+    errors,
+  );
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "builtin resolved-pending test cleanup failed");
+});
+
+// A thread that advertises both skill and command input, for the held-hydration
+// tests below.
+function hydrationFocusThread(ref: string): Partial<Thread> {
+  const focus = skillFocusThread(ref);
+  return {
+    ...focus,
+    evener: {
+      ...focus.evener,
+      capabilities: { ...focus.evener?.capabilities, skillInput: true, commandInput: true },
+    },
+  } as Partial<Thread>;
+}
+
+// A valid mixed value: the text spells "/same" at both offsets 3 (command) and
+// 9 (skill), and a third "/same" at 15 is inert prose. The parser selects an
+// atom only where a mention's name+offset matches the text token.
+const heldHydrationValue = {
+  text: "🙂 /same /same /same",
+  skillNames: ["same"],
+  commandNames: ["same"],
+  mentions: [
+    { kind: "command" as const, name: "same", offset: 3 },
+    { kind: "skill" as const, name: "same", offset: 9 },
+  ],
+};
+
+// Typing before a held hydration releases: the typed text replaces the seeded
+// selection and the durable row, with the old mixed mentions/chips gone, and the
+// real accepted-save operation is drained instead of slept on.
+test("a held hydration preserves text typed before it releases", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("root");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "held-hydration-typing" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "held-hydration-typing" });
+  setMutationStorageForTests(outbox);
+  let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  let bodyError: unknown;
+  try {
+    await repository.seedDraft(key, heldHydrationValue);
+    hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+    source = createComposerSourceState("root", { repository, key, outbox });
+    const ready = source.ready();
+    await hold.reached;
+    await mountComposer("root", hydrationFocusThread("root"), source);
+    replaceEditorText(textarea() as HTMLDivElement, "typed first");
+    await act(async () => {
+      hold?.release();
+      await ready;
+      await source?.whenSettled();
+      await waitFor(() => expect(textarea()?.textContent).toBe("typed first"));
+    });
+    const editor = textarea() as HTMLDivElement;
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
+    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(0);
+    const snapshot = source.getSnapshot();
+    expect(snapshot).toMatchObject({ text: "typed first", skillNames: [], commandNames: [] });
+    expect(snapshot.mentions ?? []).toEqual([]);
+    expect(await repository.load(key)).toMatchObject({ text: "typed first", skillNames: [] });
+    expect((await repository.load(key))?.mentions ?? []).toEqual([]);
+  } catch (error) {
+    bodyError = error;
+  } finally {
+    let drainError: unknown;
+    try {
+      await act(async () => {
+        hold?.release();
+        await source?.whenSettled();
+      });
+    } catch (error) {
+      drainError = error;
+    }
+    await act(async () => {
+      source?.dispose();
+      cleanup();
+    });
+    outbox.close();
+    repository.close();
+    bodyError ??= drainError;
+  }
+  if (bodyError !== undefined) throw bodyError;
+});
+
+// Releasing without typing hydrates the full valid mixed selection: exact text,
+// complete metadata, one command chip and one skill chip by identity, the third
+// "/same" inert, and the durable row.
+test("a held hydration publishes the full mixed command/skill selection identity", async () => {
+  const factory = new IDBFactory();
+  const key = browserDraftKey("root");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName: "held-hydration-identity" });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "held-hydration-identity" });
+  setMutationStorageForTests(outbox);
+  let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let source: ReturnType<typeof createComposerSourceState> | undefined;
+  let bodyError: unknown;
+  try {
+    await repository.seedDraft(key, heldHydrationValue);
+    hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+    source = createComposerSourceState("root", { repository, key, outbox });
+    const ready = source.ready();
+    await hold.reached;
+    await mountComposer("root", hydrationFocusThread("root"), source);
+    await act(async () => {
+      hold?.release();
+      await ready;
+      await source?.whenSettled();
+      await waitFor(() =>
+        expect((textarea() as HTMLDivElement).querySelectorAll("[data-command-name]")).toHaveLength(1),
+      );
+    });
+    const editor = textarea() as HTMLDivElement;
+    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(editor.querySelector("[data-command-name]")?.getAttribute("data-command-name")).toBe("same");
+    expect(editor.querySelector("[data-skill-name]")?.getAttribute("data-skill-name")).toBe("same");
+    expect(editor.textContent).toBe("🙂 /same /same /same");
+    const snapshot = source.getSnapshot();
+    expect(snapshot).toMatchObject(heldHydrationValue);
+    expect(snapshot.mentions).toEqual(heldHydrationValue.mentions);
+    expect(await repository.load(key)).toMatchObject(heldHydrationValue);
+  } catch (error) {
+    bodyError = error;
+  } finally {
+    let drainError: unknown;
+    try {
+      await act(async () => {
+        hold?.release();
+        await source?.whenSettled();
+      });
+    } catch (error) {
+      drainError = error;
+    }
+    await act(async () => {
+      source?.dispose();
+      cleanup();
+    });
+    outbox.close();
+    repository.close();
+    bodyError ??= drainError;
+  }
+  if (bodyError !== undefined) throw bodyError;
+});
+
 test("mobile composer omits the working path and repository without a git lookup", async () => {
   installMobileViewport();
   const fake = connectFakeClient();
@@ -1902,7 +3738,6 @@ test("mobile source-backed session omits repository metadata without a local git
 test("while a strip-triggered drain is in flight, the composer's own classic steer control is also disabled (shared busy gate)", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
-  const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     evener: {
       ref: "ref_a",
@@ -1920,8 +3755,10 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
     },
   }));
 
-  await user.click(drainButton());
-  await storage.commitStarted;
+  await act(async () => {
+    drainButton().click();
+    await storage.commitStarted;
+  });
   expect(composerSteerButton().disabled).toBe(true);
 
   storage.release();
@@ -1975,8 +3812,11 @@ test("a plain send exposes its durable pending entry while the network remains u
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
   await user.type(textarea() as HTMLDivElement, "ha");
-  await user.click(screen.getByRole("button", { name: /^send\b/i }));
-  await storage.committed;
+  await act(async () => {
+    (screen.getByRole("button", { name: /^send\b/i }) as HTMLButtonElement).click();
+    await storage.committed;
+    await settleProjectionWorkForTests();
+  });
   await flushPendingTurnsProjectionForTests();
 
   expect(result.current).toHaveLength(1);
@@ -2268,4 +4108,147 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+});
+
+// Finding 1 (source-review turn2212): the ordinary QueueStrip drain must settle
+// through the source, not the legacy clear. The drain's async cleanup aborts at
+// the real beforeCommit("clearSubmitted") boundary; the accepted mutation is
+// already durable and the source listener correctly preserves the unchanged
+// text. The production drain callback (Composer.handleDrainSuccess ->
+// clearIfUnchanged) must not clear that text anyway or advance the shared edit
+// revision the ORIGINAL capture's retry is authorized by.
+test("an aborted ordinary drain cleanup preserves the composer text and its original-guard retry still succeeds", async () => {
+  const factory = new IDBFactory();
+  const ref = "ref_drain_abort";
+  const key = browserDraftKey(ref);
+  let faultArmed = false;
+  let faultHits = 0;
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName: "drain-abort",
+    beforeCommit: (operation) => {
+      if (faultArmed && operation === "clearSubmitted") {
+        faultHits += 1;
+        throw new Error("draft storage unavailable");
+      }
+    },
+  });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName: "drain-abort" });
+  setMutationStorageForTests(outbox);
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  const source = createComposerSourceState(ref, { repository, key, outbox });
+  // Call-through capture of the REAL settleDraft argument, so the retry below
+  // uses the drain's ORIGINAL immutable capture, not a reconstructed one.
+  const settleCalls: Parameters<typeof source.settleDraft>[0][] = [];
+  const realSettle = source.settleDraft.bind(source);
+  const settleSpy = vi.spyOn(source, "settleDraft").mockImplementation(async (captured) => {
+    settleCalls.push(captured);
+    return realSettle(captured);
+  });
+  let drainCount = 0;
+  const errors: unknown[] = [];
+  try {
+    const ready = source.ready();
+    await hold.reached;
+    const fake = await mountComposer(
+      ref,
+      {
+        status: { type: "active" },
+        evener: {
+          ref,
+          mutationStateAuthoritative: true,
+          capabilities: FULL_CAPABILITIES,
+          queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+          activeTurnId: "turn_1",
+        },
+      },
+      source,
+    );
+    fake.on("turn/drainAsSteer", (params) => {
+      drainCount += 1;
+      return {
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread_a",
+          projectionState: "reflected",
+        },
+      };
+    });
+    await act(async () => {
+      hold.release();
+      await ready;
+      await source.whenSettled();
+    });
+
+    const user = userEvent.setup();
+    const editor = textarea() as HTMLDivElement;
+    await user.type(editor, "drain me");
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+    expect(await repository.load(key)).toMatchObject({ text: "drain me", skillNames: [] });
+
+    faultArmed = true;
+    await user.click(drainButton());
+    await flushPendingTurnsProjectionForTests();
+    await source.whenSettled();
+    // The real accepted mutation route ran and its cleanup aborted once.
+    expect(drainCount).toBe(1);
+    expect(faultHits).toBe(1);
+    const captured = settleCalls[0];
+    expect(captured).toBeDefined();
+    if (captured === undefined) throw new Error("the drain never settled through the source");
+    // Behavior under test: an aborted drain cleanup leaves the freshly typed,
+    // unchanged text and its durable row intact - the pending settlement must
+    // not be reported to the user as a successful clear.
+    expect(editor.textContent).toBe("drain me");
+    expect(source.getSnapshot()).toMatchObject({ text: "drain me", skillNames: [] });
+    expect(await repository.load(key)).toMatchObject({ text: "drain me", skillNames: [] });
+
+    // The ORIGINAL capture's retry is still authorized: the aborted cleanup
+    // itself advanced no shared revision, and it performs no second drain. The
+    // publishing retry runs inside act.
+    faultArmed = false;
+    await act(async () => {
+      expect(await source.settleDraft(captured)).toMatchObject({ cleared: true, persistence: "committed" });
+    });
+    await source.whenSettled();
+    expect(editor.textContent).toBe("");
+    expect(await repository.load(key)).toMatchObject({ text: "", skillNames: [] });
+    expect(drainCount).toBe(1);
+  } catch (error) {
+    errors.push(error);
+  }
+  // Disarm the fault, then join and clean up with every step attempted
+  // independently and the observer restored LAST.
+  faultArmed = false;
+  const attempt = async (step: () => void | Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  await attempt(async () => {
+    await act(async () => {
+      hold.release();
+      await source.whenSettled();
+    });
+  });
+  await attempt(() => flushPendingTurnsProjectionForTests());
+  await attempt(async () => {
+    await act(async () => {
+      await source.whenSettled();
+    });
+  });
+  await attempt(async () => {
+    await act(async () => {
+      source.dispose();
+    });
+  });
+  await attempt(() => outbox.close());
+  await attempt(() => repository.close());
+  await attempt(() => settleSpy.mockRestore());
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "aborted drain cleanup test teardown failed");
 });

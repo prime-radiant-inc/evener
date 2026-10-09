@@ -75,7 +75,9 @@ import {
   recoveryFence,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import type { RecoveryWriteGuard } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
+import { trackProjectionWork } from "../../../stores/projectionWork";
 import {
   hasBlockedUnknown,
   hasQueuedNonSend,
@@ -107,7 +109,7 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearPersistedDraft, readDraftRevision } from "./draft";
+import { readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -223,8 +225,16 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, freshRecoveryRef } =
-    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const {
+    text,
+    skillNames,
+    commandNames,
+    mentions,
+    restoreEpoch,
+    activeRecoveryId,
+    freshRecoveryRef,
+    submittedAttachmentRetirementPending,
+  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
@@ -249,12 +259,15 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     persistDraft,
     writeDraft,
     queueRecoveryPersistence,
-    clearIfUnchanged,
+    persistRecoveryEffect,
     clearSubmittedAttachments,
   } = source;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending = busyAction !== null || submitting || mutationWriteStalled;
+  const actionPending =
+    busyAction !== null || submitting || mutationWriteStalled || submittedAttachmentRetirementPending;
   const mountedRef = useRef(false);
+  const currentSourceRef = useRef(source);
+  currentSourceRef.current = source;
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
   // React focus events follow the composer's controls and portaled menus.
@@ -442,8 +455,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   }, [source]);
 
   useEffect(() => {
-    if (activeRecoveryId === null || attachments.hasPending) return;
-    void queueRecoveryPersistence(
+    if (activeRecoveryId === null || attachments.hasPending || submittedAttachmentRetirementPending) return;
+    void persistRecoveryEffect(
       activeRecoveryId,
       text,
       attachments.toInputAttachments(),
@@ -455,10 +468,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     activeRecoveryId,
     attachments.hasPending,
     attachments.toInputAttachments,
-    queueRecoveryPersistence,
+    persistRecoveryEffect,
     text,
     skillNames,
     selectionMeta,
+    submittedAttachmentRetirementPending,
   ]);
 
   useEffect(() => {
@@ -493,7 +507,6 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
     attachments.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
     scheduleCursorRestore(recovered.text.length);
   }, [
     activeRecoveryId,
@@ -817,16 +830,19 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   // QueueStrip captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.
+  //
+  // The ordinary textual cleanup is performed once, by the source's own
+  // guarded settlement/listener (settleDraft clears, and the submission-
+  // committed listener clears the visible value only when the durable clear
+  // actually happened). A drain whose async cleanup came back pending must
+  // therefore NOT clear the text here: the legacy `clearIfUnchanged` advanced
+  // the shared edit revision and removed localStorage keys, which both emptied
+  // the pending draft and invalidated the original capture's retry at
+  // sourceState's entry-revision guard. Only the exact submitted attachment
+  // objects (identity + liveness) are cleared by this callback.
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
     if (!snapshot || !source.alive) return;
-    clearIfUnchanged(
-      snapshot.text,
-      snapshot.revision,
-      snapshot.draftRevision,
-      snapshot.skillNames,
-      snapshot.commandNames,
-    );
     clearSubmittedAttachments(snapshot.attachments);
   }
 
@@ -909,6 +925,51 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    const currentRecoveryId = activeRecoveryIdRef.current;
+    if (currentRecoveryId !== null) {
+      void mergeActivatedRecovery(record, currentRecoveryId).catch(() => undefined);
+      return;
+    }
+    const releaseRetirement = source.holdSubmittedAttachmentRetirement();
+    // Capture before preparation yields. A later read may establish the first
+    // operation's token, but may not authorize merging over changed local work.
+    const entryValue: SkillEditorValue = {
+      text: textRef.current,
+      skillNames: [...skillNamesRef.current],
+      ...(selectionMetaRef.current.commandNames.length
+        ? { commandNames: [...selectionMetaRef.current.commandNames] }
+        : {}),
+      ...(selectionMetaRef.current.mentions === undefined
+        ? {}
+        : { mentions: selectionMetaRef.current.mentions.map((mention) => ({ ...mention })) }),
+    };
+    const entryItems = [...source.attachments.getState().items];
+    void trackProjectionWork(
+      source
+        .submissionDraft(entryValue)
+        .then((prepared) => {
+          if (
+            !mountedRef.current ||
+            currentSourceRef.current !== source ||
+            activeRecoveryIdRef.current !== currentRecoveryId ||
+            !source.ownsSubmissionSnapshot(prepared, entryItems) ||
+            !prepared.settlementGuard
+          )
+            return;
+          return mergeActivatedRecovery(record, currentRecoveryId, {
+            token: Object.freeze({ ...prepared.settlementGuard.token }),
+            value: entryValue,
+          });
+        })
+        .finally(releaseRetirement),
+    ).catch(() => undefined);
+  }
+
+  function mergeActivatedRecovery(
+    record: MutationRecoveryRecord,
+    currentRecoveryId: string | null,
+    ordinary?: { token: RecoveryWriteGuard["token"]; value: SkillEditorValue },
+  ): Promise<void> {
     const merged = mergeRecoveryComposerDraft(
       textRef.current,
       attachments.items,
@@ -917,7 +978,6 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       selectionMetaRef.current.commandNames,
       selectionMetaRef.current.mentions,
     );
-    const currentRecoveryId = activeRecoveryIdRef.current;
     if (currentRecoveryId === null) {
       recoveryOwnsLocalDraftRef.current = true;
       setActiveRecoveryId(record.clientMutationId);
@@ -933,6 +993,9 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
     const ownerId = currentRecoveryId ?? record.clientMutationId;
     const replacementEpoch = recoveryReplacementEpochRef.current;
+    const generation = source.getLocalGeneration();
+    const draftRevision = readDraftRevision(ref);
+    let persistedGuard: RecoveryWriteGuard | undefined;
     const persistence = queueRecoveryPersistence(
       ownerId,
       merged.text,
@@ -940,18 +1003,37 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       nextSkillNames,
       merged.commandNames,
       merged.mentions,
+      ordinary && {
+        ...ordinary,
+        stillOwnsValue: () =>
+          source.alive &&
+          source.getLocalGeneration() === generation &&
+          activeRecoveryIdRef.current === ownerId &&
+          recoveryReplacementEpochRef.current === replacementEpoch &&
+          readDraftRevision(ref) === draftRevision,
+      },
+      (guard) => {
+        persistedGuard = guard;
+      },
     );
     if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
-      void persistence
+      return persistence
         .then(async () => {
-          await discardRecoveryPendingTurn(
-            record.clientMutationId,
-            ref,
-            () => recoveryReplacementEpochRef.current === replacementEpoch,
-          );
+          const primaryGuard = persistedGuard;
+          if (!primaryGuard) return;
+          const guard = Object.freeze({
+            ...primaryGuard,
+            stillAuthorized: () =>
+              primaryGuard.stillAuthorized() &&
+              source.getLocalGeneration() === generation &&
+              readDraftRevision(ref) === draftRevision,
+          });
+          const discarded = await discardRecoveryPendingTurn(record.clientMutationId, ref, undefined, guard);
+          if (discarded) source.acknowledgeRecoveryWrite(guard);
         })
         .catch(() => undefined);
     }
+    return persistence;
   }
 
   // getComposerText is QueueStrip's own seam for reading this composer's
@@ -1014,11 +1096,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedMentions = selectionMetaRef.current.mentions;
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
+    let retiredMissingRecovery = false;
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
@@ -1041,21 +1122,17 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           skillNames: submittedSkillNames,
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
+          source,
+          mentions: submittedMentions,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
-        async () => {
+        async (submitted) => {
           if (submittedRecoveryId !== null) {
-            await queueRecoveryPersistence(
-              submittedRecoveryId,
-              submittedText,
-              payload,
-              submittedSkillNames,
-              submittedCommandNames,
-              submittedMentions,
-            );
+            // submissionDraft already drained accepted recovery edits. Rewriting
+            // here would advance the durable token past our captured authority.
             wonRecoveryResend = await resendRecoveryPendingTurn(
               submittedRecoveryId,
               ref,
@@ -1065,8 +1142,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               submittedSkillNames,
               submittedCommandNames,
               submittedMentions,
+              source.recoveryWriteGuard(submitted),
             );
-            return;
+            if (!wonRecoveryResend)
+              retiredMissingRecovery = await source.reconcileMissingRecovery(submitted, submittedAttachments);
+            return wonRecoveryResend;
           }
           if (kind === "send")
             return threadsStore
@@ -1086,15 +1166,21 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
       );
       if (!source.alive) return;
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-      clearIfUnchanged(
-        submittedText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-      clearSubmittedAttachments(submittedAttachments);
+      if (!wonRecoveryResend) {
+        toasts.push(
+          "info",
+          retiredMissingRecovery
+            ? "This message is no longer in recovery."
+            : "This message changed in another tab; your draft is kept.",
+        );
+        return;
+      }
+      // The ordinary editor cleanup is performed once, by the source's own
+      // guarded submission-committed listener when its settlement cleared the
+      // row (see sourceState's subscribeComposerSubmissionCommitted branch).
+      // Repeating clearIfUnchanged here would duplicate that clear and could
+      // drop a same-text replacement the listener deliberately preserves.
+      await clearSubmittedAttachments(submittedAttachments);
     } catch {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
@@ -1133,8 +1219,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedText = textRef.current;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
+    const submittedMentions = selectionMetaRef.current.mentions;
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
@@ -1145,18 +1230,65 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       // commandSurface's own doc comment on why the two never overlap.
       ui: { clearToSearch: () => {}, showHelp: () => {} },
     };
-    const outcome = await runBuiltinCommand(match, ctx);
-    setBusyAction(null);
-    if (outcome.ok)
-      clearIfUnchanged(
-        submittedText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-    // On failure: the draft is left exactly as typed (clearIfUnchanged is
-    // simply never called) - runBuiltinCommand has already toasted why.
+    // Capture the immutable payload through the source BEFORE the RPC and settle
+    // the durable draft only on success: a failed built-in or a newer edit
+    // preserves the draft. Preserve the exact submitted value's metadata. The
+    // whole operation is tracked as durable projection work (the same tracker the
+    // ordinary submitWithPendingTracking operation and every mutation-storage
+    // transaction register with), so a test that settles the projection observes
+    // the built-in's capture, RPC and settlement - never a fixed timer.
+    const operation = (async () => {
+      try {
+        // Capture through the source BEFORE the RPC; a capture/read failure is a
+        // preparation failure: nothing dispatched, the exact draft is preserved,
+        // and it is reported honestly instead of leaving busy set or rejecting.
+        let submitted: Awaited<ReturnType<typeof source.submissionDraft>>;
+        try {
+          submitted = await source.submissionDraft({
+            text: submittedText,
+            skillNames: submittedSkillNames,
+            ...(submittedCommandNames.length ? { commandNames: [...submittedCommandNames] } : {}),
+            ...(submittedMentions === undefined
+              ? {}
+              : { mentions: submittedMentions.map((mention) => ({ ...mention })) }),
+          });
+        } catch (error) {
+          toasts.push("error", sessionActionError("Couldn't prepare the command", error));
+          return;
+        }
+        const outcome = await runBuiltinCommand(match, ctx);
+        // A command failure already carries its own toast (runBuiltinCommand owns
+        // it); the draft stays exactly as typed and no settlement runs.
+        if (!outcome.ok) return;
+        try {
+          const settlement = await source.settleDraft(submitted);
+          // A resolved PENDING settlement is a storage failure the repository
+          // converted into a fulfilled result (not a rejected promise). Report
+          // it honestly; a committed veto (cleared:false, persistence:
+          // "committed") is a deliberate decision, not a failure, and stays silent.
+          if (settlement.persistence === "pending") {
+            toasts.push(
+              "error",
+              sessionActionError(
+                "Couldn't clear the sent command's draft",
+                new Error("the draft cleanup is still pending"),
+              ),
+            );
+          }
+        } catch (error) {
+          // The command was accepted and ran; a thrown storage failure during
+          // settlement is reported honestly and never retried or relabelled as a
+          // command failure.
+          toasts.push("error", sessionActionError("Couldn't clear the sent command's draft", error));
+        }
+      } finally {
+        // The lifecycle finally covers preparation, execution and settlement, so
+        // busy is always released (only while this mount is still alive), and no
+        // rejection escapes the fire-and-forget invocation.
+        if (mountedRef.current) setBusyAction(null);
+      }
+    })();
+    await trackProjectionWork(operation);
   }
 
   function handleFormSubmit(event: FormEvent): void {
@@ -1435,6 +1567,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           busyAction gate both ways (BusyAction's own "drain" doc comment). */}
       <QueueStrip
         ref={ref}
+        source={source}
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
         activeRecoveryId={activeRecoveryId ?? undefined}
