@@ -1136,9 +1136,8 @@ func TestMemoryReadNotesALongPage(t *testing.T) {
 		{"long-page", "opaque-long.md", long, true, true},
 		{"long-page-without-skills", "opaque-long.md", long, false, true},
 		{"short-page", "opaque-short.md", "opaque-short-page\n", true, false},
-		// The index never gets a page's size note. This reads a raw root
-		// MEMORY.md, as memory_read still does here; the rendered read and
-		// its tests come with the write path stacked on this change.
+		// The index never gets a page's size note. memory_read does not
+		// render the index yet, so this reads a raw root MEMORY.md.
 		{"long-index", "MEMORY.md", long, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

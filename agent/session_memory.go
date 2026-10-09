@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -60,10 +61,8 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 
 // memoryIndexFile is the scope's generated index, rendered from page
 // frontmatter; once a writing session migrates a scope, no file by this name
-// remains. This change only projects the rendering. memory_read rendering it
-// and the write tools refusing it are the write path, the change stacked
-// directly on this one, so until it lands memory_read of MEMORY.md reads
-// whatever file is there.
+// remains. memory_read does not render it yet: it reads whatever file stands
+// at this name.
 const memoryIndexFile = "MEMORY.md"
 
 // memoryIndexBaseline is the index the session already knows for a scope:
@@ -396,28 +395,25 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 	s.memoryMu.Lock()
 	_, tracked := s.memoryReadPages[scope][file]
 	s.memoryMu.Unlock()
+	if !adopt && !tracked {
+		s.recordOwnMemoryIndex(scope, false, listed, "", nil)
+		return
+	}
 	// ioErr is the pre-I/O hook refusing the read, which forgets what the
 	// session knew; a failed read itself is judged like any page read.
 	var raw []byte
-	var ioErr, readErr error
-	if adopt || tracked {
-		if ioErr = s.beforeMemoryIO(scope, "record"); ioErr == nil {
-			raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)))
-		}
-	}
+	var readErr error
+	ioErr := s.beforeMemoryIO(scope, "record")
 	var line string
-	if adopt && ioErr == nil {
+	if ioErr == nil {
+		raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)))
 		if page, exists := memoryPageFromRead(listed, raw, readErr, time.Time{}); exists {
 			line = memoryIndexLine(page)
 		}
 	}
 	s.recordOwnMemoryIndex(scope, adopt, listed, line, ioErr)
 	if tracked {
-		err := ioErr
-		if err == nil {
-			err = readErr
-		}
-		s.recordMemoryContent(scope, file, raw, err, false)
+		s.recordMemoryContent(scope, file, raw, cmp.Or(ioErr, readErr), false)
 	}
 }
 
@@ -453,8 +449,8 @@ func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rel, line strin
 		delete(s.memoryBaseline, scope)
 		return
 	}
-	index, count := patchMemoryIndex(s.memoryBaseline[scope].index, rel, line)
-	if count == 0 {
+	index := patchMemoryIndex(s.memoryBaseline[scope].index, rel, line)
+	if index == "" {
 		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
 		return
 	}

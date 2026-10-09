@@ -79,7 +79,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	if err != nil {
 		return out, err
 	}
-	if listed == "" {
+	if operation != "delete" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
 	}
 	s.recordOwnMemoryWrite(env, scope, file, listed)

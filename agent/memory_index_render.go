@@ -65,9 +65,8 @@ func memoryIndexLinePath(line string) string {
 }
 
 // patchMemoryIndex is index's page lines with the line of the page at rel
-// replaced by line, or dropped when line is "", and how many page lines
-// that leaves.
-func patchMemoryIndex(index, rel, line string) (patched string, count int) {
+// replaced by line, or dropped when line is "": "" when no page line is left.
+func patchMemoryIndex(index, rel, line string) string {
 	var kept []string
 	for _, existing := range memoryIndexLines(index) {
 		if memoryIndexLinePath(existing) != rel {
@@ -77,7 +76,7 @@ func patchMemoryIndex(index, rel, line string) (patched string, count int) {
 	if line != "" {
 		kept = append(kept, line+"\n")
 	}
-	return strings.Join(kept, ""), len(kept)
+	return strings.Join(kept, "")
 }
 
 // memoryTagCounts counts pages per tag; a page counts once under each tag.

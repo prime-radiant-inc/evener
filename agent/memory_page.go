@@ -272,18 +272,12 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 			pages = append(pages, filenameMemoryPage(rel, entry.ModTime))
 			continue
 		}
-		if page, ok := readMemoryPage(env, rel, entry.ModTime); ok {
+		raw, err := env.ReadFileRaw(filepath.Join(root, entry.Name))
+		if page, ok := memoryPageFromRead(rel, raw, err, entry.ModTime); ok {
 			pages = append(pages, page)
 		}
 	}
 	return pages, nil
-}
-
-// readMemoryPage reads the page at rel, reporting false when it does not
-// exist.
-func readMemoryPage(env *execenv.LocalExecutionEnvironment, rel string, modTime time.Time) (memoryPage, bool) {
-	raw, err := env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(rel)))
-	return memoryPageFromRead(rel, raw, err, modTime)
 }
 
 // memoryPageFromRead is the index entry for a read of the page at rel that

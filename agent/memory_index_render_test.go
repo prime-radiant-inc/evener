@@ -145,12 +145,15 @@ func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {
 	t.Parallel()
 	other := "- [Other](other.md) — see [x](x.md) — for the rule"
 	index := "Tags: a (1)\n- [X](x.md) — old\n" + other + "\n"
-	got, count := patchMemoryIndex(index, "x.md", "- [X](x.md) — new")
-	if want := "- [Other](other.md) — see [x](x.md) — for the rule\n- [X](x.md) — new\n"; got != want || count != 2 {
-		t.Fatalf("patched %q (%d lines), want %q", got, count, want)
+	got := patchMemoryIndex(index, "x.md", "- [X](x.md) — new")
+	if want := "- [Other](other.md) — see [x](x.md) — for the rule\n- [X](x.md) — new\n"; got != want {
+		t.Fatalf("patched %q, want %q", got, want)
 	}
-	if got, count := patchMemoryIndex(got, "x.md", ""); got != other+"\n" || count != 1 {
-		t.Fatalf("delete patched %q (%d lines)", got, count)
+	if got := patchMemoryIndex(got, "x.md", ""); got != other+"\n" {
+		t.Fatalf("delete patched %q", got)
+	}
+	if got := patchMemoryIndex(other+"\n", "other.md", ""); got != "" {
+		t.Fatalf("patched away the last page line: %q", got)
 	}
 }
 
