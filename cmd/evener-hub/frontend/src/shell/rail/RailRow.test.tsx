@@ -469,7 +469,7 @@ describe("compact session status", () => {
 
   test("failed descendants do not hide running work", () => {
     const session = apiNode({
-      state: "awaiting",
+      state: "idle",
       running_job_count: 2,
       subagents: { running: 1, failed: 1, done: 0 },
     });
@@ -535,9 +535,7 @@ describe("compact session status", () => {
   });
 
   test.each([
-    ["awaiting", "job", { running_job_count: 1 }],
     ["warning", "job", { running_job_count: 1 }],
-    ["awaiting", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
     ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
   ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
     render(
@@ -567,6 +565,23 @@ describe("compact session status", () => {
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
     expect(within(panel).getByText("Question waiting")).toBeTruthy();
+  });
+
+  // Awaiting without a question is a turn that ended on needs_response: it
+  // waits on a person as a question does, so it outranks work too (#4093).
+  test("a needs_response rest outranks running work", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: false, running_job_count: 1 }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Needs you")).toBeTruthy();
   });
 
   test("a pending approval outranks running work", () => {
@@ -689,7 +704,7 @@ describe("compact session status", () => {
 
   test.each([
     ["warning", { state: "warning" }, "Warning"],
-    ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
+    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Needs you"],
     ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
     ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
   ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
