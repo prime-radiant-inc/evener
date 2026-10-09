@@ -908,6 +908,12 @@ type EnvironmentChangedData struct {
 	WorkingDir string `json:"working_dir"`
 }
 
+// StatusSettledData is the payload for an EventStatusSettled event: the
+// session's wire state after the change.
+type StatusSettledData struct {
+	State string `json:"state"`
+}
+
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`

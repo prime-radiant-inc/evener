@@ -528,6 +528,21 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 	}
 }
 
+// A status that settles outside any turn reaches clients as
+// thread/status/changed.
+func TestAppEventProjectorMapsStatusSettled(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	settled := projector.Project(events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_1", Data: events.StatusSettledData{State: "awaiting"}})
+	if status := notificationThreadStatus(t, settled, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("settled status=%+v, want awaiting", status)
+	}
+	// Only a resting state settles outside a turn; the bridge ignores
+	// anything else, so the projector sends nothing for it either.
+	if bogus := projector.Project(events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_1", Data: events.StatusSettledData{State: "bogus"}}); len(bogus) != 0 {
+		t.Fatalf("a non-resting settled state projected %+v, want nothing", bogus)
+	}
+}
+
 func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{

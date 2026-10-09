@@ -119,6 +119,13 @@ export interface AttentionChanged {
    * question's equivalent.
    */
   approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
   prevLevel: string;
 }
 

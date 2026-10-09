@@ -25,7 +25,7 @@ export function humanizeState(wireState: string, askPending: boolean, approvalPe
     case "active":
       return "working";
     case "awaiting":
-      return askPending ? "question waiting" : "needs you";
+      return needsResponseRest(wireState, askPending) ? "needs you" : "question waiting";
     case "restartRequired":
       return "restart required";
     case "warning":
@@ -37,6 +37,13 @@ export function humanizeState(wireState: string, askPending: boolean, approvalPe
     default: // "idle", "notLoaded", "", and any future/unknown value
       return "idle";
   }
+}
+
+// needsResponseRest says a session rests awaiting with no pending question:
+// its turn ended on needs_response, asking for a reply. The hub's
+// hubapi.NeedsResponse draws the same line.
+export function needsResponseRest(wireState: string, askPending: boolean): boolean {
+  return wireState === "awaiting" && !askPending;
 }
 
 // approvalWaiting says a session is waiting on a person to allow or deny a
