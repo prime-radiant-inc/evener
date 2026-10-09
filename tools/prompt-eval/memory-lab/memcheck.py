@@ -67,10 +67,17 @@ def scope_pages(dirs):
 
 def scope_dirs(root, scopes):
     """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"].
-    A symlink is skipped, as evener's confined listing refuses one."""
-    base = glob.escape(os.path.join(root, "evener", "memory"))
-    return sorted(d for scope in scopes for d in glob.glob(os.path.join(base, scope))
-                  if os.path.isdir(d) and not os.path.islink(d))
+    A scope reached through a symlink anywhere below the state root is skipped, as evener's confined
+    resolution refuses a symlinked path component."""
+    base = os.path.join(root, "evener", "memory")
+    return sorted(d for scope in scopes for d in glob.glob(os.path.join(glob.escape(base), scope))
+                  if os.path.isdir(d) and not symlink_below(root, d))
+
+
+def symlink_below(root, path):
+    """Whether any component of path below root is a symlink."""
+    rel = os.path.relpath(path, root).split(os.sep)
+    return any(os.path.islink(os.path.join(root, *rel[:i])) for i in range(1, len(rel) + 1))
 
 
 def read(path):
