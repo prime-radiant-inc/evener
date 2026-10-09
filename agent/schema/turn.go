@@ -150,7 +150,7 @@ type CommunicateInfo struct {
 	Message string `json:"message"`
 	// EndReason is why a root session's call ended its turn (one of
 	// tool.CommunicateEndReasons); empty on a call that kept the turn going
-	// and on every delegate's call.
+	// and wherever end_reason is not offered (delegates, headless roots).
 	EndReason string `json:"end_reason,omitempty"`
 }
 

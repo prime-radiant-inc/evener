@@ -681,7 +681,8 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
-// Why a root session's communicate call ends its turn: done (nothing waits
+// Why a root session's communicate call ends its turn (offered only where
+// someone can answer the session): done (nothing waits
 // on the human partner), needs_response (the agent cannot go on until its
 // human partner answers or acts), or waiting_on_work (work the agent started
 // will wake it).
@@ -696,8 +697,8 @@ const (
 var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
 
 // WithCommunicateEndReason returns a copy of a communicate definition that
-// also offers end_reason. Only a root session gets it: a delegate's resting
-// state never asks for a person.
+// also offers end_reason. Only a root someone can answer gets it: nobody
+// responds to a delegate's or a headless root's resting state.
 func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)

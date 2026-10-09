@@ -28,10 +28,11 @@ func communicateEndReasonProperty(t *testing.T, defs []llm.ToolDefinition) map[s
 	return nil
 }
 
-// A root session someone can answer offers end_reason on communicate; a
+// A root session someone can answer offers end_reason on communicate, in the
+// advertised definition and in the schema calls are checked against; a
 // delegate and a root nobody can answer keep the tool unchanged, as ask_user
 // is hidden from them.
-func TestCommunicateEndReasonIsOfferedOnlyToRootSessions(t *testing.T) {
+func TestCommunicateEndReasonIsOfferedOnlyWhereSomeoneCanAnswer(t *testing.T) {
 	t.Parallel()
 	root := newAskTestSession(t, SessionConfig{})
 	prop := communicateEndReasonProperty(t, root.ToolDefinitions())
@@ -46,12 +47,20 @@ func TestCommunicateEndReasonIsOfferedOnlyToRootSessions(t *testing.T) {
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	delegate := newAskTestSession(t, cfg)
-	if prop := communicateEndReasonProperty(t, delegate.ToolDefinitions()); prop != nil {
-		t.Fatalf("a delegate's communicate offers end_reason: %#v", prop)
-	}
 	headless := newAskTestSession(t, SessionConfig{NonInteractive: true})
-	if prop := communicateEndReasonProperty(t, headless.ToolDefinitions()); prop != nil {
-		t.Fatalf("a root nobody can answer offers end_reason: %#v", prop)
+	registered := func(s *Session) []llm.ToolDefinition {
+		return []llm.ToolDefinition{s.reg.Get("communicate").Definition}
+	}
+	if communicateEndReasonProperty(t, registered(root)) == nil {
+		t.Fatal("a root session's registered communicate has no end_reason")
+	}
+	for name, s := range map[string]*Session{"a delegate": delegate, "a root nobody can answer": headless} {
+		if prop := communicateEndReasonProperty(t, s.ToolDefinitions()); prop != nil {
+			t.Fatalf("%s advertises end_reason: %#v", name, prop)
+		}
+		if prop := communicateEndReasonProperty(t, registered(s)); prop != nil {
+			t.Fatalf("%s's registered communicate takes end_reason: %#v", name, prop)
+		}
 	}
 	if prop := communicateEndReasonProperty(t, root.profile.ToolDefinitions()); prop != nil {
 		t.Fatal("offering end_reason to a root changed the profile's communicate definition")
@@ -65,19 +74,19 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
-		root    bool
+		offered bool
 		args    map[string]any
 		want    string
 		wantErr bool
 	}{
-		{name: "root states needs_response", root: true, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, want: "needs_response"},
-		{name: "root states waiting_on_work", root: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, want: "waiting_on_work"},
-		{name: "root states done", root: true, args: map[string]any{"end_turn": true, "end_reason": "done"}, want: "done"},
-		{name: "root states none", root: true, args: map[string]any{"end_turn": true}, want: "done"},
-		{name: "root keeps the turn going", root: true, args: map[string]any{"end_turn": false, "end_reason": "needs_response"}, want: ""},
-		{name: "root states an unknown reason", root: true, args: map[string]any{"end_turn": true, "end_reason": "later"}, wantErr: true},
-		{name: "delegate ends its turn", root: false, args: map[string]any{"end_turn": true}, want: ""},
-		{name: "delegate states a reason", root: false, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, wantErr: true},
+		{name: "root states needs_response", offered: true, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, want: "needs_response"},
+		{name: "root states waiting_on_work", offered: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, want: "waiting_on_work"},
+		{name: "root states done", offered: true, args: map[string]any{"end_turn": true, "end_reason": "done"}, want: "done"},
+		{name: "root states none", offered: true, args: map[string]any{"end_turn": true}, want: "done"},
+		{name: "root keeps the turn going", offered: true, args: map[string]any{"end_turn": false, "end_reason": "needs_response"}, want: ""},
+		{name: "root states an unknown reason", offered: true, args: map[string]any{"end_turn": true, "end_reason": "later"}, wantErr: true},
+		{name: "delegate ends its turn", offered: false, args: map[string]any{"end_turn": true}, want: ""},
+		{name: "delegate states a reason", offered: false, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -93,7 +102,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				prependSteering:        func([]steeringMessage) {},
 				resultToolName:         func() string { return "communicate" },
 				setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
-				offersEndReason:        tc.root,
+				offersEndReason:        tc.offered,
 			}
 			reg := tool.NewRegistry()
 			registerCommunicateTool(reg, deps)
