@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
@@ -35,12 +36,40 @@ var (
 // a dup of dirFd as os.NewFile(fd, ""), whose DirEntry.Info() would lstat("/"+name)
 // against the host root; resolving beneath the fd keeps the metadata anchored to
 // the directory actually being listed.
-func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, error) {
+func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, error) {
 	var st unix.Stat_t
 	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return 0, 0, err
+		return 0, 0, time.Time{}, err
 	}
-	return st.Size, os.FileMode(st.Mode & 0o777), nil
+	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each);
+	// Mtim.Unix() returns (sec, nsec), which is time.Unix's argument pair.
+	return st.Size, statFileMode(st.Mode), time.Unix(st.Mtim.Unix()), nil
+}
+
+// statFileMode converts a stat st_mode to an os.FileMode carrying the permission
+// bits and the file type, so FileMode.IsRegular is true only for a regular file.
+// It is generic because st_mode is uint16 on darwin and uint32 on linux.
+func statFileMode[M uint16 | uint32](st M) os.FileMode {
+	raw := uint32(st)
+	mode := os.FileMode(raw & 0o777)
+	switch raw & unix.S_IFMT {
+	case unix.S_IFREG:
+	case unix.S_IFDIR:
+		mode |= os.ModeDir
+	case unix.S_IFLNK:
+		mode |= os.ModeSymlink
+	case unix.S_IFIFO:
+		mode |= os.ModeNamedPipe
+	case unix.S_IFSOCK:
+		mode |= os.ModeSocket
+	case unix.S_IFCHR:
+		mode |= os.ModeDevice | os.ModeCharDevice
+	case unix.S_IFBLK:
+		mode |= os.ModeDevice
+	default:
+		mode |= os.ModeIrregular
+	}
+	return mode
 }
 
 // close releases every cached root fd. Safe to call more than once.
@@ -603,8 +632,10 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			de.IsSymlink = true
 		}
 		if !ent.IsDir() {
-			if size, mode, ierr := secureEntryInfo(dirFd, name); ierr == nil {
+			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
 				de.Size = size
+				de.ModTime = modTime
+				de.IsRegular = mode.IsRegular()
 				if mode&0o111 != 0 {
 					de.IsExec = true
 				}

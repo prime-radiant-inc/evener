@@ -16,17 +16,27 @@ type Document struct {
 
 const delimiter = "---\n"
 
+// Split cuts raw into its frontmatter block and the body after the closing
+// delimiter. ok is false, with body set to all of raw, when raw has no
+// complete frontmatter.
+func Split(raw string) (block, body string, ok bool) {
+	rest, found := strings.CutPrefix(raw, delimiter)
+	if !found {
+		return "", raw, false
+	}
+	block, body, ok = strings.Cut(rest, delimiter)
+	if !ok {
+		// Opening delimiter but no closing delimiter: treat as no frontmatter.
+		return "", raw, false
+	}
+	return block, body, true
+}
+
 // Parse splits a YAML-frontmattered Markdown document into metadata and body.
 // If no frontmatter is present (no leading ---), Meta is nil and Body is the full input.
 func Parse(raw string) (Document, error) {
-	if !strings.HasPrefix(raw, delimiter) {
-		return Document{Body: raw}, nil
-	}
-
-	rest := raw[len(delimiter):]
-	yamlStr, body, found := strings.Cut(rest, delimiter)
+	yamlStr, body, found := Split(raw)
 	if !found {
-		// Opening delimiter but no closing delimiter — treat as no frontmatter.
 		return Document{Body: raw}, nil
 	}
 
