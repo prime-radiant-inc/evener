@@ -13,6 +13,7 @@ import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
+  ENTRY_TURN_STORE,
   entryHistoryKey,
   type TranscriptResolvedIdentity,
 } from "./sessionCacheSchema";
@@ -1412,6 +1413,102 @@ it.each(["same generation", "new boot after invalidation"] as const)(
   },
 );
 
+it("retires a held opening after an accepted authoritative read at unchanged source identity", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("retired A", 1), { lifetime: 1, readId: "authoritative-A", boundary: "authoritative-A" });
+  await owner.settled();
+
+  const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+  const reader = owner.attachReader();
+  const opening = reader.openLocal(40);
+  try {
+    await queryHold.reached;
+    const authoritative = read("replacement B", 2, "item-B");
+    authoritative.authoritative = true;
+    authoritative.requestGeneration = 1;
+    const replacementItem = authoritative.thread.turns?.[0]?.items?.[0];
+    if (!replacementItem) throw new Error("read fixture must contain its replacement item");
+    replacementItem.position = { entry: 1, item: 0 };
+    replacementItem.version = 2;
+    expect(
+      owner.acceptRead(authoritative, { lifetime: 1, readId: "authoritative-B", boundary: "authoritative-B" }),
+    ).toBe(true);
+    expect(
+      owner
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["replacement B"]);
+
+    queryHold.release();
+    const opened = await opening;
+    expect(opened.status).toBe("recovery-needed");
+    expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).not.toContain("retired A");
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["replacement B"]);
+  } finally {
+    queryHold.release();
+    reader.dispose();
+    await opening;
+    owner.dispose();
+  }
+});
+
+it("releases opening bodies while the real turn metadata lookup remains held", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const seed = hydrateThread(readMany(45), ref, 101);
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: seed,
+    seedAuthority: {
+      trustedCurrentSource: true,
+      bootGeneration: seed.history!.bootGeneration,
+      epoch: seed.history!.epoch,
+      incarnation: seed.history!.incarnation ?? "",
+      snapshotLength: seed.history!.length,
+    },
+    now: () => 100,
+  });
+  const writeGate = gateEntryCommit(fixture.cache, "item-pending");
+  owner.accept(historyUpdate("pending", 46), { lifetime: 2 });
+  await writeGate.reached;
+  const reader = owner.attachReader();
+  const turnQueryHold = holdNextTransaction([ENTRY_TURN_STORE], "readonly");
+  const opening = reader.openLocal(40);
+
+  try {
+    await turnQueryHold.reached;
+    reader.dispose();
+    writeGate.release();
+    await owner.settled();
+
+    expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+      openingModelRetained: false,
+      pendingPayloadCount: 0,
+      cachedPayloadCount: 0,
+    });
+  } finally {
+    turnQueryHold.release();
+    writeGate.release();
+    reader.dispose();
+    await opening;
+    await owner.settled();
+    owner.dispose();
+  }
+});
+
 it.each(["before open", "during lookup", "after lookup"] as const)(
   "releases opening model and pending payload ownership %s and supports a fresh repeated open",
   async (disposalPoint) => {
@@ -1439,26 +1536,41 @@ it.each(["before open", "during lookup", "after lookup"] as const)(
     owner.accept(historyUpdate("pending", 46), { lifetime: 2 });
     await writeGate.reached;
     const reader = owner.attachReader();
-    expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: true, pendingPayloadCount: 1 });
+    expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+      openingModelRetained: true,
+      pendingPayloadCount: 1,
+    });
 
     if (disposalPoint === "before open") {
       reader.dispose();
-      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+        openingModelRetained: false,
+        pendingPayloadCount: 0,
+      });
     } else if (disposalPoint === "during lookup") {
       const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
       const opening = reader.openLocal(40);
       await queryHold.reached;
       reader.dispose();
-      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+        openingModelRetained: false,
+        pendingPayloadCount: 0,
+      });
       queryHold.release();
       await opening;
     } else {
       const opened = await reader.openLocal(40);
       expect(opened.model).toBeDefined();
-      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+        openingModelRetained: false,
+        pendingPayloadCount: 0,
+      });
       const repeated = await reader.openLocal(40);
       expect(repeated.model?.turns.flatMap((turn) => turn.items).some((item) => item.text === "pending")).toBe(true);
-      expect(reader.getRetentionSnapshotForTesting()).toEqual({ openingModelRetained: false, pendingPayloadCount: 0 });
+      expect(reader.getRetentionSnapshotForTesting()).toMatchObject({
+        openingModelRetained: false,
+        pendingPayloadCount: 0,
+      });
       reader.dispose();
     }
     writeGate.release();

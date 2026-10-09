@@ -63,13 +63,18 @@ export interface TranscriptReader {
   openLocal(limit: number): Promise<TranscriptReaderResult>;
   getSnapshot(): ThreadModel | undefined;
   /** @internal Reports retained body ownership without exposing payloads. */
-  getRetentionSnapshotForTesting(): { openingModelRetained: boolean; pendingPayloadCount: number };
+  getRetentionSnapshotForTesting(): {
+    openingModelRetained: boolean;
+    pendingPayloadCount: number;
+    cachedPayloadCount: number;
+  };
   dispose(): void;
 }
 
 interface ReaderOpeningState {
   model?: ThreadModel;
   pendingRows: TranscriptItemRow<CachedSessionItem>[];
+  cacheRows: TranscriptItemRow<unknown>[];
   boundary: number;
   committedBoundary?: string;
   acceptedCoverageBoundary?: string;
@@ -181,6 +186,8 @@ export class TranscriptRepository {
     this.#model = candidate;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
+    // An authoritative window may remove held items without changing source
+    // identity, so an opening captured before it must not merge those items back.
     if (
       !previousHistory ||
       !acceptedHistory ||
@@ -188,7 +195,8 @@ export class TranscriptRepository {
       previousHistory.epoch !== acceptedHistory.epoch ||
       previousHistory.incarnation !== acceptedHistory.incarnation ||
       previousHistory.invalidatedAtGeneration !== undefined ||
-      previousHistory.failed !== undefined
+      previousHistory.failed !== undefined ||
+      response.authoritative === true
     ) {
       this.#sourceRevision++;
     }
@@ -315,6 +323,7 @@ export class TranscriptRepository {
     const captureOpeningState = (): ReaderOpeningState => ({
       model: this.#model,
       pendingRows: [...this.#pending.values()],
+      cacheRows: [],
       boundary: this.#boundary,
       committedBoundary: this.#committedCoverageBoundary,
       acceptedCoverageBoundary: this.#coverageBoundary,
@@ -326,10 +335,14 @@ export class TranscriptRepository {
       authorityValid: !this.#recoveryNeeded && !this.#seedAuthorityInvalid,
     });
     let openingState: ReaderOpeningState | undefined = captureOpeningState();
-    const releaseOpeningState = (state: ReaderOpeningState) => {
+    let disposedOpeningState: ReaderOpeningState | undefined;
+    const releaseOpeningState = (state: ReaderOpeningState, preserveSnapshot = false) => {
       state.model = undefined;
       state.pendingRows.length = 0;
+      state.cacheRows.length = 0;
       if (openingState === state) openingState = undefined;
+      if (preserveSnapshot) disposedOpeningState = state;
+      else if (disposedOpeningState === state) disposedOpeningState = undefined;
     };
     let latest = this.#model;
     const unlisten = this.subscribe(() => {
@@ -337,10 +350,14 @@ export class TranscriptRepository {
     });
     return {
       getSnapshot: () => latest,
-      getRetentionSnapshotForTesting: () => ({
-        openingModelRetained: openingState?.model !== undefined,
-        pendingPayloadCount: openingState?.pendingRows.length ?? 0,
-      }),
+      getRetentionSnapshotForTesting: () => {
+        const cut = openingState ?? disposedOpeningState;
+        return {
+          openingModelRetained: cut?.model !== undefined,
+          pendingPayloadCount: cut?.pendingRows.length ?? 0,
+          cachedPayloadCount: cut?.cacheRows.length ?? 0,
+        };
+      },
       openLocal: async (limit) => {
         if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
         let cut = openingState;
@@ -361,15 +378,23 @@ export class TranscriptRepository {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           if (!window.complete && coverageBoundary !== undefined) {
+            window = { ...window, rows: [] };
             window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
           }
+          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+            return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
+          }
+          cut.cacheRows = [...window.rows];
+          window = { ...window, rows: [] };
+          const turnIds = this.#turnIDsForRows(cut.cacheRows, cut.pendingRows);
+          const turnMetadata = await this.#readTurnMetadata(turnIds);
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           const current = cut.model ?? this.#model;
           if (!current) return { status: window.complete ? "stale" : "recovery-needed" };
           const rowsByKey = new Map<string, TranscriptItemRow<unknown>>();
-          for (const row of [...window.rows, ...cut.pendingRows]) {
+          for (const row of [...cut.cacheRows, ...cut.pendingRows]) {
             const held = rowsByKey.get(row.transcriptKey);
             if (!held || held.version <= row.version) rowsByKey.set(row.transcriptKey, row);
           }
@@ -377,9 +402,10 @@ export class TranscriptRepository {
             comparePosition(left.position, right.position),
           );
           const boundedRows = limit === 0 ? [] : localRows.slice(-limit);
-          const restored = await this.#restoreWindow(
+          const restored = this.#restoreWindow(
             current,
             boundedRows,
+            turnMetadata,
             () => active && this.#acceptsLifetime(lifetime) && authorityCurrent(),
           );
           if (!restored || !active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
@@ -434,7 +460,7 @@ export class TranscriptRepository {
         this.#readerCount--;
         unlisten();
         latest = undefined;
-        if (openingState) releaseOpeningState(openingState);
+        if (openingState) releaseOpeningState(openingState, true);
         this.#reclaimBackgroundModel();
       },
     };
@@ -601,11 +627,37 @@ export class TranscriptRepository {
     };
   }
 
-  async #restoreWindow(
+  #turnIDsForRows(
+    cacheRows: readonly TranscriptItemRow<unknown>[],
+    pendingRows: readonly TranscriptItemRow<CachedSessionItem>[],
+  ): string[] {
+    const turnIds = new Set<string>();
+    const addRows = (rows: readonly TranscriptItemRow<unknown>[]) => {
+      for (const row of rows) {
+        const turnId = (row.item as { turnId?: unknown }).turnId;
+        if (typeof turnId === "string") turnIds.add(turnId);
+      }
+    };
+    addRows(cacheRows);
+    addRows(pendingRows);
+    return [...turnIds];
+  }
+
+  async #readTurnMetadata(
+    turnIds: readonly string[],
+  ): Promise<Map<string, Awaited<ReturnType<SessionEntryCache["getTurn"]>>>> {
+    const rows = await Promise.all(
+      turnIds.map(async (turnId) => [turnId, await this.#cache.getTurn(this.#binding.historyKey, turnId)] as const),
+    );
+    return new Map(rows);
+  }
+
+  #restoreWindow(
     seed: ThreadModel,
     rows: readonly TranscriptItemRow<unknown>[],
+    turnMetadata: ReadonlyMap<string, Awaited<ReturnType<SessionEntryCache["getTurn"]>>>,
     isCurrent: () => boolean,
-  ): Promise<ThreadModel | undefined> {
+  ): ThreadModel | undefined {
     const byTurn = new Map<string, ItemModel[]>();
     for (const row of rows) {
       const item = decodeTranscriptItem(row.item as CachedSessionItem);
@@ -618,8 +670,8 @@ export class TranscriptRepository {
     }
     const turns = new Map(seed.turns.map((turn) => [turn.id, turn]));
     for (const [turnId, items] of byTurn) {
-      const cached = await this.#cache.getTurn(this.#binding.historyKey, turnId);
       if (!isCurrent()) return undefined;
+      const cached = turnMetadata.get(turnId);
       const held = turns.get(turnId);
       if (!cached && !held) continue;
       const incoming: TurnModel = cached
