@@ -124,21 +124,21 @@ func (a *waiterInterruptAdapter) Stream(context.Context, llm.Request) (llm.Strea
 
 type waiterInterruptServer struct {
 	*server.Server
-	notification           chan struct{}
-	armed                  atomic.Bool
-	processingBarrierArmed atomic.Bool
-	processingFalseEntered chan struct{}
-	releaseProcessingFalse chan struct{}
-	processingBarrierOnce  sync.Once
-	processingReleaseOnce  sync.Once
-	once                   sync.Once
+	notification            chan struct{}
+	armed                   atomic.Bool
+	processingBarrierArmed  atomic.Bool
+	finishProcessingEntered chan struct{}
+	releaseFinishProcessing chan struct{}
+	processingBarrierOnce   sync.Once
+	processingReleaseOnce   sync.Once
+	once                    sync.Once
 }
 
 func (s *waiterInterruptServer) FinishProcessing(state string) {
 	s.Server.FinishProcessing(state)
 	if s.processingBarrierArmed.Load() {
-		s.processingBarrierOnce.Do(func() { close(s.processingFalseEntered) })
-		<-s.releaseProcessingFalse
+		s.processingBarrierOnce.Do(func() { close(s.finishProcessingEntered) })
+		<-s.releaseFinishProcessing
 	}
 }
 
@@ -147,7 +147,7 @@ func (s *waiterInterruptServer) armProcessingBarrier() {
 }
 
 func (s *waiterInterruptServer) releaseProcessingBarrier() {
-	s.processingReleaseOnce.Do(func() { close(s.releaseProcessingFalse) })
+	s.processingReleaseOnce.Do(func() { close(s.releaseFinishProcessing) })
 }
 
 func (s *waiterInterruptServer) SubmitNotification() {
@@ -224,10 +224,10 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	deps.newServer = func(cfg server.ServerConfig) serveServer {
 		observedServer = server.NewServer(cfg)
 		waiterServer = &waiterInterruptServer{
-			Server:                 observedServer,
-			notification:           make(chan struct{}),
-			processingFalseEntered: make(chan struct{}),
-			releaseProcessingFalse: make(chan struct{}),
+			Server:                  observedServer,
+			notification:            make(chan struct{}),
+			finishProcessingEntered: make(chan struct{}),
+			releaseFinishProcessing: make(chan struct{}),
 		}
 		return waiterServer
 	}
@@ -444,7 +444,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 		})
 		interruptResult <- daemon.client.TurnInterrupt(requestCtx, interrupt)
 	}()
-	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.processingFalseEntered, "runner FinishProcessing barrier")
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.finishProcessingEntered, "runner FinishProcessing barrier")
 	select {
 	case <-daemon.interruptResponse:
 		t.Fatal("TurnInterrupt response completed before runnerDone barrier release")

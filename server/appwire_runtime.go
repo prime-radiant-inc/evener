@@ -593,9 +593,10 @@ func (s *Server) finishProcessing(settled *string) {
 			s.status.State = *settled
 		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// Without the session's own state, the stored state still says
-			// what the input left running ("active"): nothing runs now, so
-			// that reads as idle.
+			// The stored state can still read "active": without the
+			// session's own state it is what the input left running, and the
+			// session's own state reads active while work is still pending
+			// (Session.WireState). Nothing runs now, so that reads as idle.
 			status := appStatus(s.status.State, false, false)
 			if status == appwire.ThreadStatusActive {
 				status = appwire.ThreadStatusIdle
