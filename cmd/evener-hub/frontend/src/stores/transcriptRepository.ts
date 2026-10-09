@@ -10,7 +10,9 @@ import {
   hydrateThread,
   type ItemModel,
   mergeTranscriptItemVersioned,
+  mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  pruneBackgroundHistoryBodies,
   type ThreadItem,
   type ThreadModel,
   type ThreadReadResponse,
@@ -142,6 +144,7 @@ export class TranscriptRepository {
       formatVersion: 3,
     };
     this.#publish();
+    for (const row of rows) this.#pending.set(row.transcriptKey, row);
     this.#queueWrite({
       historyKey: this.#binding.historyKey,
       clearEpoch: this.#binding.clearEpoch,
@@ -200,12 +203,14 @@ export class TranscriptRepository {
     const rows = this.#notificationRows(notification);
     const history =
       notification.method === "history/updated" ? (notification.params as { snapshot: { length: number } }) : undefined;
-    const coverage = history && rows.length > 0 ? this.#contiguousSuffix(rows, history.snapshot.length) : undefined;
     const turns = this.#notificationTurns(notification);
-    if (history && !coverage) this.#recoveryNeeded = true;
+    const hasRecordedInput = rows.length > 0 || turns.length > 0;
+    const coverage =
+      history && hasRecordedInput ? this.#contiguousSuffix(rows, turns, history.snapshot.length) : undefined;
+    if (history && hasRecordedInput && !coverage) this.#recoveryNeeded = true;
     if (notification.method === "overlay/end") this.#recoveryNeeded = true;
     this.#publish();
-    if (rows.length > 0 || turns.length > 0) {
+    if (hasRecordedInput) {
       for (const row of rows) this.#pending.set(row.transcriptKey, row);
       this.#queueWrite({
         historyKey: this.#binding.historyKey,
@@ -220,6 +225,7 @@ export class TranscriptRepository {
         this.#representedSnapshot = coverage.representedSnapshot;
       }
     }
+    if (!hasRecordedInput) this.#reclaimBackgroundModel();
     return true;
   }
 
@@ -249,6 +255,8 @@ export class TranscriptRepository {
           if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
           // A racing accepted model wins by item version; the stale query only fills absent slots.
           latest = this.#boundary > openingBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+          this.#model = latest;
+          this.#publish();
           const status =
             window.complete && !window.stale && !this.#cacheContinuityLost && !this.#recoveryNeeded
               ? "current"
@@ -393,15 +401,24 @@ export class TranscriptRepository {
 
   #contiguousSuffix(
     rows: readonly TranscriptItemRow<CachedSessionItem>[],
+    turns: readonly TurnModel[],
     representedSnapshot: number,
   ): import("./sessionEntryCache").EntryBatch["coverage"] {
-    if (!this.#coverageReadId || !this.#coverageBoundary || !this.#continuityId) return undefined;
+    if (
+      this.#recoveryNeeded ||
+      !this.#coverageReadId ||
+      !this.#coverageBoundary ||
+      !this.#continuityId ||
+      representedSnapshot !== this.#representedSnapshot + 1 ||
+      (rows.length === 0 && turns.length === 0)
+    ) {
+      return undefined;
+    }
     const positions = rows.map((row) => row.position).sort(comparePosition);
-    const start = positions[0];
-    const end = positions.at(-1);
-    if (!start || !end || representedSnapshot <= this.#representedSnapshot) return undefined;
-    if (start.entry !== this.#representedSnapshot + 1 || end.entry !== representedSnapshot) return undefined;
-    if (this.#coverageEnd && comparePosition(start, this.#coverageEnd) <= 0) return undefined;
+    const previousEnd = this.#coverageEnd;
+    if (previousEnd && positions.some((position) => comparePosition(position, previousEnd) <= 0)) {
+      return undefined;
+    }
     return {
       kind: "suffix",
       readId: this.#coverageReadId,
@@ -409,7 +426,7 @@ export class TranscriptRepository {
       previousBoundary: this.#coverageBoundary,
       boundary: `${this.#coverageBoundary}:suffix:${representedSnapshot}`,
       start: this.#coverageStart,
-      end,
+      end: positions.at(-1) ?? this.#coverageEnd,
       representedSnapshot,
     };
   }
@@ -449,7 +466,11 @@ export class TranscriptRepository {
       for (const item of items) {
         const key = item.transcriptKey ?? item.id;
         const existing = mergedItems.get(key);
-        mergedItems.set(key, mergeTranscriptItemVersioned(existing, existing?.version, item, item.version ?? 0));
+        const compact = seed.history?.turns
+          .flatMap((turn) => turn.items)
+          .find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
+        const mergeBase = compact?.version === existing?.version ? compact : existing;
+        mergedItems.set(key, mergeTranscriptItemVersioned(mergeBase, mergeBase?.version, item, item.version ?? 0));
       }
       mergedTurn = {
         ...mergedTurn,
@@ -457,10 +478,16 @@ export class TranscriptRepository {
       };
       turns.set(turnId, mergedTurn);
     }
-    return { ...seed, turns: [...turns.values()] };
+    const restored = { ...seed, turns: [...turns.values()] };
+    const loadedTurns = [...byTurn].flatMap(([turnId, items]) => {
+      const turn = turns.get(turnId);
+      return turn ? [{ ...turn, items }] : [];
+    });
+    return mergeTranscriptReaderWindow(restored, loadedTurns);
   }
 
   #mergeReaderModels(held: ThreadModel, incoming: ThreadModel): ThreadModel {
+    if (incoming.history) return mergeTranscriptReaderWindow(held, incoming.history.turns);
     const turns = new Map(held.turns.map((turn) => [turn.id, turn]));
     for (const incomingTurn of incoming.turns) {
       const heldTurn = turns.get(incomingTurn.id);
@@ -469,7 +496,11 @@ export class TranscriptRepository {
       for (const item of incomingTurn.items) {
         const key = item.transcriptKey ?? item.id;
         const existing = items.get(key);
-        items.set(key, mergeTranscriptItemVersioned(existing, existing?.version, item, item.version ?? 0));
+        const compact = held.history?.turns
+          .flatMap((turn) => turn.items)
+          .find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
+        const mergeBase = compact?.version === existing?.version ? compact : existing;
+        items.set(key, mergeTranscriptItemVersioned(mergeBase, mergeBase?.version, item, item.version ?? 0));
       }
       turns.set(incomingTurn.id, {
         ...mergedTurn,
@@ -491,10 +522,12 @@ export class TranscriptRepository {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
       }
-      this.#reclaimBackgroundModel();
     });
     this.#writes.add(write);
-    void write.finally(() => this.#writes.delete(write));
+    void write.finally(() => {
+      this.#writes.delete(write);
+      this.#reclaimBackgroundModel();
+    });
   }
 
   #now(): number {
@@ -502,20 +535,8 @@ export class TranscriptRepository {
   }
 
   #reclaimBackgroundModel(): void {
-    if (this.#readerCount > 0 || !this.#model) return;
-    const retained = this.#model.turns
-      .flatMap((turn) => turn.items)
-      .filter((item) => item.position)
-      .sort((left, right) => comparePositions(left.position, right.position))
-      .slice(-40);
-    const retainedKeys = new Set(retained.map((item) => item.transcriptKey ?? item.id));
-    this.#model = {
-      ...this.#model,
-      turns: this.#model.turns.map((turn) => ({
-        ...turn,
-        items: turn.items.filter((item) => retainedKeys.has(item.transcriptKey ?? item.id)),
-      })),
-    };
+    if (this.#readerCount > 0 || this.#pending.size > 0 || this.#writes.size > 0 || !this.#model) return;
+    this.#model = pruneBackgroundHistoryBodies(this.#model);
   }
 
   #publish(): void {

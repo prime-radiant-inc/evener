@@ -3509,7 +3509,13 @@ export function mergeTranscriptItemVersioned(
   incoming: ItemModel,
   incomingVersion: number,
 ): ItemModel {
-  if (held !== undefined && !supersedes(heldVersion, incomingVersion)) return held;
+  if (
+    held !== undefined &&
+    !supersedes(heldVersion, incomingVersion) &&
+    !(heldVersion === incomingVersion && itemIsIdentityOnly(held) && !itemIsIdentityOnly(incoming))
+  ) {
+    return held;
+  }
   return mergeReplacedItem(held, incoming);
 }
 
@@ -3517,6 +3523,20 @@ export function mergeTranscriptItemVersioned(
 export function mergeTranscriptTurnVersioned(held: TurnModel | undefined, incoming: TurnModel): TurnModel {
   if (held !== undefined && !supersedes(held.version, incoming.version)) return held;
   return { ...incoming, items: held?.items ?? [] };
+}
+
+/** Merges genuine local reader rows into versioned history using the reducer's normal fold rules. */
+export function mergeTranscriptReaderWindow<M extends ThreadModel>(
+  model: M,
+  turns: readonly TurnModel[],
+): ThreadModel & ModelExtras<M> {
+  if (!model.history || turns.length === 0) return publicModel<M>(model);
+  const fragment: HistoryFragment = {
+    turns: turns.map(({ items: _items, ...turn }) => ({ ...turn, items: [] })),
+    items: turns.flatMap((turn) => turn.items),
+  };
+  const history = { ...model.history, turns: mergeHistory(model.history.turns, fragment) };
+  return publicModel<M>(withDisplay(model, history, model.overlay ?? {}));
 }
 
 // Orders by (entry, item, sub). An item with no position sorts after every
@@ -3613,7 +3633,13 @@ function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, heldOnly = 
     const turn = held ?? { id: incoming.turnId, status: "inProgress", items: [] };
     const identity = itemIdentity(incoming);
     const index = turn.items.findIndex((item) => itemIdentity(item) === identity);
-    if (index === -1 ? heldOnly : !supersedes(turn.items[index]?.version, incoming.version)) continue;
+    const heldItem = turn.items[index];
+    const identityUpgrade =
+      heldItem !== undefined &&
+      heldItem.version === incoming.version &&
+      itemIsIdentityOnly(heldItem) &&
+      !itemIsIdentityOnly(incoming);
+    if (index === -1 ? heldOnly : !supersedes(heldItem?.version, incoming.version) && !identityUpgrade) continue;
     // Copy a turn's items once per merge, then edit the copy in place.
     const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
     ownedItems.add(turn.id);
@@ -3911,6 +3937,47 @@ function withDisplay<M extends ThreadModel>(
     overlay: shown,
     turns: displayTurns(history.turns, shown, model.turns, modelImageSessionRoute(model), model.runningTurnId),
   };
+}
+
+/**
+ * Drops completed item payloads from an idle background model while retaining
+ * identities needed for versioned upserts and overlay handoff pruning.
+ * Mounted readers keep their own full model; active overlay items are rebuilt
+ * through the same display projection used by ordinary notifications.
+ */
+export function pruneBackgroundHistoryBodies<M extends ThreadModel>(model: M): ThreadModel & ModelExtras<M> {
+  if (!model.history) return publicModel<M>(model);
+  const history = {
+    ...model.history,
+    turns: model.history.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((item) =>
+        markItemIdentityOnly(
+          markItemTextOmitted({
+            id: item.id,
+            turnId: item.turnId,
+            type: item.type,
+            text: "",
+            ...(item.transcriptKey === undefined ? {} : { transcriptKey: item.transcriptKey }),
+            ...(item.position === undefined ? {} : { position: { ...item.position } }),
+            ...(item.version === undefined ? {} : { version: item.version }),
+            ...(item.roundId === undefined ? {} : { roundId: item.roundId }),
+            ...(item.callId === undefined ? {} : { callId: item.callId }),
+            ...(item.completedAtEntry === undefined ? {} : { completedAtEntry: item.completedAtEntry }),
+            ...(item.transcriptEntryIndex === undefined ? {} : { transcriptEntryIndex: item.transcriptEntryIndex }),
+          }),
+        ),
+      ),
+    })),
+  };
+  const projected = withDisplay(model, history, model.overlay ?? {});
+  return publicModel<M>({
+    ...projected,
+    turns: projected.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.filter((item) => !itemIsIdentityOnly(item)),
+    })),
+  });
 }
 
 // The read identity a history update, resync push or page names. A resync the

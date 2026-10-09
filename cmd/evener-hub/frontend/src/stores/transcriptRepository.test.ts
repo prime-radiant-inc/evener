@@ -1,5 +1,6 @@
 import {
   type AnyNotification,
+  encodeTranscriptItem,
   hydrateThread,
   type ThreadItem,
   type ThreadModel,
@@ -164,8 +165,12 @@ it("commits all initial read rows and serves the latest bounded ascending window
   await owner.settled();
   const rows = await fixture.cache.getLatest(historyKey, 100);
   const window = await fixture.cache.getLatestWindow(historyKey, 40, "read-many-boundary");
+  const backgroundItems = owner.getSnapshot()?.history?.turns.flatMap((turn) => turn.items) ?? [];
   expect(rows).toHaveLength(45);
-  expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(40);
+  expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(0);
+  expect(backgroundItems).toHaveLength(45);
+  expect(backgroundItems.map(encodeTranscriptItem).every((item) => item.identityOnly && item.textOmitted)).toBe(true);
+  expect(JSON.stringify(backgroundItems.map(encodeTranscriptItem))).not.toContain("row-");
   expect(window.rows.map((row) => row.transcriptKey)).toEqual(
     Array.from({ length: 40 }, (_, index) => `item-${index + 6}`),
   );
@@ -229,6 +234,7 @@ it("keeps an accepted read visible after cache failure and refuses to call the l
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
   owner.acceptRead(read("before"), { lifetime: 1, readId: "read-before", boundary: "read-before-boundary" });
   await owner.settled();
   vi.spyOn(fixture.cache, "commitBatch").mockResolvedValue({
@@ -247,7 +253,6 @@ it("keeps an accepted read visible after cache failure and refuses to call the l
       .map((item) => item.text),
   ).toEqual(["before", "accepted"]);
   await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([{ transcriptKey: "item-before" }]);
-  const reader = owner.attachReader();
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
   reader.dispose();
   owner.dispose();
@@ -271,7 +276,9 @@ it("reopens committed nonresident history from bounded local rows without a serv
   expect(opened.status).toBe("current");
   expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["persisted"]);
   expect(opened.model?.runningTurnId).toBe(seed.runningTurnId);
+  expect(localOnly.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(1);
   reader.dispose();
+  expect(localOnly.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(0);
   localOnly.dispose();
 });
 
@@ -317,6 +324,13 @@ it("merges an old local query with pending and later accepted versions without r
   owner.acceptRead(read("B", 2), { lifetime: 1, readId: "read-2", boundary: "read-boundary-2" });
   owner.acceptRead(read("C", 3), { lifetime: 1, readId: "read-3", boundary: "read-boundary-3" });
   await owner.settled();
+  expect(
+    owner
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .filter((item) => item.transcriptKey === "item-A")
+      .map(encodeTranscriptItem),
+  ).toMatchObject([{ identityOnly: true, textOmitted: true }]);
   releaseQuery(oldWindow);
   const opened = await opening;
   expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["A", "B", "C"]);
@@ -487,5 +501,126 @@ it("does not extend coverage across a mixed isolated-old and distant-new notific
   const reader = owner.attachReader();
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
   reader.dispose();
+  owner.dispose();
+});
+
+it("extends coverage from accepted provenance for sparse positions and turn-only updates", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(2);
+  baseline.thread.turns![0]!.items = [
+    {
+      type: "agentMessage",
+      id: "baseline",
+      transcriptKey: "baseline",
+      turnId: "turn_1",
+      position: { entry: 100, item: 2 },
+      version: 1,
+      text: "baseline",
+    },
+  ];
+  owner.acceptRead(baseline, { lifetime: 1, readId: "read-provenance", boundary: "read-provenance-boundary" });
+  await owner.settled();
+
+  expect(
+    owner.accept(
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 3 },
+          items: [
+            {
+              type: "agentMessage",
+              id: "sparse-append",
+              transcriptKey: "sparse-append",
+              turnId: "turn_1",
+              position: { entry: 700, item: 4 },
+              version: 3,
+              text: "sparse append",
+            },
+          ],
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  await owner.settled();
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-provenance")).resolves.toMatchObject({
+    representedSnapshot: 3,
+    start: { entry: 100, item: 2 },
+    end: { entry: 700, item: 4 },
+  });
+
+  expect(
+    owner.accept(
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+          turns: [{ id: "turn_1", status: "completed", version: 4, itemsView: "full" }],
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  await owner.settled();
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-provenance")).resolves.toMatchObject({
+    representedSnapshot: 4,
+    start: { entry: 100, item: 2 },
+    end: { entry: 700, item: 4 },
+  });
+  owner.dispose();
+});
+
+it("keeps live overlay in memory without storing its payload beside settled recorded rows", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("recorded"), { lifetime: 1, readId: "read-overlay", boundary: "read-overlay-boundary" });
+  await owner.settled();
+  const live: AnyNotification = {
+    method: "overlay/upserted",
+    params: {
+      ref,
+      threadId,
+      item: {
+        key: "stream:round-live/1:agentMessage",
+        kind: "stream",
+        turnId: "turn_1",
+        roundId: "round-live",
+        streamId: "round-live/1",
+        item: {
+          type: "agentMessage",
+          id: "live-only",
+          turnId: "turn_1",
+          roundId: "round-live",
+          text: "not recorded yet",
+          status: "inProgress",
+        },
+      },
+    },
+  };
+  expect(owner.accept(live, { lifetime: 1 })).toBe(true);
+  await owner.settled();
+  expect(Object.keys(owner.getSnapshot()?.overlay ?? {})).toContain("stream:round-live/1:agentMessage");
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .some((item) => item.text === "recorded"),
+  ).toBe(false);
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    { transcriptKey: "item-recorded", item: { text: "recorded" } },
+  ]);
+  expect(JSON.stringify(await fixture.cache.getLatest(historyKey, 40))).not.toContain("not recorded yet");
   owner.dispose();
 });
