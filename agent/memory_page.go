@@ -92,46 +92,50 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 // firstMarkdownHeading returns the text of body's first ATX heading outside a
 // fenced code block, without closing hashes, or "".
 func firstMarkdownHeading(body string) string {
-	var fence string // the open fence's marker ("```" or "~~~"), "" outside one
+	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
 	for line := range strings.SplitSeq(body, "\n") {
-		indented := strings.TrimLeft(line, " ")
-		if len(line)-len(indented) <= 3 {
-			if marker := fenceMarker(indented); marker != "" {
-				switch fence {
-				case "":
-					fence = marker
-				case marker:
-					fence = ""
-				}
-				continue
+		text := strings.TrimLeft(line, " ")
+		if len(line)-len(text) > 3 {
+			continue // indented code
+		}
+		if run := fenceRun(text); run != "" {
+			switch {
+			case fence == "":
+				fence = run
+			case run[0] == fence[0] && len(run) >= len(fence) && strings.TrimSpace(text[len(run):]) == "":
+				fence = ""
 			}
+			continue
 		}
 		if fence != "" {
 			continue
 		}
-		trimmed := strings.TrimLeft(line, "#")
-		level := len(line) - len(trimmed)
+		trimmed := strings.TrimLeft(text, "#")
+		level := len(text) - len(trimmed)
 		if level >= 1 && level <= 6 && (trimmed == "" || trimmed[0] == ' ' || trimmed[0] == '\t') {
-			text := strings.TrimSpace(trimmed)
-			if stripped := strings.TrimRight(text, "#"); stripped != text && (stripped == "" || strings.HasSuffix(stripped, " ") || strings.HasSuffix(stripped, "\t")) {
-				text = strings.TrimSpace(stripped)
+			heading := strings.TrimSpace(trimmed)
+			if stripped := strings.TrimRight(heading, "#"); stripped != heading && (stripped == "" || strings.HasSuffix(stripped, " ") || strings.HasSuffix(stripped, "\t")) {
+				heading = strings.TrimSpace(stripped)
 			}
-			if text != "" {
-				return text
+			if heading != "" {
+				return heading
 			}
 		}
 	}
 	return ""
 }
 
-// fenceMarker returns "```" or "~~~" when line opens or closes a code fence.
-func fenceMarker(line string) string {
-	for _, marker := range []string{"```", "~~~"} {
-		if strings.HasPrefix(line, marker) {
-			return marker
-		}
+// fenceRun returns the leading run of three or more backticks or tildes in
+// line, which opens or closes a code fence, or "".
+func fenceRun(line string) string {
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return ""
 	}
-	return ""
+	run := line[:len(line)-len(strings.TrimLeft(line, line[:1]))]
+	if len(run) < 3 {
+		return ""
+	}
+	return run
 }
 
 // memoryFallbackDescription is the description of a page without one: its

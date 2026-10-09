@@ -43,12 +43,14 @@ func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, er
 	}
 	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each);
 	// Mtim.Unix() returns (sec, nsec), which is time.Unix's argument pair.
-	return st.Size, statFileMode(uint32(st.Mode)), time.Unix(st.Mtim.Unix()), nil
+	return st.Size, statFileMode(st.Mode), time.Unix(st.Mtim.Unix()), nil
 }
 
 // statFileMode converts a stat st_mode to an os.FileMode carrying the permission
 // bits and the file type, so FileMode.IsRegular is true only for a regular file.
-func statFileMode(raw uint32) os.FileMode {
+// It is generic because st_mode is uint16 on darwin and uint32 on linux.
+func statFileMode[M uint16 | uint32](st M) os.FileMode {
+	raw := uint32(st)
 	mode := os.FileMode(raw & 0o777)
 	switch raw & unix.S_IFMT {
 	case unix.S_IFREG:
