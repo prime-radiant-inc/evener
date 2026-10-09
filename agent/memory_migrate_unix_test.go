@@ -15,7 +15,8 @@ import (
 )
 
 // A page that exists but can't be written keeps its description only in the
-// index, so the index stays until a later run can write it.
+// index, so the index stays until a later run can write it. Pages after the
+// failed one still get their descriptions.
 func TestMigrateMemoryScopeKeepsIndexWhenAPageWriteFails(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
@@ -31,7 +32,11 @@ func TestMigrateMemoryScopeKeepsIndexWhenAPageWriteFails(t *testing.T) {
 	index := filepath.Join(scope, "MEMORY.md")
 	dir := filepath.Join(scope, "locked")
 	page := filepath.Join(dir, "p.md")
-	if err := os.WriteFile(index, []byte("- [locked](locked/p.md) — described by the index\n"), 0o600); err != nil {
+	later := filepath.Join(scope, "z.md")
+	if err := os.WriteFile(index, []byte("- [locked](locked/p.md) — described by the index\n- [later](z.md) — a later page\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(later, []byte("body\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -52,6 +57,9 @@ func TestMigrateMemoryScopeKeepsIndexWhenAPageWriteFails(t *testing.T) {
 	}
 	if _, err := os.Stat(index); err != nil {
 		t.Fatalf("MEMORY.md should stay for the next run: %v", err)
+	}
+	if raw, err := os.ReadFile(later); err != nil || string(raw) != "---\ndescription: a later page\n---\nbody\n" {
+		t.Fatalf("a page after the failed one: z.md=%q, %v", raw, err)
 	}
 
 	if err := os.Chmod(dir, 0o700); err != nil {
