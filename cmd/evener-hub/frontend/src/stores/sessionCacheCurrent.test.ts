@@ -106,8 +106,7 @@ describe("current session checkpoints", () => {
       );
       request.addEventListener("error", () => reject(request.error), { once: true });
     });
-    expect(schema.names).toContain("current");
-    expect(schema.names).toContain("currentMeta");
+    expect(schema.names).toEqual(["current", "currentMeta", "meta", "records"]);
     expect(schema.keyPath).toEqual(["ownerToken", "ref"]);
     expect(schema.currentIndex).toContain("ref");
     expect(schema.metadataKeyPath).toEqual(["ownerToken", "ref"]);

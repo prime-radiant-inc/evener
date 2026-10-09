@@ -1196,7 +1196,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 // load seam's. Both are pure so the mobile store can adopt them later.
 // ---------------------------------------------------------------------------
 
-interface CachedSessionItem extends ItemModel {
+export interface CachedSessionItem extends ItemModel {
   // JSON drops ITEM_TEXT_PRESENCE. Only omitted text needs an enumerable
   // marker; legacy records without it keep their provided-text semantics.
   textOmitted?: true;
@@ -1358,6 +1358,16 @@ function decodeCachedItem(cached: CachedSessionItem): ItemModel {
   const { textOmitted, identityOnly, ...item } = cached;
   const decoded = textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
   return identityOnly === true ? markItemIdentityOnly(decoded) : decoded;
+}
+
+/** Encodes one recorded item without changing omitted-text or identity-only semantics. */
+export function encodeTranscriptItem(item: ItemModel): CachedSessionItem {
+  return encodeCachedItem(item, true);
+}
+
+/** Decodes one stored item; malformed rows are rejected rather than cast into the model. */
+export function decodeTranscriptItem(value: unknown): ItemModel | undefined {
+  return validItem(value) ? decodeCachedItem(value) : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3490,6 +3500,17 @@ function mergeReplacedItem(held: ItemModel | undefined, incoming: ItemModel): It
     );
   }
   return merged;
+}
+
+/** Applies one versioned entry update without letting an older item regress a newer row. */
+export function mergeTranscriptItemVersioned(
+  held: ItemModel | undefined,
+  heldVersion: number | undefined,
+  incoming: ItemModel,
+  incomingVersion: number,
+): ItemModel {
+  if (held !== undefined && heldVersion !== undefined && heldVersion > incomingVersion) return held;
+  return mergeReplacedItem(held, incoming);
 }
 
 // Orders by (entry, item, sub). An item with no position sorts after every

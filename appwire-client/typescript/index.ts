@@ -432,6 +432,7 @@ export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
   CachedSessionHistory,
+  CachedSessionItem,
   CachedSessionRecord,
   CurrentTranscriptAdmission,
   CurrentTranscriptFields,
@@ -452,6 +453,8 @@ export {
   copyItemTextPresence,
   currentTranscriptState,
   decodeCurrentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
@@ -468,6 +471,7 @@ export {
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
   mergeTailTurns,
+  mergeTranscriptItemVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,

@@ -10,11 +10,16 @@ import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
+  itemTextPresence,
+  markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPage,
+  mergeTranscriptItemVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
@@ -38,6 +43,41 @@ import type {
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 import { WarningCodeContextBudget } from "./warnings";
+
+test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {
+  const omitted = markItemTextOmitted({ id: "item-1", turnId: "turn-1", type: "assistant", text: "" });
+  const explicitEmpty: ItemModel = { id: "item-2", turnId: "turn-1", type: "assistant", text: "" };
+  const identity = markItemIdentityOnly({ id: "item-3", turnId: "turn-1", type: "toolResult", text: "" });
+  const rich: ItemModel = {
+    id: "item-4",
+    turnId: "turn-1",
+    type: "toolResult",
+    text: "tool result",
+    output: "structured result",
+    error: "denied",
+    images: [{ src: "data:image/png;base64,AA==", name: "in.png" }],
+    reasoningSummaries: [["reasoning chunk"]],
+  };
+
+  const decodedOmitted = decodeTranscriptItem(encodeTranscriptItem(omitted));
+  const decodedEmpty = decodeTranscriptItem(encodeTranscriptItem(explicitEmpty));
+  const decodedIdentity = decodeTranscriptItem(encodeTranscriptItem(identity));
+  const decodedRich = decodeTranscriptItem(encodeTranscriptItem(rich));
+  expect(decodedOmitted && itemTextPresence(decodedOmitted)).toBe("omitted");
+  expect(decodedEmpty && itemTextPresence(decodedEmpty)).toBe("provided");
+  expect(decodedIdentity && encodeTranscriptItem(decodedIdentity).identityOnly).toBe(true);
+  expect(decodedRich).toMatchObject(rich);
+  expect(decodeTranscriptItem({ id: "bad" })).toBeUndefined();
+});
+
+test("versioned entry merge rejects older input and preserves richer equal-version text", () => {
+  const held: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "known text" };
+  const stale: ItemModel = { ...held, text: "stale text" };
+  const omitted = markItemTextOmitted({ ...held, text: "" });
+
+  expect(mergeTranscriptItemVersioned(held, 4, stale, 3)).toBe(held);
+  expect(mergeTranscriptItemVersioned(held, 4, omitted, 4)).toMatchObject({ text: "known text" });
+});
 
 // Each fixture is newline-delimited JSON: the first line is
 // {"hydrate": ThreadReadResponse, "ref": string}, every following line is a

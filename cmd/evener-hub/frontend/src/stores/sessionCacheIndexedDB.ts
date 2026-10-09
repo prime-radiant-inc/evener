@@ -5,6 +5,7 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { trackProjectionWork } from "./projectionWork";
+import { upgradeSessionCache } from "./sessionCacheSchema";
 import { countUtf8Bytes } from "./transcriptPayloadBudget";
 
 const DATABASE_NAME = "evener-session-cache";
@@ -600,22 +601,7 @@ export class SessionCacheIndexedDB {
   }
 
   #upgrade(database: IDBDatabase): void {
-    if (!database.objectStoreNames.contains(RECORDS_STORE)) {
-      database.createObjectStore(RECORDS_STORE, { keyPath: "ref" });
-    }
-    if (!database.objectStoreNames.contains(META_STORE)) {
-      // Initialize once: later version upgrades must retain committed clears.
-      const meta = database.createObjectStore(META_STORE, { keyPath: "ref" });
-      meta.put({ ref: EPOCH_ROW_KEY, epoch: 0 } satisfies EpochRow);
-    }
-    if (!database.objectStoreNames.contains(CURRENT_STORE)) {
-      const current = database.createObjectStore(CURRENT_STORE, { keyPath: ["ownerToken", "ref"] });
-      current.createIndex("ref", "ref", { unique: false });
-    }
-    if (!database.objectStoreNames.contains(CURRENT_META_STORE)) {
-      const currentMeta = database.createObjectStore(CURRENT_META_STORE, { keyPath: ["ownerToken", "ref"] });
-      currentMeta.createIndex("ref", "ref", { unique: false });
-    }
+    upgradeSessionCache(database);
   }
 }
 

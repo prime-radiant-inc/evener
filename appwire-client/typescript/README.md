@@ -117,6 +117,15 @@ Use those generated unions directly when consuming results; the failure arms
 carry `seam`, and planned results carry `plan` and `token`. The public Go arm
 structs and their wire fields remain the protocol authority.
 
+## Recorded transcript items
+
+`encodeTranscriptItem` and `decodeTranscriptItem` reuse the reducer's cache
+codec for one item. They preserve omitted text separately from explicit empty
+text, identity-only markers, images, reasoning summaries, tool output and
+errors. `mergeTranscriptItemVersioned` ignores an older item version and uses
+the reducer's omission-tolerant replacement rules for equal or newer versions.
+These helpers do not establish range coverage or turn metadata.
+
 ## Host-scoped requests
 
 `hostRequest(client, host, method, params, opts)` sends a typed request to the
