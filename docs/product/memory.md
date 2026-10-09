@@ -282,9 +282,10 @@ it is left alone (the backup keeps its line). The first line naming a page
 wins. Migration does not stamp. Each old index is then renamed to a
 `.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
 numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
-that fails to write leaves the old index in place. A failed migration never
-blocks rendering; the next rendering retries. Other sessions render the pages
-as they are, with fallback descriptions, until a writing session migrates.
+that fails to write does not stop the others, but leaves the old index in
+place. A failed migration never blocks rendering; the next rendering retries.
+Other sessions render the pages as they are, with fallback descriptions, until
+a writing session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
