@@ -72,40 +72,44 @@ func isMemoryIndexPath(file string) bool {
 
 const (
 	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
+	memoryStampFailedNote           = "\n\nEvener could not stamp this page's updated date: "
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
 )
 
 // stampMemoryPage sets the updated and by stamps of the Markdown page the
 // session just wrote, at rel, the slash path its scope lists it at, and
 // returns the notes its tool result should end with. A stamp that cannot be
-// written does not undo the write; the note says so.
+// written does not undo the write; a note says so, ahead of the page's own
+// description or frontmatter note.
 func (s *Session) stampMemoryPage(env *execenv.LocalExecutionEnvironment, rel string) string {
 	if path.Ext(rel) != ".md" || !isMemoryPagePath(rel) {
 		return ""
 	}
 	abs := filepath.Join(env.WorkingDirectory(), filepath.FromSlash(rel))
 	raw, err := env.ReadFileRaw(abs)
-	if err == nil {
-		// updated is written by hand, unquoted, so it reads back as a YAML date.
-		stamped := setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
-		stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
-		// A same-day write by the same session can leave the stamps as they
-		// were; skipping that write keeps the page's modification time.
-		if !bytes.Equal(stamped, raw) {
-			err = env.WriteFileRaw(abs, stamped, 0o644)
-		}
-		raw = stamped
-	}
 	if err != nil {
-		return "\n\nEvener could not stamp this page's updated date: " + err.Error()
+		return memoryStampFailedNote + err.Error()
 	}
-	switch page := parseMemoryPage(rel, raw, time.Time{}); {
+	var notes string
+	// updated is written by hand, unquoted, so it reads back as a YAML date.
+	stamped := setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+	stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
+	// A same-day write by the same session can leave the stamps as they
+	// were; skipping that write keeps the page's modification time.
+	if !bytes.Equal(stamped, raw) {
+		if err := env.WriteFileRaw(abs, stamped, 0o644); err != nil {
+			notes = memoryStampFailedNote + err.Error()
+		}
+	}
+	// The stamps leave the description as it was, so the stamped bytes
+	// answer for it even when they could not be written.
+	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
-		return memoryUnreadableFrontmatterNote
+		notes += memoryUnreadableFrontmatterNote
 	case !page.HasDescription:
-		return memoryMissingDescriptionNote
+		notes += memoryMissingDescriptionNote
 	}
-	return ""
+	return notes
 }
 
 // execOwnMemoryWrite runs a write, edit or delete of one memory file. It
