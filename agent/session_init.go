@@ -2506,7 +2506,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 
 func skillDiagnosticWarningCode(category string) string {
 	switch category {
-	case "allowed_tools_not_enforced", "unsupported_control":
+	case "allowed_tools_not_enforced", "unsupported_control", "missing_frontmatter_delimiter":
 		return events.WarningCodePluginCompatibility
 	default:
 		return ""

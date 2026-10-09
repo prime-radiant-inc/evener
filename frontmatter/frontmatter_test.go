@@ -1,6 +1,7 @@
 package frontmatter
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -120,6 +121,65 @@ func TestParse_BodyPreserved(t *testing.T) {
 	want := "\n  indented\n\ntrailing\n\n"
 	if doc.Body != want {
 		t.Errorf("Body = %q, want %q", doc.Body, want)
+	}
+}
+
+// A "---" glued to the end of a value is not a closing delimiter.
+func TestParse_ValueEndingInDashesDoesNotCloseTheBlock(t *testing.T) {
+	raw := "---\nname: t\nnote: see---\n---\nBody.\n"
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doc.Meta["note"] != "see---" {
+		t.Errorf("note = %q, want %q", doc.Meta["note"], "see---")
+	}
+	if doc.Body != "Body.\n" {
+		t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+	}
+}
+
+// An indented "---" inside a block scalar is content, not a closing delimiter.
+func TestParse_IndentedDelimiterInBlockScalarDoesNotClose(t *testing.T) {
+	raw := "---\ndescription: |\n  line\n  ---\n  more\nname: t\n---\nBody.\n"
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doc.Meta["name"] != "t" {
+		t.Errorf("name = %q, want %q", doc.Meta["name"], "t")
+	}
+	description, ok := doc.Meta["description"].(string)
+	if !ok || !strings.Contains(description, "---") {
+		t.Errorf("description = %#v, want a string containing the indented ---", doc.Meta["description"])
+	}
+	if doc.Body != "Body.\n" {
+		t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+	}
+}
+
+func TestSplit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, raw, block, body string
+		ok                     bool
+	}{
+		{"complete", "---\na: 1\n---\nbody\n", "a: 1\n", "body\n", true},
+		{"no opening", "body\n", "", "body\n", false},
+		{"no closing", "---\na: 1\n", "", "---\na: 1\n", false},
+		{"empty block", "---\n---\nbody\n", "", "body\n", true},
+		{"--- ending a value is not the closing delimiter", "---\ndescription: a---\nb: 1\n---\nbody\n", "description: a---\nb: 1\n", "body\n", true},
+		{"--- ending a value with no closing line", "---\ndescription: a---\nbody\n", "", "---\ndescription: a---\nbody\n", false},
+		{"--- with no newline at the end is not a closing delimiter", "---\na: 1\n---", "", "---\na: 1\n---", false},
+		{"CRLF delimiters are not frontmatter", "---\r\na: 1\r\n---\r\nbody\r\n", "", "---\r\na: 1\r\n---\r\nbody\r\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			block, body, ok := Split(tc.raw)
+			if block != tc.block || body != tc.body || ok != tc.ok {
+				t.Fatalf("Split=%q,%q,%v want %q,%q,%v", block, body, ok, tc.block, tc.body, tc.ok)
+			}
+		})
 	}
 }
 
