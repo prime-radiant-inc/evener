@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"maps"
@@ -311,13 +312,13 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		}
 		described := setMemoryFrontmatterField(body, memoryYAMLField("description", descriptions[page]))
 		// Frontmatter the editor can't extend in place (a flow mapping, a block
-		// ended by "...") comes back without the description; such a page is
-		// left as it is, like one whose frontmatter does not parse, and the
-		// index is still renamed. Keeping the index for it instead would retry
-		// every run until someone rewrites the page. The description stays
-		// recoverable in the backup, and the page renders with its fallback
-		// description meanwhile.
-		if parsed := parseMemoryPage(page, described, time.Time{}); !parsed.HasDescription || parsed.Description != descriptions[page] {
+		// ended by "...") comes back unchanged, as the editor checks by
+		// reading the page back; such a page is left as it is, like one whose
+		// frontmatter does not parse, and the index is still renamed. Keeping
+		// the index for it instead would retry every run until someone
+		// rewrites the page. The description stays recoverable in the backup,
+		// and the page renders with its fallback description meanwhile.
+		if bytes.Equal(described, body) {
 			continue
 		}
 		// WriteFileRaw keeps an existing file's mode, so the 0o644 applies only to
