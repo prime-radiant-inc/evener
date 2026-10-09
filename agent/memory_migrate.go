@@ -45,9 +45,11 @@ func memoryYAMLField(key, value string) string {
 }
 
 // setMemoryFrontmatterField makes line (an encoded "key: value\n") the page's
-// only top-level entry for its key, replacing an existing one and its continuation
-// lines, or adding it at the end of the block, or adding a block. Every other
-// byte of the page is kept.
+// only top-level entry for its key, replacing an existing one and the lines of
+// its value, or adding it at the end of the block, or adding a block. Every
+// other byte of the page is kept. Keys are found as YAML reads them (quoted,
+// or with a space before the colon); a block YAML can't read as a mapping
+// gains the line at its end.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
 	text := string(raw)
@@ -55,23 +57,33 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	if !ok {
 		return []byte("---\n" + line + "---\n" + text)
 	}
-	var kept []string
-	replaced, skipping := false, false
+	keys := memoryFrontmatterKeyLines(block)
 	lines := slices.Collect(strings.Lines(block))
-	for i, existing := range lines {
-		if skipping && memoryFrontmatterContinuation(lines[i:]) {
+	var kept []string
+	replaced := false
+	for i := 0; i < len(lines); i++ {
+		if k, isKey := keys[i]; !isKey || k != key {
+			kept = append(kept, lines[i])
 			continue
 		}
-		skipping = false
-		if strings.HasPrefix(existing, key+":") {
-			if !replaced {
-				kept = append(kept, line)
-				replaced = true
+		if !replaced {
+			kept = append(kept, line)
+			replaced = true
+		}
+		// The value runs to the next key; blank and comment lines ending it
+		// belong to what follows and are kept.
+		next := i + 1
+		for ; next < len(lines); next++ {
+			if _, isKey := keys[next]; isKey {
+				break
 			}
-			skipping = true
-			continue
 		}
-		kept = append(kept, existing)
+		spacers := next
+		for spacers > i+1 && (strings.TrimSpace(lines[spacers-1]) == "" || strings.HasPrefix(lines[spacers-1], "#")) {
+			spacers--
+		}
+		kept = append(kept, lines[spacers:next]...)
+		i = next - 1
 	}
 	// splitMemoryFrontmatter's block is empty or ends in a newline, so the
 	// line can be appended as it is.
@@ -81,17 +93,23 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte("---\n" + strings.Join(kept, "") + "---\n" + body)
 }
 
-// memoryFrontmatterContinuation reports whether lines[0] continues the value
-// above it: an indented or list line, or a blank line followed, past any
-// more blank lines, by one. A blank line before the next key ends the value.
-func memoryFrontmatterContinuation(lines []string) bool {
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "-")
+// memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
+// block-style frontmatter mapping to the key as YAML reads it, or is nil when
+// the block is not one.
+func memoryFrontmatterKeyLines(block string) map[int]string {
+	var doc yaml.Node
+	if yaml.Unmarshal([]byte(block), &doc) != nil || len(doc.Content) == 0 {
+		return nil
 	}
-	return false
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode || mapping.Style&yaml.FlowStyle != 0 {
+		return nil
+	}
+	keys := make(map[int]string, len(mapping.Content)/2)
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keys[mapping.Content[i].Line-1] = mapping.Content[i].Value
+	}
+	return keys
 }
 
 var (
@@ -164,11 +182,19 @@ func resolveLegacyIndexPage(link string, listed map[string]bool) (string, bool) 
 	return match, match != ""
 }
 
+// legacyIndexEntry is one line of a hand-written index: the page path it
+// links to and the description it gives that page.
+type legacyIndexEntry struct {
+	Link, Description string
+}
+
 // parseLegacyMemoryIndex reads a hand-written MEMORY.md: for each line naming
 // a page, by a Markdown link or a bare path ending in .md, the description
-// the rest of the line gives it. The first line naming a page wins.
-func parseLegacyMemoryIndex(index string) map[string]string {
-	out := make(map[string]string)
+// the rest of the line gives it, in line order. The first line naming a page
+// wins.
+func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
+	var out []legacyIndexEntry
+	seen := make(map[string]bool)
 	for line := range strings.SplitSeq(index, "\n") {
 		var target, text, rest string
 		if m := legacyIndexLink.FindStringSubmatchIndex(line); m != nil {
@@ -181,7 +207,7 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 			continue
 		}
 		page, ok := legacyIndexPage(target)
-		if _, seen := out[page]; !ok || seen {
+		if !ok || seen[page] {
 			continue
 		}
 		source := trimLegacyIndexDescription(rest)
@@ -189,7 +215,8 @@ func parseLegacyMemoryIndex(index string) map[string]string {
 			source = text
 		}
 		if description := strings.Join(strings.Fields(source), " "); description != "" {
-			out[page] = description
+			out = append(out, legacyIndexEntry{Link: page, Description: description})
+			seen[page] = true
 		}
 	}
 	return out
@@ -225,25 +252,23 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	for _, p := range listed {
 		isListed[p.Path] = true
 	}
-	// Each link resolves to a listed page; within one index a link naming the
-	// page exactly wins over one that differs from it only in case, and an
-	// earlier index wins over a later one.
+	// Each link resolves to a listed page, and the first description a page
+	// gets is kept: an earlier index wins over a later one, and within one
+	// index a link naming the page exactly wins over the earliest line naming
+	// it in another case.
 	descriptions := make(map[string]string)
 	for _, legacy := range legacies {
 		raw, err := env.ReadFileRaw(legacy)
 		if err != nil {
 			return err
 		}
-		fromIndex := make(map[string]string)
-		for link, description := range parseLegacyMemoryIndex(string(raw)) {
-			page, ok := resolveLegacyIndexPage(link, isListed)
-			if _, taken := fromIndex[page]; ok && (link == page || !taken) {
-				fromIndex[page] = description
-			}
-		}
-		for page, description := range fromIndex {
-			if _, taken := descriptions[page]; !taken {
-				descriptions[page] = description
+		entries := parseLegacyMemoryIndex(string(raw))
+		for _, exact := range []bool{true, false} {
+			for _, entry := range entries {
+				page, ok := resolveLegacyIndexPage(entry.Link, isListed)
+				if _, taken := descriptions[page]; ok && !taken && (entry.Link == page) == exact {
+					descriptions[page] = entry.Description
+				}
 			}
 		}
 	}
@@ -279,9 +304,10 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 	return nil
 }
 
-// legacyMemoryIndexes is the scope's hand-written root indexes: every root
-// entry other than a directory whose name is MEMORY.md ignoring case, as
-// isMemoryPagePath excludes them all from the pages. The one named exactly
+// legacyMemoryIndexes is the scope's hand-written root indexes: every regular
+// root file whose name is MEMORY.md ignoring case, as isMemoryPagePath
+// excludes them all from the pages. Like a page, an index that is not a
+// regular file (a symlink, FIFO or directory) is skipped. The one named exactly
 // MEMORY.md comes first. A case-insensitive filesystem holds at most one,
 // under whatever case it was created with.
 func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
@@ -297,7 +323,7 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	}
 	var out []string
 	for _, entry := range entries {
-		if entry.IsDir || !strings.EqualFold(entry.Name, memoryIndexFile) {
+		if !entry.IsRegular || !strings.EqualFold(entry.Name, memoryIndexFile) {
 			continue
 		}
 		legacy := filepath.Join(root, entry.Name)

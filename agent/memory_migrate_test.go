@@ -32,6 +32,18 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 			"---\nnote: y\n\nkeep: 1\n---\n"},
 		{"a value ending in --- does not close the block", "---\ndescription: a---\nb: 1\n---\nbody\n", "by: s1\n",
 			"---\ndescription: a---\nb: 1\nby: s1\n---\nbody\n"},
+		{"replaces a double-quoted key", "---\n\"description\": \"\"\nb: 1\n---\nx\n", "description: d\n",
+			"---\ndescription: d\nb: 1\n---\nx\n"},
+		{"replaces a single-quoted key", "---\n'description': ''\n---\nx\n", "description: d\n",
+			"---\ndescription: d\n---\nx\n"},
+		{"replaces a key with a space before its colon", "---\ndescription : \"\"\n---\nx\n", "description: d\n",
+			"---\ndescription: d\n---\nx\n"},
+		{"replaces a flow value spread over lines", "---\ntags: [a,\nb]\nk: 1\n---\n", "tags: [c]\n",
+			"---\ntags: [c]\nk: 1\n---\n"},
+		{"keeps a comment that ends the replaced value", "---\nnote: x\n# about keep\nkeep: 1\n---\n", "note: y\n",
+			"---\nnote: y\n# about keep\nkeep: 1\n---\n"},
+		{"a key-like line inside a block scalar is not a key", "---\nnote: |\n  description: no\ndescription: old\n---\n", "description: new\n",
+			"---\nnote: |\n  description: no\ndescription: new\n---\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -84,7 +96,11 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"cpp.md":             "learned C++",
 		"emph.md":            "**important** note",
 	}
-	if got := parseLegacyMemoryIndex(index); !maps.Equal(got, want) {
+	got := make(map[string]string)
+	for _, entry := range parseLegacyMemoryIndex(index) {
+		got[entry.Link] = entry.Description
+	}
+	if !maps.Equal(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
 	}
 }
@@ -330,5 +346,46 @@ func TestMigrateMemoryScopeWithNoScopeDirectory(t *testing.T) {
 	}
 	if err := migrateMemoryScope(env); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Two links naming one page in a case other than its own: the earlier line
+// wins, as for any page named twice, however the links are ordered in memory.
+// A link naming the page exactly wins over an earlier one in another case.
+func TestMigrateMemoryScopeLinkCasePrecedence(t *testing.T) {
+	t.Parallel()
+	for index, want := range map[string]string{
+		"- [x](NOTES.md) — first line\n- [y](Notes.md) — second line\n": "first line",
+		"- [x](NOTES.md) — other case\n- [y](notes.md) — exact name\n":  "exact name",
+	} {
+		for range 20 {
+			migrateLinkCase(t, index, want)
+		}
+	}
+}
+
+// migrateLinkCase migrates index into a scope holding notes.md and checks the
+// description notes.md gets.
+func migrateLinkCase(t *testing.T, index, want string) {
+	t.Helper()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := filepath.Join(root, "memory", "personal")
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "notes.md"), []byte("body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = migrateMemoryScope(env)
+	env.Cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: "+want+"\n---\nbody\n" {
+		t.Fatalf("notes.md=%q, %v", raw, err)
 	}
 }

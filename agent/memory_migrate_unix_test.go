@@ -111,3 +111,32 @@ func TestMigrateMemoryScopeSkipsAFIFOPage(t *testing.T) {
 		t.Fatalf("MEMORY.md still present: %v", err)
 	}
 }
+
+// A root index that is not a regular file (here a FIFO) is no index, as a
+// page that is not a regular file is no page: migration neither blocks on it
+// nor fails on it every run.
+func TestMigrateMemoryScopeSkipsAFIFOIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	if err := syscall.Mkfifo(filepath.Join(scope, "MEMORY.md"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- migrateMemoryScope(env) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	// TRIPWIRE: migration past a FIFO index returns in milliseconds; without a bound a regressed FIFO read would hang the whole test binary.
+	case <-time.After(10 * time.Second):
+		t.Fatal("migration blocked on a FIFO index")
+	}
+}
