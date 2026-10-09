@@ -157,18 +157,26 @@ func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {
 	}
 }
 
-// An index line's page path comes from its leading link, even when the title
-// itself contains ") — ".
-func TestMemoryIndexLinePath(t *testing.T) {
+// An index line belongs to the page its leading link names, even when the
+// title holds a link or ") — ", or the description quotes another page's link.
+func TestMemoryIndexLineFor(t *testing.T) {
 	t.Parallel()
-	for line, want := range map[string]string{
-		"- [A) — b](x.md) — desc":                                                 "x.md",
-		"- [X](x.md) — see [y](y.md) — note":                                      "x.md",
-		memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}): "s/p.md",
-		"Tags: a (1)": "",
+	linked := memoryIndexLine(memoryPage{Path: "a.md", Title: `Use [Cents](money.md) ) — here \`, Description: "d"})
+	for _, tc := range []struct {
+		line, rel string
+		want      bool
+	}{
+		{linked, "a.md", true},
+		{linked, "money.md", false},
+		{"- [A) — b](x.md) — desc", "x.md", true},
+		{"- [X](x.md) — see [y](y.md) — note", "x.md", true},
+		{"- [X](x.md) — see [y](y.md) — note", "y.md", false},
+		{memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}), "s/p.md", true},
+		{"- [X](x.md.bak) — d", "x.md", false},
+		{"Tags: a (1)", "a", false},
 	} {
-		if got := memoryIndexLinePath(line); got != want {
-			t.Fatalf("%q: got %q, want %q", line, got, want)
+		if got := memoryIndexLineFor(tc.line, tc.rel); got != tc.want {
+			t.Fatalf("%q for %q: got %t, want %t", tc.line, tc.rel, got, tc.want)
 		}
 	}
 }

@@ -382,7 +382,7 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 // it knows: the written page's index line is patched into the scope's
 // baseline, and a page it read gets its new record. Neither is echoed back.
 // Both come from one read of the page at listed, the slash path the scope
-// lists it at (listedMemoryPagePath), which names the same file as file.
+// lists it at (listedMemoryPagePath), which also keys its read record.
 //
 // Only the written page is read back, so a page another session added,
 // changed or deleted since the last boundary stays out of the baseline and
@@ -390,7 +390,8 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 // same page between this session's write and the read-back is folded in
 // unseen until the page changes again or a compaction or resume delivers the
 // index in full; the race is accepted as rare and cheap.
-func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, file, listed string) {
+func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, listed string) {
+	file := filepath.FromSlash(listed)
 	adopt := s.memoryOwnWriteSetsBaseline(scope) && isMemoryPagePath(listed)
 	s.memoryMu.Lock()
 	_, tracked := s.memoryReadPages[scope][file]
@@ -406,7 +407,7 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 	ioErr := s.beforeMemoryIO(scope, "record")
 	var line string
 	if ioErr == nil {
-		raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(listed)))
+		raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), file))
 		if page, exists := memoryPageFromRead(listed, raw, readErr, time.Time{}); exists {
 			line = memoryIndexLine(page)
 		}

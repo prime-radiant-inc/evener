@@ -82,7 +82,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	if operation != "delete" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
 	}
-	s.recordOwnMemoryWrite(env, scope, file, listed)
+	s.recordOwnMemoryWrite(env, scope, listed)
 	return out, nil
 }
 
@@ -148,7 +148,10 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		if recordErr != nil {
 			raw = nil
 		}
-		s.recordMemoryContent(scope, file, raw, recordErr, true)
+		// Keyed as the scope lists the page, so a write naming it in another
+		// case finds this record.
+		listed := filepath.FromSlash(listedMemoryPagePath(env, filepath.ToSlash(file)))
+		s.recordMemoryContent(scope, listed, raw, recordErr, true)
 		// A long page gets a note pointing at what a page should be.
 		if text, ok := out.(string); ok && size > memoryPageSizeLimit {
 			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())

@@ -71,8 +71,8 @@ func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
 	return match, true
 }
 
-// canonicalMemoryPageName is base as its directory, whose entries are names,
-// lists it: the matchMemoryNameCase match, else base itself.
+// canonicalMemoryPageName is base, one path segment, as its directory, whose
+// entries are names, lists it: the matchMemoryNameCase match, else base.
 func canonicalMemoryPageName(base string, names []string) string {
 	if match, ok := matchMemoryNameCase(base, slices.Values(names)); ok {
 		return match
@@ -82,19 +82,22 @@ func canonicalMemoryPageName(base string, names []string) string {
 
 // listedMemoryPagePath is the slash path the scope lists the file at rel
 // under, which on a case-insensitive filesystem can differ from rel's case:
-// rel with its last segment in its directory's case. A directory that can't
-// be listed leaves rel as it is.
+// rel with each segment in its directory's case. A segment whose directory
+// can't be listed, such as one a write is about to create, stays as it is.
 func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
-	dir, base := path.Split(rel)
-	entries, err := env.ListDirectory(filepath.Join(env.WorkingDirectory(), filepath.FromSlash(dir)), 1)
-	if err != nil {
-		return rel
+	var listed []string
+	for segment := range strings.SplitSeq(rel, "/") {
+		dir := filepath.Join(env.WorkingDirectory(), filepath.FromSlash(path.Join(listed...)))
+		if entries, err := env.ListDirectory(dir, 1); err == nil {
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name)
+			}
+			segment = canonicalMemoryPageName(segment, names)
+		}
+		listed = append(listed, segment)
 	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		names = append(names, entry.Name)
-	}
-	return dir + canonicalMemoryPageName(base, names)
+	return path.Join(listed...)
 }
 
 // splitMemoryFrontmatter splits text into its frontmatter block and body

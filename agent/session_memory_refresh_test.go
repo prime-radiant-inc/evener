@@ -1400,3 +1400,67 @@ func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
 		}
 	}
 }
+
+// A page whose title holds a Markdown link is still matched by its own path
+// when the session rewrites it, so the rewrite replaces its line and is not
+// echoed back.
+func TestMemoryRefreshIgnoresOwnRewriteOfPageTitledWithALink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	write := func(description string) func(llm.Request) llm.Response {
+		return func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: " + description + "\n---\n# Use [Cents](money.md) ) — here\n"})
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		write("opaque-linked-1"),
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		write("opaque-linked-2"),
+		func(llm.Request) llm.Response { return finalResponse("rewrote") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the rewrites carries %d memory contexts, want only the first full index", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	for range 3 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// On a case-insensitive filesystem a page read under one spelling and
+// written under another, directories included, is one page: the write
+// replaces its listed line and its read record, so the next turn carries
+// neither a change block nor a page notice.
+func TestMemoryRefreshOwnWriteMatchesPageReadInAnotherCase(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeedPage(t, root, "personal", "notes/fact.md", "opaque-nested-1")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "FACT.md")); err != nil {
+		t.Skip("the filesystem is case-sensitive")
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "notes/fact.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Notes/Fact.md", "content": "---\ndescription: opaque-nested-2\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the write carries %d memory contexts, want only the first full index: %s", got, latestMemoryContext(req, "personal"))
+			}
+			return finalResponse("next")
+		},
+	))
+	for range 2 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
