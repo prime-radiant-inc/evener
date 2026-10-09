@@ -501,6 +501,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         );
         await requestResult(transaction.objectStore(ANNOTATION_HEADS_STORE).put(nextHead));
         this.#options.beforeCommit?.("acceptRead");
+        const observations: DocFileContent[] = [...retained, content];
         return {
           kind: "accepted",
           lease: {
@@ -510,6 +511,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             headRevision: nextHead.headRevision,
             displayedSnapshotId: nextHead.displayedSnapshotId,
           } satisfies AcceptedSourceLease,
+          // The already-validated comparable observations of this epoch plus the
+          // content just accepted. The continuation publishes them into local
+          // memory, so a recreated adapter that validated against durable history
+          // carries that history into its entry guard, not only the latest read.
+          observations,
         } as const;
       });
       if (validation.kind === "stale") {
@@ -520,12 +526,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // An unchanged acceptance is not a changed read: drop any provisional the
         // local comparison installed and record the completed acceptance.
         finishValidation(false);
-        const prior = this.#readStates.get(documentKey);
-        const sameEpoch = prior?.accepted?.lease.epoch === validation.lease.epoch;
         this.#readStates.set(documentKey, {
           ticket,
           accepted: { lease: validation.lease, content },
-          observations: sameEpoch ? [...(prior?.observations ?? []), content] : [content],
+          observations: validation.observations,
         });
         return { state: "accepted", lease: validation.lease };
       }
