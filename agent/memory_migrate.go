@@ -202,8 +202,8 @@ type legacyIndexEntry struct {
 
 // parseLegacyMemoryIndex reads a hand-written MEMORY.md: for each line naming
 // a page, by a Markdown link or a bare path ending in .md, the description
-// the rest of the line gives it, in line order. The first line naming a page
-// wins.
+// the rest of the line gives it, in line order. The first line giving a page
+// a description wins; a line that names it with nothing to say claims nothing.
 func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	var out []legacyIndexEntry
 	seen := make(map[string]bool)

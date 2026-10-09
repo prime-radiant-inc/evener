@@ -86,8 +86,8 @@ func TestMemoryYAMLFieldRoundTrips(t *testing.T) {
 	}
 }
 
-// A page is found by a link or a bare path; the first line naming it wins and
-// anything that is not a local Markdown page is skipped.
+// A page is found by a link or a bare path; the first line describing it wins
+// and anything that is not a local Markdown page is skipped.
 func TestParseLegacyMemoryIndex(t *testing.T) {
 	t.Parallel()
 	index := "# Project memory\n\n" +
@@ -106,7 +106,9 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- **no-link** — [feedback] a line with no page\n" +
 		"- see old.md.txt for the old notes\n" +
 		"- a.md/foo is a directory path\n" +
-		"- [emph](emph.md) — **important** note\n"
+		"- [emph](emph.md) — **important** note\n" +
+		"- [](quiet.md)\n" +
+		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
 		"testing.md":         "plain `go test` silently skips everything",
 		"money/cents.md":     "Money is integer cents",
@@ -116,6 +118,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"bold.md":            "bare path in bold",
 		"cpp.md":             "learned C++",
 		"emph.md":            "**important** note",
+		"quiet.md":           "a later line describes a page an empty one named",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
