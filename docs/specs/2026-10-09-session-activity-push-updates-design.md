@@ -38,8 +38,10 @@ read broke the native suite's settled-report, stop, and list-shrink tests.
 - The activity reads stay the authority for collection membership and counts. A
   push may update a row in place; it may not invent one.
 - Counts are never reconstructed from loaded rows; the summary read stays.
-- The frame's bounded prose rules match the read's exactly (same code point cap,
-  same ellipsis, same truncation flag), or the push and read drift.
+- The frame's bounded report preview matches the read's exactly (same code point
+  cap, same ellipsis, same truncation flag), or the push and read drift. The
+  frame's unbounded `task`/`description` are never merged over the read's bounded
+  copies.
 - Additive wire change only: new fields are `omitempty`; no existing field
   changes meaning, and no new read method is introduced.
 - Web, native, and the shared store migrate together; the phone/web visible
@@ -74,9 +76,17 @@ The activity row `appwire.SessionDelegate` gains `ProjectionRevision uint64` (JS
 `projectionRevision`) so a collection read can seed the merge ordering (see
 Consumers). It is an ordering key, not display data.
 
-The daemon advertises `DelegateReportPreview bool` in `appwire.FeatureSet` so a
-source that does not produce the field can be detected; capability is resolved
-per *source*, not per connection (see Compatibility).
+The capability is authored by the response producer, not derived by the hub. A
+daemon that emits the frame sets `reportPreview: true` on the
+`SessionActivityContext` it returns, and the local agent projection that loads a
+retained session sets it too. The hub passes the field through unchanged: it
+must not resolve capability from a handshake, because the client-facing
+connection `FeatureSet` is the hub's own hardcoded constant
+(`cmd/evener-hub/app_rpc.go`), a remote "source" is itself a hub whose set is its
+own, and a local daemon's features are not read by the hub. An older producer
+omits the field and the client keeps the read (see Compatibility). Carry it as a
+field on `SessionActivityContext` (a per-response capability), not on
+`appwire.FeatureSet`.
 
 Regenerate the TypeScript (`appwire-client/typescript/types.gen.ts`) and the
 protocol catalog (`docs/appwire-protocol.md`) with `make generate`.
@@ -108,24 +118,36 @@ under-invalidating a count. Revisit only against a measured win.
    `state.delegates.rows` by `delegateId` when the scope matches —
    `session` accepts only `delegate.ownerSessionId === context.sessionId`,
    `subtree` accepts the thread's own subtree. Keep `ownerRef`, `rootRef`,
-   `childRef`, and `name` from the loaded row; take every mutable field,
-   including the reported preview, from the frame.
-2. Order a merge by `runGeneration`, then `projectionRevision`, held in a
-   per-delegate applied-revision map seeded by every collection read (the row now
-   carries `projectionRevision`) and cleared on session replacement and dispose.
-   Skip a frame that is not newer, so a frame delayed past a newer read cannot
-   regress a row or clear a settled report. On a generation increase, clear the
-   prior run's preview.
-3. If the frame names a delegate the loaded rows do not contain and the
-   collection is observed, request a root read at most once per delegate ID (a
-   seen-unknown set). A root read reconciles only to the displayed boundary, so a
-   delegate beyond the loaded extent can never be adopted by that read; without
-   the per-ID bound, every later frame for it would re-read. A genuinely new
-   delegate sorts into the first page the read returns and is adopted.
+   `childRef`, and `name` from the loaded row; take the mutable status and report
+   fields from the frame, but keep `task` and `description` from the read: the
+   read bounds its prose and the frame does not, so merging the frame's copy
+   would let a later read shrink the row.
+2. Order every contribution by the projector's own total order — `runGeneration`,
+   then `projectionRevision`, then `latestActivityAt` — held in a per-delegate
+   applied map, so a same-revision later-activity frame still applies (the
+   projector admits it, `mergeAppwireDelegateInfo`) and a stale frame is skipped.
+   A collection read is not exempt: each read row joins the map the same way
+   (seed on first sight, keep the newer of read and applied). Otherwise a read
+   that lands after a newer frame clobbers it, and the seeded revision then skips
+   frames that fall in the gap. On a generation increase, clear the prior run's
+   preview.
+3. If step 1 accepted the frame (scope matched) and it names a delegate the
+   loaded rows do not contain, and the collection is observed, request a root
+   read at most once per delegate ID (a seen-unknown set). A frame the scope
+   check dropped (a descendant-owned delegate on a `session` store) never reads.
+   A root read reconciles only to the displayed boundary, so a delegate beyond
+   the loaded extent can never be adopted by that read; without the per-ID bound,
+   every later frame for it would re-read. A genuinely new delegate sorts into
+   the first page the read returns and is adopted.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
    as today, but do not refresh `delegates`. `evener/thread/resync` still
    refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
+6. Treat a response whose context `epoch` differs from the loaded one as a source
+   replacement and read the collection afresh. Today the store compares epochs
+   only on non-root page reads (`sessionActivityStore.ts`), so this comparison
+   must also cover a root read and the summary. The invalidation carries no
+   epoch, so a response is the only place to see it.
 
 **Web.** The Agents tab, the Activity sheet, the transcript entity view, the
 status bar, and the session chrome consume the store unchanged; the merge makes
@@ -154,11 +176,14 @@ event kinds (`agent/internal/delegatestore/event.go`) are create, run-start,
 terminal-prepared, run-finished, resumability-closed, subtree-stop requested and
 completed, delivery-acknowledged, and attention-changed — none removes a
 delegate. The activity keys derive from every non-nil stored row
-(`deriveSessionActivityDelegateKeys`); `captureDelegateCandidates` excludes a row
-only by scope ownership and page admission (byte budget), both of which report
-`complete:false` rather than a removal; and retirement deletes a child's
-artifacts directory, not its durable record (a retained delegate still lists with
-no live runtime). Within one source epoch the listed set therefore only grows.
+(`deriveSessionActivityDelegateKeys`). `captureDelegateCandidates` leaves a row
+out for reasons that are not removals: out-of-scope ownership (never listed for
+this scope), the walk's creation-admission high-water mark (a delegate created
+after an incremental walk's boundary appears on the next fresh root read), and
+the response byte budget (which reports `complete:false`). Only a fresh root read
+establishes the full current set; retirement deletes a child's artifacts
+directory, not its durable record (a retained delegate still lists with no live
+runtime). Within one source epoch, a fresh root read's set therefore only grows.
 
 It shrinks only on a source replacement (a new epoch) or a session replacement.
 Note: `acceptContext` resets the store only when the resolved `sessionId`
@@ -181,19 +206,16 @@ removal rule.
 
 ## Compatibility
 
-The gate keeps an un-upgraded source working, and it must be per source. The
-client-facing `FeatureSet` is the hub's own connection capability, not a remote
-daemon's, and `AppwireClientLike` exposes no features at all, so a
-connection-level flag cannot protect an older remote daemon: it would skip the
-read and never see the report. Instead, the hub carries the owning source's
-support on the activity response it already returns — a `reportPreview bool` on
-`SessionActivityContext`, set from the source's advertised capability (the hub's
-handshake probe already captures a remote source's `Features`, and a local daemon
-shares the hub's build). The store enables the no-read merge only for a context
-that advertises it; otherwise it keeps today's behavior — read `delegates` on the
-invalidation. The first task confirms the hub can resolve a source's capability
-at read time; if it cannot, the gate degrades to "keep the read", never to "skip
-it blindly".
+The gate keeps an un-upgraded source working, and it is authored by the
+producer. The capability rides on `SessionActivityContext`, set by the daemon
+that produced the rows (or the local agent projection for a retained session) —
+never resolved by the hub: the client-facing connection `FeatureSet` is the hub's
+own constant (`cmd/evener-hub/app_rpc.go`), a remote "source" is itself a hub
+whose set is its own, and a local daemon's features are not read by the hub. The
+store enables the no-read merge only for a context that advertises
+`reportPreview`; otherwise it keeps today's behavior — read `delegates` on the
+invalidation — so reports still land. A negative-path test must pin that
+fallback.
 
 ## Test and acceptance obligations
 
@@ -213,8 +235,13 @@ it blindly".
   listed set and the client reconciles absence only through a read.
 - **Roster.** `SlimDelegateForRoster` strips the preview fields; a thread/read
   roster row never carries them.
-- **Ordering.** A collection read seeds the applied-revision map, so a frame
-  delayed past a newer read is skipped rather than applied.
+- **Ordering.** The total order matches the projector's; a read seeds the map; a
+  read that lands after a newer frame does not clobber it and does not skip a
+  frame in the gap; a same-revision later-activity frame still applies; a stale
+  frame is skipped.
+- **Capability.** A context advertising `reportPreview` merges without reading
+  the collection on an invalidation; a context that does not advertise it keeps
+  reading, so the report still lands.
 - **Counts.** A count-moving update still refreshes the summary; the Agents
   count never derives from loaded rows.
 - **Web.** Rows update from a frame with no collection read; the boundary test
@@ -232,12 +259,13 @@ it blindly".
 | Risk | Guard |
 | --- | --- |
 | Push/read preview drift | Shared bounding helper; parity test. |
-| Stale row from an out-of-order frame | `runGeneration` + `projectionRevision`, seeded by every read. |
-| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID. |
+| Read clobbers a newer frame | each read row joins the total order; keep the newer of read and applied. |
+| Stale row from an out-of-order frame | `runGeneration` + `projectionRevision` + `latestActivityAt`, matching the projector. |
+| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
-| Old source with no preview | Per-source capability on the activity context; the read stays unless the source advertises. |
-| Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change) unchanged; the collection still reads on observe and paging. |
+| Old source with no preview | producer-authored context capability; the read stays unless the source advertises, with a negative-path test. |
+| Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 
 ## Open questions for Jesse
 
@@ -255,7 +283,7 @@ All resolved 2026-10-09.
 | --- | --- |
 | Wire + generated | `appwire/types.go`, `appwire/session_activity.go`, `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md` |
 | Roster slimming | `appwire/delegate_roster.go`, `server/appwire_runtime.go` |
-| Capability plumbing | the hub's activity handler (`cmd/evener-hub/app_session_activity.go`), `cmd/evener-hub/internal/appsource` (remote features), `SessionActivityContext` |
+| Capability plumbing | `SessionActivityContext` field, set by the producing daemon (`agent/session_activity*.go`) and the retained loader; the hub passes it through (`cmd/evener-hub/app_session_activity.go`, `internal/appsource`) |
 | Producer | `internal/appprojector/appwire_projection.go`, `agent/session_activity_delegates.go` (shared bound) |
 | Shared store | `appwire-client/typescript/sessionActivityStore.ts`, `.test.ts` |
 | Web | `cmd/evener-hub/frontend/src/shell/activitybar/ActivityPageBoundary.tsx` (done), `activityApi.test.tsx` |
