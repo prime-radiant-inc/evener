@@ -99,11 +99,13 @@ those the budget showed); a scope with no pages leaves no baseline, so content t
 appears later arrives in full. When the session itself writes, edits or
 deletes any page through the memory tools, that page's new index line (or its
 removal) is patched into the baseline, so its own change is never echoed back
-while other sessions' changes since the baseline still arrive. A scope with no
-baseline starts one from that line only when the model was last told the scope
-had no pages; after an unavailable state the next boundary delivers the index in
-full. A scope with a baseline is read only at the
-first model call of each turn (each input the session processes: a user message
+while other sessions' changes since the baseline still arrive. The line is
+matched under the path the scope lists the page at, so writing `Fact.md` on a
+case-insensitive filesystem replaces the line of a page listed as `fact.md`. A
+scope with no baseline starts one from that line only when the model was last
+told the scope had no pages; after an unavailable state the next boundary
+delivers the index in full. A scope with a baseline is read only at the first
+model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read appends one change block for the
 scope instead of the full index: the quoted page lines added and removed since the
@@ -266,8 +268,8 @@ creating a frontmatter block if there is none and keeping every other byte. A
 page whose stamps would not change (same session, same day) is not rewritten.
 Frontmatter Evener can't safely edit in place is left unstamped. A
 failed write is not stamped. A stamp that fails to write does not fail the call;
-the result ends with a note saying so. A written page with no description gets a
-note asking for one, and a page whose frontmatter does not parse gets its own
+the result carries a note saying so, ahead of the notes below. A written page
+with no description gets a note asking for one, and a page whose frontmatter does not parse gets its own
 note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
@@ -282,14 +284,15 @@ exactly one page matches it ignoring case. A linked page that exists and has no
 description gets it; a page that already has one keeps it, and a page whose
 frontmatter can't take it is left alone (the backup keeps its line). The first
 line naming a page wins, except that within one index a link in the page's
-exact case wins over an earlier line naming it in another case; an earlier
-index wins over a later one. Migration does not stamp. Each old index is then
-renamed to a `.MEMORY.md.pre-generated` backup, a dot name that is never a page
-or searched, numbered `.2`, `.3` and so on when taken, so no backup is
-overwritten. A page that fails to write does not stop the others, but leaves
-the old index in place. A failed migration never blocks rendering; the next
-rendering retries. Other sessions render the pages as they are, with fallback
-descriptions, until a writing session migrates.
+exact case wins over an earlier line naming it in another case. Across indexes,
+the one named exactly `MEMORY.md` is read first, and an earlier index wins over
+a later one. Migration does not stamp. Each old index is then renamed to a
+`.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
+numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
+that fails to write does not stop the others, but leaves the old index in
+place. A failed migration never blocks rendering; the next rendering retries.
+Other sessions render the pages as they are, with fallback descriptions, until
+a writing session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
