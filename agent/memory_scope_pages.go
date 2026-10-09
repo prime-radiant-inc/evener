@@ -38,7 +38,9 @@ func ListMemoryScopePages(dir string) ([]MemoryScopePage, error) {
 	for _, p := range pages {
 		out = append(out, MemoryScopePage{
 			Path: p.Path, Description: p.Description, HasDescription: p.HasDescription, Frontmatter: p.Frontmatter,
-			Unreadable: p.Unreadable, Tags: p.Tags, Updated: p.Updated, By: p.By,
+			Unreadable: p.Unreadable, Updated: p.Updated, By: p.By,
+			// Never nil, so a page with no tags encodes them as [], not null.
+			Tags: append([]string{}, p.Tags...),
 		})
 	}
 	return out, nil

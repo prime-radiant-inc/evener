@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,12 +34,20 @@ func TestListMemoryScopePages(t *testing.T) {
 	}
 	want := []MemoryScopePage{
 		{Path: "a.md", Description: "alpha one", HasDescription: true, Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
-		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true},
-		{Path: "crlf.md", Description: "--- " + memoryNoDescription},
+		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true, Tags: []string{}},
+		{Path: "crlf.md", Description: "--- " + memoryNoDescription, Tags: []string{}},
 		{Path: "plain.md", Description: "no description " + memoryNoDescription, Frontmatter: true, Tags: []string{"x"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+	// A page with no tags encodes them as an empty list, never null.
+	var decoded []map[string]any
+	if raw, err := json.Marshal(got); err != nil || json.Unmarshal(raw, &decoded) != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if tags, ok := decoded[1]["tags"].([]any); !ok || len(tags) != 0 {
+		t.Fatalf("bad.md tags encoded as %#v, want []", decoded[1]["tags"])
 	}
 }
 
