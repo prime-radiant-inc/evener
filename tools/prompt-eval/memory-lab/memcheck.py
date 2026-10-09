@@ -135,10 +135,9 @@ def index_lines_ok(root):
 def new_pages_ok(root, require_description, tags_subset):
     new = 0
     for path in memory_files(root, ["projects/*"]):
-        parsed = parse_frontmatter(read(path))
-        if os.path.basename(path) == "MEMORY.md" or (parsed and parsed[0].get("by") == "seed-fixture"):
+        fields, tags = parse_frontmatter(read(path)) or ({}, [])
+        if os.path.basename(path) == "MEMORY.md" or fields.get("by") == "seed-fixture":
             continue
-        fields, tags = parsed if parsed else ({}, [])
         new += 1
         if require_description and not fields.get("description"):
             print(f"{path}: no description", file=sys.stderr)

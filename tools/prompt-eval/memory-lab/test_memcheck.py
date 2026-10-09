@@ -133,10 +133,10 @@ class SeedFrontmatter(unittest.TestCase):
     def test_unclosed_frontmatter_fails(self):
         self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: \"x\"\n"))
 
-    def test_index_overflow_seed_pages_all_pass(self):
-        seed = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios", "index-overflow", "seed")
-        pages = [p for p in glob.glob(os.path.join(seed, "**", "*.md"), recursive=True) if os.path.basename(p) != "MEMORY.md"]
-        self.assertEqual(len(pages), 120)
+    def test_every_scenario_seed_page_passes(self):
+        scenarios = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios")
+        pages = glob.glob(os.path.join(scenarios, "*", "seed", "**", "*.md"), recursive=True)
+        self.assertIn(os.path.join(scenarios, "index-overflow", "seed", "coupon-stacking.md"), pages)
         problems = [(p, memcheck.seed_frontmatter_problem(memcheck.read(p))) for p in pages]
         self.assertEqual([pp for pp in problems if pp[1]], [])
 

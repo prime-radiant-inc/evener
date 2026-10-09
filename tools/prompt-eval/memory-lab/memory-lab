@@ -962,17 +962,16 @@ def scenario_problems(scen):
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or spec != raw:
         return [f"load_scenario returned {type(spec).__name__} with keys {sorted(spec) if isinstance(spec, dict) else '-'}, "
                 "not the scenario"]
-    dirs = [base_fixture(scen, spec)]
+    dirs, pages = [base_fixture(scen, spec)], []
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
-    problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
-    for st in spec["stages"]:
         if st.get("seed_project_memory"):
-            seed = os.path.join(scen, st["seed_project_memory"])
-            for page in sorted(glob.glob(os.path.join(seed, "**", "*.md"), recursive=True)):
-                problem = memcheck.seed_frontmatter_problem(memcheck.read(page))
-                if problem:
-                    problems.append(f"{os.path.relpath(page, scen)}: {problem}")
+            pages += find_files(dirs[-1], ".md")
+    problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    for page in pages:
+        problem = memcheck.seed_frontmatter_problem(read_file(page))
+        if problem:
+            problems.append(f"{os.path.relpath(page, scen)}: {problem}")
     return problems
 
 
