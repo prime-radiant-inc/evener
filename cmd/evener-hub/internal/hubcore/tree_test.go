@@ -1939,9 +1939,10 @@ func fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T
 	if tree.NeedsYou[0].ID != "01ERR" || tree.NeedsYou[0].State != "errored" {
 		t.Fatalf("[0] = %s/%s, want 01ERR/errored (errors first, real state on node)", tree.NeedsYou[0].ID, tree.NeedsYou[0].State)
 	}
-	// Then oldest-first among the amber family: WARN (-2h) before AWAIT (-1h).
-	if tree.NeedsYou[1].ID != "01WARN" || tree.NeedsYou[2].ID != "01AWAIT" {
-		t.Fatalf("amber order = %s,%s want 01WARN,01AWAIT", tree.NeedsYou[1].ID, tree.NeedsYou[2].ID)
+	// Then the awaiting row, which waits on a person (#4093), ahead of the
+	// warning even though the warning is older.
+	if tree.NeedsYou[1].ID != "01AWAIT" || tree.NeedsYou[2].ID != "01WARN" {
+		t.Fatalf("amber order = %s,%s want 01AWAIT,01WARN", tree.NeedsYou[1].ID, tree.NeedsYou[2].ID)
 	}
 }
 
@@ -2173,7 +2174,7 @@ func fuzzScenarioProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
-func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
+func fuzzScenarioNeedsYou_AskPendingSharesTheNeedsResponseBand(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
@@ -2189,11 +2190,10 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 	if len(tree.NeedsYou) != 3 {
 		t.Fatalf("NeedsYou len = %d, want 3", len(tree.NeedsYou))
 	}
-	// errored first, then ask-pending (even though it is newer than the
-	// your-move row), then your-move last — despite 01OLD_YOURMOVE being the
-	// oldest-updated of all three.
+	// errored first, then the question and the needs_response row together
+	// in one band (#4093), oldest waiting first.
 	got := []string{tree.NeedsYou[0].ID, tree.NeedsYou[1].ID, tree.NeedsYou[2].ID}
-	want := []string{"01ERR", "01ASK", "01OLD_YOURMOVE"}
+	want := []string{"01ERR", "01OLD_YOURMOVE", "01ASK"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("band order = %v, want %v", got, want)
@@ -2203,8 +2203,8 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 
 // fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
 // ordering (principle 1, section 7.1): failed first, then the sessions blocked
-// on a person's answer, questions and approvals together and oldest waiting
-// first, then your-move. The approval's session keeps reporting "active" (the
+// on a person, questions, approvals and needs_response rows together and
+// oldest waiting first (#4093). The approval's session keeps reporting "active" (the
 // escalation blocks mid-turn), so only its ApprovalPending can place it.
 func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
 	now := time.Now()
@@ -2225,9 +2225,8 @@ func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
 	for _, node := range tree.NeedsYou {
 		got = append(got, node.ID)
 	}
-	// The approval waits longer than the question, so it leads their shared
-	// band; in the lowest band it would trail even the older your-move row.
-	want := []string{"01ERR", "01APPROVAL", "01ASK", "01OLD_YOURMOVE"}
+	// One shared band, oldest waiting first.
+	want := []string{"01ERR", "01OLD_YOURMOVE", "01APPROVAL", "01ASK"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("band order = %v, want %v", got, want)
 	}
