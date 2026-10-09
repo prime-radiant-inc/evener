@@ -675,6 +675,12 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		if !s.restStillPending(generation) || s.autonomyInFlight() {
 			return
 		}
+		// restMu orders this rest against a turn starting (processOneInput
+		// takes it before advancing restGeneration): either the turn starts
+		// first and the rest no longer arms, or the rest's announcement is on
+		// the event feed before anything the turn emits.
+		s.restMu.Lock()
+		defer s.restMu.Unlock()
 		if s.restAwaiting(generation) {
 			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
 		}

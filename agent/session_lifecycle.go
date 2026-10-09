@@ -2014,17 +2014,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
+	// A needs_response rest arming right now finishes, announcement and
+	// all, before this turn starts (restMu); one that hasn't armed yet sees
+	// the generation this turn advances and stays idle.
+	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.delegateDeliveryMu.Unlock()
+		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	// A turn starting ends any needs_response quiet period still running:
 	// whichever boundary this turn rests on, the older rest no longer applies.
 	s.restGeneration++
+	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
