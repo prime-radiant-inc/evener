@@ -64,9 +64,11 @@ def scope_pages(dirs):
 
 
 def scope_dirs(root, scopes):
-    """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"]."""
+    """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"].
+    A symlink is skipped, as evener's confined listing refuses one."""
     base = glob.escape(os.path.join(root, "evener", "memory"))
-    return sorted(d for scope in scopes for d in glob.glob(os.path.join(base, scope)) if os.path.isdir(d))
+    return sorted(d for scope in scopes for d in glob.glob(os.path.join(base, scope))
+                  if os.path.isdir(d) and not os.path.islink(d))
 
 
 def read(path):
@@ -75,10 +77,11 @@ def read(path):
 
 
 def root_index(scope_dir):
-    """The scope's root MEMORY.md, its name matched without regard to case as the product does, or None."""
+    """The scope's root MEMORY.md, its name matched without regard to case as the product does, or None.
+    Like the product, it counts only a regular file, never a symlink."""
     for name in sorted(os.listdir(scope_dir)):
         path = os.path.join(scope_dir, name)
-        if name.lower() == "memory.md" and os.path.isfile(path):
+        if name.lower() == "memory.md" and os.path.isfile(path) and not os.path.islink(path):
             return path
     return None
 

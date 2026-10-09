@@ -70,6 +70,17 @@ class IndexLines(Root):
         self.put("projects/p/a.md", "# " + "t" * 300 + "\n")
         self.assertEqual(self.run_cmd("index-lines"), 0)
 
+    def test_symlinked_scope_and_root_index_are_not_read(self):
+        # Evener's listing skips symlinks, so neither is part of the memory.
+        self.put("elsewhere/a.md", "---\ndescription: " + "y" * 201 + "\n---\n")
+        self.put("elsewhere/long.md", "- " + "z" * 250 + "\n")
+        self.put("personal/ok.md", "---\ndescription: short\n---\n")
+        memory = os.path.join(self.root, "evener", "memory")
+        os.makedirs(os.path.join(memory, "projects"))
+        os.symlink(os.path.join(memory, "elsewhere"), os.path.join(memory, "projects", "linked"))
+        os.symlink(os.path.join(memory, "elsewhere", "long.md"), os.path.join(memory, "personal", "MEMORY.md"))
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
     def test_glob_characters_in_the_state_root_are_literal(self):
         self.root = os.path.join(self.root, "run[1]")
         self.put("projects/p/a.md", "---\ndescription: " + "y" * 201 + "\n---\n")
