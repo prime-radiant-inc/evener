@@ -19,7 +19,7 @@ tags: [money, formatting]
 ---
 ```
 
-Evener builds the index from this frontmatter and stamps each page with the date it changed, so you never edit MEMORY.md. Reuse a tag the index already lists when one fits. A tag names a topic, such as a subsystem, tool or area, never a state. Commit SHAs, branch names, session and worker ids, scratch paths, test counts and review verdicts go stale within days: keep them out of personal memory.
+Evener builds the index from this frontmatter and stamps each page with the date it changed, so you never edit MEMORY.md. Reuse a tag the index already lists when one fits. A tag names a topic, such as a subsystem, tool or area, never a state. Commit SHAs, branch names, session and worker ids, scratch paths, test counts and review verdicts go stale within days: keep them out of personal memory. So do approvals, sign-offs and authorizations, and where a plan or task stands. Memory never records permission: an approval covers the work your partner gave it for, and a later session that found one stored would act on a grant nobody gave it. Progress belongs in the task list or the plan, which the work keeps current.
 
 When a fact changes or what you observe contradicts a page, rewrite the page, its description included, in the same turn so they say what is true now, or remove a page that is simply wrong with memory_delete. When a page you read has turned into a log or holds several facts, it is yours to fix before you finish: move each durable fact that is still true to its own page, delete the rest, and give each page its own description. Personal memory is not where work is coordinated, so no one depends on the run details you remove. Never store secrets.
 
