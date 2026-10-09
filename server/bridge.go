@@ -174,7 +174,11 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 		return
 	}
 	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
-		if s.status.State != string(agent.SessionClosed) {
+		// An input being taken, with no turn published yet, may still end
+		// without one: hold the rest for the end of processing. Once a turn is
+		// published, any settle the bridge still meets predates it, and the
+		// turn's own end restates the state.
+		if s.processing && s.appPendingStableTurnID == "" && s.status.State != string(agent.SessionClosed) {
 			s.appHeldSettledEffect = effect
 		}
 		return
@@ -246,6 +250,9 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 			return nil
 		}
 		return func(s *Server) {
+			// The input ended on its own SESSION_END, which states the
+			// session's state; a rest held during it no longer applies.
+			s.appHeldSettledEffect = nil
 			s.endProcessingLocked()
 			s.status.State = string(agent.SessionClosed)
 			if ok && d.State != "" {

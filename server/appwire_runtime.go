@@ -372,12 +372,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
-		if event.Kind == events.EventExecutionStarted || event.Kind == events.EventSessionEnd {
-			// A turn started after the rest settled, and its own end restates
-			// the state, or a SESSION_END ended the input, which drops the
-			// rest even when the end was an interrupt.
-			s.appHeldSettledEffect = nil
-		}
 		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
@@ -592,11 +586,12 @@ func (s *Server) finishProcessing() {
 		s.appDeferredTerminalNotifications = nil
 		held := s.appHeldSettledEffect
 		s.appHeldSettledEffect = nil
-		applyHeld := held != nil && len(pending) == 0 && s.status.State != string(agent.SessionClosed)
-		if applyHeld {
+		// A deferred terminal status comes from a published turn, and
+		// publishing a turn drops the held rest, so the two never meet.
+		if held != nil {
 			held(s)
 		}
-		if len(pending) == 0 && (wasProcessing || applyHeld) && threadID != "" {
+		if len(pending) == 0 && wasProcessing && threadID != "" {
 			// The session state still says what the input left running
 			// ("active") until serve samples it after this call: nothing runs
 			// now, so that reads as idle.
