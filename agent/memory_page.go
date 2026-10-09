@@ -38,9 +38,11 @@ const (
 
 // isMemoryPagePath reports whether rel, a slash path relative to the scope
 // root, is a page: no segment starts with "." (memory_search's rule) and it
-// is not the root MEMORY.md, which is generated.
+// is not the root MEMORY.md, which is generated. The root name is matched
+// without regard to case: on a case-insensitive filesystem memory.md is the
+// same file.
 func isMemoryPagePath(rel string) bool {
-	if rel == memoryIndexFile {
+	if strings.EqualFold(rel, memoryIndexFile) {
 		return false
 	}
 	return !execenv.IsDotPath(rel)
