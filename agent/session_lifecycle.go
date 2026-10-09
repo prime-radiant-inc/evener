@@ -2014,9 +2014,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
-	// A needs_response rest arming right now finishes, announcement and
-	// all, before this turn starts (restMu); one that hasn't armed yet sees
-	// the generation this turn advances and stays idle.
+	// restMu: a needs_response rest arming right now announces first.
 	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
