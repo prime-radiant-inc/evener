@@ -12,6 +12,36 @@ import (
 
 const skillFrontmatterDelimiter = "---\n"
 
+// recoverMissingOpeningDelimiter accepts a skill source whose YAML frontmatter
+// block is missing only its opening delimiter line. A skill written from
+// scratch sometimes begins directly with "name: ..." and closes with "---",
+// forgetting the leading line; this restores it so the block parses normally.
+// It reports true only when the text before the first "---" delimiter is a YAML
+// mapping carrying both a name and a description, so ordinary body text that
+// merely contains a "---" rule is left alone.
+func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
+	// index 0 means the opening delimiter is already present; -1 means there is
+	// no closing delimiter line to recover at all.
+	index := bytes.Index(data, []byte(skillFrontmatterDelimiter))
+	if index <= 0 {
+		return data, false
+	}
+	candidate := skillFrontmatterDelimiter + string(data[:index]) + skillFrontmatterDelimiter
+	document, err := frontmatter.Parse(candidate)
+	if err != nil || document.Meta == nil {
+		return data, false
+	}
+	if !nonBlankString(document.Meta["name"]) || !nonBlankString(document.Meta["description"]) {
+		return data, false
+	}
+	return append([]byte(skillFrontmatterDelimiter), data...), true
+}
+
+func nonBlankString(value any) bool {
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) != ""
+}
+
 // InvocationControls governs how a skill may be advertised for invocation.
 type InvocationControls struct {
 	DisableModelInvocation bool `json:"disable_model_invocation"`
@@ -68,6 +98,7 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 		return descriptor, []Diagnostic{diagnostic}, parseErr
 	}
 
+	data, recovered := recoverMissingOpeningDelimiter(data)
 	if !bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
 		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
 	}
@@ -120,6 +151,14 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 	descriptor.Meta.Description = description
 
 	var diagnostics []Diagnostic
+	if recovered {
+		diagnostics = append(diagnostics, Diagnostic{
+			Category: "missing_frontmatter_delimiter",
+			Name:     name,
+			Source:   source,
+			Message:  "skill frontmatter is missing its opening --- delimiter; the leading block was read as frontmatter",
+		})
+	}
 	var validationErrors []error
 
 	disableModelInvocation, controlErr := parseControl(document.Meta, "disable-model-invocation", false)

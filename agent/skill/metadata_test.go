@@ -159,6 +159,33 @@ func TestSkillControlsRejectInvalidFrontmatter(t *testing.T) {
 	}
 }
 
+// A skill authored from scratch sometimes begins directly with its YAML fields
+// and closes with "---", forgetting only the opening delimiter. Evener should
+// read that block as frontmatter and say so with an advisory diagnostic.
+func TestSkillControlsRecoverMissingOpeningDelimiter(t *testing.T) {
+	raw := []byte("name: probe\ndescription: fixture\n---\nBODY_941\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	if descriptor.CatalogName != "probe" || descriptor.Meta.Name != "probe" || descriptor.Meta.Description != "fixture" {
+		t.Fatalf("descriptor=%+v", descriptor)
+	}
+	assertDiagnostic(t, diagnostics, "missing_frontmatter_delimiter", "")
+}
+
+// The recovery must not swallow ordinary body text that merely contains a
+// "---" rule. Without both a name and a description in the leading block, the
+// file is still malformed and still rejected.
+func TestSkillControlsRejectDelimiterlessBodyWithoutName(t *testing.T) {
+	raw := []byte("# Notes\nsteps: three\n---\nBODY_941\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err == nil || !descriptor.Unavailable {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	assertDiagnostic(t, diagnostics, "invalid_frontmatter", "")
+}
+
 func TestSkillControlsAllowedToolsFormsAndDiagnostic(t *testing.T) {
 	tests := []struct {
 		name  string

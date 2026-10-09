@@ -110,6 +110,35 @@ func TestSkillLoadRejectsChangedDeclaredName(t *testing.T) {
 	}
 }
 
+// Recovery must reach the delivered body too: the frontmatter block must not
+// leak into the instructions, and the digest stays over the exact on-disk
+// bytes so identity still tracks the file as written.
+func TestSkillLoadRecoversBodyFromMissingOpeningDelimiter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	data := []byte("name: probe\ndescription: recovered fixture\n---\nRECOVERED_BODY_5c31\n")
+	descriptor, diagnostics, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("Parse() = descriptor %+v, diagnostics %+v, error %v", descriptor, diagnostics, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, loadDiagnostics, err := Load(descriptor)
+	if err != nil {
+		t.Fatalf("Load() error = %v, diagnostics = %+v", err, loadDiagnostics)
+	}
+	const wantBody = "RECOVERED_BODY_5c31\n"
+	if loaded.Body != wantBody {
+		t.Fatalf("Load() body = %q, want %q (frontmatter must not leak into instructions)", loaded.Body, wantBody)
+	}
+	wantDigest := sha256.Sum256(data)
+	if loaded.Digest != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("Load() digest = %q, want SHA-256 over exact on-disk bytes %q", loaded.Digest, hex.EncodeToString(wantDigest[:]))
+	}
+}
+
 func TestSkillLoadReportsInvalidCurrentControls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "SKILL.md")
