@@ -2885,24 +2885,45 @@ it("expires when full coverage arrives after an initial prefix observation", asy
 // After a full rev-A acceptance, a compatible revision-less prefix is accepted and
 // becomes the retained local accepted source. A changed full read started while an
 // older operation's append already holds the stores must install suppression
-// BEFORE any await, at the append's last abortable boundary. This isolates the
-// retained local evidence inside one real repository instance; no adapter
-// recreation is involved.
-it.each(["draft", "recovery"] as const)(
-  "cancels a pending append when a changed full read starts after a compatible prefix on %s backing",
-  async (backing) => {
+// BEFORE any await, at the append's last abortable boundary. Covered both inside
+// one real repository instance and after the annotation adapter is recreated on the
+// same factory/database with the original source still alive.
+it.each([
+  ["draft", "same"],
+  ["draft", "recreated"],
+  ["recovery", "same"],
+  ["recovery", "recreated"],
+] as const)(
+  "cancels a pending append when a changed full read starts after a compatible prefix on %s backing with a %s adapter",
+  async (backing, mode) => {
     let f: Awaited<ReturnType<typeof fixture>>;
+    let active: ReturnType<typeof createDocumentAnnotationRepository>;
     let ticket: ReadTicket;
     let changed: Promise<ReadOutcome> | undefined;
     let startRead = false;
-    f = await fixture(`local-guard-${backing}`, {
-      onAppendReadsIssued: () => {
-        if (startRead) {
-          startRead = false;
-          changed = observeRead(f.repo.acceptRead(ticket, docContent(`${SOURCE}changed\n`, "rev-B")));
-        }
-      },
-    });
+    const onAppendReadsIssued = () => {
+      if (startRead) {
+        startRead = false;
+        changed = observeRead(active.acceptRead(ticket, docContent(`${SOURCE}changed\n`, "rev-B")));
+      }
+    };
+    f = await fixture(`local-guard-${backing}-${mode}`, { onAppendReadsIssued });
+    active = f.repo;
+    // Recreated mode closes ONLY the first adapter BEFORE the prefix acceptance,
+    // then runs every annotation call through a replacement on the same
+    // factory/database and drafts, with the real live target.
+    if (mode === "recreated") {
+      f.repo.close();
+      const replacement = createDocumentAnnotationRepository({
+        indexedDB: f.factory,
+        databaseName: f.databaseName,
+        drafts: f.drafts,
+        onAppendReadsIssued,
+        targetFor: () => f.source,
+      });
+      cleanupAfterTest(() => replacement.close());
+      active = replacement;
+    }
     // Join and validate the started observed read even when an assertion exits
     // the case early; a rejection is an outcome, not a value.
     cleanupAfterTest(async () => {
@@ -2926,8 +2947,8 @@ it.each(["draft", "recovery"] as const)(
 
     // A genuinely accepted compatible prefix leaves only partial local evidence,
     // in the SAME epoch as op-1.
-    const prefix = await f.repo.acceptRead(
-      await f.repo.beginRead(f.document),
+    const prefix = await active.acceptRead(
+      await active.beginRead(f.document),
       docContent(SOURCE.slice(0, 10), undefined, true),
     );
     expect(prefix.state).toBe("accepted");
@@ -2947,10 +2968,10 @@ it.each(["draft", "recovery"] as const)(
     const tokenBefore = f.source.getDraftToken();
 
     // Next genuine ticket BEFORE starting handoff.
-    ticket = await f.repo.beginRead(f.document);
+    ticket = await active.beginRead(f.document);
 
     startRead = true;
-    const handedOff = await f.repo.handoff(f.document, "op-1");
+    const handedOff = await active.handoff(f.document, "op-1");
     if (!changed) throw new Error("changed read never started");
     const changedResult = expectResolvedRead(await changed);
 
@@ -2976,7 +2997,7 @@ it.each(["draft", "recovery"] as const)(
     if (changedResult.state !== "expiry-pending" || !changedResult.receipt) {
       throw new Error("changed read did not return a genuine expiry receipt");
     }
-    await f.repo.finishExpiry(changedResult.receipt);
+    await active.finishExpiry(changedResult.receipt);
 
     // Fresh rows after actual expiry: no old-operation append, terminal
     // cancellation, payload deletion, and every backing/source value unchanged.
@@ -2995,7 +3016,7 @@ it.each(["draft", "recovery"] as const)(
       )
       .toBe(false);
     expect
-      .soft((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId))
+      .soft((await active.listAnnotations(f.document)).map((view) => view.operation.operationId))
       .not.toContain("op-1");
     const ordinaryAfterExpiry = await f.drafts.load(f.key);
     const recoveryAfterExpiry = await f.outbox.getRecovery("rec-1");
@@ -3010,7 +3031,7 @@ it.each(["draft", "recovery"] as const)(
     expect.soft(f.source.getDraftToken()).toEqual(tokenBefore);
 
     // Final cancelled replay: fresh rows and the same source values must hold again.
-    expect.soft((await f.repo.handoff(f.document, "op-1")).state).toBe("cancelled");
+    expect.soft((await active.handoff(f.document, "op-1")).state).toBe("cancelled");
     expect.soft(await f.drafts.load(f.key)).toEqual(ordinary);
     expect.soft(await f.outbox.getRecovery("rec-1")).toEqual(recovery);
     const replayAttachment = (await f.outbox.getRecovery("rec-1"))?.attachments[0];
