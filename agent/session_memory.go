@@ -58,7 +58,12 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 	return s.memoryContextEnabled() && s.canInstructTool("memory_write") && s.canInstructTool("memory_edit") && s.canInstructTool("memory_delete")
 }
 
-// memoryIndexFile is the scope's generated index: no file by this name is written, and memory_read of it renders the pages.
+// memoryIndexFile is the scope's generated index, rendered from page
+// frontmatter; once a writing session migrates a scope, no file by this name
+// remains. This change only projects the rendering. memory_read rendering it
+// and the write tools refusing it are the write path, the change stacked
+// directly on this one, so until it lands memory_read of MEMORY.md reads
+// whatever file is there.
 const memoryIndexFile = "MEMORY.md"
 
 // memoryIndexBaseline is the index the session already knows for a scope:
