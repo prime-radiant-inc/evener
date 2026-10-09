@@ -133,6 +133,40 @@ func TestParse_BodyPreserved(t *testing.T) {
 	}
 }
 
+// A "---" glued to the end of a value is not a closing delimiter.
+func TestParse_ValueEndingInDashesDoesNotCloseTheBlock(t *testing.T) {
+	raw := "---\nname: t\nnote: see---\n---\nBody.\n"
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doc.Meta["note"] != "see---" {
+		t.Errorf("note = %q, want %q", doc.Meta["note"], "see---")
+	}
+	if doc.Body != "Body.\n" {
+		t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+	}
+}
+
+// An indented "---" inside a block scalar is content, not a closing delimiter.
+func TestParse_IndentedDelimiterInBlockScalarDoesNotClose(t *testing.T) {
+	raw := "---\ndescription: |\n  line\n  ---\n  more\nname: t\n---\nBody.\n"
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doc.Meta["name"] != "t" {
+		t.Errorf("name = %q, want %q", doc.Meta["name"], "t")
+	}
+	description, ok := doc.Meta["description"].(string)
+	if !ok || !strings.Contains(description, "---") {
+		t.Errorf("description = %#v, want a string containing the indented ---", doc.Meta["description"])
+	}
+	if doc.Body != "Body.\n" {
+		t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+	}
+}
+
 func TestParse_EmptyInput(t *testing.T) {
 	doc, err := Parse("")
 	if err != nil {
@@ -166,7 +200,7 @@ func TestParse_OnlyDelimiters(t *testing.T) {
 
 func TestParse_DelimiterInBody(t *testing.T) {
 	// A second "---\n" in the body must not be treated as a closing delimiter.
-	// Parse must use the FIRST occurrence (strings.Index semantics).
+	// Parse must use the FIRST whole-line occurrence.
 	raw := "---\nname: t\n---\nbody\n---\nnot-fm\n"
 	doc, err := Parse(raw)
 	if err != nil {

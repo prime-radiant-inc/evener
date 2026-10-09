@@ -139,6 +139,29 @@ func TestSkillLoadRecoversBodyFromMissingOpeningDelimiter(t *testing.T) {
 	}
 }
 
+// A frontmatter value ending in dashes must not be treated as the closing
+// delimiter, so the delivered body starts after the real one.
+func TestSkillLoadRecoversBodyWithValueEndingInDashes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	data := []byte("name: probe\ndescription: fine\nnote: see---\n---\nBODY_9f31\n")
+	descriptor, diagnostics, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("Parse() = descriptor %+v, diagnostics %+v, error %v", descriptor, diagnostics, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := Load(descriptor)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	const wantBody = "BODY_9f31\n"
+	if loaded.Body != wantBody {
+		t.Fatalf("Load() body = %q, want %q (a value ending in dashes must not leak the delimiter)", loaded.Body, wantBody)
+	}
+}
+
 func TestSkillLoadReportsInvalidCurrentControls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "SKILL.md")
