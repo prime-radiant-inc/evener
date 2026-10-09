@@ -35,7 +35,7 @@ MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "mems
 MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
 MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"
 # The agent.MemoryScopePage fields the checks read; a memscope built before one
-# existed leaves it out.
+# existed leaves it out, and one built before tags were always a list emits null.
 PAGE_FIELDS = {"path", "description", "has_description", "frontmatter", "unreadable", "tags", "by"}
 
 
@@ -58,8 +58,10 @@ def scope_pages(dirs):
     scopes = json.loads(out.stdout)
     for pages in scopes.values():
         for p in pages:
-            if missing := PAGE_FIELDS - p.keys():
-                raise MemscopeError(f"{MEMSCOPE} is out of date (its pages lack {', '.join(sorted(missing))}); re{MEMSCOPE_BUILD}")
+            missing = sorted(PAGE_FIELDS - p.keys())
+            if missing or p["tags"] is None:
+                shape = f"its pages lack {', '.join(missing)}" if missing else "it lists missing tags as null"
+                raise MemscopeError(f"{MEMSCOPE} is out of date ({shape}); {MEMSCOPE_BUILD}")
     return scopes
 
 
@@ -123,7 +125,7 @@ def new_pages_ok(root, require_description, tags_subset):
             if p["by"] == "seed-fixture":
                 continue
             new += 1
-            path, tags = os.path.join(scope, p["path"]), p["tags"] or []
+            path, tags = os.path.join(scope, p["path"]), p["tags"]
             if require_description and not p["has_description"]:
                 print(f"{path}: no description{' (frontmatter unreadable)' if p['unreadable'] else ''}", file=sys.stderr)
                 return False

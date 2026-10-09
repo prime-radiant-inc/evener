@@ -119,15 +119,12 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 		return p
 	}
 	text := string(raw)
+	// Parse reads the block Split finds, so its body is Split's even when
+	// the YAML fails. Frontmatter is the block's presence, not its parsed
+	// value: a block holding only a YAML null parses to no metadata.
+	_, body, hasBlock := splitMemoryFrontmatter(text)
 	doc, err := frontmatter.Parse(text)
-	body := doc.Body
-	_, splitBody, hasBlock := splitMemoryFrontmatter(text)
-	if err != nil {
-		p.Unreadable = true
-		body = splitBody
-	}
-	// The block's presence, not its parsed value: a block holding only a YAML
-	// null parses to no metadata but is still frontmatter.
+	p.Unreadable = err != nil
 	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
 	if heading != "" {

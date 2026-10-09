@@ -4,7 +4,7 @@
 The tests build the real bin/memscope helper (go build) into a temp dir once, so
 memcheck's checks run on pages exactly as evener reads them; how evener parses
 frontmatter is tested in package agent."""
-import contextlib, glob, io, os, subprocess, sys, tempfile, unittest
+import contextlib, glob, io, json, os, subprocess, sys, tempfile, unittest
 
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -148,17 +148,22 @@ class NewPages(Root):
 
     def test_stale_helper_exits_with_how_to_rebuild_it(self):
         self.put("projects/p/a.md", "---\ndescription: d\n---\n")
-        # A memscope built before a field existed lists pages without it.
-        stale = os.path.join(self.root, "stale-memscope")
-        with open(stale, "w") as f:
-            f.write('#!/bin/sh\necho \'{"%s": [{"path": "a.md", "description": "d"}]}\'\n' % os.path.join(self.root, "evener", "memory", "projects", "p"))
-        os.chmod(stale, 0o755)
+        scope = os.path.join(self.root, "evener", "memory", "projects", "p")
         built = memcheck.MEMSCOPE
-        memcheck.MEMSCOPE = stale
         self.addCleanup(setattr, memcheck, "MEMSCOPE", built)
-        with self.assertRaises(SystemExit) as cm:
-            self.run_cmd("new-pages")
-        self.assertIn("go build -o bin/memscope", str(cm.exception.code))
+        full = {"path": "a.md", "description": "d", "has_description": True, "frontmatter": True,
+                "unreadable": False, "by": ""}
+        # A memscope built before a field existed leaves it out; one built
+        # before tags were always a list emits null for none.
+        for page in ({"path": "a.md", "description": "d"}, {**full, "tags": None}):
+            stale = os.path.join(self.root, "stale-memscope")
+            with open(stale, "w") as f:
+                f.write("#!/bin/sh\ncat <<'EOF'\n" + json.dumps({scope: [page]}) + "\nEOF\n")
+            os.chmod(stale, 0o755)
+            memcheck.MEMSCOPE = stale
+            with self.assertRaises(SystemExit) as cm:
+                self.run_cmd("new-pages")
+            self.assertIn("go build -o bin/memscope", str(cm.exception.code))
 
 
 class SeedProblems(Root):

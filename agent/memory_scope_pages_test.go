@@ -42,12 +42,8 @@ func TestListMemoryScopePages(t *testing.T) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
 	}
 	// A page with no tags encodes them as an empty list, never null.
-	var decoded []map[string]any
-	if raw, err := json.Marshal(got); err != nil || json.Unmarshal(raw, &decoded) != nil {
-		t.Fatalf("round trip: %v", err)
-	}
-	if tags, ok := decoded[1]["tags"].([]any); !ok || len(tags) != 0 {
-		t.Fatalf("bad.md tags encoded as %#v, want []", decoded[1]["tags"])
+	if raw, err := json.Marshal(got[1].Tags); err != nil || string(raw) != "[]" {
+		t.Fatalf("bad.md tags encoded as %s (%v), want []", raw, err)
 	}
 }
 
