@@ -17,6 +17,7 @@ import {
   entryHistoryKey,
   LEGACY_META_STORE,
   LEGACY_RECORDS_STORE,
+  type TranscriptHistoryMetaRow,
   type TranscriptSessionMetadata,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
@@ -72,6 +73,12 @@ function independentJsonBytes(value: unknown): number {
   const json = JSON.stringify(value);
   if (json === undefined) throw new TypeError("expected a JSON-encoded row");
   return new TextEncoder().encode(json).byteLength;
+}
+
+function persistedSessionMetadataPayload(value: unknown): Omit<TranscriptHistoryMetaRow, "encodedBytes" | "itemCount"> {
+  if (!value || typeof value !== "object") throw new TypeError("expected persisted session metadata");
+  const { encodedBytes: _encodedBytes, itemCount: _itemCount, ...payload } = value as TranscriptHistoryMetaRow;
+  return payload;
 }
 
 function holdNextReadonlyTransactionContaining(storeName: string) {
@@ -1003,6 +1010,7 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
     };
   };
   const payload = (value: TranscriptSessionMetadata) => ({
+    historyKey: value.historyKey,
     requestedRefs: value.requestedRefs,
     resolvedIdentity: value.resolvedIdentity,
     savedAt: value.savedAt,
@@ -1011,23 +1019,29 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
   });
   const alpha = metadata("session-alpha", "alias://短", 100);
   const beta = metadata("session-beta", "session://beta", 200);
-  const alphaBytes = independentJsonBytes(payload(alpha));
-  const betaBytes = independentJsonBytes(payload(beta));
   await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: alpha });
+  const alphaPayload = persistedSessionMetadataPayload(await readEntryMeta(factory, name, alpha.historyKey));
+  expect(alphaPayload).toEqual(payload(alpha));
+  const alphaBytes = independentJsonBytes(alphaPayload);
   await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
     historyBytes: alphaBytes,
     aggregateBytes: alphaBytes,
   });
 
   await cache.commitBatch({ historyKey: beta.historyKey, clearEpoch: 0, items: [], sessionMetadata: beta });
+  const betaPayload = persistedSessionMetadataPayload(await readEntryMeta(factory, name, beta.historyKey));
+  expect(betaPayload).toEqual(payload(beta));
+  const betaBytes = independentJsonBytes(betaPayload);
   await expect(cache.getByteTotals(beta.historyKey)).resolves.toEqual({
     historyBytes: betaBytes,
     aggregateBytes: alphaBytes + betaBytes,
   });
 
   const grown = metadata("session-alpha", "alias://a much longer 名称", 300);
-  const grownBytes = independentJsonBytes(payload(grown));
   await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: grown });
+  const grownPayload = persistedSessionMetadataPayload(await readEntryMeta(factory, name, alpha.historyKey));
+  expect(grownPayload).toEqual(payload(grown));
+  const grownBytes = independentJsonBytes(grownPayload);
   await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(grown);
   await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
     historyBytes: grownBytes,
@@ -1057,8 +1071,10 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
   });
 
   const shrunk = metadata("session-alpha", "alias://ø", 400);
-  const shrunkBytes = independentJsonBytes(payload(shrunk));
   await cache.commitBatch({ historyKey: alpha.historyKey, clearEpoch: 0, items: [], sessionMetadata: shrunk });
+  const shrunkPayload = persistedSessionMetadataPayload(await readEntryMeta(factory, name, alpha.historyKey));
+  expect(shrunkPayload).toEqual(payload(shrunk));
+  const shrunkBytes = independentJsonBytes(shrunkPayload);
   await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({
     historyBytes: shrunkBytes + itemBytes,
     aggregateBytes: shrunkBytes + betaBytes + itemBytes,
@@ -1159,7 +1175,6 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
   await expect(cache.getLatest(alpha.historyKey, 10)).resolves.toEqual([item]);
   await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual(beforeAbortTotals);
 
-  const afterAbortBytes = independentJsonBytes(payload(candidateMetadata));
   await expect(
     cache.commitBatch({
       historyKey: alpha.historyKey,
@@ -1168,6 +1183,9 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
       sessionMetadata: candidateMetadata,
     }),
   ).resolves.toMatchObject({ outcome: "committed" });
+  const candidatePayload = persistedSessionMetadataPayload(await readEntryMeta(factory, name, alpha.historyKey));
+  expect(candidatePayload).toEqual(payload(candidateMetadata));
+  const afterAbortBytes = independentJsonBytes(candidatePayload);
   const candidateItemBytes = independentJsonBytes({ ...candidate, positionSub: 0 });
   await expect(cache.getSessionMetadata(alpha.historyKey)).resolves.toEqual(candidateMetadata);
   await expect(cache.getByteTotals(alpha.historyKey)).resolves.toEqual({

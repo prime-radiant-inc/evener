@@ -94,13 +94,13 @@ function encodedBytes(value: unknown): number {
 
 type SessionMetadataPayload = Pick<
   TranscriptHistoryMetaRow,
-  "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion"
+  "historyKey" | "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion"
 >;
 
 function sessionMetadataPayload(
   row: TranscriptHistoryMetaRow | TranscriptSessionMetadata,
 ): SessionMetadataPayload | undefined {
-  const { requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion } = row;
+  const { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion } = row;
   if (
     requestedRefs === undefined &&
     resolvedIdentity === undefined &&
@@ -110,7 +110,7 @@ function sessionMetadataPayload(
   ) {
     return undefined;
   }
-  return { requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion };
+  return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion };
 }
 
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
