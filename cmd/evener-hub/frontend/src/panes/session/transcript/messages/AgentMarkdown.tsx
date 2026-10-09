@@ -7,6 +7,7 @@ import { Markdown } from "../../../../widgets/markdown";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { OpenButton } from "../../../../widgets/openbutton";
 import { browserDocPort } from "../../../doc/browserDocPort";
+import { useDocOpeningOrigin } from "../../../doc/docOpeningContext";
 import { useEntityTextEnhancement } from "../EntityText";
 import { fileDocParams } from "../fileOpenBeside";
 
@@ -32,6 +33,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   const sessionRef =
     ref && (!ref.includes(":") || (ref.startsWith("local:") && isValidTranscriptRef(ref))) ? ref : undefined;
   const cwd = thread?.cwd;
+  const origin = useDocOpeningOrigin();
   const root = useRef<HTMLDivElement>(null);
   const [affordances, setAffordances] = useState<ReactPortal[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
@@ -49,7 +51,9 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       const href = link.getAttribute("href") ?? "";
       const params = fileDocParams(fileLinkPath(href), sessionRef, cwd);
       if (params === undefined) continue;
-      const open = () => paneActions.openBeside({ type: "doc", params });
+      // Merge the captured scope origin into the SAME params fileDocParams built.
+      const docParams = origin === undefined ? params : { ...params, origin };
+      const open = () => paneActions.openBeside({ type: "doc", params: docParams });
       const onClick = (event: MouseEvent) => {
         if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
@@ -57,13 +61,13 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         open();
       };
       link.href =
-        params.kind === "image"
-          ? docImageURL(browserDocPort.origin, params.session, params.path)
-          : docFileRawURL(browserDocPort.origin, params.session, params.path);
+        docParams.kind === "image"
+          ? docImageURL(browserDocPort.origin, docParams.session, docParams.path)
+          : docFileRawURL(browserDocPort.origin, docParams.session, docParams.path);
       link.addEventListener("click", onClick);
       const slot = document.createElement("span");
       link.after(slot);
-      portals.push(createPortal(<OpenButton label={`Open beside: ${params.path}`} onClick={open} />, slot));
+      portals.push(createPortal(<OpenButton label={`Open beside: ${docParams.path}`} onClick={open} />, slot));
       cleanups.push(() => {
         link.setAttribute("href", href);
         link.removeEventListener("click", onClick);
@@ -74,7 +78,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     return () => {
       for (const cleanup of cleanups) cleanup();
     };
-  }, [source, live, sessionRef, cwd]);
+  }, [source, live, sessionRef, cwd, origin]);
 
   return (
     <>

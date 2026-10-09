@@ -24,6 +24,7 @@ import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { OpenButton } from "../../../widgets";
+import { useDocOpeningOrigin } from "../../doc/docOpeningContext";
 import type { DocParams } from "../../doc/openDoc";
 
 // fileDocParams builds the DocParams for openDocBeside, or undefined when the
@@ -43,9 +44,13 @@ export function fileDocParams(
 }
 
 function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: string; sessionRef: string; cwd?: string }) {
+  const origin = useDocOpeningOrigin();
   const params = fileDocParams(absPath, sessionRef, cwd);
   if (params === undefined) return null; // out-of-cwd / not hydrated yet → no affordance
-  const docParams = params;
+  // Merge the captured scope origin into the SAME params fileDocParams built;
+  // its path checks and kind are untouched, and with no provider the params stay
+  // origin-less.
+  const docParams: DocParams = origin === undefined ? params : { ...params, origin };
   // "Open beside" stays a literal, contiguous prefix (not "Open <path>
   // beside") so every existing /open beside/i query - ToolCallItem.test.tsx's
   // own affordance tests among them - still finds this control unchanged;

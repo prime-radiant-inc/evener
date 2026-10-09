@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { DocOpeningProvider } from "../../doc/docOpeningContext";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 
 // --- fileDocParams: builds a file DocParams, or undefined when anything the
@@ -77,5 +78,56 @@ test("renders nothing for an out-of-cwd path (no affordance)", () => {
 
 test("renders nothing until the thread's cwd has hydrated", () => {
   const { container } = render(<FileOpenBesideButton absPath="/home/proj/a.ts" sessionRef="ref_unhydrated" />);
+  expect(container.firstChild).toBeNull();
+});
+
+// --- Captured opening origin (Task 4). The producer reads the origin from the
+// DocOpeningProvider context and merges it into the SAME params it already
+// builds; fileDocParams' path checks are untouched. The provider module is the
+// pending source seam: until it lands, importing it fails this file's
+// collection (a setup failure, reported as such, not a behavior RED). ---------
+
+const ORIGIN = { kind: "browser-origin" as const, paneId: "owner-pane", compositionOwnerId: "owner-A" };
+
+test("a file card under a retained browser-origin provider captures that origin in its params", () => {
+  seedThreadCwd("ref_a", "/home/proj");
+  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  render(
+    <DocOpeningProvider origin={ORIGIN}>
+      <FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />
+    </DocOpeningProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open beside: src/a.ts" }));
+  expect(spy).toHaveBeenCalledWith({
+    type: "doc",
+    params: { session: "ref_a", path: "src/a.ts", kind: "file", origin: ORIGIN },
+  });
+  spy.mockRestore();
+});
+
+test("a file card under a browser-readonly-session provider captures that explicit source pane", () => {
+  seedThreadCwd("ref_a", "/home/proj");
+  const origin = { kind: "browser-readonly-session" as const, sourcePaneId: "cascade-pane" };
+  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  render(
+    <DocOpeningProvider origin={origin}>
+      <FileOpenBesideButton absPath="/home/proj/docs/NOTES.md" sessionRef="ref_a" />
+    </DocOpeningProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open beside: docs/NOTES.md" }));
+  expect(spy).toHaveBeenCalledWith({
+    type: "doc",
+    params: { session: "ref_a", path: "docs/NOTES.md", kind: "file", origin },
+  });
+  spy.mockRestore();
+});
+
+test("an out-of-cwd path earns no affordance even under an origin provider", () => {
+  seedThreadCwd("ref_a", "/home/proj");
+  const { container } = render(
+    <DocOpeningProvider origin={ORIGIN}>
+      <FileOpenBesideButton absPath="/etc/passwd" sessionRef="ref_a" />
+    </DocOpeningProvider>,
+  );
   expect(container.firstChild).toBeNull();
 });

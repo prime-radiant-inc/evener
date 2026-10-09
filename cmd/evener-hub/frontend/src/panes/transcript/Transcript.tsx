@@ -29,6 +29,7 @@ import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { DocOpeningProvider, docOpeningOriginFor } from "../doc/docOpeningContext";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
 import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
@@ -71,7 +72,9 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
         record.id === paneId && record.type === "transcript" && (record.params as TranscriptParams).ref === ref,
     ),
   );
-  const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
+  const lifetime = pane ? conversationPaneLifetime(pane) : null;
+  const view = lifetime ? retainedTranscriptReadView(lifetime, ref, "transcript") : undefined;
+  const docOpeningOrigin = lifetime ? docOpeningOriginFor(lifetime, ref) : undefined;
   const model = useThreadsStore((state) => state.threads.get(ref));
   const { snapshot: activity } = useSessionActivity(ref);
   const scope = deriveScope(navigationStore.getState(), ref, activity);
@@ -84,7 +87,9 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           </div>
         )}
         <div className={CLASS.list}>
-          {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          <DocOpeningProvider origin={docOpeningOrigin}>
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          </DocOpeningProvider>
         </div>
       </div>
     </PaneScaffold>

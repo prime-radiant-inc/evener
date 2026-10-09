@@ -12,16 +12,32 @@
 // The namespace import (not a named one) is deliberate: it lets openDoc.test.ts
 // spy openBeside through the module object, the reliable vitest seam for
 // asserting this delegation while the target is still a no-op.
+import type { DestinationProvenance } from "@evener/appwire-client";
 import * as paneActions from "../../shell/paneActions";
 // Importing the opener registers the "doc" pane type (side effect of ./index):
 // every producer that can open a doc pane already imports this module, so the
 // pane is guaranteed registered before openDocBeside routes it through dockview.
 import "./index";
 
+// The opening provenance a doc pane carries when its producers captured one:
+// the two browser destination shapes only. A restored or native destination is
+// not a serialized opening origin and is never stored here.
+export type DocOpeningOrigin = Extract<
+  DestinationProvenance,
+  { kind: "browser-origin" } | { kind: "browser-readonly-session" }
+>;
+
 export interface DocParams {
   session: string;
   path: string;
-  kind: "file" | "image";
+  // The persisted doc kind vocabulary: the current file/image kinds plus the
+  // legacy "text" kind older panels still carry (and a restored layout must
+  // preserve, not rewrite). DocPane renders anything but an image as a file.
+  kind: "file" | "image" | "text";
+  // The scope that opened this document, captured at the real opening action.
+  // Absent for the approved older persisted shape (and when no provider supplied
+  // one), which stays readable and session-bound.
+  origin?: DocOpeningOrigin;
 }
 
 export function openDocBeside(params: DocParams): void {

@@ -14,6 +14,7 @@ import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { DocOpeningProvider, docOpeningOriginFor } from "../doc/docOpeningContext";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
 import {
@@ -75,6 +76,10 @@ function ScopeConversation({
     scope.requestedRef,
     scope.requestedRef === lifetime.sourceRef ? lifetime.sourceType : "cascade",
   );
+  // EACH column captures its own displayed scope's origin: only the lifetime's
+  // own session source column earns a browser-origin; every other column is an
+  // explicit read-only source pane.
+  const docOpeningOrigin = docOpeningOriginFor(lifetime, scope.requestedRef);
   useLayoutEffect(() => {
     if (sessionId !== undefined) reconcileCascadeBinding(pane, scope.requestedRef, sessionId);
   }, [pane, scope.requestedRef, sessionId]);
@@ -102,7 +107,9 @@ function ScopeConversation({
       {readable ? (
         <CascadeColumn paneId={pane.id} scope={activity}>
           {admitted ? (
-            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
+            <DocOpeningProvider origin={docOpeningOrigin}>
+              <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
+            </DocOpeningProvider>
           ) : (
             <EmptyState title="Loading transcript…" />
           )}

@@ -58,6 +58,24 @@ export function disposeConversationPaneLifetime(pane: OpenPaneRecord): void {
   lifetimes.get(pane)?.dispose();
 }
 
+// The destination resolver for a saved browser note (Task 4). It reads the
+// EXISTING WeakMap and the current workspace record - never creating a lifetime
+// and never authorizing a closed or replaced source. A mismatched pane, a
+// disposed lifetime, a non-session source or a different displayed session all
+// resolve to null. The durable document key's namespace check belongs to the
+// annotation port that calls this, not here.
+export function retainedComposerSourceFor(
+  paneId: string,
+  sourceId: string,
+  sessionRef: string,
+): ComposerSourceState | null {
+  const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+  const lifetime = pane ? lifetimes.get(pane) : undefined;
+  if (!lifetime?.alive || lifetime.sourceType !== "session" || lifetime.sourceRef !== sessionRef) return null;
+  const source = lifetime.composer;
+  return source?.alive && source.sourceId === sourceId ? source : null;
+}
+
 onPaneRetype((previous, replacement) => {
   const lifetime = lifetimes.get(previous);
   if (!lifetime) return;
