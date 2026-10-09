@@ -21,8 +21,8 @@ import (
 // index. Its dot name keeps it out of the pages and out of memory_search.
 const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 
-// freeMemoryBackupPath is the first backup name in root that names nothing:
-// memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
+// freeMemoryBackupPath is the first backup name that no entry in root has (a
+// symlink, even a dangling one, counts): memoryLegacyIndexBackup, then the same name with ".2", ".3" and so on. An
 // older Evener build can write MEMORY.md again after migration; numbering
 // keeps the first backup, the one holding the original index, from being
 // overwritten when that file is migrated too.
@@ -34,12 +34,20 @@ const memoryLegacyIndexBackup = ".MEMORY.md.pre-generated"
 // fs.ErrNotExist. A backup is lost only if an older build writes MEMORY.md
 // again between one run's rename and another's earlier check; that window is
 // accepted, since the lost index's descriptions are already in its pages.
-func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) string {
-	backup := filepath.Join(root, memoryLegacyIndexBackup)
-	for n := 2; env.FileExists(backup); n++ {
-		backup = filepath.Join(root, memoryLegacyIndexBackup+"."+strconv.Itoa(n))
+func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (string, error) {
+	entries, err := env.ListDirectory(root, 1)
+	if err != nil {
+		return "", err
 	}
-	return backup
+	taken := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		taken[entry.Name] = true
+	}
+	backup := memoryLegacyIndexBackup
+	for n := 2; taken[backup]; n++ {
+		backup = memoryLegacyIndexBackup + "." + strconv.Itoa(n)
+	}
+	return filepath.Join(root, backup), nil
 }
 
 // memoryYAMLField encodes one frontmatter line, quoting value as YAML needs.
@@ -322,7 +330,11 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		return errors.Join(writeErrs...)
 	}
 	for _, legacy := range legacies {
-		if err := env.RenamePath(legacy, freeMemoryBackupPath(env, root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		backup, err := freeMemoryBackupPath(env, root)
+		if err != nil {
+			return err
+		}
+		if err := env.RenamePath(legacy, backup); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}

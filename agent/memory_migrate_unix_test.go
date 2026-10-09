@@ -140,3 +140,33 @@ func TestMigrateMemoryScopeSkipsAFIFOIndex(t *testing.T) {
 		t.Fatal("migration blocked on a FIFO index")
 	}
 }
+
+// Any entry at a backup name, a symlink included (even one whose target is
+// gone), occupies it: migration moves on to the next free name and leaves the
+// entry alone.
+func TestMigrateMemoryScopeTreatsASymlinkBackupAsTaken(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	scope := filepath.Join(root, "memory", "personal")
+	link := filepath.Join(scope, memoryLegacyIndexBackup)
+	if err := os.Symlink("gone", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte("- [a](a.md) — index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != "gone" {
+		t.Fatalf("the symlink backup was replaced: %q, %v", target, err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
+		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	}
+}
