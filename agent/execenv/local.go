@@ -2128,14 +2128,17 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
 
-	rg, err := e.findExecutable("rg")
 	// Ripgrep takes no predicate, so a search that skips files walks natively.
-	if err != nil || skip != nil {
-		// Fallback to native Go regex search when ripgrep is absent
+	if skip != nil {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+	}
+	rg, err := e.findExecutable("rg")
+	if err != nil {
+		// Fallback to native Go regex search when ripgrep is absent
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
 	}
 
 	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)

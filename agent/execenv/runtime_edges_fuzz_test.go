@@ -292,16 +292,16 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			_ = fn("denied", nil, fs.ErrPermission)
 			return nil
 		}
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseWalkDir = func(fs.FS, string, fs.WalkDirFunc) error { return fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err == nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err == nil {
 			t.Fatal("browse walk fault succeeded")
 		}
 		secureBrowseWalkDir = browseWalkOrig
 		secureBrowseReadFile = func(fs.FS, string) ([]byte, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseReadFile = browseReadOrig
