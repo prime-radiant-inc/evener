@@ -77,7 +77,7 @@ Rendering reads every page in the scope. That cost replaces today's single-file 
 
 ## Migration
 
-The first time Evener renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Migration takes no lock:
+The first time a session with `memory_write`, `memory_edit` and `memory_delete` renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Any other session never migrates, because migration edits pages and removes the root index; it renders the pages as they are, with fallback descriptions, until a writing session migrates. Migration takes no lock:
 1. Parse each line of the old index for a Markdown link to a page in the scope (`[text](path)` or a bare `path.md`). The rest of the line, with the link and leading list markers and separators (`-`, `—`, `:`) stripped, is that page's description.
 2. For each linked page that exists and has no `description` in its frontmatter, write that description into its frontmatter. Pages that already have a description keep it. Migration does not stamp `updated`/`by`.
 3. Rename the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched). An earlier backup is never replaced: when the name is taken, the file goes to the first free name of `.MEMORY.md.pre-generated.2`, `.3` and so on, because an older build sharing the scope can write `MEMORY.md` again after migration.
