@@ -31,7 +31,6 @@
 // with no hover to reveal them).
 
 import {
-  approvalWaiting,
   humanizeState,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
@@ -438,13 +437,13 @@ function effectiveSessionState(session: RailSession): string {
   if (presented === "errored") return "errored";
   // Only attention that waits on a person outranks work: a question, a turn
   // that ended on needs_response (awaiting without a question, #4093), an
-  // approval, or a restart. A warning shares the amber dot family, but running
-  // jobs remain what is happening.
+  // approval (which displayState presents as awaiting), or a restart. A
+  // warning shares the amber dot family, but running jobs remain what is
+  // happening.
   const attentionOutranksWork =
-    session.state === "restartRequired" ||
-    session.state === "awaiting" ||
-    (session.state === "warning" && session.ask_pending === true) ||
-    approvalWaiting(session.state, session.approval_pending === true);
+    presented === "awaiting" ||
+    presented === "restartRequired" ||
+    (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
     return "active";

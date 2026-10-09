@@ -535,12 +535,12 @@ describe("compact session status", () => {
   });
 
   test.each([
-    ["warning", "job", { running_job_count: 1 }],
-    ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-  ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
+    ["job", { running_job_count: 1 }],
+    ["subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+  ] as const)("a non-blocking warning yields to running %s work", (_workKind, work) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state, ask_pending: false, ...work }))}
+        node={sessionRailNode(apiNode({ state: "warning", ask_pending: false, ...work }))}
         info={info()}
         actions={actions()}
       />,
@@ -552,27 +552,15 @@ describe("compact session status", () => {
     expect(within(panel).getByText("Running")).toBeTruthy();
   });
 
-  test("a pending question outranks running work", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-
-    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
-    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Question waiting")).toBeTruthy();
-  });
-
   // Awaiting without a question is a turn that ended on needs_response: it
   // waits on a person as a question does, so it outranks work too (#4093).
-  test("a needs_response rest outranks running work", () => {
+  test.each([
+    ["pending question", true, "Question waiting"],
+    ["needs_response rest", false, "Needs you"],
+  ] as const)("a %s outranks running work", (_name, askPending, expected) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: false, running_job_count: 1 }))}
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: askPending, running_job_count: 1 }))}
         info={info()}
         actions={actions()}
       />,
@@ -581,7 +569,7 @@ describe("compact session status", () => {
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Needs you")).toBeTruthy();
+    expect(within(panel).getByText(expected)).toBeTruthy();
   });
 
   test("a pending approval outranks running work", () => {
