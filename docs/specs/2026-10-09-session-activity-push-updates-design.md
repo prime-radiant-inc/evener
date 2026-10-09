@@ -141,7 +141,8 @@ listed set therefore only grows. It shrinks only when the epoch or session is
 replaced, which resets the store (`acceptContext`) and re-reads; journal
 recovery truncates an uncommitted trailing batch, never a served row.
 
-Decision (pending Jesse's ruling): take the append-only model. Creates are
+Decision (ruled by Jesse, 2026-10-09): take the append-only model. Delegates
+never get rehomed; they only end. Creates are
 caught because the new delegate's frame names an ID the loaded rows do not hold,
 so the store reads then; removals do not occur. Pin the invariant with a
 regression test — a delegate record survives every lifecycle transition and a
@@ -196,8 +197,10 @@ fallback is to leave the read in place for such sources and accept the work.
 
 ## Open questions for Jesse
 
-1. **Membership:** confirm the append-only model above (recommended), or require
-   an explicit removal signal in the invalidation regardless?
+All resolved 2026-10-09.
+
+1. **Membership:** ruled — take the append-only model (delegates never get
+   rehomed; they only end).
 2. **Scope:** decided — web + native + shared store together.
 3. **Summary invalidation:** decided — keep it on every delegate change; narrow
    only against a measured win.
