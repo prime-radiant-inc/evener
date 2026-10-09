@@ -148,7 +148,9 @@ func memoryFrontmatterKeyLines(block string) map[int]string {
 var (
 	// A link's destination is bare, or in angle brackets (memoryLinkTarget's
 	// form for a path with spaces or parentheses) with backslash escapes.
-	legacyIndexLink     = regexp.MustCompile(`\[([^\]]*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|([^)\s]+))\)`)
+	// The title may hold backslash escapes, such as the "\]" memoryIndexLine
+	// writes for a "]" in a title.
+	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|([^)\s]+))\)`)
 	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
 )
@@ -187,7 +189,11 @@ func trimLegacyIndexDescription(rest string) string {
 // legacyIndexPage turns a link target into a page path in the scope, or
 // reports false for anything that is not a local Markdown page.
 func legacyIndexPage(target string) (string, bool) {
-	target, _, _ = strings.Cut(target, "#")
+	// A "#" starts a fragment ("cents.md#rule") unless the whole target is a
+	// page path, as the generated index writes for a page named "a#b.md".
+	if path.Ext(target) != ".md" {
+		target, _, _ = strings.Cut(target, "#")
+	}
 	if strings.Contains(target, "://") {
 		return "", false
 	}
@@ -214,7 +220,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	for line := range strings.SplitSeq(index, "\n") {
 		var target, text, rest string
 		if m := legacyIndexLink.FindStringSubmatchIndex(line); m != nil {
-			text = line[m[2]:m[3]]
+			text = legacyIndexEscape.ReplaceAllString(line[m[2]:m[3]], "$1")
 			if m[4] >= 0 {
 				target = legacyIndexEscape.ReplaceAllString(line[m[4]:m[5]], "$1")
 			} else {

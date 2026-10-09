@@ -109,6 +109,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- [emph](emph.md) — **important** note\n" +
 		"- [spaced](<my notes (old).md>) — a path in angle brackets\n" +
 		"- [escaped](<x \\<y\\>.md>) — angle brackets escaped inside one\n" +
+		"- [[WIP\\] Fix](wip.md)\n" +
 		"- [](quiet.md)\n" +
 		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
@@ -123,6 +124,7 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"quiet.md":           "a later line describes a page an empty one named",
 		"my notes (old).md":  "a path in angle brackets",
 		"x <y>.md":           "angle brackets escaped inside one",
+		"wip.md":             "[WIP] Fix",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
@@ -456,11 +458,13 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 // so an index an older build copied from a generated one still migrates.
 func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
 	t.Parallel()
-	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, "<x> y.md", "sub/half).md"} {
-		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
-		got := parseLegacyMemoryIndex(line + "\n")
-		if len(got) != 1 || got[0].Link != rel || got[0].Description != "d" {
-			t.Fatalf("%q from %q: got %+v", rel, line, got)
+	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, `a\>b.md`, "<x> y.md", "sub/half).md", "a#b.md"} {
+		for _, title := range []string{"T", `[WIP] Fix \ it`} {
+			line := memoryIndexLine(memoryPage{Path: rel, Title: title, Description: "d"})
+			got := parseLegacyMemoryIndex(line + "\n")
+			if len(got) != 1 || got[0].Link != rel || got[0].Description != "d" {
+				t.Fatalf("%q from %q: got %+v", rel, line, got)
+			}
 		}
 	}
 }
