@@ -138,6 +138,33 @@ class NewPages(Root):
         self.put("projects/p/sub/MEMORY.md", "---\ndescription: d\n---\n")
         self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
 
+    def test_description_yaml_reads_as_null_bool_number_or_date_does_not_count(self):
+        for value in ("null", "~", "false", "TRUE", "42", "0x1F", "1e3", ".inf", "2026-09-24"):
+            with self.subTest(value=value):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_quoted_or_word_description_that_looks_typed_counts(self):
+        for value in ('"null"', "'42'", "yes", "1.2.3"):
+            with self.subTest(value=value):
+                self.put("projects/p/a.md", f"---\ndescription: {value}\n---\n")
+                self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+
+    def test_non_markdown_page_is_a_new_page_without_a_description(self):
+        self.put("projects/p/notes.txt", "---\ndescription: d\n---\n")
+        self.assertEqual(self.run_cmd("new-pages"), 0)
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_hidden_files_are_not_pages(self):
+        self.put("projects/p/.draft.md", "---\ndescription: d\n---\n")
+        self.put("projects/p/.git/x.md", "---\ndescription: d\n---\n")
+        self.assertEqual(self.run_cmd("new-pages"), 1)
+
+    def test_glob_characters_in_the_state_root_are_literal(self):
+        self.root = os.path.join(self.root, "run[1]")
+        self.put("projects/p/a.md", "---\ndescription: d\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+
 class SeedFrontmatter(unittest.TestCase):
     def test_quoted_description_word_tags_and_date_pass(self):
         self.assertIsNone(memcheck.seed_frontmatter_problem(

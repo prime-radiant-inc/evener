@@ -7,12 +7,14 @@ memory root as $XDG_STATE_HOME, so a scenario runs:
     python3 "$LAB_DIR/memcheck.py" index-lines
     python3 "$LAB_DIR/memcheck.py" new-pages --require-description --tags-subset-of a,b
 
-index-lines   Exit 1 when an index line is over 200 characters. A frontmatter
-              page's index line is its description; a scope's root MEMORY.md (a
-              build without the generated index) contributes each of its lines.
-              Characters are runes, not bytes.
-new-pages     Looks only at project pages the stage wrote (not the root MEMORY.md,
-              not marked `by: seed-fixture`). Exit 1 when it wrote none, or when
+index-lines   Exit 1 when an index line is over 200 characters. It measures the
+              part of the line the model writes: a frontmatter page's description,
+              or each line of a scope's root MEMORY.md (a build without the
+              generated index). The title, path, tags and date the product adds are
+              not counted. Characters are runes, not bytes.
+new-pages     Looks only at project pages not marked `by: seed-fixture` (nor the
+              root MEMORY.md): in a one-stage scenario, the pages the stage wrote;
+              a later stage also sees an earlier one's. Exit 1 when there are none, or when
               --require-description is set and one has no readable description, or
               when --tags-subset-of is set and one has no tags or a tag outside the list.
 
@@ -47,6 +49,16 @@ class Unreadable(ValueError):
     """Frontmatter that is not valid YAML; the product lists its page as "(frontmatter unreadable)"."""
 
 
+# Plain scalars yaml.v3 reads as null, bool, int, float or timestamp, not a string:
+# a page whose description is one has none, for the product as here.
+YAML_NON_STRING = re.compile(
+    r"~|null|Null|NULL|true|True|TRUE|false|False|FALSE"
+    r"|[-+]?(0b[01_]+|0o[0-7_]+|0x[0-9a-fA-F_]+|[0-9][0-9_]*)"
+    r"|[-+]?(\.[0-9]+|[0-9][0-9_]*\.[0-9_]*|[0-9][0-9_]*)([eE][-+]?[0-9]+)?"
+    r"|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)"
+    r"|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}([Tt ].*)?")
+
+
 def plain_value(value):
     """value, an unquoted one-line scalar, or Unreadable when YAML would read a
     mapping in it: a ": " inside it or a ":" at its end."""
@@ -72,7 +84,8 @@ def parse_frontmatter(text):
     Returns None when there is no frontmatter block, and raises Unreadable on
     the invalid YAML a model most often writes (plain_value). A value may be
     plain, quoted, or a folded/literal block scalar (> or |) with indented
-    continuation lines, which join with spaces. tags is a flow list `[a, b]`,
+    continuation lines, which join with spaces; a plain value YAML types
+    (YAML_NON_STRING) is None. tags is a flow list `[a, b]`,
     a block list of `- a` lines, or one scalar tag (normalize_tags)."""
     block = split_frontmatter(text)
     if block is None:
@@ -101,7 +114,10 @@ def parse_frontmatter(text):
             fields[key] = " ".join(rest).strip()
         else:
             joined = " ".join([value] + rest)
-            fields[key] = unquote(joined) if quoted else plain_value(joined)
+            if quoted:
+                fields[key] = unquote(joined)
+            else:
+                fields[key] = None if YAML_NON_STRING.fullmatch(joined) else plain_value(joined)
     return fields, tags
 
 
@@ -124,8 +140,10 @@ def read(path):
 
 
 def memory_files(root, scopes):
+    """Every file the product lists as a page or index: any name, none under a dot path."""
     for scope in scopes:
-        yield from sorted(glob.glob(os.path.join(root, "evener", "memory", scope, "**", "*.md"), recursive=True))
+        paths = glob.glob(os.path.join(glob.escape(os.path.join(root, "evener", "memory")), scope, "**", "*"), recursive=True)
+        yield from sorted(p for p in paths if os.path.isfile(p))
 
 
 def is_root_index(root, path):
@@ -136,8 +154,11 @@ def is_root_index(root, path):
 
 
 def readable_frontmatter(path):
-    """The page's (fields, tags), with ({}, []) for a page without frontmatter or
-    with Unreadable frontmatter, as the product reads neither's description."""
+    """The page's (fields, tags), with ({}, []) for a non-Markdown page or one
+    without frontmatter or with Unreadable frontmatter, as the product reads
+    none of their descriptions."""
+    if not path.endswith(".md"):
+        return {}, []
     try:
         return parse_frontmatter(read(path)) or ({}, [])
     except Unreadable as e:
