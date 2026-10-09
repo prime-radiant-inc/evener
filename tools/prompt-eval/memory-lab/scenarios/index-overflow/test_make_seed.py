@@ -9,8 +9,9 @@ import make_seed
 
 class SeedPages(unittest.TestCase):
     def test_no_page_repeats_a_tag(self):
-        for p in make_seed.seed_pages():
-            self.assertEqual(len(p["tags"]), len(set(p["tags"])), p["path"])
+        for filler in (make_seed.FILLER, 999):
+            for p in make_seed.seed_pages(filler):
+                self.assertEqual(len(p["tags"]), len(set(p["tags"])), p["path"])
 
 
 if __name__ == "__main__":
