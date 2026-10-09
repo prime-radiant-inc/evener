@@ -459,11 +459,13 @@ it("publishes a recorded item and covered stream retirement together while stora
   owner.dispose();
 });
 
-it("does not extend coverage across a mixed isolated-old and distant-new notification", async () => {
+it("extends producer-complete suffix coverage across an old update and distant new entry", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
-  owner.acceptRead(readMany(50), { lifetime: 1, readId: "read-gap", boundary: "read-gap-boundary" });
+  const baseline = readMany(50);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 8_004 };
+  owner.acceptRead(baseline, { lifetime: 1, readId: "read-gap", boundary: "read-gap-boundary" });
   await owner.settled();
   const notification: AnyNotification = {
     method: "history/updated",
@@ -472,7 +474,9 @@ it("does not extend coverage across a mixed isolated-old and distant-new notific
       threadId,
       bootGeneration: "1",
       epoch: 0,
-      snapshot: { incarnation: identity.incarnation, length: 51 },
+      // ChangedSince(published) returns every item/turn changed since the
+      // previous byte boundary; its length may jump by many transcript bytes.
+      snapshot: { incarnation: identity.incarnation, length: 19_431 },
       items: [
         {
           type: "agentMessage",
@@ -497,9 +501,13 @@ it("does not extend coverage across a mixed isolated-old and distant-new notific
   };
   owner.accept(notification, { lifetime: 1 });
   await owner.settled();
-  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-gap")).resolves.toBeUndefined();
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-gap")).resolves.toMatchObject({
+    representedSnapshot: 19_431,
+    start: { entry: 1 },
+    end: { entry: 51 },
+  });
   const reader = owner.attachReader();
-  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  expect((await reader.openLocal(40)).status).toBe("current");
   reader.dispose();
   owner.dispose();
 });
@@ -520,6 +528,8 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
       text: "baseline",
     },
   ];
+  // Snapshot.length is the transcript-byte boundary, not a notification counter.
+  baseline.snapshot = { incarnation: identity.incarnation, length: 1_376 };
   owner.acceptRead(baseline, { lifetime: 1, readId: "read-provenance", boundary: "read-provenance-boundary" });
   await owner.settled();
 
@@ -532,7 +542,7 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
           threadId,
           bootGeneration: "1",
           epoch: 0,
-          snapshot: { incarnation: identity.incarnation, length: 3 },
+          snapshot: { incarnation: identity.incarnation, length: 9_586 },
           items: [
             {
               type: "agentMessage",
@@ -551,10 +561,11 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
   ).toBe(true);
   await owner.settled();
   await expect(fixture.cache.getCoverage(historyKey, "suffix:read-provenance")).resolves.toMatchObject({
-    representedSnapshot: 3,
+    representedSnapshot: 9_586,
     start: { entry: 100, item: 2 },
     end: { entry: 700, item: 4 },
   });
+  const firstSuffix = await fixture.cache.getCoverage(historyKey, "suffix:read-provenance");
 
   expect(
     owner.accept(
@@ -565,7 +576,7 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
           threadId,
           bootGeneration: "1",
           epoch: 0,
-          snapshot: { incarnation: identity.incarnation, length: 4 },
+          snapshot: { incarnation: identity.incarnation, length: 9_586 },
           turns: [{ id: "turn_1", status: "completed", version: 4, itemsView: "full" }],
         },
       } as AnyNotification,
@@ -573,11 +584,55 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
     ),
   ).toBe(true);
   await owner.settled();
-  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-provenance")).resolves.toMatchObject({
-    representedSnapshot: 4,
+  const sameLengthSuffix = await fixture.cache.getCoverage(historyKey, "suffix:read-provenance");
+  expect(sameLengthSuffix).toMatchObject({
+    representedSnapshot: 9_586,
     start: { entry: 100, item: 2 },
     end: { entry: 700, item: 4 },
   });
+  expect(sameLengthSuffix?.boundary).not.toBe(firstSuffix?.boundary);
+  owner.dispose();
+});
+
+it("requires monotonic producer byte boundaries before extending a suffix", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = read("baseline");
+  baseline.snapshot = { incarnation: identity.incarnation, length: 4_096 };
+  owner.acceptRead(baseline, { lifetime: 1, readId: "read-decreasing", boundary: "read-decreasing-boundary" });
+  await owner.settled();
+
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 3_900 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "baseline-update",
+            transcriptKey: "item-baseline",
+            turnId: "turn_1",
+            position: { entry: 1, item: 0 },
+            version: 2,
+            text: "updated under a stale byte boundary",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  await owner.settled();
+
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-decreasing")).resolves.toBeUndefined();
+  const reader = owner.attachReader();
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  reader.dispose();
   owner.dispose();
 });
 

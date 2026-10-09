@@ -124,7 +124,18 @@ export class TranscriptRepository {
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
     this.#coverageBoundary = request.boundary;
     this.#coverageReadId = request.readId;
-    this.#continuityId ??= `${this.#binding.lifetime}:${request.readId}`;
+    // This token identifies the source authority and baseline that can support
+    // uninterrupted suffixes; Snapshot.length is a separate byte boundary.
+    this.#continuityId = JSON.stringify([
+      this.#binding.lifetime,
+      this.#binding.ref,
+      this.#binding.threadId,
+      this.#binding.historyKey,
+      response.bootGeneration ?? "",
+      response.epoch ?? 0,
+      response.snapshot?.incarnation ?? this.#binding.identity.incarnation,
+      request.readId,
+    ]);
     this.#bootGeneration = response.bootGeneration;
     this.#epoch = response.epoch;
     this.#recoveryNeeded = candidate.history?.invalidatedAtGeneration !== undefined;
@@ -409,24 +420,27 @@ export class TranscriptRepository {
       !this.#coverageReadId ||
       !this.#coverageBoundary ||
       !this.#continuityId ||
-      representedSnapshot !== this.#representedSnapshot + 1 ||
+      representedSnapshot < this.#representedSnapshot ||
       (rows.length === 0 && turns.length === 0)
     ) {
       return undefined;
     }
+    // The producer's ChangedSince(previous byte boundary) is the continuity
+    // proof. Item positions select the covered window; their numeric gaps do
+    // not establish or disprove whether the input stream skipped records.
     const positions = rows.map((row) => row.position).sort(comparePosition);
     const previousEnd = this.#coverageEnd;
-    if (previousEnd && positions.some((position) => comparePosition(position, previousEnd) <= 0)) {
-      return undefined;
-    }
+    const lastPosition = positions.at(-1);
+    const end =
+      previousEnd && (!lastPosition || comparePosition(lastPosition, previousEnd) <= 0) ? previousEnd : lastPosition;
     return {
       kind: "suffix",
       readId: this.#coverageReadId,
       continuityId: this.#continuityId,
       previousBoundary: this.#coverageBoundary,
-      boundary: `${this.#coverageBoundary}:suffix:${representedSnapshot}`,
+      boundary: `${this.#coverageBoundary}:suffix:${this.#boundary}`,
       start: this.#coverageStart,
-      end: positions.at(-1) ?? this.#coverageEnd,
+      end: end ?? null,
       representedSnapshot,
     };
   }
