@@ -251,7 +251,11 @@ When the rendering passes the 8 KiB projection budget, the projection keeps the
 header, then the newest lines that fit, then one closing line such as
 `Not shown: 9 pages (vitest 4, indexeddb 3, untagged 2).` A page counts once
 under each of its tags; tags are ordered by count, highest first, then by name,
-with `untagged` last, and one page reads `1 page`. The line counts and names no
+with `untagged` last, and one page reads `1 page`. In this projection the
+header and the closing line each list only the most-used tags (ties by name)
+that fit in 512 bytes, then `and M more tags`, so a scope with hundreds of tags
+still shows its newest pages; the header keeps its kept tags alphabetical. The
+whole index that `memory_read` returns lists every tag. The line counts and names no
 routes; the envelope adds " Not every page is shown; the index's last line
 counts the rest." after its `memory_read` route.
 
