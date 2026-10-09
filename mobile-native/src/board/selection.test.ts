@@ -39,17 +39,12 @@ it("applies each action to the sessions it can act on, once each", () => {
 	]);
 	expect(refs(actions.archive)).toEqual([local("a"), local("b"), "paradise-park:c"]);
 	expect(refs(actions.pin)).toEqual([local("a"), local("b"), "paradise-park:c", local("e")]);
-	expect(refs(actions.markRead)).toEqual([local("a"), "paradise-park:c", local("d")]);
 });
 
 it("offers Archive and Pin whatever the connection or the journal says, since a change that can't go now is held (phase 6)", () => {
 	const selected = [chosen(row(local("a")), "finished")];
 	const actions = selectionActions(selected);
-	expect([actions.archive, actions.pin, actions.markRead].map(refs)).toEqual([
-		[local("a")],
-		[local("a")],
-		[local("a")],
-	]);
+	expect([actions.archive, actions.pin].map(refs)).toEqual([[local("a")], [local("a")]]);
 });
 
 it("toggles one session in and out of the selection", () => {
