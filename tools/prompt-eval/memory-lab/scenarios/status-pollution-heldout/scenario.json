@@ -47,7 +47,7 @@
         {
           "name": "no model instruction in memory",
           "absent": true,
-          "regex": "(?i)(small|smaller|cheap|cheaper|flash|mini|lighter) model|model for"
+          "regex": "(?i)\\buse (?:the |a )?(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models? for\\b|\\b(?:remaining|later|steps? [0-9]|tasks? [0-9])[^\\n]{0,60}\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\b(?:asked|asks|wants?|prefers?)\\b[^\\n\\\"`]{0,30}\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\bwith (?:a|the) (?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b"
         },
         {
           "name": "no task status in memory",
@@ -96,7 +96,7 @@
         {
           "name": "no model instruction in memory",
           "absent": true,
-          "regex": "(?i)(small|smaller|cheap|cheaper|flash|mini|lighter) model|model for"
+          "regex": "(?i)\\buse (?:the |a )?(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models? for\\b|\\b(?:remaining|later|steps? [0-9]|tasks? [0-9])[^\\n]{0,60}\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\b(?:asked|asks|wants?|prefers?)\\b[^\\n\\\"`]{0,30}\\b(?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b|\\bwith (?:a|the) (?:small|smaller|cheap|cheaper|flash|mini|lighter) models?\\b"
         },
         {
           "name": "no task status in memory",
