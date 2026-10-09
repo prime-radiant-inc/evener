@@ -271,7 +271,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if s.exists("edge", filepath.Join(worktree, "missing-parent", "leaf")) {
 		t.Fatal("sandbox exists missing parent unexpectedly returned true")
 	}
-	if _, err := s.listDir("edge", filepath.Join(worktree, "missing-dir"), 1); err == nil {
+	if _, err := s.listDir("edge", filepath.Join(worktree, "missing-dir"), 1, false); err == nil {
 		t.Fatal("sandbox listDir missing directory unexpectedly succeeded")
 	}
 	entries := []DirEntry{}

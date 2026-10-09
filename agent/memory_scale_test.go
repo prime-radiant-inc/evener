@@ -64,7 +64,7 @@ func TestProjectMemoryIndexKeepsNewestPagesAsTagsSprawl(t *testing.T) {
 					missing = append(missing, p.Path)
 				}
 			}
-			header := memoryTagsHeader(sorted, true)
+			header := memoryTagsHeaderLine(sorted, true)
 			t.Logf("tags=%d: %d page lines shown, len=%d, header=%d bytes, truncated=%t", tags, memoryProjectedPageLines(content), len(content), len(header), truncated)
 			if len(content) > memoryProjectionCap || len(missing) > 0 {
 				t.Fatalf("tags=%d: len=%d (cap %d), %d page lines shown, header %d bytes; %d of the newest %d pages missing (first %q)",

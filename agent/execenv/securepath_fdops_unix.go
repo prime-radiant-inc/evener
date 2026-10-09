@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -518,24 +517,21 @@ func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 // root; the destination's parents are created beneath its root fd. The rename is
 // a single renameat between the two checked directory fds.
 func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
-	oldParent, oldLeaf, err := s.openWriteParent(tool, oldAbs, false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unix.Close(oldParent) }()
-	newParent, newLeaf, err := s.openWriteParent(tool, newAbs, true)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unix.Close(newParent) }()
-	return unix.Renameat(oldParent, oldLeaf, newParent, newLeaf)
+	return s.betweenWriteParents(tool, oldAbs, newAbs, unix.Renameat)
 }
 
-// link gives the file at oldAbs the second name newAbs. Both endpoints must
-// resolve beneath a writable root; the destination's parents are created
-// beneath its root fd. Unlike rename, it never replaces newAbs: an existing
+// link gives the file at oldAbs the second name newAbs, with the same
+// checks as rename. Unlike rename, it never replaces newAbs: an existing
 // newAbs fails with EEXIST, which matches fs.ErrExist.
 func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	return s.betweenWriteParents(tool, oldAbs, newAbs, func(oldParent int, oldLeaf string, newParent int, newLeaf string) error {
+		return unix.Linkat(oldParent, oldLeaf, newParent, newLeaf, 0)
+	})
+}
+
+// betweenWriteParents runs op on the checked parent fds and leaves of oldAbs
+// and newAbs, creating newAbs's parents beneath its root fd.
+func (s *sandboxFS) betweenWriteParents(tool, oldAbs, newAbs string, op func(oldParent int, oldLeaf string, newParent int, newLeaf string) error) error {
 	oldParent, oldLeaf, err := s.openWriteParent(tool, oldAbs, false)
 	if err != nil {
 		return err
@@ -546,7 +542,7 @@ func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(newParent) }()
-	return unix.Linkat(oldParent, oldLeaf, newParent, newLeaf, 0)
+	return op(oldParent, oldLeaf, newParent, newLeaf)
 }
 
 // mkdirAll creates abs (and any missing parents) beneath a writable root.
@@ -609,13 +605,7 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 // root, and each subdirectory is re-opened beneath its parent's fd with
 // O_NOFOLLOW — never re-resolved from the root by a joined path. Masked entries
 // are skipped so a denylisted subtree is never enumerated.
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
-	return s.listDirWith(tool, abs, depth, false)
-}
-
-// listDirWith is listDir; with visibleOnly it leaves out dot entries and
-// never opens a dot directory.
-func (s *sandboxFS) listDirWith(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
+func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
@@ -645,7 +635,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, v
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
 		name := ent.Name()
-		if visibleOnly && strings.HasPrefix(name, ".") {
+		if visibleOnly && IsDotPath(name) {
 			continue
 		}
 		childAbs := filepath.Join(baseAbs, name)

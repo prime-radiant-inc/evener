@@ -1878,7 +1878,7 @@ func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibl
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDirWith("list_dir", e.resolve(path), depth, visibleOnly)
+		return sfs.listDir("list_dir", e.resolve(path), depth, visibleOnly)
 	}
 	root := e.resolve(path)
 
@@ -1892,7 +1892,7 @@ func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibl
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
 			name := ent.Name()
-			if visibleOnly && strings.HasPrefix(name, ".") {
+			if visibleOnly && IsDotPath(name) {
 				continue
 			}
 			relName := name

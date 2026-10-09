@@ -253,12 +253,12 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		securePathRel = func(string, string) (string, error) { return "", errors.New("scripted rel failure") }
 		_, _, _ = containingRoot([]string{root}, filepath.Join(root, "child"))
 		securePathRel = pathRelOrig
-		if _, err := rootFS.listDir("list_directory", root, 2); err != nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err != nil {
 			t.Fatal(err)
 		}
 		entryInfoOrig := secureEntryInfo
 		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0, time.Time{}, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 1); err != nil {
+		if _, err := rootFS.listDir("list_directory", root, 1, false); err != nil {
 			t.Fatal(err)
 		}
 		secureEntryInfo = entryInfoOrig
@@ -283,7 +283,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 
 		readDirOrig := secureReadDirEntries
 		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 2); err == nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err == nil {
 			t.Fatal("scripted readdir failure unexpectedly succeeded")
 		}
 		secureReadDirEntries = readDirOrig
@@ -339,7 +339,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		openatOrig := secureOpenat
 		secureOpenat = func(int, string, int, uint32) (int, error) { return -1, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 2); err != nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err != nil {
 			t.Fatal(err)
 		}
 		secureOpenat = openatOrig
@@ -351,7 +351,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			}
 			return readDirOrig(fd)
 		}
-		if _, err := rootFS.listDir("list_directory", root, 2); err == nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err == nil {
 			t.Fatal("recursive readdir failure unexpectedly succeeded")
 		}
 		secureReadDirEntries = readDirOrig

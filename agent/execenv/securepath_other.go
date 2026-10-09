@@ -87,11 +87,7 @@ func (s *sandboxFS) mkdirAll(tool, abs string) error {
 
 func (s *sandboxFS) exists(tool, abs string) bool { return false }
 
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
-	return nil, errSandboxUnsupported()
-}
-
-func (s *sandboxFS) listDirWith(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
+func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
