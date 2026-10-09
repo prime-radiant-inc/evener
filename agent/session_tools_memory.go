@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -238,13 +239,50 @@ func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnviron
 		return execFileEdit(ctx, env, forwarded, s.fileReadGuard(env))
 	})
 }
+
+// legacyIndexSearchLine matches a line a search of the scope root reports
+// from the root's hand-written MEMORY.md, in any letter case: a match
+// "MEMORY.md:N:text", a context line "MEMORY.md-N-text", a count
+// "MEMORY.md:N" or the bare name.
+var legacyIndexSearchLine = regexp.MustCompile(`(?i)^memory\.md(?::\d+(?::|$)|-\d+-|$)`)
+
+// withoutLegacyIndexLines is a search of the scope root's output without the
+// hand-written MEMORY.md's lines, and without a "--" group separator left
+// leading, trailing or doubled by dropping them.
+func withoutLegacyIndexLines(out string) string {
+	var kept []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if legacyIndexSearchLine.MatchString(line) || line == "--" && (len(kept) == 0 || kept[len(kept)-1] == "--") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if n := len(kept); n > 0 && kept[n-1] == "--" {
+		kept = kept[:n-1]
+	}
+	return strings.Join(kept, "\n")
+}
+
+// execMemorySearch searches a scope's files. A scope a session without
+// memory_write has not migrated still has its hand-written root MEMORY.md,
+// which memory_read answers with the generated index instead, so the search
+// leaves that file out. Its lines are dropped after the search's result cap,
+// which can then return fewer lines than the cap allows.
 func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	env, forwarded, release, err := s.memoryFileArgs(args, "path", "search")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return execFileGrep(ctx, env, forwarded)
+	target := filepath.Clean(stringArg(args, "path"))
+	if isMemoryIndexPath(target) {
+		return "", nil
+	}
+	out, err := execFileGrep(ctx, env, forwarded)
+	if text, ok := out.(string); ok && err == nil && target == "." {
+		return withoutLegacyIndexLines(text), nil
+	}
+	return out, err
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
