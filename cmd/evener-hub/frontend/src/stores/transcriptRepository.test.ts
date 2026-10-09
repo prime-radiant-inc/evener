@@ -3,8 +3,16 @@ import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { TranscriptRepository } from "./transcriptRepository";
 
 const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) fixture.dispose();
+afterEach(async () => {
+  for (const fixture of fixtures.splice(0)) await fixture.dispose();
+});
+
+it("returns an awaitable completion for entry fixture database deletion", async () => {
+  const fixture = createEntryCacheFixture();
+  const disposed = fixture.dispose();
+
+  expect(disposed).toBeInstanceOf(Promise);
+  await expect(disposed).resolves.toBeUndefined();
 });
 
 it("publishes recorded rows before persistence and keeps streaming overlay memory-only", async () => {

@@ -5,6 +5,7 @@ export const ENTRY_ITEM_STORE = "transcriptItems";
 export const ENTRY_TURN_STORE = "transcriptTurns";
 export const ENTRY_COVERAGE_STORE = "transcriptCoverage";
 export const ENTRY_META_STORE = "transcriptMeta";
+export const ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX = "historyKey_boundary_snapshot";
 export const LEGACY_RECORDS_STORE = "records";
 export const LEGACY_META_STORE = "meta";
 export const CURRENT_STORE = "current";
@@ -40,10 +41,36 @@ export interface TranscriptCoverageRow {
   suffixBlocked?: boolean;
 }
 
+export interface TranscriptRequestedRef {
+  clientId: string;
+  ref: string;
+}
+
+export interface TranscriptResolvedIdentity {
+  clientId: string;
+  hostId: string;
+  sessionId: string;
+  incarnation: string;
+}
+
+export interface TranscriptSessionMetadata {
+  historyKey: string;
+  requestedRefs: readonly TranscriptRequestedRef[];
+  resolvedIdentity: TranscriptResolvedIdentity;
+  savedAt: number;
+  accessedAt: number;
+  formatVersion: number;
+}
+
 export interface TranscriptHistoryMetaRow {
   historyKey: string;
   encodedBytes: number;
   itemCount: number;
+  requestedRefs?: readonly TranscriptRequestedRef[];
+  resolvedIdentity?: TranscriptResolvedIdentity;
+  savedAt?: number;
+  accessedAt?: number;
+  formatVersion?: number;
 }
 
 export interface TranscriptAggregateMetaRow {
@@ -95,6 +122,9 @@ export function upgradeSessionCache(database: IDBDatabase, includeEntryStores = 
   if (!database.objectStoreNames.contains(ENTRY_COVERAGE_STORE)) {
     const coverage = database.createObjectStore(ENTRY_COVERAGE_STORE, { keyPath: ["historyKey", "rangeId"] });
     coverage.createIndex("historyKey_boundary", ["historyKey", "boundary"], { unique: false });
+    coverage.createIndex(ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX, ["historyKey", "boundary", "representedSnapshot"], {
+      unique: false,
+    });
   }
   if (!database.objectStoreNames.contains(ENTRY_META_STORE)) {
     database.createObjectStore(ENTRY_META_STORE, { keyPath: "historyKey" });

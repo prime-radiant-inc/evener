@@ -3502,14 +3502,14 @@ function mergeReplacedItem(held: ItemModel | undefined, incoming: ItemModel): It
   return merged;
 }
 
-/** Applies one versioned entry update without letting an older item regress a newer row. */
+/** Applies the recorded history version precedence to one keyed entry row. */
 export function mergeTranscriptItemVersioned(
   held: ItemModel | undefined,
   heldVersion: number | undefined,
   incoming: ItemModel,
   incomingVersion: number,
 ): ItemModel {
-  if (held !== undefined && heldVersion !== undefined && heldVersion > incomingVersion) return held;
+  if (held !== undefined && !supersedes(heldVersion, incomingVersion)) return held;
   return mergeReplacedItem(held, incoming);
 }
 

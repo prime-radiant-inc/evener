@@ -80,6 +80,68 @@ test("versioned entry merge rejects older input and preserves richer equal-versi
   expect(mergeTranscriptItemVersioned(held, 4, omitted, 4)).toMatchObject({ text: "known text" });
 });
 
+test("recorded history rejects equal-version explicit empty fields but accepts a newer clear", () => {
+  const heldImages = [{ type: "image", url: "data:image/png;base64,AA==", mediaType: "image/png" }];
+  let model = testHydrateV6({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            transcriptKey: "entry-4/item-0",
+            turnId: "turn_1",
+            type: "assistant",
+            text: "known text",
+            images: heldImages,
+            version: 4,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const update = (version: number, text: string, images: typeof heldImages) =>
+    applyNotification(
+      model,
+      {
+        method: "history/updated",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          bootGeneration: "",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: version },
+          items: [
+            {
+              id: "item_1",
+              transcriptKey: "entry-4/item-0",
+              turnId: "turn_1",
+              type: "assistant",
+              text,
+              images,
+              version,
+              status: "completed",
+            },
+          ],
+        },
+      },
+      1000 + version,
+    );
+
+  model = update(4, "", []);
+  const equalVersion = itemAt(turnAt(model, 0), 0);
+  expect(equalVersion).toMatchObject({ text: "known text", version: 4 });
+  expect(equalVersion.images?.map(({ src }) => src)).toEqual([heldImages[0]!.url]);
+
+  model = update(5, "", []);
+  const newerVersion = itemAt(turnAt(model, 0), 0);
+  expect(newerVersion).toMatchObject({ text: "", version: 5 });
+  expect(newerVersion.images?.map(({ src }) => src)).toEqual([heldImages[0]!.url]);
+});
+
 test("versioned turn merge rejects older and equal metadata without copying item arrays", () => {
   const item: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "body" };
   const held: TurnModel = { id: "turn-1", status: "completed", version: 8, items: [item] };

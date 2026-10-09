@@ -6,6 +6,7 @@ import {
 } from "@evener/appwire-client";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   CURRENT_META_STORE,
   CURRENT_STORE,
@@ -16,16 +17,138 @@ import {
   entryHistoryKey,
   LEGACY_META_STORE,
   LEGACY_RECORDS_STORE,
+  type TranscriptSessionMetadata,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
-const caches: SessionEntryCache[] = [];
+const caches: Array<{ close(): void }> = [];
 const databases: Array<{ factory: IDBFactory; name: string }> = [];
-afterEach(() => {
+const openedDatabases: IDBDatabase[] = [];
+
+function openFixtureDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(name);
+    request.addEventListener(
+      "success",
+      () => {
+        openedDatabases.push(request.result);
+        resolve(request.result);
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
+function deleteFixtureDatabase(factory: IDBFactory, name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = factory.deleteDatabase(name);
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error(`${name} database deletion blocked`)), {
+      once: true,
+    });
+  });
+}
+
+function requestValue<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
+function transactionDone(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+  });
+}
+
+function independentJsonBytes(value: unknown): number {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("expected a JSON-encoded row");
+  return new TextEncoder().encode(json).byteLength;
+}
+
+function holdNextReadonlyTransactionContaining(storeName: string) {
+  const transact = IDBDatabase.prototype.transaction;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let heldTransaction: IDBTransaction | undefined;
+  const reached = new Promise<void>((resolve) => {
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase["transaction"]>
+    ) {
+      const transaction = transact.apply(this, args);
+      if (!hold && transaction.mode === "readonly" && transaction.objectStoreNames.contains(storeName)) {
+        heldTransaction = transaction;
+        hold = holdIndexedDBEvent(transaction, "complete");
+        void hold.reached.then(resolve);
+      }
+      return transaction;
+    });
+  });
+  return {
+    reached,
+    transaction: () => heldTransaction,
+    release() {
+      hold?.release();
+      vi.restoreAllMocks();
+    },
+  };
+}
+
+async function readEntryMeta(factory: IDBFactory, name: string, key: string): Promise<unknown> {
+  const database = await openFixtureDatabase(factory, name);
+  const transaction = database.transaction(ENTRY_META_STORE, "readonly");
+  const done = transactionDone(transaction);
+  const row = await requestValue(transaction.objectStore(ENTRY_META_STORE).get(key));
+  await done;
+  return row;
+}
+
+afterEach(async () => {
   vi.restoreAllMocks();
+  for (const database of openedDatabases.splice(0)) database.close();
   for (const cache of caches.splice(0)) cache.close();
-  for (const { factory, name } of databases.splice(0)) factory.deleteDatabase(name);
+  for (const { factory, name } of databases.splice(0)) await deleteFixtureDatabase(factory, name);
+});
+
+it("waits for the real entry fixture database deletion to settle", async () => {
+  const fixture = createEntryCacheFixture();
+  caches.push(fixture.cache);
+  databases.push({ factory: fixture.indexedDB, name: fixture.name });
+  const deleteDatabase = fixture.indexedDB.deleteDatabase.bind(fixture.indexedDB);
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  vi.spyOn(fixture.indexedDB, "deleteDatabase").mockImplementation((name) => {
+    const request = deleteDatabase(name);
+    if (name === fixture.name) {
+      hold = holdIndexedDBEvent(request, "success");
+      request.addEventListener("success", () => {}, { once: true });
+    }
+    return request;
+  });
+
+  try {
+    let settled = false;
+    const disposed = fixture.dispose();
+    expect(disposed).toBeInstanceOf(Promise);
+    if (!(disposed instanceof Promise)) return;
+    const observed = disposed.then(() => {
+      settled = true;
+    });
+    await hold?.reached;
+    expect(settled).toBe(false);
+    hold?.release();
+    await observed;
+    expect(settled).toBe(true);
+  } finally {
+    hold?.release();
+  }
 });
 
 it("writes and reads one entry by history identity and transcript key", async () => {
@@ -153,6 +276,45 @@ it("does not let an older item version replace a newer committed entry", async (
   await cache.putItems([row]);
   await cache.putItems([{ ...row, version: 1, item: { ...row.item, text: "older" } }]);
   await expect(cache.getLatest(historyKey, 40)).resolves.toEqual([row]);
+});
+
+it("keeps richer equal-version item fields and accepts a genuinely newer explicit clear", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "host/session/equal-version";
+  const held = {
+    historyKey,
+    transcriptKey: "entry-4/item-0",
+    position: { entry: 4, item: 0 },
+    version: 4,
+    item: {
+      id: "item-0",
+      turnId: "turn-1",
+      type: "assistant",
+      text: "known text",
+      images: [{ src: "data:image/png;base64,AA==", name: "held.png" }],
+      output: "known output",
+    },
+  };
+  await cache.putItems([held]);
+
+  const equalVersion = {
+    ...held,
+    item: { ...held.item, text: "", images: [], output: "" },
+  };
+  await cache.putItems([equalVersion]);
+  expect.soft(await cache.getLatest(historyKey, 10)).toEqual([held]);
+
+  const newerClear = {
+    ...held,
+    version: 5,
+    item: { ...held.item, text: "", output: "" },
+  };
+  await cache.putItems([newerClear]);
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([newerClear]);
 });
 
 it("round-trips omitted and explicit-empty text, identity-only rows, and rich recorded payloads", async () => {
@@ -407,50 +569,737 @@ it("treats an authoritative empty history read as complete with its real boundar
   });
 });
 
-it("returns isolated old rows as seeds but marks a window outside certified coverage stale", async () => {
+it("selects only certified rows when isolated old and distant seeds are present", async () => {
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
   const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
   caches.push(cache);
   const historyKey = "host/session/seed-incarnation";
-  const baselineRow = {
-    historyKey,
-    transcriptKey: "covered",
-    position: { entry: 10, item: 0 },
-    version: 10,
-    item: { id: "covered", turnId: "turn-1", type: "assistant", text: "covered" },
-  };
-  await cache.commitBatch({
-    historyKey,
-    clearEpoch: 0,
-    items: [baselineRow],
-    coverage: {
-      kind: "read",
-      readId: "read-10",
-      start: { entry: 10, item: 0 },
-      end: { entry: 10, item: 0 },
-      representedSnapshot: 10,
-      serverCursor: "cursor-10",
-      boundary: "boundary-10",
-    },
-  });
-  const isolatedSeed = {
+  const oldSeed = {
     historyKey,
     transcriptKey: "isolated-old",
     position: { entry: 2, item: 0 },
     version: 99,
-    item: { id: "isolated-old", turnId: "turn-0", type: "toolResult", text: "seed" },
+    item: { id: "isolated-old", turnId: "turn-0", type: "toolResult", text: "old seed" },
   };
-  await cache.putItems([isolatedSeed]);
+  const coveredRows = [10, 11].map((entry) => ({
+    historyKey,
+    transcriptKey: `covered-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `covered-${entry}`, turnId: "turn-1", type: "assistant", text: `covered-${entry}` },
+  }));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: coveredRows,
+    coverage: {
+      kind: "read",
+      readId: "read-10",
+      start: { entry: 10, item: 0 },
+      end: { entry: 11, item: 0 },
+      representedSnapshot: 11,
+      serverCursor: "cursor-10",
+      boundary: "boundary-10",
+    },
+  });
+  const distantSeed = {
+    historyKey,
+    transcriptKey: "isolated-distant",
+    position: { entry: 90, item: 0 },
+    version: 99,
+    item: { id: "isolated-distant", turnId: "turn-9", type: "toolResult", text: "distant seed" },
+  };
+  await cache.putItems([oldSeed, distantSeed]);
 
-  await expect(cache.getLatestWindow(historyKey, 10, "boundary-10")).resolves.toMatchObject({
-    rows: [isolatedSeed, baselineRow],
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([oldSeed, ...coveredRows, distantSeed]);
+  const bounded = await cache.getLatestWindow(historyKey, 2, "boundary-10");
+  expect.soft(bounded).toMatchObject({
+    rows: coveredRows,
     coverage: [expect.objectContaining({ rangeId: "read:read-10", serverCursor: "cursor-10" })],
-    complete: false,
-    stale: true,
+    complete: true,
+    stale: false,
     boundary: "boundary-10",
     serverCursor: "cursor-10",
+  });
+  const wider = await cache.getLatestWindow(historyKey, 10, "boundary-10");
+  expect.soft(wider).toMatchObject({ rows: coveredRows, complete: true, stale: false, boundary: "boundary-10" });
+});
+
+it("selects one highest-snapshot certificate when many reads share a boundary", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "host/session/shared-boundary";
+  const rows = Array.from({ length: 24 }, (_, index) => ({
+    historyKey,
+    transcriptKey: `read-${index + 1}`,
+    position: { entry: index + 1, item: 0 },
+    version: index + 1,
+    item: { id: `item-${index + 1}`, turnId: "turn-1", type: "assistant", text: `body-${index + 1}` },
+  }));
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    await cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [row],
+      coverage: {
+        kind: "read",
+        readId: `read-${index + 1}`,
+        start: row.position,
+        end: row.position,
+        representedSnapshot: index + 1,
+        boundary: "shared-boundary",
+      },
+    });
+  }
+
+  const openCursor = IDBIndex.prototype.openCursor;
+  let returnedCertificates = 0;
+  vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementation(function (this: IDBIndex, ...args) {
+    const request = openCursor.apply(this, args);
+    if (this.objectStore.name === ENTRY_COVERAGE_STORE) {
+      request.addEventListener("success", () => {
+        if (request.result) returnedCertificates += 1;
+      });
+    }
+    return request;
+  });
+  const window = await cache.getLatestWindow(historyKey, 1, "shared-boundary");
+
+  expect(window.rows).toEqual([rows[23]]);
+  expect(window.coverage).toMatchObject([{ readId: "read-24", representedSnapshot: 24 }]);
+  expect(returnedCertificates).toBeLessThanOrEqual(1);
+});
+
+it("reads rows and their certificate from one snapshot across a peer commit", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const peer = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache, peer);
+  const historyKey = "host/session/read-race";
+  const row10 = {
+    historyKey,
+    transcriptKey: "entry-10",
+    position: { entry: 10, item: 0 },
+    version: 10,
+    item: { id: "entry-10", turnId: "turn-1", type: "assistant", text: "ten" },
+  };
+  const row11 = {
+    historyKey,
+    transcriptKey: "entry-11",
+    position: { entry: 11, item: 0 },
+    version: 11,
+    item: { id: "entry-11", turnId: "turn-1", type: "assistant", text: "eleven" },
+  };
+  const readCoverage = (end: typeof row10.position | typeof row11.position, representedSnapshot: number) => ({
+    kind: "read" as const,
+    readId: "race-read",
+    start: row10.position,
+    end,
+    representedSnapshot,
+    boundary: "race-boundary",
+  });
+  await cache.commitBatch({ historyKey, clearEpoch: 0, items: [row10], coverage: readCoverage(row10.position, 10) });
+
+  const heldRead = holdNextReadonlyTransactionContaining(ENTRY_ITEM_STORE);
+  const pendingWindow = cache.getLatestWindow(historyKey, 2, "race-boundary");
+  try {
+    await heldRead.reached;
+    expect(heldRead.transaction()).toBeDefined();
+    await peer.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [row11],
+      coverage: readCoverage(row11.position, 11),
+    });
+  } finally {
+    heldRead.release();
+  }
+
+  const racedWindow = await pendingWindow;
+  expect.soft(racedWindow).toMatchObject({
+    rows: [row10],
+    coverage: [{ end: row10.position, representedSnapshot: 10 }],
+    complete: true,
+    stale: false,
+    boundary: "race-boundary",
+  });
+  await expect(peer.getLatestWindow(historyKey, 2, "race-boundary")).resolves.toMatchObject({
+    rows: [row10, row11],
+    coverage: [{ end: row11.position, representedSnapshot: 11 }],
+    complete: true,
+    stale: false,
+  });
+});
+
+it("advances consecutive metadata-only suffixes before a later append", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "host/session/metadata-suffix";
+  const baseline = {
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read" as const,
+      readId: "metadata-read",
+      start: { entry: 1, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 5,
+      boundary: "B5",
+    },
+  };
+  await cache.commitBatch(baseline);
+  const suffix = (
+    previousBoundary: string,
+    boundary: string,
+    representedSnapshot: number,
+    end: { entry: number; item: number },
+  ) => ({
+    kind: "suffix" as const,
+    readId: "metadata-read",
+    continuityId: "connection-1",
+    previousBoundary,
+    boundary,
+    start: { entry: 1, item: 0 },
+    end,
+    representedSnapshot,
+  });
+
+  const first = await cache.commitBatch({ ...baseline, coverage: suffix("B5", "B6", 5, { entry: 5, item: 0 }) });
+  expect.soft(first).toMatchObject({ outcome: "committed", coverage: "extended" });
+  expect.soft(await cache.getCoverage(historyKey, "suffix:metadata-read")).toMatchObject({
+    boundary: "B6",
+    representedSnapshot: 5,
+  });
+  const second = await cache.commitBatch({ ...baseline, coverage: suffix("B6", "B7", 5, { entry: 5, item: 0 }) });
+  expect.soft(second).toMatchObject({ outcome: "committed", coverage: "extended" });
+  expect.soft(await cache.getCoverage(historyKey, "suffix:metadata-read")).toMatchObject({
+    boundary: "B7",
+    representedSnapshot: 5,
+  });
+
+  const appended = {
+    historyKey,
+    transcriptKey: "entry-6",
+    position: { entry: 6, item: 0 },
+    version: 6,
+    item: { id: "entry-6", turnId: "turn-1", type: "assistant", text: "six" },
+  };
+  const third = await cache.commitBatch({
+    ...baseline,
+    items: [appended],
+    coverage: suffix("B7", "B8", 6, { entry: 6, item: 0 }),
+  });
+  expect.soft(third).toMatchObject({ outcome: "committed", coverage: "extended" });
+  expect.soft(await cache.getCoverage(historyKey, "suffix:metadata-read")).toMatchObject({
+    end: appended.position,
+    boundary: "B8",
+    representedSnapshot: 6,
+  });
+});
+
+it("keeps baseline paging cursor associated with its range across multiple appends", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "host/session/cursor-provenance";
+  const rows = [1, 2, 3, 4].map((entry) => ({
+    historyKey,
+    transcriptKey: `entry-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `entry-${entry}`, turnId: "turn-1", type: "assistant", text: `body-${entry}` },
+  }));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: rows.slice(0, 2),
+    coverage: {
+      kind: "read",
+      readId: "cursor-read",
+      start: rows[0]!.position,
+      end: rows[1]!.position,
+      representedSnapshot: 2,
+      serverCursor: "cursor-before-entry-1",
+      boundary: "B2",
+    },
+  });
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [rows[2]!],
+    coverage: {
+      kind: "suffix",
+      readId: "cursor-read",
+      continuityId: "connection-1",
+      previousBoundary: "B2",
+      boundary: "B3",
+      start: rows[0]!.position,
+      end: rows[2]!.position,
+      representedSnapshot: 3,
+    },
+  });
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [rows[3]!],
+    coverage: {
+      kind: "suffix",
+      readId: "cursor-read",
+      continuityId: "connection-1",
+      previousBoundary: "B3",
+      boundary: "B4",
+      start: rows[0]!.position,
+      end: rows[3]!.position,
+      representedSnapshot: 4,
+    },
+  });
+
+  const latest = await cache.getLatestWindow(historyKey, 2, "B4");
+  expect.soft(latest.rows).toEqual(rows.slice(2));
+  expect.soft(latest.coverage).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        rangeId: "read:cursor-read",
+        start: rows[0]!.position,
+        end: rows[1]!.position,
+        serverCursor: "cursor-before-entry-1",
+      }),
+      expect.objectContaining({ rangeId: "suffix:cursor-read", start: rows[0]!.position, end: rows[3]!.position }),
+    ]),
+  );
+  expect.soft(latest.serverCursor).toBeUndefined();
+  const cachedBeforeCursor = await cache.getLatestWindow(historyKey, 4, "B4");
+  expect(cachedBeforeCursor.rows).toEqual(rows);
+  expect(cachedBeforeCursor.coverage).toEqual(latest.coverage);
+});
+
+it("preserves a longer peer read and its cursor after a shorter compatible read", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const primary = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const peer = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(primary, peer);
+  const historyKey = "host/session/shorter-peer-read";
+  const rows = [10, 11, 12, 13].map((entry) => ({
+    historyKey,
+    transcriptKey: `entry-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `entry-${entry}`, turnId: "turn-1", type: "assistant", text: `body-${entry}` },
+  }));
+  await primary.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: rows,
+    coverage: {
+      kind: "read",
+      readId: "peer-read",
+      start: rows[0]!.position,
+      end: rows[3]!.position,
+      representedSnapshot: 13,
+      serverCursor: "cursor-13",
+      boundary: "B13",
+    },
+  });
+  await peer.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: rows.slice(0, 2),
+    coverage: {
+      kind: "read",
+      readId: "peer-read",
+      start: rows[0]!.position,
+      end: rows[1]!.position,
+      representedSnapshot: 11,
+      serverCursor: "cursor-11",
+      boundary: "B11",
+    },
+  });
+
+  await expect(primary.getLatestWindow(historyKey, 2, "B13")).resolves.toMatchObject({
+    rows: rows.slice(2),
+    coverage: [expect.objectContaining({ end: rows[3]!.position, representedSnapshot: 13, serverCursor: "cursor-13" })],
+    complete: true,
+    stale: false,
+    boundary: "B13",
+    serverCursor: "cursor-13",
+  });
+  await expect(peer.getCoverage(historyKey, "read:peer-read")).resolves.toMatchObject({
+    end: rows[3]!.position,
+    representedSnapshot: 13,
+    serverCursor: "cursor-13",
+    boundary: "B13",
+  });
+});
+
+it("stores requested aliases separately from resolved identity with typed session metadata", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const resolvedIdentity = {
+    clientId: "client-main",
+    hostId: "host-resolved",
+    sessionId: "session-resolved",
+    incarnation: "boot-7",
+  };
+  const historyKey = entryHistoryKey(resolvedIdentity);
+  const metadata: TranscriptSessionMetadata = {
+    historyKey,
+    requestedRefs: [
+      { clientId: "client-main", ref: "alias://production" },
+      { clientId: "client-main", ref: "session://stable-name" },
+    ],
+    resolvedIdentity,
+    savedAt: 1_791_550_000_000,
+    accessedAt: 1_791_550_012_345,
+    formatVersion: 1,
+  };
+  const batch = { historyKey, clearEpoch: 0, items: [], sessionMetadata: metadata };
+
+  await expect(cache.commitBatch(batch)).resolves.toMatchObject({ outcome: "committed" });
+  expect.soft(await readEntryMeta(factory, name, historyKey)).toMatchObject(metadata);
+  expect(metadata.requestedRefs).not.toContainEqual({ clientId: "client-main", ref: resolvedIdentity.sessionId });
+  await expect(cache.getSessionMetadata(historyKey)).resolves.toEqual(metadata);
+});
+
+it("refuses a pre-Clear batch after real Clear and allows a fresh epoch write", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const sessionCache = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
+  caches.push(cache, sessionCache);
+  const historyKey = "host/session/real-clear";
+  const baseline = {
+    historyKey,
+    transcriptKey: "baseline",
+    position: { entry: 1, item: 0 },
+    version: 1,
+    item: { id: "baseline", turnId: "turn-1", type: "assistant", text: "survives entry epoch check" },
+  };
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [baseline],
+    coverage: {
+      kind: "read",
+      readId: "before-clear",
+      start: baseline.position,
+      end: baseline.position,
+      representedSnapshot: 1,
+      serverCursor: "cursor-before-clear",
+      boundary: "before-clear",
+    },
+  });
+  const beforeClearTotals = await cache.getByteTotals(historyKey);
+  const clear = await sessionCache.clear();
+  expect(clear).toEqual({ committed: true, epoch: 1 });
+
+  const stale = {
+    historyKey,
+    transcriptKey: "stale-after-clear",
+    position: { entry: 2, item: 0 },
+    version: 2,
+    item: { id: "stale-after-clear", turnId: "turn-1", type: "assistant", text: "must be refused" },
+  };
+  await expect(
+    cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [stale],
+      coverage: {
+        kind: "read",
+        readId: "stale-after-clear",
+        start: stale.position,
+        end: stale.position,
+        representedSnapshot: 2,
+        boundary: "stale-after-clear",
+      },
+    }),
+  ).resolves.toEqual({ outcome: "refused", reason: "clear-epoch" });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([baseline]);
+  await expect(cache.getCoverage(historyKey, "read:before-clear")).resolves.toMatchObject({
+    boundary: "before-clear",
+    serverCursor: "cursor-before-clear",
+  });
+  await expect(cache.getCoverage(historyKey, "read:stale-after-clear")).resolves.toBeUndefined();
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual(beforeClearTotals);
+
+  const fresh = { ...stale, transcriptKey: "fresh-after-clear", item: { ...stale.item, id: "fresh-after-clear" } };
+  await expect(cache.commitBatch({ historyKey, clearEpoch: 1, items: [fresh] })).resolves.toMatchObject({
+    outcome: "committed",
+  });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([baseline, fresh]);
+  await expect(cache.getByteTotals(historyKey)).resolves.toMatchObject({
+    historyBytes: expect.any(Number),
+    aggregateBytes: expect.any(Number),
+  });
+});
+
+it("accounts exact independent byte deltas and rolls back all held writes including turns", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "host/session/exact-byte-deltas";
+  const row1 = {
+    historyKey,
+    transcriptKey: "entry-1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+    item: { id: "entry-1", turnId: "turn-1", type: "assistant", text: "first" },
+  };
+  const storedItem1 = { ...row1, positionSub: 0 };
+  const turn1 = {
+    id: "turn-1",
+    status: "completed",
+    version: 1,
+    items: [{ ...row1.item, version: 1 }],
+  };
+  const storedTurn1 = { historyKey, turnId: "turn-1", version: 1, metadata: { status: "completed", version: 1 } };
+  const coverage1 = {
+    historyKey,
+    rangeId: "read:bytes-read",
+    kind: "read" as const,
+    start: row1.position,
+    end: row1.position,
+    representedSnapshot: 1,
+    serverCursor: "cursor-1",
+    readId: "bytes-read",
+    boundary: "B1",
+  };
+  const appendDelta =
+    independentJsonBytes(storedItem1) + independentJsonBytes(storedTurn1) + independentJsonBytes(coverage1);
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [row1],
+    turns: [turn1],
+    coverage: {
+      kind: "read",
+      readId: "bytes-read",
+      start: row1.position,
+      end: row1.position,
+      representedSnapshot: 1,
+      serverCursor: "cursor-1",
+      boundary: "B1",
+    },
+  });
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({
+    historyBytes: appendDelta,
+    aggregateBytes: appendDelta,
+  });
+
+  const row2 = { ...row1, version: 2, item: { ...row1.item, text: "replacement is longer" } };
+  const storedItem2 = { ...row2, positionSub: 0 };
+  const turn2 = { ...turn1, version: 2, items: [{ ...row2.item, version: 2 }] };
+  const storedTurn2 = { historyKey, turnId: "turn-1", version: 2, metadata: { status: "completed", version: 2 } };
+  const replacementDelta =
+    independentJsonBytes(storedItem2) -
+    independentJsonBytes(storedItem1) +
+    independentJsonBytes(storedTurn2) -
+    independentJsonBytes(storedTurn1);
+  await cache.commitBatch({ historyKey, clearEpoch: 0, items: [row2], turns: [turn2] });
+  const afterReplacement = appendDelta + replacementDelta;
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({
+    historyBytes: afterReplacement,
+    aggregateBytes: afterReplacement,
+  });
+
+  const coverage2 = {
+    ...coverage1,
+    representedSnapshot: 2,
+    serverCursor: "cursor-2",
+    boundary: "B2",
+  };
+  const metadataDelta = independentJsonBytes(coverage2) - independentJsonBytes(coverage1);
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "bytes-read",
+      start: row1.position,
+      end: row1.position,
+      representedSnapshot: 2,
+      serverCursor: "cursor-2",
+      boundary: "B2",
+    },
+  });
+  const beforeAbort = afterReplacement + metadataDelta;
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({
+    historyBytes: beforeAbort,
+    aggregateBytes: beforeAbort,
+  });
+
+  const candidate = {
+    historyKey,
+    transcriptKey: "candidate",
+    position: { entry: 2, item: 0 },
+    version: 3,
+    item: { id: "candidate", turnId: "turn-2", type: "assistant", text: "must roll back" },
+  };
+  const storedCandidate = { ...candidate, positionSub: 0 };
+  const candidateTurn = {
+    id: "turn-2",
+    status: "completed",
+    version: 3,
+    items: [{ ...candidate.item, version: 3 }],
+  };
+  const storedCandidateTurn = {
+    historyKey,
+    turnId: "turn-2",
+    version: 3,
+    metadata: { status: "completed", version: 3 },
+  };
+  const candidateCoverage = {
+    historyKey,
+    rangeId: "read:aborted-read",
+    kind: "read" as const,
+    start: candidate.position,
+    end: candidate.position,
+    representedSnapshot: 3,
+    serverCursor: "cursor-aborted",
+    readId: "aborted-read",
+    boundary: "aborted-boundary",
+  };
+  const abortedDelta =
+    independentJsonBytes(storedCandidate) +
+    independentJsonBytes(storedCandidateTurn) +
+    independentJsonBytes(candidateCoverage);
+  expect(abortedDelta).toBeGreaterThan(0);
+
+  const transaction = IDBDatabase.prototype.transaction;
+  let heldTransaction: IDBTransaction | undefined;
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const opened = transaction.apply(this, args);
+    if (opened.mode === "readwrite" && opened.objectStoreNames.contains(ENTRY_COVERAGE_STORE)) {
+      heldTransaction = opened;
+    }
+    return opened;
+  });
+  const put = IDBObjectStore.prototype.put;
+  const staged: Array<{ store: string; value: unknown }> = [];
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let pulsing = true;
+  let markHeld!: () => void;
+  const requestHeld = new Promise<void>((resolve) => {
+    markHeld = resolve;
+  });
+  const pulse = (store: IDBObjectStore) => {
+    if (pulsing) store.count().addEventListener("success", () => pulse(store), { once: true });
+  };
+  vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["put"]>
+  ) {
+    const request = put.apply(this, args);
+    const value = args[0];
+    staged.push({ store: this.name, value });
+    if (
+      !hold &&
+      this.name === ENTRY_COVERAGE_STORE &&
+      value !== null &&
+      typeof value === "object" &&
+      "rangeId" in value &&
+      value.rangeId === "read:aborted-read"
+    ) {
+      hold = holdIndexedDBEvent(request, "success");
+      request.addEventListener("success", () => {}, { once: true });
+      void hold.reached.then(markHeld);
+      pulse(this);
+    }
+    return request;
+  });
+
+  let settled = false;
+  const pending = cache
+    .commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [candidate],
+      turns: [candidateTurn],
+      coverage: {
+        kind: "read",
+        readId: "aborted-read",
+        start: candidate.position,
+        end: candidate.position,
+        representedSnapshot: 3,
+        serverCursor: "cursor-aborted",
+        boundary: "aborted-boundary",
+      },
+    })
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  try {
+    const state = await Promise.race([requestHeld.then(() => "held" as const), pending.then(() => "settled" as const)]);
+    expect(state).toBe("held");
+    expect(heldTransaction).toBeDefined();
+    expect(hold).toBeDefined();
+    expect(settled).toBe(false);
+    expect(staged).toContainEqual({
+      store: ENTRY_ITEM_STORE,
+      value: expect.objectContaining({ transcriptKey: "candidate", positionSub: 0, item: candidate.item }),
+    });
+    expect(staged).toContainEqual({ store: ENTRY_TURN_STORE, value: expect.objectContaining(storedCandidateTurn) });
+    expect(staged).toContainEqual({ store: ENTRY_COVERAGE_STORE, value: expect.objectContaining(candidateCoverage) });
+    expect(staged).toContainEqual({
+      store: ENTRY_META_STORE,
+      value: expect.objectContaining({ historyKey, encodedBytes: beforeAbort + abortedDelta, itemCount: 2 }),
+    });
+    expect(staged).toContainEqual({
+      store: ENTRY_META_STORE,
+      value: expect.objectContaining({ historyKey: "__aggregate", encodedBytes: beforeAbort + abortedDelta }),
+    });
+    heldTransaction?.abort();
+  } finally {
+    pulsing = false;
+    try {
+      heldTransaction?.abort();
+    } catch {
+      // The transaction may already have completed or aborted.
+    }
+    hold?.release();
+    vi.restoreAllMocks();
+    await pending.catch(() => {});
+  }
+
+  await expect(pending).resolves.toMatchObject({ outcome: "failed" });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([row2]);
+  await expect(cache.getTurn(historyKey, "turn-1")).resolves.toMatchObject({
+    version: 2,
+    metadata: { status: "completed", version: 2 },
+  });
+  await expect(cache.getTurn(historyKey, "turn-2")).resolves.toBeUndefined();
+  await expect(cache.getCoverage(historyKey, "read:bytes-read")).resolves.toMatchObject(coverage2);
+  await expect(cache.getCoverage(historyKey, "read:aborted-read")).resolves.toBeUndefined();
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({
+    historyBytes: beforeAbort,
+    aggregateBytes: beforeAbort,
   });
 });
 

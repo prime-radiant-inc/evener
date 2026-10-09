@@ -10,16 +10,19 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
 import {
+  ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX,
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
   ENTRY_META_STORE,
   ENTRY_TURN_STORE,
+  entryHistoryKey,
   LEGACY_META_STORE,
   SESSION_CACHE_DATABASE_NAME,
   type TranscriptAggregateMetaRow,
   type TranscriptCoverageRow,
   type TranscriptHistoryMetaRow,
   type TranscriptItemRow,
+  type TranscriptSessionMetadata,
   type TranscriptTurnRow,
   upgradeSessionCache,
 } from "./sessionCacheSchema";
@@ -58,6 +61,7 @@ export interface EntryBatch {
   items: readonly TranscriptItemRow<unknown>[];
   turns?: readonly TurnModel[];
   coverage?: EntryCoverageInput;
+  sessionMetadata?: TranscriptSessionMetadata;
 }
 
 export type EntryWriteOutcome =
@@ -93,11 +97,42 @@ function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosit
   return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
 }
 
-function inRange(position: ThreadItemPosition, range: TranscriptCoverageRow): boolean {
-  return (
-    (!range.start || comparePosition(position, range.start) >= 0) &&
-    (!range.end || comparePosition(position, range.end) <= 0)
-  );
+function itemIndexRange(
+  keyRange: typeof IDBKeyRange,
+  historyKey: string,
+  coverage?: TranscriptCoverageRow,
+): IDBKeyRange | null {
+  if (coverage && coverage.start === null && coverage.end === null) return null;
+  const lower: IDBValidKey = coverage?.start
+    ? [historyKey, coverage.start.entry, coverage.start.item, coverage.start.sub ?? 0]
+    : [historyKey, 0, 0, 0];
+  const upper: IDBValidKey = coverage?.end
+    ? [historyKey, coverage.end.entry, coverage.end.item, coverage.end.sub ?? 0]
+    : [historyKey, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+  return keyRange.bound(lower, upper);
+}
+
+function latestRowsFromIndex<T>(index: IDBIndex, range: IDBKeyRange, limit: number): Promise<TranscriptItemRow<T>[]> {
+  if (limit === 0) return Promise.resolve([]);
+  const rows: TranscriptItemRow<T>[] = [];
+  return new Promise((resolve, reject) => {
+    const request = index.openCursor(range, "prev");
+    request.addEventListener("error", () => reject(request.error ?? new Error("entry cursor failed")), { once: true });
+    request.addEventListener("success", () => {
+      const cursor = request.result;
+      if (!cursor || rows.length === limit) {
+        resolve(rows.reverse());
+        return;
+      }
+      const { positionSub: _positionSub, ...row } = cursor.value as TranscriptItemRow<T> & { positionSub?: number };
+      rows.push(row as TranscriptItemRow<T>);
+      if (rows.length === limit) {
+        resolve(rows.reverse());
+        return;
+      }
+      cursor.continue();
+    });
+  });
 }
 
 function turnMetadata(turn: TurnModel): Omit<TurnModel, "id" | "items"> {
@@ -155,6 +190,13 @@ export class SessionEntryCache {
   async commitBatch(batch: EntryBatch): Promise<EntryWriteOutcome> {
     if (batch.items.some((row) => row.historyKey !== batch.historyKey)) {
       return { outcome: "failed", error: new Error("entry batch contains a different history identity") };
+    }
+    if (
+      batch.sessionMetadata &&
+      (batch.sessionMetadata.historyKey !== batch.historyKey ||
+        entryHistoryKey(batch.sessionMetadata.resolvedIdentity) !== batch.historyKey)
+    ) {
+      return { outcome: "failed", error: new Error("entry metadata does not match its resolved history identity") };
     }
     let transaction: IDBTransaction | undefined;
     let complete: Promise<void> | undefined;
@@ -243,6 +285,8 @@ export class SessionEntryCache {
       historyBytes += coverageResult.byteDelta;
       aggregateBytes += coverageResult.byteDelta;
       metaStore.put({
+        ...historyMeta,
+        ...batch.sessionMetadata,
         historyKey: batch.historyKey,
         encodedBytes: historyBytes,
         itemCount: historyMeta.itemCount + changedItems,
@@ -328,7 +372,17 @@ export class SessionEntryCache {
       continuityId: input.continuityId,
       boundary: input.boundary,
     };
-    if (previous && previous.representedSnapshot >= row.representedSnapshot) {
+    if (previous && previous.representedSnapshot > row.representedSnapshot) {
+      return { result: "unchanged", byteDelta: 0 };
+    }
+    if (
+      previous &&
+      previous.representedSnapshot === row.representedSnapshot &&
+      previous.boundary === row.boundary &&
+      comparePosition(previous.start, row.start) === 0 &&
+      comparePosition(previous.end, row.end) === 0 &&
+      previous.serverCursor === row.serverCursor
+    ) {
       return { result: "unchanged", byteDelta: 0 };
     }
     store.put(row);
@@ -347,73 +401,67 @@ export class SessionEntryCache {
       [historyKey, 0, 0, 0],
       [historyKey, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
     );
-    const rows: TranscriptItemRow<T>[] = [];
     try {
-      await new Promise<void>((resolve, reject) => {
-        const request = index.openCursor(range, "prev");
-        request.addEventListener("error", () => reject(request.error ?? new Error("entry cursor failed")), {
-          once: true,
-        });
-        request.addEventListener("success", () => {
-          const cursor = request.result;
-          if (!cursor || rows.length === limit) {
-            resolve();
-            return;
-          }
-          const { positionSub: _positionSub, ...row } = cursor.value as TranscriptItemRow<T> & { positionSub?: number };
-          rows.push(row as TranscriptItemRow<T>);
-          if (rows.length === limit) {
-            resolve();
-            return;
-          }
-          cursor.continue();
-        });
-      });
+      const rows = await latestRowsFromIndex<T>(index, range, limit);
       await complete;
+      return rows;
     } catch (error) {
       await complete.catch(() => {});
       throw error;
     }
-    return rows.reverse();
   }
 
   async getLatestWindow(historyKey: string, limit: number, requestedBoundary: string): Promise<EntryWindow> {
-    const rows = await this.getLatest(historyKey, limit);
+    if (!Number.isInteger(limit) || limit < 0)
+      throw new RangeError("entry window limit must be a non-negative integer");
     const database = await this.#connection.open();
-    const transaction = database.transaction(ENTRY_COVERAGE_STORE, "readonly");
+    const transaction = database.transaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
     const complete = transactionCompletion(transaction);
-    const index = transaction.objectStore(ENTRY_COVERAGE_STORE).index("historyKey_boundary");
-    const ranges = await new Promise<TranscriptCoverageRow[]>((resolve, reject) => {
-      const output: TranscriptCoverageRow[] = [];
-      const request = index.openCursor(this.#keyRange.only([historyKey, requestedBoundary]));
-      request.addEventListener("error", () => reject(request.error ?? new Error("coverage cursor failed")), {
-        once: true,
+    const itemIndex = transaction.objectStore(ENTRY_ITEM_STORE).index("historyKey_position");
+    const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+    const coverageIndex = coverageStore.index(ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX);
+    const certificateRange = this.#keyRange.bound(
+      [historyKey, requestedBoundary, 0],
+      [historyKey, requestedBoundary, Number.MAX_SAFE_INTEGER],
+    );
+    try {
+      const best = await new Promise<TranscriptCoverageRow | undefined>((resolve, reject) => {
+        const request = coverageIndex.openCursor(certificateRange, "prev");
+        request.addEventListener("error", () => reject(request.error ?? new Error("coverage cursor failed")), {
+          once: true,
+        });
+        request.addEventListener(
+          "success",
+          () => resolve((request.result?.value as TranscriptCoverageRow | undefined) ?? undefined),
+          { once: true },
+        );
       });
-      request.addEventListener("success", () => {
-        const cursor = request.result;
-        if (!cursor) {
-          resolve(output);
-          return;
-        }
-        output.push(cursor.value as TranscriptCoverageRow);
-        cursor.continue();
-      });
-    });
-    await complete;
-    const candidates = ranges.filter((range) => range.kind === "read" || range.kind === "suffix");
-    const best = candidates
-      .filter((range) => range.boundary === requestedBoundary)
-      .sort((left, right) => right.representedSnapshot - left.representedSnapshot)[0];
-    const completeRange = best !== undefined && rows.every((row) => inRange(row.position, best));
-    return {
-      rows,
-      coverage: best ? [best] : [],
-      complete: completeRange,
-      stale: !completeRange,
-      ...(best
-        ? { boundary: best.boundary, ...(best.serverCursor === undefined ? {} : { serverCursor: best.serverCursor }) }
-        : {}),
-    };
+      let coverage = best ? [best] : [];
+      if (best?.kind === "suffix" && best.readId !== undefined) {
+        const baseline = await requestResult(
+          coverageStore.get([historyKey, `read:${best.readId}`]) as IDBRequest<TranscriptCoverageRow | undefined>,
+        );
+        if (baseline) coverage = [baseline, best];
+      }
+      const range = itemIndexRange(this.#keyRange, historyKey, best);
+      const rows = range ? await latestRowsFromIndex<unknown>(itemIndex, range, limit) : [];
+      await complete;
+      return {
+        rows,
+        coverage,
+        complete: best !== undefined,
+        stale: best === undefined,
+        ...(best
+          ? {
+              boundary: best.boundary,
+              ...(best.kind === "read" && best.serverCursor !== undefined ? { serverCursor: best.serverCursor } : {}),
+            }
+          : {}),
+      };
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
   }
 
   async getTurn(historyKey: string, turnId: string): Promise<TranscriptTurnRow | undefined> {
@@ -451,5 +499,33 @@ export class SessionEntryCache {
     ]);
     await complete;
     return { historyBytes: history?.encodedBytes ?? 0, aggregateBytes: aggregate?.encodedBytes ?? 0 };
+  }
+
+  async getSessionMetadata(historyKey: string): Promise<TranscriptSessionMetadata | undefined> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    const row = await requestResult(
+      transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+    );
+    await complete;
+    if (
+      !row ||
+      row.requestedRefs === undefined ||
+      row.resolvedIdentity === undefined ||
+      row.savedAt === undefined ||
+      row.accessedAt === undefined ||
+      row.formatVersion === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      historyKey: row.historyKey,
+      requestedRefs: row.requestedRefs,
+      resolvedIdentity: row.resolvedIdentity,
+      savedAt: row.savedAt,
+      accessedAt: row.accessedAt,
+      formatVersion: row.formatVersion,
+    };
   }
 }
