@@ -24,10 +24,9 @@ const MAX_MARKS_PER_CALL = 500;
 // service) say nothing about the mark, which goes again on the next flush.
 const INVALID_PARAMS = -32602;
 
-/** A mark as seen/set carries it, less its ref. */
-type PendingMark = { seenThrough: number } | { unread: true };
 interface PendingEntry {
-	mark: PendingMark;
+	/** The turn end the mark reads the session through, in ms. */
+	seenThrough: number;
 	/** The hub answered a call carrying this very entry. */
 	acknowledged: boolean;
 }
@@ -37,9 +36,9 @@ type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen">
 // Per client object, so a reconnect to an upgraded hub tries again.
 const withoutSeenSet = new WeakSet<ConversationClientLike>();
 
-/** One hub's pending seen marks and the calls that carry them. Calls go one
- * at a time and in order, because the hub may handle two requests at once and
- * a quick "mark seen, then mark unread" must never land reversed. The call is
+/** One hub's pending seen marks and the calls that carry them. The hub keeps
+ * the newest seen-through it is sent, so order can't undo a mark; calls go one
+ * at a time to keep the acknowledgement bookkeeping simple. The call is
  * idempotent, so a mark whose call failed in transit is simply sent again on
  * the next flush; there is no recovery journal. */
 export class HubSeenMarks {
@@ -57,10 +56,7 @@ export class HubSeenMarks {
 		const ended = hubTurnEnd(row);
 		if (ended === null) return null;
 		const entry = this.pending.get(row.ref);
-		if (entry) {
-			if ("unread" in entry.mark) return false;
-			if (ended <= entry.mark.seenThrough) return true;
-		}
+		if (entry && ended <= entry.seenThrough) return true;
 		return row.unseen !== true;
 	}
 
@@ -71,22 +67,9 @@ export class HubSeenMarks {
 		let changed = false;
 		for (const { ref, seenThrough } of marks) {
 			if (!Number.isFinite(seenThrough) || seenThrough <= 0) continue;
-			const current = this.pending.get(ref)?.mark;
-			if (current && "seenThrough" in current && current.seenThrough >= seenThrough) continue;
-			this.pending.set(ref, { mark: { seenThrough }, acknowledged: false });
-			changed = true;
-		}
-		if (changed) this.changed();
-		if (changed && client) this.flush(client);
-	}
-
-	/** Records unread marks and sends them. */
-	markUnread(client: ConversationClientLike | null, refs: readonly string[]): void {
-		let changed = false;
-		for (const ref of refs) {
-			const current = this.pending.get(ref)?.mark;
-			if (current && "unread" in current) continue;
-			this.pending.set(ref, { mark: { unread: true }, acknowledged: false });
+			const current = this.pending.get(ref);
+			if (current && current.seenThrough >= seenThrough) continue;
+			this.pending.set(ref, { seenThrough, acknowledged: false });
 			changed = true;
 		}
 		if (changed) this.changed();
@@ -102,9 +85,9 @@ export class HubSeenMarks {
 	}
 
 	/** Drops each pending mark the hub's rows show landed, or show no longer
-	 * applies: a seen mark once the row reads seen or a newer turn ended, an
-	 * unread mark once the row reads unseen. Only a row the hub decides can
-	 * show either, so a row without a readable turn_ended_at is skipped. */
+	 * applies: once the row reads seen or a newer turn ended. Only a row the
+	 * hub decides can show either, so a row without a readable turn_ended_at
+	 * is skipped. */
 	prune(rows: Iterable<HubRow>): void {
 		let changed = false;
 		for (const row of rows) {
@@ -112,8 +95,7 @@ export class HubSeenMarks {
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
 			if (ended === null) continue;
-			const done = "unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
-			if (done) {
+			if (row.unseen !== true || ended > entry.seenThrough) {
 				this.pending.delete(row.ref);
 				changed = true;
 			}
@@ -140,7 +122,7 @@ export class HubSeenMarks {
 				if (!client || withoutSeenSet.has(client)) return;
 				const batch = [...this.pending].filter(([, entry]) => !entry.acknowledged).slice(0, MAX_MARKS_PER_CALL);
 				if (batch.length === 0) return;
-				const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) => ({ ref, ...mark }));
+				const sessions: SessionSeenMark[] = batch.map(([ref, { seenThrough }]) => ({ ref, seenThrough }));
 				// An entry replaced while its call was out is a newer mark: only the
 				// entry that was sent takes the call's outcome.
 				const stillSent = ([ref, entry]: [string, PendingEntry]) => this.pending.get(ref) === entry;
@@ -193,9 +175,8 @@ export function forgetHubSeenMarks(hubId: string): void {
 
 /** The Board's seen state over both paths: the hub decides a row that
  * carries a readable turn_ended_at, and the device's SeenMarkers decides any
- * other. Opening a row marks it read through the turn it showed. Mark as
- * read and Mark as unread (part 3's long-press menu and select mode) call
- * markRead and markUnread; each sends one call for all its hub rows. */
+ * other. Opening a row marks it read through the turn it showed, in one call
+ * for all its hub rows. */
 export class BoardSeen {
 	constructor(
 		private readonly markers: SeenMarkers,
@@ -214,14 +195,5 @@ export class BoardSeen {
 			else this.markers.markSeen(row);
 		}
 		this.hub.markSeen(client, marks);
-	}
-
-	markUnread(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
-		const refs: string[] = [];
-		for (const row of rows) {
-			if (hubTurnEnd(row) !== null) refs.push(row.ref);
-			else this.markers.markUnread(row.ref);
-		}
-		this.hub.markUnread(client, refs);
 	}
 }

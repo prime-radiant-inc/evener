@@ -1599,7 +1599,7 @@ it("opens a session after marking it seen", async () => {
 
 // Rows the hub decides (S4): each carries its turn end, and the hub says
 // whether it is unseen. The device's markers say the opposite of the hub for
-// both: its epoch covers the first, and it holds an unread mark for the second.
+// both: its epoch covers the first, and the second updated after it.
 const hubUnseen = session("local:hub-unseen", {
 	title: "Hub unseen",
 	updated_at: minutesAgo(90),
@@ -1619,22 +1619,18 @@ const pinnedUnseen = session("local:pinned-unseen", {
 	turn_ended_at: minutesAgo(80),
 	unseen: true,
 });
+// A device adopted an hour ago (adoptedAnHourAgo) reads Hub seen as unseen.
 const hubFleet: Fleet = {
 	...fleet,
 	live: [[failing, working, hubUnseen, hubSeen, finished]],
 	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
 };
-/** A device an hour past first run that marked Hub seen unread itself. */
-function deviceDisagrees(hub: string) {
-	adoptedAnHourAgo(hub);
-	seenMarkers(hub).markUnread("local:hub-seen");
-}
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
 it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1652,7 +1648,7 @@ it("takes Finished or Idle from the hub for a row that carries its turn end, wha
 
 it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const shape = { ...hubFleet };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -1669,9 +1665,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	// The device's own markers are not touched for a hub row.
-	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
-		"local:hub-seen": { unread: true },
-	});
+	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({});
 	// Opening it again, now from Idle, costs no request.
 	pressLabel(tree, "Idle, 2 sessions");
 	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
@@ -1696,7 +1690,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 
 it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1709,7 +1703,7 @@ it("marks a row without a turn end on the device, and sends the hub nothing", as
 
 it("sends a mark made while the connection was down once it's ready again", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -3139,13 +3133,13 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 
 it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub({
 		...hubFleet,
 		catalogs: { projects: [evenerProject()] },
 		projectPages: {
 			"evener:current": [
-				// The device holds an unread mark for this ref; the hub says seen.
+				// The device's first run predates this ref; the hub says seen.
 				session("local:hub-seen", {
 					title: "Project hub seen",
 					live: false,
@@ -4705,56 +4699,6 @@ it("says why a rename failed, in the hub's words", async () => {
 	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
 });
 
-it("marks a finished row read from the menu, moving it to Idle, and unread again", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
-	const host = menuHost(id);
-	const ref = `local:${OTHER_SESSION_ID}`;
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settleMicrotasks();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	const read = menuHost(id);
-	expect(menuItem(read, ref).state).toBe("idle");
-	act(() => read.act(menuItem(read, ref), "markUnread"));
-	await settleMicrotasks();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-});
-
-it("sends no read mark through another hub's client when this Board's hub isn't the active one", async () => {
-	const first = hubId();
-	const second = hubId();
-	adoptedAnHourAgo(first);
-	adoptedAnHourAgo(second);
-	// A row the hub decides (it carries a turn end), so marking it read is a
-	// hub write (BoardSeen.markRead), not just the device's own marker.
-	const row = session("local:hub-unseen", {
-		title: "Hub unseen",
-		updated_at: minutesAgo(90),
-		turn_ended_at: minutesAgo(90),
-		unseen: true,
-	});
-	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
-	const fakeA = hub(shape);
-	const fakeB = hub(shape);
-	connect(first, fakeA.client, "ready");
-	const nav = navigation();
-	const tree = await mount(nav);
-	const host = menuHost(first);
-	const ref = "local:hub-unseen";
-	// The active hub changes to a different one, but this Board (mounted for
-	// "first") stays up, as it would underneath a freshly-selected hub's own
-	// screen; its next render reads the new connection.
-	connect(second, fakeB.client, "ready");
-	setFocused(false);
-	setFocused(true);
-	await settleMicrotasks();
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settleMicrotasks();
-	expect(fakeA.seen).toEqual([]);
-	expect(fakeB.seen).toEqual([]);
-	act(() => tree.unmount());
-});
-
 it("flushes a hidden Board's pending read marks through no other hub's client when the connection re-binds", async () => {
 	const first = hubId();
 	const second = hubId();
@@ -4776,9 +4720,9 @@ it("flushes a hidden Board's pending read marks through no other hub's client wh
 	setFocused(false);
 	setFocused(true);
 	await settleMicrotasks();
-	// Marked while another hub is active: the mark waits in this Board's
-	// hub's pending marks.
-	act(() => host.act(menuItem(host, "local:hub-unseen"), "markRead"));
+	// Opened while another hub is active: the read mark waits in this
+	// Board's hub's pending marks.
+	act(() => host.openSession(menuItem(host, "local:hub-unseen")));
 	await settleMicrotasks();
 	// The other hub's connection drops and comes back, handing the Board a
 	// ready client again.
@@ -4821,6 +4765,7 @@ it("opens a session from the menu's card without marking it through another hub'
 	act(() => host.openSession(menuItem(host, ref)));
 	await settleMicrotasks();
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -5204,9 +5149,7 @@ it("leads the toolbar with Select, which puts a checkbox on every session row an
 	expect(pressables(tree, "New session")).toHaveLength(1);
 	pressLabel(tree, "Select");
 	expect(pressables(tree, "New session")).toHaveLength(0);
-	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([
-		1, 1, 1, 1,
-	]);
+	expect(["Done", "Archive", "Pin"].map((label) => pressables(tree, label).length)).toEqual([1, 1, 1]);
 	const rows = tree.root.findAllByType(BoardRow);
 	expect(rows.map((row) => row.props.selected)).toEqual([false, false, false]);
 	// Select mode's rows neither swipe nor open a menu.
@@ -5408,29 +5351,13 @@ it("pins nothing to a new category whose name is too long, and says why", async 
 	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
 });
 
-it("marks the chosen finished sessions read and leaves select mode", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(selectFleet()));
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	select(tree, "Write changelog", "Refactor parser");
-	expect(pressables(tree, "Archive")[0].props.disabled).toBe(false);
-	pressLabel(tree, "Mark as read");
-	await settleMicrotasks();
-	expect(inSelectMode(tree)).toBe(false);
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
-});
-
 it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
 	const fake = hub(selectFleet());
 	const { id, tree } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, navigation());
 	select(tree, "Write changelog");
-	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
-		false,
-		false,
-		false,
-	]);
+	expect(["Archive", "Pin"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([false, false]);
 	pressLabel(tree, "Archive");
 	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);

@@ -10,14 +10,12 @@ export function SelectBar({
 	onDone,
 	onArchive,
 	onPin,
-	onMarkRead,
 	...placement
 }: {
-	counts: { archive: number; pin: number; markRead: number };
+	counts: { archive: number; pin: number };
 	onDone: () => void;
 	onArchive: () => void;
 	onPin: () => void;
-	onMarkRead: () => void;
 } & ToolbarPlacement) {
 	return (
 		<ToolbarFrame {...placement}>
@@ -25,7 +23,6 @@ export function SelectBar({
 			<View style={{ flex: 1, flexDirection: "row", justifyContent: "flex-end" }}>
 				<BarButton label="Archive" disabled={counts.archive === 0} onPress={onArchive} />
 				<BarButton label="Pin" disabled={counts.pin === 0} onPress={onPin} />
-				<BarButton label="Mark as read" disabled={counts.markRead === 0} onPress={onMarkRead} />
 			</View>
 		</ToolbarFrame>
 	);

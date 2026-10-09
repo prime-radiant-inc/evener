@@ -580,6 +580,11 @@ type testConfig struct {
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
 
+	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
+	// tests; zero rests awaiting at the settle itself. Nil keeps the
+	// production default.
+	needsResponseQuietPeriod *time.Duration
+
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
 	// keeps the production default. Inherited by child configs like every
