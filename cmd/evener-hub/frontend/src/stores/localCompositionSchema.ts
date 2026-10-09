@@ -1,3 +1,11 @@
+import type {
+  DestinationProvenance,
+  DocFileContent,
+  DocumentKey,
+  ExpiryReceipt,
+  PreparedAnnotation,
+} from "@evener/appwire-client";
+
 export const LOCAL_COMPOSITION_DATABASE_NAME = "evener-mutation-outbox";
 export const LOCAL_COMPOSITION_DATABASE_VERSION = 4;
 
@@ -17,6 +25,80 @@ export const ANNOTATION_PAYLOADS_STORE = "annotationPayloads";
 export const ANNOTATION_OPERATIONS_STORE = "annotationOperations";
 export const ANNOTATION_SEQUENCES_STORE = "annotationSequences";
 export const ANNOTATION_EXPIRY_STORE = "annotationExpiry";
+
+// Row DTOs for the browser annotation stores. Version 4/keyPaths are unchanged;
+// only the shapes are named here so the adapter and the draft repository share
+// one definition. JSON key encoders are pure and live here so both modules can
+// import them without a cycle.
+export interface AnnotationHeadRow {
+  documentKey: string;
+  namespaceIncarnation: string;
+  epoch: string;
+  headRevision: number;
+  readGeneration: number;
+  displayedSnapshotId: string;
+  evidenceKey: string;
+}
+
+export interface AnnotationEvidenceRow {
+  evidenceKey: string;
+  documentKey: string;
+  epoch: string;
+  content: DocFileContent;
+}
+
+export interface AnnotationPayloadRow {
+  payloadKey: string;
+  documentKey: string;
+  epoch: string;
+  operation: PreparedAnnotation;
+}
+
+export interface AnnotationSequenceRow {
+  documentKey: string;
+  lastSequence: number;
+}
+
+export type AnnotationOperationRow = {
+  operationKey: string;
+  namespaceKey: string;
+  namespaceIncarnation: string;
+  documentKey: string;
+  sessionKey: string;
+  sessionSequence: number;
+  operationId: string;
+  epoch: string;
+} & (
+  | { state: "pending"; destination: DestinationProvenance; payloadKey: string }
+  | { state: "applied"; draftRevision: number }
+  | { state: "cancelled" }
+);
+
+export interface AnnotationExpiryRow {
+  expiryKey: string;
+  receipt: ExpiryReceipt;
+}
+
+export function annotationNamespaceKey(namespace: DocumentKey["namespace"]): string {
+  return JSON.stringify([namespace.kind, namespace.kind === "browser" ? namespace.origin : namespace.hubId]);
+}
+
+export function annotationOperationKey(namespace: DocumentKey["namespace"], id: string): string {
+  return JSON.stringify([namespace.kind, namespace.kind === "browser" ? namespace.origin : namespace.hubId, id]);
+}
+
+export function annotationDocumentKey(key: DocumentKey): string {
+  return JSON.stringify([
+    key.namespace.kind,
+    key.namespace.kind === "browser" ? key.namespace.origin : key.namespace.hubId,
+    key.sessionRef,
+    key.path,
+  ]);
+}
+
+export function annotationExpiryKey(documentKey: string, epoch: string): string {
+  return JSON.stringify([documentKey, epoch]);
+}
 
 export function registerLocalCompositionSchema(database: IDBDatabase): void {
   if (!database.objectStoreNames.contains(MUTATION_OUTBOX_STORE)) {

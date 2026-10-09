@@ -243,13 +243,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       ...(value.mentions === undefined ? {} : { mentions: value.mentions.map((mention) => ({ ...mention })) }),
     };
   }
+  // Synchronize the selection-metadata ref from a complete value. Publication is
+  // the caller's single responsibility; this performs no store write.
   function mergeSelection(value: SkillEditorValue): void {
-    updateSelectionMeta({
-      text: value.text,
-      skillNames: [...value.skillNames],
-      ...(value.commandNames === undefined ? {} : { commandNames: [...value.commandNames] }),
-      ...(value.mentions === undefined ? {} : { mentions: value.mentions.map((mention) => ({ ...mention })) }),
-    });
+    selectionMetaRef.current = {
+      commandNames: value.commandNames === undefined ? [] : [...value.commandNames],
+      mentions: value.mentions === undefined ? undefined : value.mentions.map((mention) => ({ ...mention })),
+    };
   }
   function currentValue(): SkillEditorValue {
     return {
@@ -264,9 +264,35 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     };
   }
   function publishValue(value: SkillEditorValue): void {
-    updateText(value.text);
-    updateSkillNames([...value.skillNames]);
+    if (disposed) return;
+    // Change detection reuses the submission-ownership semantics — text, ordered
+    // skill names, normalized command names and mention presence — so absent
+    // versus empty mentions stay distinct.
+    if (
+      textRef.current === value.text &&
+      sameSkillSelections(skillNamesRef.current, value.skillNames) &&
+      sameSkillSelections(selectionMetaRef.current.commandNames, value.commandNames ?? []) &&
+      sameMentions(selectionMetaRef.current.mentions, value.mentions)
+    ) {
+      // The source store already holds this value, so no store notification is due.
+      // The runtime draft projection can still be stale (hydration/transfer, or an
+      // accepted edit taking over a guard-protected write), so refresh it through
+      // its existing disposal/ownership guard without touching the store.
+      syncProjection();
+      return;
+    }
+    // Synchronize every ref BEFORE publication, then publish the complete accepted
+    // value and its projection with one store update and one projection update.
+    textRef.current = value.text;
+    skillNamesRef.current = [...value.skillNames];
     mergeSelection(value);
+    state.setState({
+      text: textRef.current,
+      skillNames: skillNamesRef.current,
+      commandNames: selectionMetaRef.current.commandNames,
+      mentions: selectionMetaRef.current.mentions,
+    });
+    syncProjection();
   }
   function storedValue(row: {
     text: string;
