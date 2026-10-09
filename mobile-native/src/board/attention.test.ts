@@ -60,6 +60,7 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "active", approval_pending: true }, false, false, "approval"],
 		[{ state: "active", offline: true, approval_pending: true }, false, false, "shutDown"],
 		[{ state: "awaiting", ask_pending: true, approval_pending: true }, false, false, "question"],
+		[{ state: "awaiting", approval_pending: true }, false, false, "approval"],
 		[{ state: "errored", approval_pending: true }, false, false, "failed"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
@@ -139,6 +140,7 @@ describe("a row's Board state (spec 13.1)", () => {
 	it.each([
 		["failed", "Failed"],
 		["question", "Question"],
+		["needsYou", "Needs you"],
 		["approval", "Approval"],
 		["warning", "Warning"],
 		["restartNeeded", "Restart needed"],
@@ -179,6 +181,7 @@ describe("Live bands (spec 7.1)", () => {
 	it.each([
 		["failed", "needsYou"],
 		["question", "needsYou"],
+		["needsYou", "needsYou"],
 		["approval", "needsYou"],
 		["warning", "needsYou"],
 		["restartNeeded", "needsYou"],
@@ -190,7 +193,7 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+	it("sorts Needs you by failed, then question, needs-your-reply or approval, then warning or restart-needed, then oldest first", () => {
 		// Every row is newer than each row in the bands below it, ages interleave
 		// within a band, and the rows arrive newest first: age order, arrival
 		// order and any merged or split band would each give a different sequence.
@@ -200,12 +203,14 @@ describe("Live bands (spec 7.1)", () => {
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
 			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
 			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			// A turn that ended on needs_response ranks with questions (#4093).
+			row("n", { state: "awaiting", updated_at: at(9) }),
 			row("w-new", { state: "warning", updated_at: at(3) }),
 			row("r", { state: "restartRequired", updated_at: at(2) }),
 			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
 		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
-		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "n", "w-old", "r", "w-new"]);
 	});
 
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
@@ -381,6 +386,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
 		["failed", { word: "Failed", hue: "danger", text: "open the session to see what went wrong" }],
 		["question", { word: "Question", hue: "attention", text: "waiting for your answer" }],
+		["needsYou", { word: "Needs you", hue: "attention", text: "waiting for your reply" }],
 		["approval", { word: "Approval", hue: "attention", text: "waiting for your permission" }],
 		["warning", { word: "Warning", hue: "attention", text: "open the session to see it" }],
 		[

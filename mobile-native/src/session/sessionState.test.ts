@@ -66,6 +66,7 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("idle"), "idle", "Finished"],
 		[session("awaiting", { askPending: true }), "question", "Asks a question"],
 		[session("active", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
+		[session("awaiting", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
 		[session("awaiting", { askPending: true, pendingEscalations: [escalation] }), "question", "Asks a question"],
 		[session("systemError"), "failed", "Failed"],
 		[session("systemError", { askPending: true, pendingEscalations: [escalation] }), "failed", "Failed"],

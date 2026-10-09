@@ -104,6 +104,13 @@ describe("session alerts (spec 13.3)", () => {
 		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
 	});
 
+	it("alerts again when an answered question's turn ends needing your reply", () => {
+		const asking = row("a", { state: "awaiting", ask_pending: true });
+		const start = detectSessionAlerts(null, bands([asking], [asking]), none).states;
+		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
+	});
+
 	it("stays quiet when a host goes offline and comes back", () => {
 		const asking = row("p", { state: "awaiting", ask_pending: true, host_id: "paradise-park" });
 		const start = detectSessionAlerts(null, bands([asking]), none).states;
