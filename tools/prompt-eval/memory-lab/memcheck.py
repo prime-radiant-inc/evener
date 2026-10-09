@@ -32,6 +32,7 @@ import argparse, glob, json, os, subprocess, sys
 
 MAX_INDEX_LINE = 200
 MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "memscope")
+MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
 
 
 class MemscopeError(RuntimeError):
@@ -43,9 +44,11 @@ def scope_pages(dirs):
     if not dirs:
         return {}
     try:
-        out = subprocess.run([MEMSCOPE, *dirs], capture_output=True, text=True)
+        out = subprocess.run([MEMSCOPE, *dirs], capture_output=True, text=True, timeout=MEMSCOPE_TIMEOUT)
     except FileNotFoundError:
         raise MemscopeError(f"{MEMSCOPE} is missing; build it in the lab directory: go build -o bin/memscope ./memscope")
+    except subprocess.TimeoutExpired:
+        raise MemscopeError(f"memscope timed out after {MEMSCOPE_TIMEOUT}s")
     if out.returncode != 0:
         raise MemscopeError(f"memscope failed: {out.stderr.strip()}")
     return json.loads(out.stdout)
@@ -71,10 +74,22 @@ def root_index(scope_dir):
     return None
 
 
-def seed_problems(seed_dir):
-    """Why pages of a scenario's seed would not read as written: each page whose
-    frontmatter the product can't parse. memory-lab check runs this."""
-    return [f"{p['path']}: frontmatter unreadable" for p in scope_pages([seed_dir])[seed_dir] if p["unreadable"]]
+def seed_problems(seed_dirs):
+    """{seed dir: [problem, ...]} for the seed pages that won't read as written:
+    frontmatter evener can't parse, or a page that opens with --- but that evener
+    reads no description from (a CRLF or padded delimiter, or no closing ---).
+    memory-lab check runs this; seeds with no problems are left out."""
+    problems = {}
+    for seed, pages in scope_pages(seed_dirs).items():
+        for p in pages:
+            if p["unreadable"]:
+                problem = "frontmatter unreadable"
+            elif not p["has_description"] and read(os.path.join(seed, p["path"])).startswith("---"):
+                problem = "starts with --- but evener reads no description from it"
+            else:
+                continue
+            problems.setdefault(seed, []).append(f"{p['path']}: {problem}")
+    return problems
 
 
 def index_lines_ok(root):

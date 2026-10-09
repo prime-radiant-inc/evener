@@ -1,9 +1,6 @@
 package agent
 
 import (
-	"fmt"
-	"os"
-
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -21,15 +18,9 @@ type MemoryScopePage struct {
 
 // ListMemoryScopePages reads the pages of the memory scope directory dir
 // exactly as the generated index does, so a tool outside the agent (the
-// memory lab's checks) needn't reimplement frontmatter parsing.
+// memory lab's checks) needn't reimplement frontmatter parsing. A missing
+// dir, or one that isn't a directory, is an error; nothing is created.
 func ListMemoryScopePages(dir string) ([]MemoryScopePage, error) {
-	// Stat first: listing must never create the scope, as a confined
-	// environment would.
-	if info, err := os.Stat(dir); err != nil {
-		return nil, err
-	} else if !info.IsDir() {
-		return nil, fmt.Errorf("memory scope %s is not a directory", dir)
-	}
 	pages, err := listMemoryPages(execenv.NewLocalExecutionEnvironment(dir))
 	if err != nil {
 		return nil, err

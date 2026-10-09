@@ -27,7 +27,7 @@ go build -o bin/memscope ./memscope      # reads memory pages as evener does, fo
 go build -o bin/evener-base ../../../cmd/evener    # build each version you want to compare
 ```
 
-To compare prompt versions, build one `evener` binary per commit, for example `bin/evener-base` from `main` and `bin/evener-try` from your branch. `bin/` is git-ignored.
+`memscope` reads pages with the frontmatter parser of the tree you build it in, so rebuild it after pulling, from the branch whose parsing the checks should use (normally the newer one). To compare prompt versions, build one `evener` binary per commit, for example `bin/evener-base` from `main` and `bin/evener-try` from your branch. `bin/` is git-ignored.
 
 The lab runs real models with your configured provider credentials, so it is never part of `make test`. Write results under `tools/prompt-eval/results/`, which is git-ignored.
 

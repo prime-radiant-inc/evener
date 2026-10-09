@@ -137,16 +137,22 @@ class NewPages(Root):
 
 
 class SeedProblems(Root):
-    def test_unreadable_seed_page_is_a_problem(self):
+    def test_unreadable_or_unread_frontmatter_is_a_problem(self):
         self.put("seed/a.md", "---\ndescription: Cart rule 7: whole numbers\n---\n")
         self.put("seed/b.md", "# no frontmatter is fine\n")
-        self.assertEqual(memcheck.seed_problems(os.path.join(self.root, "evener", "memory", "seed")),
-                         ["a.md: frontmatter unreadable"])
+        self.put("seed/c.md", "---\r\ndescription: d\r\n---\r\n")
+        self.put("seed/d.md", "---\ndescription: never closed\n")
+        self.put("seed/e.md", "---\ndescription: fine\n---\n")
+        seed = os.path.join(self.root, "evener", "memory", "seed")
+        self.assertEqual(memcheck.seed_problems([seed]), {seed: [
+            "a.md: frontmatter unreadable",
+            "c.md: starts with --- but evener reads no description from it",
+            "d.md: starts with --- but evener reads no description from it"]})
 
     def test_every_scenario_seed_reads(self):
         seeds = sorted(glob.glob(os.path.join(HERE, "scenarios", "*", "seed")))
         self.assertIn(os.path.join(HERE, "scenarios", "index-overflow", "seed"), seeds)
-        self.assertEqual({seed: memcheck.seed_problems(seed) for seed in seeds}, {seed: [] for seed in seeds})
+        self.assertEqual(memcheck.seed_problems(seeds), {})
 
 
 if __name__ == "__main__":

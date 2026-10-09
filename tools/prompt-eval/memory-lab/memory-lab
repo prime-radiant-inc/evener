@@ -966,13 +966,13 @@ def scenario_problems(scen):
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
     problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
-    for st in spec["stages"]:
-        seed = os.path.join(scen, st.get("seed_project_memory", ""))
-        if st.get("seed_project_memory") and os.path.isdir(seed):
-            try:
-                problems += [f"{st['seed_project_memory']}/{p}" for p in memcheck.seed_problems(seed)]
-            except memcheck.MemscopeError as e:
-                problems.append(str(e))
+    seeds = sorted({os.path.join(scen, st["seed_project_memory"]) for st in spec["stages"]
+                    if st.get("seed_project_memory") and os.path.isdir(os.path.join(scen, st["seed_project_memory"]))})
+    try:
+        for seed, found in memcheck.seed_problems(seeds).items():
+            problems += [f"{os.path.relpath(seed, scen)}/{p}" for p in found]
+    except memcheck.MemscopeError as e:
+        problems.append(str(e))
     return problems
 
 
