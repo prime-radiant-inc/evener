@@ -172,7 +172,19 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
+	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
+		return
+	}
 	effect(s)
+}
+
+// settledStatusSupersededLocked reports whether a resting status that settled
+// outside any turn (EventStatusSettled) arrives too late to describe the
+// session: a turn is running or about to run, and its own end restates the
+// state, or the session already closed, and closed wins. The caller holds
+// s.mu.
+func (s *Server) settledStatusSupersededLocked() bool {
+	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {
@@ -213,6 +225,14 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
+	case events.EventStatusSettled:
+		// Only a resting state settles outside a turn; anything else would
+		// store a state the projector maps differently.
+		d, ok := ev.Data.(events.StatusSettledData)
+		if !ok || (d.State != string(agent.SessionAwaiting) && d.State != string(agent.SessionIdle)) {
+			return nil
+		}
+		return func(s *Server) { s.status.State = d.State }
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
