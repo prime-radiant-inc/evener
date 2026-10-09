@@ -61,3 +61,23 @@ func TestListMemoryScopePagesNeedsAnExistingDirectory(t *testing.T) {
 		t.Fatal("want an error for a scope that is a file")
 	}
 }
+
+// A relative scope directory is read relative to the working directory.
+func TestListMemoryScopePagesReadsARelativeDirectory(t *testing.T) {
+	parent := t.TempDir()
+	scope := filepath.Join(parent, "scope")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "a.md"), []byte("---\ndescription: d\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	got, err := ListMemoryScopePages("scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "a.md" {
+		t.Fatalf("got %+v, want a.md", got)
+	}
+}
