@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -295,19 +296,33 @@ func TestNeedsResponseRestAnnouncesBeforeATurnThatStartsWhileItArms(t *testing.T
 	case <-ctx.Done():
 		t.Fatal("the rest never armed")
 	}
+	// The second turn start reports its goroutine as it reaches restMu, so
+	// the wait below reads that goroutine's own stack, not another session's.
+	// The timer is parked in its hook, so nothing reads the config now.
+	turnGoroutine := make(chan string, 1)
+	sess.cfg.testOnly.turnStartBeforeRestMu = func() { turnGoroutine <- currentGoroutineHeader() }
 	turnDone := make(chan error, 1)
 	go func() {
 		_, err := sess.ProcessInput(ctx, "next", nil)
 		turnDone <- err
 	}()
-	// The turn must park on restMu while the announcement is pending.
-	for !turnParkedOnRestMu() {
+	// The turn must park on restMu while the announcement is pending: once it
+	// has reached the lock, restMu is the next mutex it can wait on.
+	var header string
+	select {
+	case header = <-turnGoroutine:
+	case err := <-turnDone:
+		t.Fatalf("turn finished (err %v) before reaching restMu", err)
+	case <-ctx.Done():
+		t.Fatal("the turn never reached its start")
+	}
+	for !goroutineWaitsOnMutex(header) {
 		select {
 		case err := <-turnDone:
 			t.Fatalf("turn finished (err %v) while the rest's announcement was pending", err)
 		case <-ctx.Done():
-			t.Fatal("the turn never reached its start")
-		case <-time.After(time.Millisecond): // TRIPWIRE: poll interval only; ctx bounds the wait.
+			t.Fatal("the turn never parked on restMu")
+		case <-time.After(10 * time.Millisecond): // TRIPWIRE: poll interval only; ctx bounds the wait.
 		}
 	}
 	close(release)
@@ -339,13 +354,35 @@ func TestNeedsResponseRestAnnouncesBeforeATurnThatStartsWhileItArms(t *testing.T
 	}
 }
 
-// turnParkedOnRestMu reports whether some goroutine is waiting for a mutex
-// inside processOneInput: the turn start blocked on restMu.
-func turnParkedOnRestMu() bool {
-	for _, stack := range strings.Split(goroutineDump(), "\n\n") {
-		if strings.Contains(stack, "sync.(*Mutex).Lock") && strings.Contains(stack, ").processOneInput(") {
-			return true
+// currentGoroutineHeader is the calling goroutine's "goroutine N [" prefix,
+// which names it in a full goroutine dump.
+func currentGoroutineHeader() string {
+	buf := make([]byte, 64)
+	buf = buf[:runtime.Stack(buf, false)]
+	header, _, _ := strings.Cut(string(buf), "[")
+	return header + "["
+}
+
+// goroutineWaitsOnMutex reports whether the goroutine whose dump header is
+// header is blocked taking a sync.Mutex.
+func goroutineWaitsOnMutex(header string) bool {
+	for stack := range strings.SplitSeq(goroutineDump(), "\n\n") {
+		if strings.HasPrefix(stack, header) {
+			// Lock is inlined, so a blocked wait shows as lockSlow.
+			return strings.Contains(stack, "sync.(*Mutex).lockSlow")
 		}
 	}
 	return false
+}
+
+// The quiet-period timer holds restMu across its STATUS_SETTLED emit, and a
+// watch fired from that emit could start a turn, which takes restMu: the
+// event must never be watchable.
+func TestStatusSettledIsNotAWatchableEventKind(t *testing.T) {
+	t.Parallel()
+	for name, kind := range modelEventKinds {
+		if kind == events.EventStatusSettled {
+			t.Fatalf("modelEventKinds[%q] is EventStatusSettled; the needs_response timer emits it holding restMu", name)
+		}
+	}
 }

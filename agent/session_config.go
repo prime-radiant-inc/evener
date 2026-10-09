@@ -590,6 +590,11 @@ type testConfig struct {
 	// emitted, with restMu held, so a test can start a turn in that gap.
 	needsResponseRestBeforeAnnounce func()
 
+	// turnStartBeforeRestMu, when set, runs in processOneInput right before
+	// the turn start takes restMu, so a test knows the lock is the next thing
+	// the turn waits on.
+	turnStartBeforeRestMu func()
+
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
 	// keeps the production default. Inherited by child configs like every

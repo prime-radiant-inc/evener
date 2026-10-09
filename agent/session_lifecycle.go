@@ -2015,6 +2015,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
 	// restMu: a needs_response rest arming right now announces first.
+	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
+		hook()
+	}
 	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
