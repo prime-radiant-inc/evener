@@ -136,8 +136,19 @@ func (s *idlePublicationServer) observeProcessing(processing bool) {
 	s.mu.Unlock()
 }
 
+func (s *idlePublicationServer) FinishProcessing(state string) {
+	s.Server.FinishProcessing(state)
+	s.observeProcessing(false)
+	s.notePostTurnState(state)
+}
+
 func (s *idlePublicationServer) SetState(state string) {
 	s.Server.SetState(state)
+	s.notePostTurnState(state)
+}
+
+// notePostTurnState records the first state published after the turn ended.
+func (s *idlePublicationServer) notePostTurnState(state string) {
 	s.mu.Lock()
 	postTurn := s.sawProcessing && s.sawNotProcess
 	if postTurn {
@@ -225,11 +236,10 @@ func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
 	<-s.releaseProcessing
 }
 
-func (s *sessionControlIdentityServer) SetProcessing(processing bool) {
-	s.Server.SetProcessing(processing)
-	if processing {
-		return
-	}
+// FinishProcessing opens the finish gate and, when asked, holds the daemon
+// in the unclaimed input pass.
+func (s *sessionControlIdentityServer) FinishProcessing(state string) {
+	s.Server.FinishProcessing(state)
 	s.mu.Lock()
 	finishing := s.processing
 	s.processing = false

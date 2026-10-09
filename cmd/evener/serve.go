@@ -153,6 +153,9 @@ type serveServer interface {
 	// returns.
 	SetRetirementAdmission(func(context.Context, string) (func(), error))
 	SetProcessing(bool)
+	// FinishProcessing ends the running input with the session's own state
+	// as the input left it, stored and published in one step.
+	FinishProcessing(string)
 	// SetProcessingTurn publishes a running execution's TurnID; serve
 	// installs it as each session's execution-started func.
 	SetProcessingTurn(string)
@@ -1849,9 +1852,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
-			srv.SetProcessing(false)
+			srv.FinishProcessing(sess.WireState())
 			srv.SetCancelFunc(nil)
-			srv.SetState(sess.WireState())
 			currentCancel()
 			close(runnerDone)
 			clearMutationRunner(runnerDone)

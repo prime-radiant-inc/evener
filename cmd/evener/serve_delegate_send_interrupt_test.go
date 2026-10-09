@@ -134,9 +134,9 @@ type waiterInterruptServer struct {
 	once                   sync.Once
 }
 
-func (s *waiterInterruptServer) SetProcessing(processing bool) {
-	s.Server.SetProcessing(processing)
-	if !processing && s.processingBarrierArmed.Load() {
+func (s *waiterInterruptServer) FinishProcessing(state string) {
+	s.Server.FinishProcessing(state)
+	if s.processingBarrierArmed.Load() {
 		s.processingBarrierOnce.Do(func() { close(s.processingFalseEntered) })
 		<-s.releaseProcessingFalse
 	}
@@ -444,7 +444,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 		})
 		interruptResult <- daemon.client.TurnInterrupt(requestCtx, interrupt)
 	}()
-	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.processingFalseEntered, "runner SetProcessing(false) barrier")
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.processingFalseEntered, "runner FinishProcessing barrier")
 	select {
 	case <-daemon.interruptResponse:
 		t.Fatal("TurnInterrupt response completed before runnerDone barrier release")

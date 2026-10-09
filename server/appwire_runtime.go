@@ -566,7 +566,13 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 // interrupted one, so after any other its status was the last word. After an
 // interrupted SESSION_END processing is still set, and this publishes the
 // settled status.
-func (s *Server) finishProcessing() {
+//
+// settled, when given, is the session's own state as the input left it,
+// which serve reads once the input returns. It becomes the stored state, and
+// it is what this publishes when nothing deferred speaks for the thread: an
+// input refused before its turn started has no SESSION_END, and a
+// needs_response rest may have armed awaiting while it was being taken.
+func (s *Server) finishProcessing(settled *string) {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
@@ -583,10 +589,13 @@ func (s *Server) finishProcessing() {
 			pending = append(pending, item)
 		}
 		s.appDeferredTerminalNotifications = nil
+		if settled != nil {
+			s.status.State = *settled
+		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The session state still says what the input left running
-			// ("active") until serve samples it after this call: nothing runs
-			// now, so that reads as idle.
+			// Without the session's own state, the stored state still says
+			// what the input left running ("active"): nothing runs now, so
+			// that reads as idle.
 			status := appStatus(s.status.State, false, false)
 			if status == appwire.ThreadStatusActive {
 				status = appwire.ThreadStatusIdle

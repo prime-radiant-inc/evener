@@ -893,12 +893,19 @@ func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJo
 // thread idle.
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
-		s.finishProcessing()
+		s.finishProcessing(nil)
 		return
 	}
 	s.mu.Lock()
 	s.processing = true
 	s.mu.Unlock()
+}
+
+// FinishProcessing ends the running input with the session's own state as
+// the input left it (Session.WireState): stored, and published when no
+// SESSION_END already spoke for the thread (finishProcessing).
+func (s *Server) FinishProcessing(state string) {
+	s.finishProcessing(&state)
 }
 
 // SetProcessingTurn publishes turnID as the running execution: the thread is

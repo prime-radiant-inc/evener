@@ -536,3 +536,23 @@ func TestServerAppWireStatusSettledAfterCloseIsNotPublished(t *testing.T) {
 		}
 	}
 }
+
+// An input that refuses before its turn starts ends with no SESSION_END, so
+// finishing it publishes the session's own resting state: a needs_response
+// rest that armed while the input was being taken reads and broadcasts as
+// awaiting, never idle on the wire and awaiting on a read.
+func TestServerAppWireFinishPublishesTheSessionsRestingState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_refused_pass")
+	srv.SetProcessing(true)
+	srv.SetState("processing")
+	srv.FinishProcessing("awaiting")
+
+	if read := readThreadOverWire(t, srv, "local:th_refused_pass"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+	statuses := statusNotifications(t, srv, "th_refused_pass")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want the finish to broadcast awaiting", statuses)
+	}
+}
