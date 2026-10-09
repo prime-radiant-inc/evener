@@ -53,13 +53,8 @@ func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateR
 // immediateRestConfig is testConfig with the needs_response quiet period
 // dropped, for tests that build a SessionConfig literal.
 func immediateRestConfig() testConfig {
-	var tc testConfig
-	dropQuietPeriod(&tc)
-	return tc
+	return testConfig{needsResponseQuietPeriod: new(time.Duration)}
 }
-
-// dropQuietPeriod zeroes the needs_response quiet period in tc.
-func dropQuietPeriod(tc *testConfig) { tc.needsResponseQuietPeriod = new(time.Duration) }
 
 // withClock runs the session on c, keeping newSession's default config.
 func withClock(c clock.Clock) sessionOpt { return func(o *sessionOpts) { o.clock = c } }
@@ -140,7 +135,7 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		cfg.testOnly.skipGitSnapshot = true
 	}
 	if o.immediateRest {
-		dropQuietPeriod(&cfg.testOnly)
+		cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
 	}
 	if o.clock != nil {
 		cfg.clock = o.clock

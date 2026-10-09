@@ -634,25 +634,24 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	s.mu.Lock()
 	s.restGeneration++
 	generation := s.restGeneration
-	s.mu.Unlock()
-	if s.askPendingCount() > 0 {
+	if len(s.askPending) > 0 {
 		// Only the answer resolves a pending question; queued input waits
 		// behind it, so nothing else is read here.
-		s.mu.Lock()
 		if s.restStillPendingLocked(generation) {
 			s.state = SessionAwaiting
 		}
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Unlock()
 	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
 		return
 	}
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	moves := func() bool { return s.QueueDepth() > 0 || s.hasRunnableUserSteering() }
-	if settleTerminalState(hadOutput, goalKicked, moves(), s.autonomyInFlight()) != SessionAwaiting {
+	moves := s.QueueDepth() > 0 || s.hasRunnableUserSteering()
+	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
 	// A needs_response rest waits out a quiet period first, so a session that
@@ -670,9 +669,10 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		return
 	}
 	s.sclock().AfterFunc(delay, func() {
-		// The cheap checks first, so a timer outliving its session or turn
-		// reads no work state.
-		if !s.restStillPending(generation) || moves() || s.autonomyInFlight() {
+		// The cheap check first, so a timer outliving its session or turn
+		// reads no work state. restAwaiting re-reads queued input and
+		// steering under the transition's hold.
+		if !s.restStillPending(generation) || s.autonomyInFlight() {
 			return
 		}
 		if s.restAwaiting(generation) {
@@ -697,14 +697,12 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 // restAwaiting moves the session to awaiting if the rest numbered generation
 // can still arm, and reports whether it did. Queued input and runnable user
 // steering are read again under the same hold as the transition, since
-// neither starts a turn the moment it arrives. Steering a Stop parked is not
-// runnable, as in hasRunnableUserSteering; the held flag lives in the client
-// mutation store, so it is read before s.mu.
+// neither starts a turn the moment it arrives.
 func (s *Session) restAwaiting(generation uint64) bool {
-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+	steeringHeld := s.userSteeringHeld()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || (!steeringHeld && s.hasPendingUserSteeringLocked()) {
+	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.runnableUserSteeringLocked(steeringHeld) {
 		return false
 	}
 	s.state = SessionAwaiting
