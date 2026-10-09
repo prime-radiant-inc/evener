@@ -8,6 +8,7 @@ import {
 } from "./threadSubscription";
 import type {
   AnyNotification,
+  EvenerDelegateInfo,
   JobActivityJob,
   SessionActivityContext,
   SessionActivityIssue,
@@ -84,6 +85,9 @@ interface ResourceRead {
   /** Bumped when the last observer leaves; a read begun before it is dropped. */
   releases: number;
 }
+/** Cap on the buffered latest frame per unknown delegate id; the per-ID
+ * seen-unknown set bounds reads, so this only guards an unbounded store. */
+const MAX_BUFFERED_DELEGATE_FRAMES = 128;
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -143,6 +147,21 @@ export class SessionActivityStore {
   private runtimeThreadId: string | null = null;
   private statusRevision = 0;
   private statusUpdate: { revision: number; threadId: string; status: ThreadStatus } | null = null;
+  /** The applied merge order per delegate id: strictly-greater revision wins
+   * the snapshot fields, latestActivityAt is the independent maximum. Cleared
+   * on a source epoch change, a session replacement and dispose. */
+  private readonly appliedDelegates = new Map<
+    string,
+    { projectionRevision: number; latestActivityAt: string | undefined }
+  >();
+  /** Delegate ids that triggered a root read for membership; at most once per
+   * id. Cleared with the applied map. */
+  private readonly seenUnknownDelegates = new Set<string>();
+  /** Latest pushed frame per unknown delegate id, applied once a read admits
+   * the row so a settle during a later-page read is not dropped. */
+  private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  /** The last accepted context's no-read-merge eligibility. */
+  private pushEligible = false;
 
   constructor(
     private readonly client: SessionActivityClient,
@@ -283,6 +302,12 @@ export class SessionActivityStore {
     // cursors retire together; opaque cache epochs alone do not imply this.
     this.generation += 1;
     const generation = this.generation;
+    this.appliedDelegates.clear();
+    this.seenUnknownDelegates.clear();
+    this.bufferedUnknownDelegates.clear();
+    // The replacement context has not been seen by noteContext yet; a fresh
+    // session resets eligibility rather than reporting a live->retained flip.
+    this.pushEligible = false;
     const metadata = this.lease?.metadata();
     if (metadata?.sessionId !== context.sessionId || this.statusUpdate?.threadId !== metadata?.threadId)
       this.statusUpdate = null;
@@ -419,15 +444,32 @@ export class SessionActivityStore {
             },
           });
           if (stale()) continue;
+          this.noteContext(summary.context);
           if (unavailable) {
             read.failures += 1;
             this.retry(resource);
           } else if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
-          if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {
+          // A changed epoch is a source replacement. The pushed merge state is
+          // epoch-scoped -- a replacement journal rebuilds projectionRevision
+          // from 1, so an old epoch's higher revision would otherwise win
+          // forever -- so any response that sees the change retires it, root
+          // reads included. The comparison must skip while the stored epoch is
+          // unset or the first read of every store loops. A page still restarts
+          // its walk and drops its stale rows; a root read is already the fresh
+          // read, so it is accepted and records the new epoch below.
+          const epochMismatch = page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId;
+          if (read.epoch !== undefined && epochMismatch) {
+            this.appliedDelegates.clear();
+            this.seenUnknownDelegates.clear();
+            this.bufferedUnknownDelegates.clear();
+          }
+          if (!root && epochMismatch) {
             read.cursor = undefined;
             read.refresh = null;
+            read.epoch = page.context.epoch;
+            read.sessionId = page.context.sessionId;
             read.rootQueued = true;
             continue;
           }
@@ -462,6 +504,15 @@ export class SessionActivityStore {
           } else {
             rows = mergeRows(resource, current.rows, page.rows);
           }
+          if (resource === "delegates") {
+            // A read joins each row the same way a frame does, so it cannot
+            // clobber a newer frame nor skip one applied in the gap, and it
+            // admits any buffered frame for a row it serves.
+            rows = this.joinDelegateRows(
+              rows as readonly SessionDelegate[],
+              current.rows as readonly SessionDelegate[],
+            );
+          }
           // A clean continuation cannot acknowledge an unresolved root scan.
           // Retain its issues and root recovery demand until fresh reconciliation.
           const issues = reconciled ? [] : mergeIssues(current.issues, freshIssues);
@@ -488,6 +539,7 @@ export class SessionActivityStore {
           if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           if (dropped()) continue;
+          this.noteContext(page.context);
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -574,6 +626,115 @@ export class SessionActivityStore {
     state: SessionActivityCollectionState<ActivityRow>,
   ): void {
     this.publish({ [resource]: state });
+  }
+  /** The no-read merge is eligible only when the producing source advertises
+   * the bounded preview and is live -- the combination in which delegate
+   * frames reliably follow an invalidation. A live context that turns retained
+   * (an ancestor released its runtime) can receive post-release invalidations
+   * with no frame, so the flip reconciles the observed delegates with a read. */
+  private noteContext(context: SessionActivityContext): void {
+    const next = context.reportPreview === true && context.availability === "live";
+    if (this.pushEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
+      void this.request("delegates", "root");
+    }
+    this.pushEligible = next;
+  }
+  /** The frame's logical owner scopes it: `ownerSessionId` is always the
+   * physical root, so a session store keys on `logicalOwnerSessionId` (the
+   * nearest ancestor session) instead. A subtree store's ref-matched frames
+   * already belong to the observed subtree. */
+  private delegateFrameInScope(frame: EvenerDelegateInfo): boolean {
+    const context = this.state.context;
+    if (!context) return false;
+    if (this.scope !== "session") return true;
+    return (frame.logicalOwnerSessionId ?? frame.ownerSessionId) === context.sessionId;
+  }
+  /** A pushed frame patches a loaded row in place and never invents one: an
+   * unknown delegate asks for one root read (bounded per id) and its latest
+   * frame waits for a read to admit the row. */
+  private applyDelegateFrame(frame: EvenerDelegateInfo): void {
+    if (!this.delegateFrameInScope(frame)) return;
+    const rows = this.state.delegates.rows;
+    const index = rows.findIndex((row) => row.delegateId === frame.delegateId);
+    if (index === -1) {
+      this.noteUnknownDelegate(frame);
+      return;
+    }
+    const current = rows[index];
+    if (!current) return;
+    const merged = this.mergeDelegateFrame(current, frame);
+    if (merged === current) return;
+    const next = rows.slice();
+    next[index] = merged;
+    this.appliedDelegates.set(frame.delegateId, {
+      projectionRevision: merged.projectionRevision,
+      latestActivityAt: merged.latestActivityAt,
+    });
+    this.publish({ delegates: { ...this.state.delegates, rows: next } });
+  }
+  private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
+    const read = this.reads.delegates;
+    if (read.observers === 0 && !read.oneShot) return;
+    this.bufferedUnknownDelegates.set(frame.delegateId, frame);
+    if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
+      const oldest = this.bufferedUnknownDelegates.keys().next();
+      if (!oldest.done) this.bufferedUnknownDelegates.delete(oldest.value);
+    }
+    if (this.seenUnknownDelegates.has(frame.delegateId)) return;
+    this.seenUnknownDelegates.add(frame.delegateId);
+    void this.request("delegates", "root");
+  }
+  /** The projector's join: the strictly greater revision supplies the snapshot
+   * fields, while latestActivityAt is the independent maximum -- a lower
+   * revision may advance it, a higher one never moves it backward. */
+  private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+    const incoming = delegateRowFromFrame(current, frame);
+    const applied = this.appliedDelegates.get(frame.delegateId) ?? {
+      projectionRevision: current.projectionRevision,
+      latestActivityAt: current.latestActivityAt,
+    };
+    const winner =
+      revisionOf(incoming.projectionRevision) > revisionOf(applied.projectionRevision) ? incoming : current;
+    const activity = laterActivity(applied.latestActivityAt, incoming.latestActivityAt);
+    const merged = activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+    return delegateRowsEqual(merged, current) ? current : merged;
+  }
+  private joinDelegateRows(
+    incoming: readonly SessionDelegate[],
+    previous: readonly SessionDelegate[],
+  ): SessionDelegate[] {
+    const previousById = new Map(previous.map((row) => [row.delegateId, row]));
+    return incoming.map((row) => {
+      const existing = previousById.get(row.delegateId);
+      const applied = this.appliedDelegates.get(row.delegateId);
+      let merged: SessionDelegate;
+      if (applied === undefined) {
+        // First sight in this epoch -- or the first read after a replacement
+        // cleared the map: the served row seeds the order and wins, so an old
+        // epoch's higher revision cannot regress it.
+        merged = row;
+      } else {
+        // A served row is an authoritative snapshot: it wins at equal revision
+        // (parity with a same-revision frame) and only loses to a strictly
+        // newer applied frame, which it must not clobber.
+        const winner =
+          revisionOf(row.projectionRevision) >= revisionOf(applied.projectionRevision) ? row : (existing ?? row);
+        const activity = laterActivity(applied.latestActivityAt, row.latestActivityAt);
+        const candidate = activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+        merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
+      }
+      const buffered = this.bufferedUnknownDelegates.get(row.delegateId);
+      if (buffered) {
+        this.bufferedUnknownDelegates.delete(row.delegateId);
+        merged = this.mergeDelegateFrame(merged, buffered);
+      }
+      this.seenUnknownDelegates.delete(row.delegateId);
+      this.appliedDelegates.set(row.delegateId, {
+        projectionRevision: merged.projectionRevision,
+        latestActivityAt: merged.latestActivityAt,
+      });
+      return merged;
+    });
   }
   private async fetch(
     resource: SessionActivityResource,
@@ -680,6 +841,13 @@ export class SessionActivityStore {
           this.publish({ runtime: { ...metadata, status: this.statusUpdate.status } });
         return;
       }
+      case "evener/delegate/updated":
+        // Only an eligible context enables the no-read merge. An older or
+        // retained source keeps today's behavior: the activity-changed
+        // invalidation re-reads the collection, so reports still land.
+        if (!this.pushEligible) return;
+        this.applyDelegateFrame(notification.params.delegate);
+        return;
       case "evener/thread/activity/changed":
         if (
           this.scope === "session" &&
@@ -705,7 +873,12 @@ export class SessionActivityStore {
       default:
         return;
     }
+    // The no-read merge covers delegate field changes; summary, jobs and
+    // watches refresh as today. A resync still refreshes every observed
+    // resource, delegates included.
+    const skipDelegates = notification.method === "evener/thread/activity/changed" && this.pushEligible;
     for (const resource of changed) {
+      if (resource === "delegates" && skipDelegates) continue;
       if (this.reads[resource].observers > 0 || this.reads[resource].oneShot) {
         void this.request(resource, "root", notification.method === "evener/thread/resync");
       }
@@ -745,6 +918,10 @@ export class SessionActivityStore {
     this.lease = null;
     this.runtimeThreadId = null;
     this.statusUpdate = null;
+    this.appliedDelegates.clear();
+    this.seenUnknownDelegates.clear();
+    this.bufferedUnknownDelegates.clear();
+    this.pushEligible = false;
     this.state = { ...this.state, runtime: null };
     for (const stop of this.stopListening) stop();
     this.stopListening = [];
@@ -752,6 +929,92 @@ export class SessionActivityStore {
   }
 }
 
+/** A winning frame supplies every mutating field, absent optionals included,
+ * so it clears what it omits; only the loaded row's identity survives: a frame
+ * carries no refs and `name` is immutable per delegate. */
+function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+  return {
+    delegateId: row.delegateId,
+    name: row.name,
+    ownerRef: row.ownerRef,
+    rootRef: row.rootRef,
+    childRef: row.childRef,
+    runGeneration: frame.runGeneration,
+    projectionRevision: frame.projectionRevision,
+    reportPreview: frame.reportPreview,
+    reportPreviewTruncated: frame.reportPreviewTruncated,
+    parentDelegateId: frame.parentDelegateId,
+    description: frame.description ?? "",
+    task: frame.task ?? "",
+    type: frame.type,
+    lifecycle: frame.lifecycle,
+    phase: frame.phase,
+    status: frame.status,
+    outcome: frame.outcome,
+    reason: frame.reason,
+    error: frame.error,
+    terminal: frame.terminal ?? false,
+    resumable: frame.resumable,
+    notResumableReason: frame.notResumableReason,
+    model: frame.model,
+    reasoningEffort: frame.reasoningEffort,
+    runStartedAt: frame.runStartedAt,
+    runEndedAt: frame.runEndedAt,
+    latestActivityAt: frame.latestActivityAt,
+    usage: frame.usage,
+    worktree: frame.worktree,
+  };
+}
+/** Mirrors internal/appprojector.delegateActivityAfter: a blank or unparseable
+ * value never wins, and a blank current loses to any parseable candidate. */
+function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
+  if (!candidate || candidate.trim() === "") return false;
+  if (!current || current.trim() === "") return true;
+  const candidateMs = Date.parse(candidate);
+  const currentMs = Date.parse(current);
+  return !Number.isNaN(candidateMs) && !Number.isNaN(currentMs) && candidateMs > currentMs;
+}
+function laterActivity(candidate: string | undefined, current: string | undefined): string | undefined {
+  return activityAfter(candidate, current) ? candidate : current;
+}
+/** A missing/NaN revision is the zero value; an unset read row must not beat a
+ * real frame, and two unset rows compare equal. */
+function revisionOf(value: number | undefined): number {
+  return typeof value === "number" && !Number.isNaN(value) ? value : 0;
+}
+function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
+  return (
+    a.delegateId === b.delegateId &&
+    a.name === b.name &&
+    a.ownerRef === b.ownerRef &&
+    a.rootRef === b.rootRef &&
+    a.childRef === b.childRef &&
+    a.runGeneration === b.runGeneration &&
+    a.projectionRevision === b.projectionRevision &&
+    a.reportPreview === b.reportPreview &&
+    a.reportPreviewTruncated === b.reportPreviewTruncated &&
+    a.parentDelegateId === b.parentDelegateId &&
+    a.description === b.description &&
+    a.task === b.task &&
+    a.type === b.type &&
+    a.lifecycle === b.lifecycle &&
+    a.phase === b.phase &&
+    a.status === b.status &&
+    a.outcome === b.outcome &&
+    a.reason === b.reason &&
+    a.error === b.error &&
+    a.terminal === b.terminal &&
+    a.resumable === b.resumable &&
+    a.notResumableReason === b.notResumableReason &&
+    a.model === b.model &&
+    a.reasoningEffort === b.reasoningEffort &&
+    a.runStartedAt === b.runStartedAt &&
+    a.runEndedAt === b.runEndedAt &&
+    a.latestActivityAt === b.latestActivityAt &&
+    JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
+    JSON.stringify(a.worktree) === JSON.stringify(b.worktree)
+  );
+}
 function rowIdentity(resource: SessionActivityCollection, row: ActivityRow): string {
   if (resource === "delegates") return (row as SessionDelegate).delegateId;
   if (resource === "jobs") {

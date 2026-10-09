@@ -19,7 +19,11 @@ import { deferred } from "./testing/deferred";
 import { callsTo } from "./testing/fakeClient";
 import { acquireThreadSubscription } from "./threadSubscription";
 import type {
+  AnyNotification,
+  EvenerDelegateInfo,
+  SessionActivityContext,
   SessionActivitySummary,
+  SessionDelegate,
   SessionDelegatesResponse,
   SessionJobsResponse,
   SessionWatch,
@@ -2551,4 +2555,435 @@ test.each([1, 2])("a read dropped during its page's publish %i still refreshes a
   stop();
   await vi.advanceTimersByTimeAsync(100);
   expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+});
+
+// --- Pushed delegate merge (spec: session-activity push updates) ---
+//
+// The no-read merge is enabled only by a live context that advertises
+// `reportPreview`; the shared `activityContext()` fixture omits it on purpose,
+// so the default client keeps the read path (the negative test below pins it).
+
+const pushContext = (overrides: Partial<SessionActivityContext> = {}): SessionActivityContext => ({
+  ...activityContext(),
+  reportPreview: true,
+  ...overrides,
+});
+const delegateRow = (overrides: Partial<SessionDelegate> = {}): SessionDelegate => ({
+  ...delegateFixture(),
+  projectionRevision: 1,
+  ...overrides,
+});
+const frameInfo = (overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo => ({
+  runGeneration: 1,
+  delegateId: "delegate-1",
+  ownerSessionId: "session",
+  logicalOwnerSessionId: "session",
+  rootSessionId: "session",
+  childSessionId: "child",
+  transcriptRef: "remote:child",
+  type: "delegate",
+  lifecycle: "running",
+  phase: "running",
+  status: "running",
+  terminal: false,
+  resumable: true,
+  needsAttention: false,
+  projectionRevision: 2,
+  ...overrides,
+});
+const pushedFrame = (delegate: EvenerDelegateInfo): AnyNotification => ({
+  method: "evener/delegate/updated",
+  params: { threadId: "session", ref: activityRef, delegate },
+});
+// An eligible client: both the summary and delegates reads answer a live
+// context advertising the bounded preview, and the collection serves one row.
+function pushClient(): ReturnType<typeof activityClient> {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({ ...summaryFixture(scope), context: pushContext() }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow()],
+  }));
+  return client;
+}
+async function pushOwner(
+  client = pushClient(),
+): Promise<{ client: ReturnType<typeof activityClient>; store: SessionActivityStore }> {
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  return { client, store };
+}
+
+test("a delegate field update patches a loaded row with zero delegates reads", async () => {
+  const { client, store } = await pushOwner();
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ projectionRevision: 2, status: "failed", reportPreview: "done", reportPreviewTruncated: false }),
+    ),
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before);
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ status: "failed", reportPreview: "done" });
+});
+
+test("a repeated delegate frame publishes nothing", async () => {
+  const { client, store } = await pushOwner();
+  const frame = frameInfo({ projectionRevision: 2, status: "failed" });
+  client.emitNotification(pushedFrame(frame));
+  let publishes = 0;
+  const stop = store.subscribe(() => {
+    publishes += 1;
+  });
+  client.emitNotification(pushedFrame(frame));
+  stop();
+  expect(publishes).toBe(0);
+});
+
+test("a stale projectionRevision cannot regress a row", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 5, status: "completed" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 3, status: "running" })));
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+});
+
+test("a resume clears the prior report", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ runGeneration: 1, projectionRevision: 5, reportPreview: "old", status: "completed" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(pushedFrame(frameInfo({ runGeneration: 2, projectionRevision: 6, status: "running" })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.runGeneration).toBe(2);
+  expect(row?.reportPreview).toBeUndefined();
+});
+
+test("a session store ignores another owner's delegate per the logical owner", async () => {
+  const { client, store } = await pushOwner();
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "other-delegate", logicalOwnerSessionId: "other-owner", projectionRevision: 9 }),
+    ),
+  );
+  client.emitNotification(
+    pushedFrame(frameInfo({ logicalOwnerSessionId: "other-owner", projectionRevision: 9, status: "failed" })),
+  );
+  expect(store.getSnapshot().delegates.rows).toHaveLength(1);
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before);
+});
+
+test("a non-root session store accepts its own children and ignores a deeper descendant", async () => {
+  const client = pushClient();
+  const context = pushContext({ sessionId: "parent-session" });
+  client.on("evener/thread/activity/read", ({ scope }) => ({ ...summaryFixture(scope), context }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        ownerSessionId: "parent-session",
+        logicalOwnerSessionId: "parent-session",
+        projectionRevision: 2,
+        status: "completed",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        ownerSessionId: "parent-session",
+        logicalOwnerSessionId: "grandchild-session",
+        projectionRevision: 3,
+        status: "failed",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+});
+
+test("a root session store ignores a descendant-owned delegate frame without a read", async () => {
+  const { client, store } = await pushOwner();
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "descendant-delegate", logicalOwnerSessionId: "descendant", ownerSessionId: "session" }),
+    ),
+  );
+  await store.refresh("summary");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before);
+  expect(store.getSnapshot().delegates.rows).toHaveLength(1);
+});
+
+test("the served projectionRevision seeds the merge order", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 8, status: "completed" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 7, status: "running" })));
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 9, status: "failed" })));
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
+});
+
+test("a lower-revision later-activity frame advances only the timestamp", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 5, status: "completed", latestActivityAt: "2026-01-01T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 3, status: "running", latestActivityAt: "2026-01-02T00:00:00Z" })),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.status).toBe("completed");
+  expect(row?.latestActivityAt).toBe("2026-01-02T00:00:00Z");
+});
+
+test("a higher-revision frame does not move latestActivityAt backward", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 5, status: "running", latestActivityAt: "2026-01-02T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 6, status: "failed", latestActivityAt: "2026-01-01T00:00:00Z" })),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.status).toBe("failed");
+  expect(row?.latestActivityAt).toBe("2026-01-02T00:00:00Z");
+});
+
+test("a read landing after a newer frame neither clobbers it nor reopens a skipped revision", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 6, status: "running", latestActivityAt: "2026-01-01T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 10, status: "completed", latestActivityAt: "2026-01-02T00:00:00Z" })),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    status: "completed",
+    projectionRevision: 10,
+    latestActivityAt: "2026-01-02T00:00:00Z",
+  });
+  await store.refresh("delegates");
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    status: "completed",
+    projectionRevision: 10,
+    latestActivityAt: "2026-01-02T00:00:00Z",
+  });
+  // A frame in the gap (7, above the read's 6 and below the applied 10) must
+  // still be rejected, while its later activity advances independently.
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 7, status: "failed", latestActivityAt: "2026-01-03T00:00:00Z" })),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.status).toBe("completed");
+  expect(row?.latestActivityAt).toBe("2026-01-03T00:00:00Z");
+});
+
+test("an epoch change wins over an applied row with the same id at a lower revision", async () => {
+  const { client, store } = await pushOwner();
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ projectionRevision: 5, status: "completed", reportPreview: "frame", reportPreviewTruncated: false }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.reportPreview).toBe("frame");
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 1, status: "running", reportPreview: "replacement" })],
+  }));
+  await store.refresh("delegates");
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(1);
+  expect(row?.reportPreview).toBe("replacement");
+  expect(row?.status).toBe("running");
+});
+
+test("extending the epoch comparison to root reads neither loops nor misses the change", async () => {
+  const { client, store } = await pushOwner();
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 1, status: "failed" })],
+  }));
+  await store.refresh("delegates");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(2);
+  expect(store.getSnapshot().delegates.context?.epoch).toBe("epoch-2");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
+});
+
+test("an epoch change retires a buffered unknown-id frame", async () => {
+  const client = pushClient();
+  const { store } = await pushOwner(client);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 10, status: "completed", reportPreview: "buffered" }),
+    ),
+  );
+  await activityState(
+    store,
+    () => callsTo(client, "evener/thread/delegates/list") === before + 1 && !store.getSnapshot().delegates.loading,
+  );
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow(),
+      delegateRow({ delegateId: "delegate-2", projectionRevision: 1, status: "running", reportPreview: "replacement" }),
+    ],
+  }));
+  await store.refresh("delegates");
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.projectionRevision).toBe(1);
+  expect(row?.reportPreview).toBe("replacement");
+  expect(row?.status).toBe("running");
+});
+
+test("a buffered unknown-id frame is applied once a read admits the row", async () => {
+  const client = pushClient();
+  let admit = false;
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: admit
+      ? [delegateRow(), delegateRow({ delegateId: "delegate-2", projectionRevision: 1, status: "running" })]
+      : [delegateRow()],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  expect(store.getSnapshot().delegates.rows.map((candidate) => candidate.delegateId)).toEqual(["delegate-1"]);
+  admit = true;
+  await store.refresh("delegates");
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
+test("a live context that becomes retained reconciles the observed delegates", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ availability: "retained" }),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  const beforeDelegates = callsTo(client, "evener/thread/delegates/list");
+  activityChanged(client, ["summary", "delegates"]);
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.rows[0]?.status === "failed" && !store.getSnapshot().delegates.loading,
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(beforeDelegates + 1);
+});
+
+test("a context without the capability keeps reading delegates on the invalidation", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().context?.reportPreview).not.toBe(true);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  activityChanged(client, ["delegates"]);
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.rows[0]?.status === "failed" && !store.getSnapshot().delegates.loading,
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
+});
+
+test("an unknown delegate triggers one read, and a delegates invalidation alone triggers none", async () => {
+  const { client, store } = await pushOwner();
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 2 })));
+  client.emitNotification(pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 3 })));
+  client.emitNotification(pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 4 })));
+  await activityState(
+    store,
+    () => callsTo(client, "evener/thread/delegates/list") === before + 1 && !store.getSnapshot().delegates.loading,
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
+  activityChanged(client, ["delegates"]);
+  await store.refresh("summary");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
+});
+
+test("a count-moving delegate change still refreshes the summary", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  const beforeSummary = callsTo(client, "evener/thread/activity/read");
+  const beforeDelegates = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 2, status: "failed" })));
+  activityChanged(client, ["summary", "delegates"]);
+  await activityState(
+    store,
+    () =>
+      callsTo(client, "evener/thread/activity/read") === beforeSummary + 1 && !store.getSnapshot().summaryState.loading,
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(beforeDelegates);
 });
