@@ -66,9 +66,9 @@ func RollupRank(state string) int {
 // StateWord returns the unified display word for a normalized attention
 // state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
 // and the TUI (displayWord) so the two surfaces can never independently
-// drift on vocabulary (Track A §1). askPending selects between the two
-// needs-you bands (Track A §2 ask-tiering) and is ignored for every other
-// state.
+// drift on vocabulary (Track A §1). askPending selects the word for awaiting:
+// "Question waiting" for a pending question, "Needs you" for a turn that
+// ended on needs_response (#4093). It is ignored for every other state.
 func StateWord(state string, askPending bool) string {
 	switch state {
 	case "errored":
@@ -77,7 +77,7 @@ func StateWord(state string, askPending bool) string {
 		if askPending {
 			return "Question waiting"
 		}
-		return "Your move"
+		return "Needs you"
 	case "active":
 		return "Working"
 	case "restartRequired":
@@ -96,12 +96,13 @@ func StateWord(state string, askPending bool) string {
 }
 
 // NeedsYouBand ranks a needs-you row into one of three ordering bands:
-// errored (2, "broken beats blocked"), blocked on a person's answer (1: a
-// question or an approval, "blocked beats your-move"), or your-move (0, a
-// generic settle). Callers sort NeedsYou rows by this band descending, then
-// by recency within a band. Meaningful only for the needs-you tier
-// (errored/awaiting/warning states, plus sessions a pending approval
-// promotes); callers outside that tier should not invoke it. An approval
+// errored (2, "broken beats blocked"), blocked on a person (1: a question, an
+// approval, or an awaiting turn that ended on needs_response, #4093), or
+// everything else in the tier (0: a warning or a restart). Callers sort
+// NeedsYou rows by this band descending, then by recency within a band.
+// Meaningful only for the needs-you tier (errored, awaiting, warning and
+// restartRequired states, plus sessions a pending approval promotes);
+// callers outside that tier should not invoke it. An approval
 // blocks mid-turn, so its session still reports "active" and only
 // approvalPending can place it; pass false where the caller has no approval
 // information. Both flags are ignored when state is "errored" (errored
@@ -110,7 +111,7 @@ func NeedsYouBand(state string, askPending, approvalPending bool) int {
 	switch {
 	case state == "errored":
 		return 2
-	case askPending || approvalPending:
+	case state == "awaiting" || askPending || approvalPending:
 		return 1
 	default:
 		return 0
