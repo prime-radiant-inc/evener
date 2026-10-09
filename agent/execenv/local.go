@@ -1861,6 +1861,16 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 // by name within each directory, nested names are prefixed with their relative
 // path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, false)
+}
+
+// ListVisibleDirectory is ListDirectory without dot entries. It never reads
+// a dot directory, so a large .git beneath path costs it nothing.
+func (e *LocalExecutionEnvironment) ListVisibleDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, true)
+}
+
+func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
 	}
@@ -1868,7 +1878,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDir("list_dir", e.resolve(path), depth)
+		return sfs.listDirWith("list_dir", e.resolve(path), depth, visibleOnly)
 	}
 	root := e.resolve(path)
 
@@ -1882,6 +1892,9 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
 			name := ent.Name()
+			if visibleOnly && strings.HasPrefix(name, ".") {
+				continue
+			}
 			relName := name
 			if relPrefix != "" {
 				relName = filepath.Join(relPrefix, name)

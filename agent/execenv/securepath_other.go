@@ -91,6 +91,10 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
+func (s *sandboxFS) listDirWith(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
+	return nil, errSandboxUnsupported()
+}
+
 func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
 	return nil, 0, errSandboxUnsupported()
 }

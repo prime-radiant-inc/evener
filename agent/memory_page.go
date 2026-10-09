@@ -260,10 +260,12 @@ func memoryStampDate(v any) string {
 
 // listMemoryPages reads every page of env's scope. Only regular files on
 // page paths are listed; a page removed since the listing is skipped,
-// and one that cannot be read is listed by its filename.
+// and one that cannot be read is listed by its filename. The walk never
+// enters a dot directory, which holds no pages, so a .git in the scope does
+// not slow the listing.
 func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
 	root := env.WorkingDirectory()
-	entries, err := env.ListDirectory(root, memoryPageWalkDepth)
+	entries, err := env.ListVisibleDirectory(root, memoryPageWalkDepth)
 	if err != nil {
 		return nil, err
 	}

@@ -200,7 +200,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		policy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}
 		sfs := newSandboxFS(&policy, "")
 		defer sfs.close()
-		if err := sfs.walkDirFd(-1, "", t.TempDir(), 2, new([]DirEntry)); err == nil {
+		if err := sfs.walkDirFd(-1, "", t.TempDir(), 2, false, new([]DirEntry)); err == nil {
 			t.Fatal("directory walk on invalid descriptor succeeded")
 		}
 		_ = sfs.recheckMaskedFd("read_file", filepath.Join(t.TempDir(), "x"), -1)
@@ -268,7 +268,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		entryInfoForSynth := secureEntryInfo
 		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0o755, time.Time{}, nil }
 		var synthetic []DirEntry
-		if err := rootFS.walkDirFd(-1, "", root, 1, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
+		if err := rootFS.walkDirFd(-1, "", root, 1, false, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
 		}
 		secureEntryInfo = entryInfoForSynth

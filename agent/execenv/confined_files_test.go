@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -211,5 +212,44 @@ func TestConfinedFileLink(t *testing.T) {
 	}
 	if err := NewLocalExecutionEnvironment(root).LinkConfinedFile("MEMORY.md", ".backup.4"); err == nil {
 		t.Fatal("unconfined environment linked a file")
+	}
+}
+
+// ListVisibleDirectory leaves out dot entries and never reads a dot
+// directory, so a large .git costs a listing nothing. Not parallel: it
+// counts directory reads through the package's read seams.
+func TestListVisibleDirectoryPrunesDotDirectories(t *testing.T) {
+	confined, err := NewConfinedFileEnvironment(t.TempDir(), "memory/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer confined.Cleanup()
+	for name, env := range map[string]*LocalExecutionEnvironment{"confined": confined, "unconfined": NewLocalExecutionEnvironment(t.TempDir())} {
+		root := env.WorkingDirectory()
+		for _, file := range []string{"a.md", ".dotfile", "sub/b.md", "sub/.hidden/c.md", ".git/objects/00/x"} {
+			path := filepath.Join(root, filepath.FromSlash(file))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reads := 0
+		secureRead, plainRead := secureReadDirEntries, listReadDir
+		secureReadDirEntries = func(fd int) ([]os.DirEntry, error) { reads++; return secureRead(fd) }
+		listReadDir = func(dir string) ([]os.DirEntry, error) { reads++; return plainRead(dir) }
+		entries, err := env.ListVisibleDirectory(root, 64)
+		secureReadDirEntries, listReadDir = secureRead, plainRead
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var names []string
+		for _, entry := range entries {
+			names = append(names, filepath.ToSlash(entry.Name))
+		}
+		if want := []string{"a.md", "sub", "sub/b.md"}; !slices.Equal(names, want) || reads != 2 {
+			t.Fatalf("%s: listed %q with %d directory reads, want %q with 2 (the root and sub)", name, names, reads, want)
+		}
 	}
 }
