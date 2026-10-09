@@ -202,14 +202,72 @@ func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
 	parent := newTestSessionForState(t)
 	child := newTestSessionForState(t)
 	parent.subagents.mu.Lock()
-	parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
 	parent.subagents.mu.Unlock()
 
 	if got := parent.WireState(); got != string(SessionIdle) {
 		t.Fatalf("WireState with only live child = %q, want %q", got, SessionIdle)
 	}
 	if !parent.autonomyInFlight() {
-		t.Fatal("live child must remain autonomy in flight for settle and restore")
+		t.Fatal("a running child must remain autonomy in flight for settle and restore")
+	}
+}
+
+// Only a child doing work counts as autonomy: running, being driven, or
+// finalizing a generation. A finished child's runtime kept warm for a quick
+// follow-up will not move its parent, nor will a closed one.
+func TestAutonomyInFlight_CountsOnlyWorkingChildren(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                                 string
+		running, driving, finalizing, closed bool
+		want                                 bool
+	}{
+		{name: "running", running: true, want: true},
+		{name: "driving", driving: true, want: true},
+		{name: "finalizing", finalizing: true, want: true},
+		{name: "warm idle", want: false},
+		{name: "closed", running: true, closed: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parent := newTestSessionForState(t)
+			child := newTestSessionForState(t)
+			parent.subagents.mu.Lock()
+			parent.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: tc.running, driving: tc.driving, finalizing: tc.finalizing, closed: tc.closed}
+			parent.subagents.mu.Unlock()
+			if got := parent.autonomyInFlight(); got != tc.want {
+				t.Fatalf("autonomyInFlight = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A finished delegate whose runtime is still warm does not keep its parent
+// from resting awaiting after a needs_response turn (#4093).
+func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+	}})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	child := newTestSessionForState(t)
+	sess.subagents.mu.Lock()
+	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	sess.subagents.mu.Unlock()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting beside a warm idle child", got)
 	}
 }
 

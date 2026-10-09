@@ -25,7 +25,7 @@ const (
 	// SessionAwaiting indicates the session is idle with the ball in its
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
-	// work (goal kick, pending notifications, queued input, live child
+	// work (goal kick, pending notifications, queued input, working child
 	// subagents) is in flight. A plain reply rests idle. It is the
 	// daemon-truth source for the hub's "needs you" attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
@@ -182,8 +182,8 @@ func (s *Session) hasPendingStableSteering() bool {
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
-// without user input: pending job notifications, queued input, or live child
-// subagents. Reads take each signal's own lock sequentially — never nested —
+// without user input: pending job notifications, queued input, or a working
+// child subagent (hasWorkingSubagent; a warm idle runtime does not count). Reads take each signal's own lock sequentially — never nested —
 // per the settle lock discipline (spec v5). A restored-but-unkicked goal is
 // deliberately NOT autonomy: nothing will move until the user acts, and amber
 // is what surfaces that stall.
@@ -191,7 +191,7 @@ func (s *Session) autonomyInFlight() bool {
 	if s.sessionWorkPending() {
 		return true
 	}
-	return len(s.liveSubagentSessions()) > 0
+	return s.hasWorkingSubagent()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -589,7 +589,7 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // RestoreSession already decided from history alone (including awaiting,
 // when this second pass is not needed), so this call exists purely to rule
 // an upgrade back out once autonomy signals that were not yet restored the
-// first time — live children, pending notifications, queued input — are
+// first time — working children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
 // the same value its one caller (RestoreSessionFromMetaWithConfig) already
@@ -634,7 +634,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 			return
 		}
 		target = settleTerminalState(hadOutput, goalKicked,
-			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), s.hasWorkingSubagent())
 	}
 	if target != SessionAwaiting {
 		return

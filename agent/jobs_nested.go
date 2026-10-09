@@ -218,6 +218,35 @@ func (s *Session) liveSubagentSessions() []*Session {
 	return live
 }
 
+// hasWorkingSubagent reports whether a direct child is running a generation,
+// being driven, or finalizing one: work that reports back and moves this
+// session. A finished child's runtime kept warm for a quick follow-up does
+// not, and neither does a closed one. Each sub's flags are read under its own
+// lock after the manager mutex is released, as liveSubagentSessions does.
+func (s *Session) hasWorkingSubagent() bool {
+	if s.subagents == nil {
+		return false
+	}
+	s.subagents.mu.Lock()
+	subs := make([]*subagent, 0, len(s.subagents.subs))
+	for _, sub := range s.subagents.subs {
+		subs = append(subs, sub)
+	}
+	s.subagents.mu.Unlock()
+	for _, sub := range subs {
+		if sub == nil {
+			continue
+		}
+		sub.mu.Lock()
+		working := !sub.closed && (sub.running || sub.driving || sub.finalizing)
+		sub.mu.Unlock()
+		if working {
+			return true
+		}
+	}
+	return false
+}
+
 // liveSubagentSessionsBounded returns the live ordinary-subagent descendant
 // sessions of s, treating any session whose ID is in stopIDs as a leaf: it
 // neither reports nor descends past one. A live delegate runtime is tracked as a
