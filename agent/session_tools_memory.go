@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -72,54 +71,40 @@ func isMemoryIndexPath(file string) bool {
 
 const (
 	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
-	memoryStampFailedNote           = "\n\nEvener could not stamp this page's updated date: "
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
 )
 
-// stampMemoryPage sets the updated and by stamps of the Markdown page the
-// session just wrote, at rel, the slash path its scope lists it at, and
-// returns the notes its tool result should end with. A stamp that cannot be
-// written does not undo the write; a note says so, ahead of the page's own
-// description or frontmatter note.
-func (s *Session) stampMemoryPage(env *execenv.LocalExecutionEnvironment, rel string) string {
+// stampMemoryPage is raw, the bytes a tool is about to write to the file at
+// rel, the slash path its scope lists it at, with the updated and by stamps
+// set when the file is a Markdown page, and the notes the tool result should
+// end with. The stamps go into the tool's one write, so no second
+// read-modify-write can undo another session's write or delete. Any other
+// file passes through unchanged.
+func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes string) {
 	if path.Ext(rel) != ".md" || !isMemoryPagePath(rel) {
-		return ""
+		return raw, ""
 	}
-	abs := filepath.Join(env.WorkingDirectory(), filepath.FromSlash(rel))
-	raw, err := env.ReadFileRaw(abs)
-	if err != nil {
-		return memoryStampFailedNote + err.Error()
-	}
-	var notes string
 	// updated is written by hand, unquoted, so it reads back as a YAML date.
 	// Valid frontmatter that can't take a key line, such as a flow mapping,
 	// stays unstamped rather than unreadable.
-	stamped := setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+	stamped = setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
 	stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
-	// A same-day write by the same session can leave the stamps as they
-	// were; skipping that write keeps the page's modification time.
-	if !bytes.Equal(stamped, raw) {
-		if err := env.WriteFileRaw(abs, stamped, 0o644); err != nil {
-			notes = memoryStampFailedNote + err.Error()
-		}
-	}
-	// The stamps leave the description as it was, so the stamped bytes
-	// answer for it even when they could not be written.
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
-		notes += memoryUnreadableFrontmatterNote
+		notes = memoryUnreadableFrontmatterNote
 	case !page.HasDescription:
-		notes += memoryMissingDescriptionNote
+		notes = memoryMissingDescriptionNote
 	}
-	return notes
+	return stamped, notes
 }
 
 // execOwnMemoryWrite runs a write, edit or delete of one memory file. It
-// refuses the generated index. Once the operation succeeds it stamps a
-// written page and records the result as the session's own: the page's line
-// is patched into its index baseline, and a page it read gets its new record,
-// so neither is echoed back.
-func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error)) (any, error) {
+// refuses the generated index. write passes the bytes it is about to write
+// through stamp. Once the operation succeeds the result gets the page's
+// notes and is recorded as the session's own: the page's line is patched
+// into its index baseline, and a page it read gets its new record, so
+// neither is echoed back.
+func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, write func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error)) (any, error) {
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	if isMemoryIndexPath(file) {
 		return nil, errMemoryIndexGenerated
@@ -131,30 +116,33 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	defer release()
 	// The page is stamped and its line patched under the path its scope
 	// lists it at, which on a case-insensitive filesystem can differ from
-	// file's case. A delete looks that path up before the page is gone; a
-	// write after it, so a page it creates is listed under its own name.
-	var listed string
-	if operation == "delete" {
-		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
+	// file's case. It is looked up before the operation, while a page being
+	// deleted still exists, and again after a write, so a page it creates is
+	// listed under its own name.
+	listed := listedMemoryPagePath(env, filepath.ToSlash(file))
+	var notes string
+	stamp := func(raw []byte) []byte {
+		var stamped []byte
+		stamped, notes = s.stampMemoryPage(listed, raw)
+		return stamped
 	}
-	out, err := write(env, forwarded)
+	out, err := write(env, forwarded, stamp)
 	if err != nil {
 		return out, err
 	}
 	if operation != "delete" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
-		if notes := s.stampMemoryPage(env, listed); notes != "" {
-			if text, ok := out.(string); ok {
-				out = text + notes
-			}
-		}
+	}
+	if text, ok := out.(string); ok && notes != "" {
+		out = text + notes
 	}
 	s.recordOwnMemoryWrite(env, scope, listed)
 	return out, nil
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	return s.execOwnMemoryWrite(args, "write", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
+	return s.execOwnMemoryWrite(args, "write", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
+		forwarded["content"] = string(stamp([]byte(fmt.Sprint(forwarded["content"]))))
 		return execFileWrite(ctx, env, forwarded, s.fileReadGuard(env))
 	})
 }
@@ -236,8 +224,10 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	return out, err
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
-		return execFileEdit(ctx, env, forwarded, s.fileReadGuard(env))
+	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
+		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path, oldString, newString string, replaceAll bool) (string, error) {
+			return env.EditFileWith(path, oldString, newString, replaceAll, stamp)
+		})
 	})
 }
 
@@ -263,7 +253,7 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any) (any, error) {
+	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {
 		path := stringArg(forwarded, "file_path")
 		warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
 		if err := env.RemoveConfinedFile(path); err != nil {

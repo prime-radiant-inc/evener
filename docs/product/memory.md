@@ -268,16 +268,16 @@ frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
 ordinary page. Deleting a page needs no index repair; its line is gone from the
 next rendering.
 
-**Stamps.** After a successful `memory_write` or `memory_edit` of a `.md` file
-that counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted
-so it reads back as a YAML date) and `by` (the session's full id, YAML-encoded),
-creating a frontmatter block if there is none and keeping every other byte. A
-page whose stamps would not change (same session, same day) is not rewritten.
-Frontmatter Evener can't safely edit in place is left unstamped. A
-failed write is not stamped. A stamp that fails to write does not fail the call;
-the result carries a note saying so, ahead of the notes below. A written page
-with no description gets a note asking for one, and a page whose frontmatter
-does not parse gets its own note asking to fix the YAML.
+**Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
+counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so
+it reads back as a YAML date) and `by` (the session's full id, YAML-encoded)
+in the bytes the tool writes, creating a frontmatter block if there is none and
+keeping every other byte. Frontmatter Evener can't safely edit in place is left
+unstamped. The stamps land in the tool's one write, never a second
+read-modify-write, so a stamp cannot undo another session's later write or
+delete of the page. A failed write writes nothing. A written page with no
+description gets a note asking for one, and a page whose frontmatter does not
+parse gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,

@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -160,51 +159,42 @@ func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 	}
 }
 
-// stampPausingClock is the real clock, except that the first Now() a
-// session's page stamp makes once armed blocks until release closes.
-// stampMemoryPage reads Now() after reading the page and before writing it
-// back, so the pause holds a stamp between its read and its write.
-type stampPausingClock struct {
+// postWritePausingClock is the real clock, except that once armed, the first
+// Now() made while the page at path already holds marker blocks until
+// release closes. A tool that stamps the content it writes reads the clock
+// before its write lands, so it never pauses. A stamp that reads the page
+// back after the tool's write and writes it again reads the clock between
+// the two, and is held there.
+type postWritePausingClock struct {
 	clock.Clock
-	armed   atomic.Bool
-	paused  chan struct{}
-	release chan struct{}
+	path, marker string
+	armed        atomic.Bool
+	paused       chan struct{}
+	release      chan struct{}
 }
 
-func newStampPausingClock() *stampPausingClock {
-	return &stampPausingClock{Clock: clock.Real(), paused: make(chan struct{}), release: make(chan struct{})}
+func newPostWritePausingClock(path, marker string) *postWritePausingClock {
+	return &postWritePausingClock{Clock: clock.Real(), path: path, marker: marker, paused: make(chan struct{}), release: make(chan struct{})}
 }
 
-func (c *stampPausingClock) Now() time.Time {
-	if c.armed.Load() && calledFromMemoryStamp() && c.armed.CompareAndSwap(true, false) {
-		close(c.paused)
-		<-c.release
+func (c *postWritePausingClock) Now() time.Time {
+	if c.armed.Load() {
+		if raw, err := os.ReadFile(c.path); err == nil && strings.Contains(string(raw), c.marker) && c.armed.CompareAndSwap(true, false) {
+			close(c.paused)
+			<-c.release
+		}
 	}
 	return c.Clock.Now()
 }
 
-// calledFromMemoryStamp reports whether (*Session).stampMemoryPage is on the
-// calling goroutine's stack.
-func calledFromMemoryStamp() bool {
-	pcs := make([]uintptr, 32)
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
-	for {
-		frame, more := frames.Next()
-		if strings.HasSuffix(frame.Function, ".(*Session).stampMemoryPage") {
-			return true
-		}
-		if !more {
-			return false
-		}
-	}
-}
-
-// memoryStampRace starts A's memory_write of page with content and returns
-// once A's stamp has read the page back and is paused before writing it.
-// finish releases the stamp and waits for A's write to return.
-func memoryStampRace(t *testing.T, root, page, content string) (finish func()) {
+// memoryStampRace runs A's memory_write of page with content, whose body
+// holds marker, and returns once A's write has landed: either A's tool
+// returned, or it read the clock after the write and is held there. Either
+// way, the page on disk must already carry A's stamps, so the tool wrote
+// them with the content. finish lets A's tool go on and waits for it.
+func memoryStampRace(t *testing.T, root, page, content, marker string) (finish func()) {
 	t.Helper()
-	clk := newStampPausingClock()
+	clk := newPostWritePausingClock(filepath.Join(root, "memory", "personal", page), marker)
 	a := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: clk}))
 	clk.armed.Store(true)
 	done := make(chan error, 1)
@@ -212,23 +202,40 @@ func memoryStampRace(t *testing.T, root, page, content string) (finish func()) {
 		_, err := a.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "personal", "file_path": page, "content": content})
 		done <- err
 	}()
-	<-clk.paused
+	var aErr error
+	returned := false
+	select {
+	case <-clk.paused:
+	case aErr = <-done:
+		returned = true
+		if !clk.armed.CompareAndSwap(true, false) {
+			// A late clock read paused after the tool returned; let it go.
+			<-clk.paused
+		}
+	}
+	raw, err := os.ReadFile(clk.path)
+	if err != nil || !strings.Contains(string(raw), memoryYAMLField("by", a.ID())) {
+		t.Errorf("A's write landed without A's stamps (A returned=%t): page=%q err=%v", returned, raw, err)
+	}
 	return func() {
 		close(clk.release)
-		if err := <-done; err != nil {
-			t.Fatalf("A's write: %v", err)
+		if !returned {
+			aErr = <-done
+		}
+		if aErr != nil {
+			t.Fatalf("A's write: %v", aErr)
 		}
 	}
 }
 
-// B reads the page A just wrote and deletes it while A's stamp is between
-// its read and its write. B saw A's content, so A's write came before B's
-// delete: the page must stay deleted.
+// B reads the page A just wrote and deletes it, while A's tool may still be
+// running. B saw A's content, so A's write came before B's delete: the page
+// must stay deleted.
 func TestMemoryStampDoesNotResurrectAPageDeletedAfterItWasRead(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "memory", "personal", "fact.md")
-	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n")
+	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	read, err := b.execMemoryRead(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md"})
 	if err != nil || !strings.Contains(fmt.Sprint(read), "A-fact") {
@@ -243,14 +250,14 @@ func TestMemoryStampDoesNotResurrectAPageDeletedAfterItWasRead(t *testing.T) {
 	}
 }
 
-// B edits the content A just wrote while A's stamp is between its read and
-// its write. B's edit applied to A's content, so it came after A's write:
-// the page must keep B's edit.
+// B edits the content A just wrote, while A's tool may still be running.
+// B's edit applied to A's content, so it came after A's write: the page must
+// keep B's edit.
 func TestMemoryStampDoesNotUndoAnEditOfThePageItStamps(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "memory", "personal", "fact.md")
-	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n")
+	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	if _, err := b.execMemoryEdit(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "A-fact", "new_string": "B-corrected-fact"}); err != nil {
 		t.Fatalf("B's edit: %v", err)
