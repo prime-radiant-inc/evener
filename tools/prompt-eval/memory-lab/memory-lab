@@ -30,7 +30,7 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
    "stages": [{"name": "A", "prompt": "...",
                "seed_project_memory": "seed",   # optional dir copied into project memory first
                "before": "shell run in the workspace before the stage",  # optional
-               "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
+               "checks": [{"name": "...", "run": "shell; exit 0 = pass; $LAB_DIR is the lab directory, e.g. python3 \"$LAB_DIR/memcheck.py\" index-lines"}],
                "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project) and "absent": true optional
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
@@ -51,6 +51,9 @@ import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, sig
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True
+sys.path.insert(0, HERE)
+import memcheck  # next to this script
 PROJID = os.path.join(HERE, "bin", "projid")
 
 
@@ -502,7 +505,7 @@ def session_failure(session, rounds_capped):
 
 def grade_checks(spec, inputs):
     try:
-        rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+        rc, _ = run_bounded(spec["run"], inputs["work"], {**inputs["env"], "LAB_DIR": HERE}, COMMAND_TIMEOUT)
     finally:
         # A held-out check deletes its own test file, unless it was killed first;
         # a leftover would join every later check's and stage's build.
@@ -944,7 +947,8 @@ def print_pass_rates(grades):
 
 def scenario_problems(scen):
     """Why scen can't run as written, or [] when it can: load_scenario must accept it and
-    return that scenario's own dict, and every fixture and seed dir it names must exist."""
+    return that scenario's own dict, every fixture and seed dir it names must exist, and evener
+    must read every seeded page's frontmatter (memcheck.seed_problems)."""
     try:
         with open(os.path.join(scen, "scenario.json")) as f:
             raw = json.load(f)
@@ -961,7 +965,15 @@ def scenario_problems(scen):
     dirs = [base_fixture(scen, spec)]
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
-    return [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    seeds = sorted({os.path.join(scen, st["seed_project_memory"]) for st in spec["stages"]
+                    if st.get("seed_project_memory") and os.path.isdir(os.path.join(scen, st["seed_project_memory"]))})
+    try:
+        for seed, found in memcheck.seed_problems(seeds).items():
+            problems += [f"{os.path.relpath(seed, scen)}/{p}" for p in found]
+    except memcheck.MemscopeError as e:
+        problems.append(str(e))
+    return problems
 
 
 def cmd_check(args):

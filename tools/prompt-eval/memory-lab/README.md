@@ -23,10 +23,11 @@ The script is Python 3.11 or later, using the standard library only. From the re
 cd tools/prompt-eval/memory-lab
 mkdir -p bin
 go build -o bin/projid ./projid          # computes a checkout's project memory id, for seeded scenarios
+go build -o bin/memscope ./memscope      # reads memory pages as evener does, for memcheck.py and ./memory-lab check
 go build -o bin/evener-base ../../../cmd/evener    # build each version you want to compare
 ```
 
-To compare prompt versions, build one `evener` binary per commit, for example `bin/evener-base` from `main` and `bin/evener-try` from your branch. `bin/` is git-ignored.
+`memscope` reads pages with the frontmatter parser of the tree you build it in, so rebuild it after pulling, from the branch whose parsing the checks should use (normally the newer one). To compare prompt versions, build one `evener` binary per commit, for example `bin/evener-base` from `main` and `bin/evener-try` from your branch. `bin/` is git-ignored.
 
 The lab runs real models with your configured provider credentials, so it is never part of `make test`. Write results under `tools/prompt-eval/results/`, which is git-ignored.
 
@@ -107,6 +108,7 @@ Every scenario is a directory holding `scenario.json` and `fixture/` (a small Go
 | `clean-seed` | The same decision seeded as a clean one-fact page | The control for `polluted-seed`. |
 | `sdd-plan` | A four-task superpowers plan run with the real subagent-driven-development skill (copied into the fixture's `.agents/skills`). Measures bookkeeping: run `bookkeeping` on the results | The skill keeps its own ledger, so progress belongs there with task-list statuses only. Its checks look at every branch, because the skill works on a worktree branch and leaves the merge to the partner: a held-out test of all four helpers (coupon bounds, empty cart, unknown SKU) must pass on some branch. |
 | `plan-noskill` | The same plan with no skill and a may-stop-you cue. Progress should go in the task list | The same held-out behavior check as `sdd-plan`. |
+| `index-overflow` | Seeded project memory of 120 tagged pages whose index overflows the 8 KiB projection. The fact the task needs (coupons never stack) is on the oldest page, which the projection leaves out. B adds ApplyCoupons | Measures finding a page through the "Not shown" tag counts or memory_search, and whether new pages reuse seeded tags and carry a description. The seed also has a hand-written MEMORY.md so a build without the generated index gets one; regenerate with make_seed.py. Builds with the generated index migrate a seeded `MEMORY.md` into page frontmatter, so one seed compares the hand-written index (base) with the generated one (try). The tag-reuse and description checks only pass on builds that write frontmatter pages (main writes none), so compare base on the held-out test and trace. The two trace rows report on their own: "read the coupon page" passes on either route, and "searched memory for coupons" shows how often the route was memory_search. The held-out cases need no rounding rule. |
 
 ## Scenario format
 
@@ -115,7 +117,7 @@ The header of `memory-lab` documents every field. In short:
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
 - stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (`work` plus digits, like `work2`; `run` refuses a `fixture` without one other than `work`) and `resume` (continue an earlier stage's session)
 - checks come in these types:
-  - `checks`: shell commands
+  - `checks`: shell commands; `$LAB_DIR` is the lab directory, and `memcheck.py` there holds the shared memory checks (`index-lines`, `new-pages`)
   - `trace`: tool-call regexes
   - `memory`: regexes over memory files, optionally per scope or `absent`
   - `final`: a regex over the last message
@@ -123,7 +125,7 @@ The header of `memory-lab` documents every field. In short:
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
 
-Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself and that its fixture and seed dirs exist, prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
+Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself, that its fixture and seed dirs exist, and that evener reads every seeded page's frontmatter (through `bin/memscope`; an unquoted value holding `: ` is invalid YAML, so quote it), prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
 

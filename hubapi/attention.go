@@ -63,6 +63,12 @@ func RollupRank(state string) int {
 	}
 }
 
+// NeedsResponse reports whether a normalized state is the needs_response
+// rest: awaiting with no pending question. A plain reply rests idle.
+func NeedsResponse(state string, askPending bool) bool {
+	return state == "awaiting" && !askPending
+}
+
 // StateWord returns the unified display word for a normalized attention
 // state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
 // and the TUI (displayWord) so the two surfaces can never independently
@@ -74,10 +80,10 @@ func StateWord(state string, askPending bool) string {
 	case "errored":
 		return "Error"
 	case "awaiting":
-		if askPending {
-			return "Question waiting"
+		if NeedsResponse(state, askPending) {
+			return "Needs you"
 		}
-		return "Needs you"
+		return "Question waiting"
 	case "active":
 		return "Working"
 	case "restartRequired":
