@@ -77,12 +77,12 @@ Rendering reads every page in the scope. That cost replaces today's single-file 
 
 ## Migration
 
-The first time Evener renders a scope that still has a real `MEMORY.md` file at its root, it migrates, under the scope's existing memory lock:
+The first time Evener renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Migration takes no lock:
 1. Parse each line of the old index for a Markdown link to a page in the scope (`[text](path)` or a bare `path.md`). The rest of the line, with the link and leading list markers and separators (`-`, `—`, `:`) stripped, is that page's description.
 2. For each linked page that exists and has no `description` in its frontmatter, write that description into its frontmatter. Pages that already have a description keep it. Migration does not stamp `updated`/`by`.
-3. Rename the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched), replacing any earlier file of that name.
+3. Rename the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched). An earlier backup is never replaced: when the name is taken, the file goes to the first free name of `.MEMORY.md.pre-generated.2`, `.3` and so on, because an older build sharing the scope can write `MEMORY.md` again after migration.
 
-Migration is idempotent: once the root `MEMORY.md` is gone it never runs again, and a crash mid-way leaves pages with a description and the old file still present, so the next run finishes the job. Two sessions racing serialize on the scope lock; the second finds no `MEMORY.md` and skips.
+Migration is idempotent, so it needs no lock: once the root `MEMORY.md` is gone it never runs again, and a crash mid-way leaves pages with a description and the old file still present, so the next run finishes the job. A page that fails to write does not stop the others but keeps `MEMORY.md` in place for the next run. Two sessions racing read the same old index and write the same descriptions, skip pages that already have one, and the one whose rename finds `MEMORY.md` already gone counts as done.
 
 ## Prompts, tools, skill and docs
 

@@ -17,19 +17,24 @@ type Document struct {
 const delimiter = "---\n"
 
 // Split cuts raw into its frontmatter block and the body after the closing
-// delimiter. ok is false, with body set to all of raw, when raw has no
-// complete frontmatter.
+// delimiter, the first line that is exactly "---". ok is false, with body set
+// to all of raw, when raw has no complete frontmatter. Delimiters end in "\n"
+// only, so a CRLF document reads as having no frontmatter.
 func Split(raw string) (block, body string, ok bool) {
 	rest, found := strings.CutPrefix(raw, delimiter)
 	if !found {
 		return "", raw, false
 	}
-	block, body, ok = strings.Cut(rest, delimiter)
-	if !ok {
+	if body, found := strings.CutPrefix(rest, delimiter); found {
+		return "", body, true
+	}
+	// The closing delimiter starts a line, so "a---\n" ending a value is not one.
+	end := strings.Index(rest, "\n"+delimiter)
+	if end < 0 {
 		// Opening delimiter but no closing delimiter: treat as no frontmatter.
 		return "", raw, false
 	}
-	return block, body, true
+	return rest[:end+1], rest[end+1+len(delimiter):], true
 }
 
 // Parse splits a YAML-frontmattered Markdown document into metadata and body.

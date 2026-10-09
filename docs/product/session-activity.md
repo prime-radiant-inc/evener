@@ -37,8 +37,8 @@ The web rail shows its Running spinner; the phone Board classifies the parent
 as Working, using its existing pulse meter in Live and static mark elsewhere.
 This applies to quiet parents and nonblocking warnings, including mixed running
 and failed children. Questions and approvals keep their attention presentation,
-and so does an awaiting rest after a turn that ended on `needs_response`, since
-it waits on a person the same way.
+and so does an awaiting rest after a turn that ended on `needs_response`, on the
+web rail and the phone Board alike, since it waits on a person the same way.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
 

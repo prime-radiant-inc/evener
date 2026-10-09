@@ -146,3 +146,22 @@ func TestListMemoryPages(t *testing.T) {
 		}
 	}
 }
+
+// The root index is generated on every filesystem, so its name is excluded
+// whatever the case; a nested file of that name is an ordinary page.
+func TestIsMemoryPagePathExcludesTheRootIndexInAnyCase(t *testing.T) {
+	t.Parallel()
+	for rel, want := range map[string]bool{
+		"MEMORY.md":     false,
+		"memory.md":     false,
+		"Memory.MD":     false,
+		"sub/MEMORY.md": true,
+		"sub/memory.md": true,
+		"memory.md.txt": true,
+		"notes.md":      true,
+	} {
+		if got := isMemoryPagePath(rel); got != want {
+			t.Errorf("isMemoryPagePath(%q)=%v, want %v", rel, got, want)
+		}
+	}
+}
