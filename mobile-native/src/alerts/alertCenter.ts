@@ -46,7 +46,7 @@ export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
  * hold the same object. */
 export interface AlertPreferences {
 	readonly failures: boolean;
-	/** Questions and approvals. */
+	/** Questions, approvals and turns that ended waiting for your reply. */
 	readonly questions: boolean;
 	readonly finished: boolean;
 	/** Hold alerts while reading or typing. */

@@ -168,11 +168,12 @@ function endedTime(row: NavigationSessionSummary): number {
 function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
 }
-// Spec 7.1's order: failed leads, then a question or approval, then a
-// warning or restart-needed, regardless of age; age breaks ties within a
-// band. The hub sorts its needs_you section into the same bands
-// (hubapi.NeedsYouBand: failed first, then any row with a pending question or
-// approval whatever its own state, then everything else). boardState's mark
+// Spec 7.1's order: failed leads, then a question, an approval or a turn
+// that ended on needs_response, then a warning or restart-needed, regardless
+// of age; age breaks ties within a band. The hub sorts its needs_you section
+// into the same bands (hubapi.NeedsYouBand: failed first, then any row
+// awaiting you or with a pending question or approval whatever its own
+// state, then everything else). boardState's mark
 // precedence returns "warning"/"restartNeeded" for a row before ever
 // consulting ask_pending/approval_pending, so a warning or restart-needed row
 // that also carries one of those flags must still read it here directly - the
