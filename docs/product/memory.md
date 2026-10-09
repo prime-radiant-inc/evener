@@ -97,10 +97,11 @@ or access returns after a missing, unavailable or revoked state. A projected
 index with pages becomes the baseline, held whole (every page line, not only
 those the budget showed); a scope with no pages leaves no baseline, so content that
 appears later arrives in full. When the session itself writes, edits or
-deletes any page through the memory tools, the index is rendered again and
-becomes its baseline, so its own change is never echoed back. A scope with no
-baseline adopts that rendering only when the model was last told the scope had
-no pages; after an unavailable state the next boundary delivers the index in
+deletes any page through the memory tools, that page's new index line (or its
+removal) is patched into the baseline, so its own change is never echoed back
+while other sessions' changes since the baseline still arrive. A scope with no
+baseline starts one from that line only when the model was last told the scope
+had no pages; after an unavailable state the next boundary delivers the index in
 full. A scope with a baseline is read only at the
 first model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
@@ -183,12 +184,13 @@ tags, merge pages that share tags, and delete stale pages. It does not activate 
 ## Generated index
 
 A scope's `MEMORY.md` is not a file. Evener renders it from the scope's pages
-whenever it is needed, in [`memory_index_render.go`](../../agent/memory_index_render.go)
+whenever it is needed (a hand-written root index left from earlier builds stays
+on disk only until a writing session migrates it; see **Migration**), in [`memory_index_render.go`](../../agent/memory_index_render.go)
 and [`memory_page.go`](../../agent/memory_page.go).
 
 **What counts as a page.** Every regular file under the scope root, in
 subdirectories too, except a path with a segment starting with `.` (the rule
-`memory_search` uses) and a file named `MEMORY.md` at the root. Symlinks are
+`memory_search` uses) and a file named `MEMORY.md` at the root, in any case. Symlinks are
 skipped, as scope confinement already refuses them. Only `.md` files are parsed
 for frontmatter. Any other file, or a page that cannot be read, renders with its
 filename as the description and no `(no description)` marker.
@@ -249,7 +251,8 @@ counts the rest." after its `memory_read` route.
 **Reading and writing it.** `memory_read` of `MEMORY.md` at the scope root (in
 any case) renders the whole index with no size cap, paged by `offset` and
 `limit`, or returns `This scope has no pages yet.` `memory_search` never
-matches it. `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at
+searches a root `MEMORY.md` in any case, so a hand-written index not yet
+migrated never shows up in its results. `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at
 the scope root are refused in any case, since `memory.md` names the same file on
 macOS's default filesystem: "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
@@ -260,20 +263,35 @@ next rendering.
 that counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted
 so it reads back as a YAML date) and `by` (the session's full id, YAML-encoded),
 creating a frontmatter block if there is none and keeping every other byte. A
+page whose stamps would not change (a same-day write by the same session) is
+not rewritten, so its modification time stays. Frontmatter that parses but
+would no longer read the stamp back after an edit in place, such as a flow
+mapping or a block ended by `...`, is left unstamped rather than broken. A
 failed write is not stamped. A stamp that fails to write does not fail the call;
 the result ends with a note saying so. A written page with no description gets a
 note asking for one, and a page whose frontmatter does not parse gets its own
 note asking to fix the YAML.
 
-**Migration.** The first time Evener renders a scope that still has a real
-`MEMORY.md` at its root, it moves the old index into the pages. Each line that
+**Migration.** The first time a session that can write memory (it has
+`memory_write`, `memory_edit` and `memory_delete`, the access the save guidance
+needs) renders a scope that still has a real `MEMORY.md` at its root, it moves
+the old index into the pages. Every regular root file named `MEMORY.md` in any
+case is migrated, the exact name first; a case-sensitive filesystem can hold
+several. Any other session renders the pages as they are, with fallback
+descriptions, until a writing session migrates. Each line that
 links to a page in the scope (`[text](path)` or a bare `path.md`) gives that
 page a description: the rest of the line, with the link, list markers and
 separators stripped. A linked page that exists and has no description gets it;
-a page that already has one keeps it. Migration does not stamp. The old file is
-then renamed to `.MEMORY.md.pre-generated`, a dot name that is never a page or
-searched, replacing any earlier file of that name. A failed migration never
-blocks rendering; the next rendering retries.
+a page that already has one keeps it, and a page whose frontmatter does not
+parse, or cannot take the description in place, is left as it is (its
+description stays in the backup). The first line naming a page wins, and a link
+naming the page in its exact case wins over one naming it in another case.
+Migration does not stamp. Each old index is then renamed to
+`.MEMORY.md.pre-generated`, a dot name that is never a page or searched; when
+that name (in any case) is taken, the next free of `.MEMORY.md.pre-generated.2`,
+`.3` and so on, so an earlier backup is never overwritten. A page that fails to
+write leaves every old index in place. A failed migration never blocks
+rendering; the next rendering retries.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
