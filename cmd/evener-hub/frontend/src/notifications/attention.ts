@@ -61,6 +61,15 @@ export function snapshotFromTree(input: unknown): Map<string, AttentionEntry> {
   return new Map();
 }
 
+function isLoud(entry: AttentionEntry, loudScope: NotificationsLoudScopePref): boolean {
+  return (
+    loudScope === "all" || entry.askPending || entry.approvalPending || entry.needsResponse || entry.level === "error"
+  );
+}
+
+// A session fires when it becomes loud: on entering the tier, or when a row
+// already in it turns into something the scope alerts for (a warning that
+// settles into a reply request). A row that stays loud never re-fires.
 export function detectFires(
   prev: Map<string, AttentionEntry>,
   next: Map<string, AttentionEntry>,
@@ -68,15 +77,10 @@ export function detectFires(
 ): AttentionEntry[] {
   const fires: AttentionEntry[] = [];
   for (const [ref, entry] of next) {
-    if (prev.has(ref)) continue;
-    if (
-      loudScope === "all" ||
-      entry.askPending ||
-      entry.approvalPending ||
-      entry.needsResponse ||
-      entry.level === "error"
-    )
-      fires.push(entry);
+    if (!isLoud(entry, loudScope)) continue;
+    const before = prev.get(ref);
+    if (before && isLoud(before, loudScope)) continue;
+    fires.push(entry);
   }
   return fires;
 }

@@ -120,6 +120,26 @@ describe("detectFires", () => {
       detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: false })), asks).map((e) => e.ref),
     ).toEqual(["local:a"]);
   });
+  // A row already in the tier fires when it becomes loud: a warning that
+  // settles into a needs_response rest asks for a reply.
+  test("asks: a quiet row that becomes a reply request fires", () => {
+    expect(
+      detectFires(
+        snap(row({ ref: "local:a", state: "warning" })),
+        snap(row({ ref: "local:a", state: "awaiting" })),
+        asks,
+      ).map((e) => e.ref),
+    ).toEqual(["local:a"]);
+  });
+  test("asks: a loud row that stays loud does not re-fire", () => {
+    expect(
+      detectFires(
+        snap(row({ ref: "local:a", state: "awaiting", ask_pending: true })),
+        snap(row({ ref: "local:a", state: "awaiting" })),
+        asks,
+      ),
+    ).toEqual([]);
+  });
   test("asks: a warning is silent", () => {
     expect(detectFires(snap(), snap(row({ ref: "local:w", state: "warning" })), asks)).toEqual([]);
   });

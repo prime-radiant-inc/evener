@@ -217,7 +217,7 @@ func fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip(t *testing.T) {
 // fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip: level and ask can
 // hold still while needs_response moves (a warning settling into the rest), so
 // the hub reports the flip like an ask or approval flip, and a session that
-// goes away clears it. The web fires only when a session enters the tier.
+// goes away clears it; the web fires when the flip makes the row loud.
 func fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip(t *testing.T) {
 	var got []appwire.AttentionChangedPayload
 	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })
