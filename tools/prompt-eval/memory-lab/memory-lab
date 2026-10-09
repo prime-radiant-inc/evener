@@ -947,8 +947,8 @@ def print_pass_rates(grades):
 
 def scenario_problems(scen):
     """Why scen can't run as written, or [] when it can: load_scenario must accept it and
-    return that scenario's own dict, every fixture and seed dir it names must exist, and every
-    seeded page's frontmatter must be in the YAML subset memcheck.seed_frontmatter_problem accepts."""
+    return that scenario's own dict, every fixture and seed dir it names must exist, and evener
+    must read every seeded page's frontmatter (memcheck.seed_problems)."""
     try:
         with open(os.path.join(scen, "scenario.json")) as f:
             raw = json.load(f)
@@ -962,16 +962,17 @@ def scenario_problems(scen):
     if not isinstance(spec, dict) or not isinstance(spec.get("stages"), list) or spec != raw:
         return [f"load_scenario returned {type(spec).__name__} with keys {sorted(spec) if isinstance(spec, dict) else '-'}, "
                 "not the scenario"]
-    dirs, pages = [base_fixture(scen, spec)], []
+    dirs = [base_fixture(scen, spec)]
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
-        if st.get("seed_project_memory"):
-            pages += find_files(dirs[-1], ".md")
     problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
-    for page in pages:
-        problem = memcheck.seed_frontmatter_problem(memcheck.read(page))  # raw line ends, unlike read_file
-        if problem:
-            problems.append(f"{os.path.relpath(page, scen)}: {problem}")
+    for st in spec["stages"]:
+        seed = os.path.join(scen, st.get("seed_project_memory", ""))
+        if st.get("seed_project_memory") and os.path.isdir(seed):
+            try:
+                problems += [f"{st['seed_project_memory']}/{p}" for p in memcheck.seed_problems(seed)]
+            except memcheck.MemscopeError as e:
+                problems.append(str(e))
     return problems
 
 

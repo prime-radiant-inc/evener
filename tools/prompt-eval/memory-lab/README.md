@@ -23,6 +23,7 @@ The script is Python 3.11 or later, using the standard library only. From the re
 cd tools/prompt-eval/memory-lab
 mkdir -p bin
 go build -o bin/projid ./projid          # computes a checkout's project memory id, for seeded scenarios
+go build -o bin/memscope ./memscope      # reads memory pages as evener does, for memcheck.py and ./memory-lab check
 go build -o bin/evener-base ../../../cmd/evener    # build each version you want to compare
 ```
 
@@ -124,7 +125,7 @@ The header of `memory-lab` documents every field. In short:
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
 
-Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself, that its fixture and seed dirs exist, and that every seeded page's frontmatter will parse (memcheck's parser; an unquoted value holding `: ` is invalid YAML, so quote it), prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
+Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself, that its fixture and seed dirs exist, and that evener reads every seeded page's frontmatter (through `bin/memscope`; an unquoted value holding `: ` is invalid YAML, so quote it), prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 
 Write a check that a reasonable outcome can actually fail. Before you trust a scenario, confirm that the baseline prompt doesn't already pass it, and that its regexes don't match comments or prose. The `cents` float check originally failed on comments that said "no floats".
 
