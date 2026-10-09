@@ -30,7 +30,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; my $idx = $f =~ m{/MEMORY\\.md$}; while (<F>) { chomp; next unless $idx || s/^description:\\s*//; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -60,7 +60,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; my $idx = $f =~ m{/MEMORY\\.md$}; while (<F>) { chomp; next unless $idx || s/^description:\\s*//; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -94,7 +94,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; my $idx = $f =~ m{/MEMORY\\.md$}; while (<F>) { chomp; next unless $idx || s/^description:\\s*//; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -136,7 +136,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; my $idx = $f =~ m{/MEMORY\\.md$}; while (<F>) { chomp; next unless $idx || s/^description:\\s*//; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     }

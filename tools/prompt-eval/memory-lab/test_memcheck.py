@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Tests for memcheck.py. Run: python3 -B tools/prompt-eval/memory-lab/test_memcheck.py"""
+import contextlib, io, os, sys, tempfile, unittest
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import memcheck
+
+
+class Root(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+    def put(self, rel, text):
+        path = os.path.join(self.root, "evener", "memory", rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def run_cmd(self, *argv):
+        old = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = self.root
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_STATE_HOME", old) if old else os.environ.pop("XDG_STATE_HOME", None))
+        with contextlib.redirect_stderr(io.StringIO()):
+            return memcheck.main(list(argv))
+
+
+class IndexLines(Root):
+    def test_short_description_with_long_body_passes(self):
+        self.put("projects/p/a.md", "---\ndescription: short\n---\n" + "x" * 500 + "\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_long_description_in_subdirectory_fails(self):
+        self.put("projects/p/sub/a.md", "---\ndescription: " + "y" * 201 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 1)
+
+    def test_long_memory_md_line_fails(self):
+        self.put("personal/MEMORY.md", "- " + "z" * 250 + "\n")
+        self.assertEqual(self.run_cmd("index-lines"), 1)
+
+    def test_counts_runes_not_bytes(self):
+        self.put("projects/p/a.md", "---\ndescription: " + "—" * 200 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+        self.put("projects/p/b.md", "---\ndescription: " + "—" * 201 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 1)
+
+    def test_other_key_ending_in_description_is_not_the_description(self):
+        self.put("projects/p/a.md", "---\nx_description: " + "y" * 300 + "\ndescription: ok\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_body_line_starting_description_is_not_the_description(self):
+        self.put("projects/p/a.md", "---\ndescription: ok\n---\ndescription: " + "y" * 300 + "\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_folded_description_joins_its_lines(self):
+        self.put("projects/p/a.md", "---\ndescription: >\n  " + "a" * 150 + "\n  " + "b" * 100 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 1)
+
+    def test_quoted_description_drops_its_quotes(self):
+        self.put("projects/p/a.md", '---\ndescription: "' + "a" * 200 + '"\n---\n')
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+    def test_dashes_after_a_body_are_not_frontmatter(self):
+        self.put("projects/p/a.md", "# Title\n\n---\ndescription: " + "y" * 300 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
+
+class NewPages(Root):
+    def test_no_new_page_fails(self):
+        self.put("projects/p/seed.md", "---\ndescription: d\ntags: [a]\nby: seed-fixture\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_memory_md_is_not_a_new_page(self):
+        self.put("projects/p/MEMORY.md", "- a line\n")
+        self.assertEqual(self.run_cmd("new-pages"), 1)
+
+    def test_empty_description_fails(self):
+        self.put("projects/p/a.md", "---\ndescription:\ntags: [a]\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_x_description_key_does_not_count(self):
+        self.put("projects/p/a.md", "---\nx_description: yes\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_body_description_line_does_not_count(self):
+        self.put("projects/p/a.md", "---\ntags: [a]\n---\ndescription: yes\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_described_page_passes(self):
+        self.put("projects/p/a.md", "---\ndescription: yes\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+
+    def test_tags_inside_seed_set_pass_in_flow_and_block_form(self):
+        self.put("projects/p/a.md", "---\ntags: [A, 'b']\n---\n")
+        self.put("projects/p/b.md", "---\ntags:\n- a\n- \"b\"\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a,b"), 0)
+
+    def test_tag_outside_seed_set_fails(self):
+        self.put("projects/p/a.md", "---\ntags: [a, new]\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a,b"), 1)
+
+    def test_page_without_tags_fails_tag_reuse(self):
+        self.put("projects/p/a.md", "---\ndescription: d\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a"), 1)
+
+    def test_page_without_frontmatter_fails_tag_reuse(self):
+        self.put("projects/p/a.md", "# just text\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -5,16 +5,18 @@ fact the task needs on the oldest page, which the projection leaves out.
 
 Why a generator: 120 pages by hand drift; this keeps the seed, its hand-written
 MEMORY.md (so a build from before the generated index also gets an index) and
-the scenario's tag-reuse check in step. Run it from anywhere after editing it:
+the scenario's tag-reuse check in step. The checks themselves live in memcheck.py. Run it from anywhere after editing it:
 
     python3 scenarios/index-overflow/make_seed.py
 
 It rewrites seed/ and scenario.json next to itself, then run ./memory-lab check.
 """
-import datetime, json, os, shutil
+import datetime, itertools, json, os, shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED = os.path.join(HERE, "seed")
+FILLER = 119  # plus the target page: 120 pages
+NEWEST = datetime.date(2026, 9, 30)
 
 TOPICS = {
     "vitest": "Vitest run {n} needs --pool=forks when worker {n} crashes on teardown",
@@ -41,36 +43,7 @@ TARGET = {
 }
 
 
-def new_pages_check(seed_tags, condition):
-    """A shell check over the project pages this stage wrote (any page not
-    marked by: seed-fixture). It passes only when the stage wrote at least one
-    page and condition holds; condition sees `new`, a list of (tags, described)
-    pairs, and `seed`, the seeded tag set."""
-    return (
-        "python3 - <<'EOF'\n"
-        "import glob, os, re, sys\n"
-        f"seed = set({seed_tags!r})\n"
-        "new = []\n"
-        "for f in glob.glob(os.environ['XDG_STATE_HOME'] + '/evener/memory/projects/*/**/*.md', recursive=True):\n"
-        "    text = open(f).read()\n"
-        "    if os.path.basename(f) == 'MEMORY.md' or 'by: seed-fixture' in text:\n"
-        "        continue\n"
-        "    m = re.match(r'---\\n(.*?)\\n---\\n', text, re.S)\n"
-        "    block = m.group(1) if m else ''\n"
-        "    flow = re.search(r'^tags:\\s*\\[(.*)\\]', block, re.M)\n"
-        "    if flow:\n"
-        "        tags = [t.strip().strip('\"\\'') for t in flow.group(1).split(',')]\n"
-        "    elif re.search(r'^tags:\\s*$', block, re.M):\n"
-        "        tags = re.findall(r'^- (.+)$', block.split('tags:', 1)[1], re.M)\n"
-        "    else:\n"
-        "        tags = []\n"
-        "    new.append(([t.lower() for t in tags if t], 'description:' in block))\n"
-        f"sys.exit(0 if new and {condition} else 1)\n"
-        "EOF"
-    )
-
-
-def page(path, title, description, tags, updated, body):
+def page(title, description, tags, updated, body):
     return (f"---\ndescription: {description}\ntags: [{', '.join(tags)}]\n"
             f"updated: {updated}\nby: seed-fixture\n---\n# {title}\n\n{body}")
 
@@ -79,32 +52,25 @@ def main():
     shutil.rmtree(SEED, ignore_errors=True)
     os.makedirs(SEED)
     pages = []
-    day = datetime.date(2026, 9, 30)
-    n = 0
-    while len(pages) < 119:
-        for tag, template in TOPICS.items():
-            if len(pages) == 119:
-                break
-            n += 1
-            tags = [tag] if n % 4 else [tag, "tests"]
-            pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
-                          "description": template.format(n=n), "tags": tags, "updated": day.isoformat(),
-                          "body": template.format(n=n) + ".\n"})
-            day -= datetime.timedelta(days=1)
+    for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), FILLER), 1):
+        description = TOPICS[tag].format(n=n)
+        pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
+                      "description": description, "tags": [tag] if n % 4 else [tag, "tests"],
+                      "updated": (NEWEST - datetime.timedelta(days=n - 1)).isoformat(),
+                      "body": description + ".\n"})
     pages.append(TARGET)
     for p in pages:
         dest = os.path.join(SEED, p["path"])
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "w") as f:
-            f.write(page(p["path"], p["title"], p["description"], p["tags"], p["updated"], p["body"]))
+            f.write(page(p["title"], p["description"], p["tags"], p["updated"], p["body"]))
     # Newest first, as the generated index orders them; the target is last, past 8 KiB.
     with open(os.path.join(SEED, "MEMORY.md"), "w") as f:
         f.write("# Project memory\n\n")
         for p in pages:
             f.write(f"- [{p['title']}]({p['path']}) — {p['description']}\n")
     seed_tags = sorted({t for p in pages for t in p["tags"]})
-    reuse = new_pages_check(seed_tags, "all(tags and set(tags) <= seed for tags, _ in new)")
-    described = new_pages_check(seed_tags, "all(described for _, described in new)")
+    memcheck = 'python3 "$LAB_DIR/memcheck.py" new-pages'
     heldout = (
         "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\n"
         "func TestHeldoutApplyCouponsLargestOnly(t *testing.T) {\n"
@@ -124,8 +90,8 @@ def main():
             "checks": [
                 {"name": "tests pass", "run": "go test ./..."},
                 {"name": "held-out largest coupon only", "run": heldout},
-                {"name": "new pages reuse seeded tags", "run": reuse},
-                {"name": "new pages have a description", "run": described},
+                {"name": "new pages reuse seeded tags", "run": f"{memcheck} --tags-subset-of {','.join(seed_tags)}"},
+                {"name": "new pages have a description", "run": f"{memcheck} --require-description"},
             ],
             "trace": [
                 {"name": "read the coupon page", "tool": "memory_read", "regex": "coupon"},

@@ -30,7 +30,7 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
    "stages": [{"name": "A", "prompt": "...",
                "seed_project_memory": "seed",   # optional dir copied into project memory first
                "before": "shell run in the workspace before the stage",  # optional
-               "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
+               "checks": [{"name": "...", "run": "shell; exit 0 = pass; $LAB_DIR is the lab directory, e.g. python3 \"$LAB_DIR/memcheck.py\" index-lines"}],
                "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project) and "absent": true optional
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
@@ -502,7 +502,7 @@ def session_failure(session, rounds_capped):
 
 def grade_checks(spec, inputs):
     try:
-        rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+        rc, _ = run_bounded(spec["run"], inputs["work"], {**inputs["env"], "LAB_DIR": HERE}, COMMAND_TIMEOUT)
     finally:
         # A held-out check deletes its own test file, unless it was killed first;
         # a leftover would join every later check's and stage's build.

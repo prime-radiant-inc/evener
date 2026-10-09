@@ -19,11 +19,11 @@
         },
         {
           "name": "new pages reuse seeded tags",
-          "run": "python3 - <<'EOF'\nimport glob, os, re, sys\nseed = set(['api', 'cart', 'catalog', 'ci', 'coupons', 'docs', 'indexeddb', 'logging', 'pricing', 'release', 'tests', 'vitest'])\nnew = []\nfor f in glob.glob(os.environ['XDG_STATE_HOME'] + '/evener/memory/projects/*/**/*.md', recursive=True):\n    text = open(f).read()\n    if os.path.basename(f) == 'MEMORY.md' or 'by: seed-fixture' in text:\n        continue\n    m = re.match(r'---\\n(.*?)\\n---\\n', text, re.S)\n    block = m.group(1) if m else ''\n    flow = re.search(r'^tags:\\s*\\[(.*)\\]', block, re.M)\n    if flow:\n        tags = [t.strip().strip('\"\\'') for t in flow.group(1).split(',')]\n    elif re.search(r'^tags:\\s*$', block, re.M):\n        tags = re.findall(r'^- (.+)$', block.split('tags:', 1)[1], re.M)\n    else:\n        tags = []\n    new.append(([t.lower() for t in tags if t], 'description:' in block))\nsys.exit(0 if new and all(tags and set(tags) <= seed for tags, _ in new) else 1)\nEOF"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --tags-subset-of api,cart,catalog,ci,coupons,docs,indexeddb,logging,pricing,release,tests,vitest"
         },
         {
           "name": "new pages have a description",
-          "run": "python3 - <<'EOF'\nimport glob, os, re, sys\nseed = set(['api', 'cart', 'catalog', 'ci', 'coupons', 'docs', 'indexeddb', 'logging', 'pricing', 'release', 'tests', 'vitest'])\nnew = []\nfor f in glob.glob(os.environ['XDG_STATE_HOME'] + '/evener/memory/projects/*/**/*.md', recursive=True):\n    text = open(f).read()\n    if os.path.basename(f) == 'MEMORY.md' or 'by: seed-fixture' in text:\n        continue\n    m = re.match(r'---\\n(.*?)\\n---\\n', text, re.S)\n    block = m.group(1) if m else ''\n    flow = re.search(r'^tags:\\s*\\[(.*)\\]', block, re.M)\n    if flow:\n        tags = [t.strip().strip('\"\\'') for t in flow.group(1).split(',')]\n    elif re.search(r'^tags:\\s*$', block, re.M):\n        tags = re.findall(r'^- (.+)$', block.split('tags:', 1)[1], re.M)\n    else:\n        tags = []\n    new.append(([t.lower() for t in tags if t], 'description:' in block))\nsys.exit(0 if new and all(described for _, described in new) else 1)\nEOF"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-description"
         }
       ],
       "trace": [
