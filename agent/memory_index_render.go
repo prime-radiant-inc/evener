@@ -110,27 +110,26 @@ func memoryTagCounts(pages []memoryPage) (counts map[string]int, untagged int) {
 // tags are. 512 bytes holds about 25 typical tags.
 const memoryTagListBudget = 512
 
-// memoryTagList is a tag list's parts: each tag in counts written as
-// part(tag), in order. A capped list keeps only the most-used tags (ties by
-// name) that fit memoryTagListBudget, each followed by ", ", and ends with
-// how many tags it leaves out.
-func memoryTagList(counts map[string]int, part func(tag string) string, order func(a, b string) int, capped bool) []string {
-	tags := slices.Collect(maps.Keys(counts))
-	more := 0
-	if capped {
-		slices.SortFunc(tags, func(a, b string) int {
-			return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
-		})
-		size := 0
-		for i, tag := range tags {
-			size += len(part(tag)) + len(", ")
-			if size > memoryTagListBudget {
-				tags, more = tags[:i], len(tags)-i
-				break
-			}
+// topMemoryTags is the most-used tags in counts (ties by name), most-used
+// first, that fit memoryTagListBudget when each is written as part(tag)
+// followed by ", ", and how many tags it leaves out.
+func topMemoryTags(counts map[string]int, part func(tag string) string) (top []string, more int) {
+	tags := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {
+		return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
+	})
+	size := 0
+	for i, tag := range tags {
+		size += len(part(tag)) + len(", ")
+		if size > memoryTagListBudget {
+			return tags[:i], len(tags) - i
 		}
 	}
-	slices.SortFunc(tags, order)
+	return tags, 0
+}
+
+// memoryTagParts is tags written as part(tag), then how many more tags a
+// capped list leaves out, when it leaves any.
+func memoryTagParts(tags []string, part func(tag string) string, more int) []string {
 	parts := make([]string, 0, len(tags)+1)
 	for _, tag := range tags {
 		parts = append(parts, part(tag))
@@ -152,7 +151,12 @@ func memoryTagsHeaderLine(pages []memoryPage, capped bool) string {
 		return ""
 	}
 	part := func(tag string) string { return fmt.Sprintf("%s (%d)", tag, counts[tag]) }
-	return "Tags: " + strings.Join(memoryTagList(counts, part, strings.Compare, capped), ", ") + "\n"
+	tags, more := slices.Sorted(maps.Keys(counts)), 0
+	if capped {
+		tags, more = topMemoryTags(counts, part)
+		slices.Sort(tags)
+	}
+	return "Tags: " + strings.Join(memoryTagParts(tags, part, more), ", ") + "\n"
 }
 
 // memoryNotShownLine closes a projection that leaves rest out: how many pages,
@@ -162,8 +166,8 @@ func memoryTagsHeaderLine(pages []memoryPage, capped bool) string {
 func memoryNotShownLine(rest []memoryPage) string {
 	counts, untagged := memoryTagCounts(rest)
 	part := func(tag string) string { return fmt.Sprintf("%s %d", tag, counts[tag]) }
-	byCount := func(a, b string) int { return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b)) }
-	parts := memoryTagList(counts, part, byCount, true)
+	tags, more := topMemoryTags(counts, part)
+	parts := memoryTagParts(tags, part, more)
 	if untagged > 0 {
 		parts = append(parts, fmt.Sprintf("untagged %d", untagged))
 	}

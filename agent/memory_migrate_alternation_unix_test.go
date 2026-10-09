@@ -38,26 +38,6 @@ func oldBuildRound(t *testing.T, scope string, round int) (string, map[string]st
 	return index.String(), descriptions
 }
 
-// memoryBackups is a scope's backups of hand-written indexes, by name.
-func memoryBackups(t *testing.T, scope string) map[string]string {
-	t.Helper()
-	entries, err := os.ReadDir(scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backups := make(map[string]string)
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), memoryLegacyIndexBackup) {
-			raw, err := os.ReadFile(filepath.Join(scope, entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			backups[entry.Name()] = string(raw)
-		}
-	}
-	return backups
-}
-
 // An old build and a new build take turns on one scope five times: each old
 // round adds pages and writes a fresh MEMORY.md, each new round migrates it.
 // Every old line's description must reach its page, the first backup must
@@ -123,7 +103,7 @@ func TestMigrateMemoryScopeAlternatingWithAnOldBuild(t *testing.T) {
 // old build recreates MEMORY.md, and B moves what is now MEMORY.md to the
 // name it chose. The test drives B's move with the name B chose before A ran.
 // The original index must survive, and the recreated index's lines, which B
-// never migrated, must reach their pages or stay for the next run.
+// never migrated, must stay in MEMORY.md for the next run.
 func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
@@ -140,7 +120,7 @@ func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The old build finds no MEMORY.md and writes a fresh one.
-	recreatedIndex, recreated := oldBuildRound(t, scope, 2)
+	recreatedIndex, _ := oldBuildRound(t, scope, 2)
 	// B moves the index it read, the original, to the name it chose before
 	// A's move.
 	if err := moveLegacyMemoryIndex(env, scope, legacy, []byte(original), backupB); err != nil {
@@ -156,16 +136,6 @@ func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 	}
 	if backups := memoryBackups(t, scope); len(backups) != 1 {
 		t.Errorf("index backups %q, want only the original", backups)
-	}
-	_, indexErr := os.Stat(legacy)
-	for page, description := range recreated {
-		raw, err := os.ReadFile(filepath.Join(scope, page))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := parseMemoryPage(page, raw, time.Time{}); got.Description != description && indexErr != nil {
-			t.Errorf("%s description=%q and MEMORY.md is gone (%v): its line %q is lost", page, got.Description, indexErr, description)
-		}
 	}
 }
 

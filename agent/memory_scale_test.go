@@ -48,15 +48,15 @@ func memoryProjectedPageLines(content string) int {
 const memorySprawlNewest = 20
 
 // As a scope's tags multiply, the projection still shows its newest pages
-// within the cap. The tag header and the "Not shown" line both list every
-// tag, so past a few hundred tags they fill the cap on their own.
+// within the cap. Listed in full, the tag header and the "Not shown" line
+// would fill the cap on their own past a few hundred tags.
 func TestProjectMemoryIndexKeepsNewestPagesAsTagsSprawl(t *testing.T) {
 	t.Parallel()
 	for _, tags := range []int{10, 50, 100, 200, 400, 800} {
 		t.Run(fmt.Sprintf("tags=%d", tags), func(t *testing.T) {
 			t.Parallel()
 			pages := sprawlMemoryPages(1000, tags)
-			content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+			content, _, _ := projectMemoryIndex(pages, memoryProjectionCap)
 			sorted := sortedMemoryPages(pages)
 			var missing []string
 			for _, p := range sorted[:memorySprawlNewest] {
@@ -65,20 +65,12 @@ func TestProjectMemoryIndexKeepsNewestPagesAsTagsSprawl(t *testing.T) {
 				}
 			}
 			header := memoryTagsHeaderLine(sorted, true)
-			t.Logf("tags=%d: %d page lines shown, len=%d, header=%d bytes, truncated=%t", tags, memoryProjectedPageLines(content), len(content), len(header), truncated)
 			if len(content) > memoryProjectionCap || len(missing) > 0 {
-				t.Fatalf("tags=%d: len=%d (cap %d), %d page lines shown, header %d bytes; %d of the newest %d pages missing (first %q)",
-					tags, len(content), memoryProjectionCap, memoryProjectedPageLines(content), len(header), len(missing), memorySprawlNewest, memoryFirstOr(missing))
+				t.Fatalf("tags=%d: len=%d (cap %d), %d page lines shown, header %d bytes; of the newest %d pages, missing %q",
+					tags, len(content), memoryProjectionCap, memoryProjectedPageLines(content), len(header), memorySprawlNewest, missing)
 			}
 		})
 	}
-}
-
-func memoryFirstOr(items []string) string {
-	if len(items) == 0 {
-		return ""
-	}
-	return items[0]
 }
 
 // memoryScalePageFiller pads a scale page's body to about 1.5 KB.
@@ -150,7 +142,6 @@ func BenchmarkMemoryIndexRender(b *testing.B) {
 				b.Fatal(err)
 			}
 			defer env.Cleanup()
-			b.ResetTimer()
 			for b.Loop() {
 				pages, err := listMemoryPages(env)
 				if err != nil {

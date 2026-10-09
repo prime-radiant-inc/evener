@@ -62,36 +62,36 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 // leaves the index in place. The index is removed only once its bytes are
 // the ones the migration read: an older build may have written it again
 // since, and those lines are not in the pages yet, so that file stays for the
-// next run (its link is dropped; the index itself still holds those bytes).
-// A rewrite landing between that check and the removal would still be lost;
-// the window is two system calls wide.
+// next run. A rewrite landing between that check and the removal would
+// still be lost; the window is two system calls wide.
 func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
 	repeated, err := memoryBackupHolds(env, root, raw)
 	if err != nil {
 		return err
 	}
-	if repeated {
-		current, err := env.ReadFileRaw(legacy)
-		if err != nil || !bytes.Equal(current, raw) {
-			return ignoreNotExist(err)
+	if !repeated {
+		for {
+			err := env.LinkConfinedFile(legacy, backup)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, fs.ErrExist) {
+				// fs.ErrNotExist: another migration moved the index first.
+				return ignoreNotExist(err)
+			}
+			if backup, err = freeMemoryBackupPath(env, root); err != nil {
+				return err
+			}
 		}
-		return ignoreNotExist(env.RemoveConfinedFile(legacy))
+		// A link to bytes this migration did not read backs up nothing it
+		// migrated; the index still holds them.
+		if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
+			return errors.Join(err, env.RemoveConfinedFile(backup))
+		}
 	}
-	for {
-		err := env.LinkConfinedFile(legacy, backup)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			// fs.ErrNotExist: another migration moved the index first.
-			return ignoreNotExist(err)
-		}
-		if backup, err = freeMemoryBackupPath(env, root); err != nil {
-			return err
-		}
-	}
-	if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
-		return errors.Join(err, env.RemoveConfinedFile(backup))
+	current, err := env.ReadFileRaw(legacy)
+	if err != nil || !bytes.Equal(current, raw) {
+		return ignoreNotExist(err)
 	}
 	return ignoreNotExist(env.RemoveConfinedFile(legacy))
 }
@@ -106,7 +106,7 @@ func memoryBackupHolds(env *execenv.LocalExecutionEnvironment, root string, raw 
 	}
 	prefix := strings.ToLower(memoryLegacyIndexBackup)
 	for _, entry := range entries {
-		if !entry.IsRegular || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
+		if !entry.IsRegular || entry.Size != int64(len(raw)) || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
 			continue
 		}
 		if existing, err := env.ReadFileRaw(filepath.Join(root, entry.Name)); err == nil && bytes.Equal(existing, raw) {
@@ -343,7 +343,12 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	// index a link naming the page exactly wins over the earliest line naming
 	// it in another case.
 	descriptions := make(map[string]string)
-	raws := make(map[string][]byte, len(legacies))
+	// read is each index that still existed, with the bytes migrated from it.
+	type readIndex struct {
+		path string
+		raw  []byte
+	}
+	var read []readIndex
 	for _, legacy := range legacies {
 		raw, err := env.ReadFileRaw(legacy)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -353,7 +358,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		if err != nil {
 			return err
 		}
-		raws[legacy] = raw
+		read = append(read, readIndex{legacy, raw})
 		entries := parseLegacyMemoryIndex(string(raw))
 		for _, exact := range []bool{true, false} {
 			for _, entry := range entries {
@@ -405,16 +410,12 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	if len(writeErrs) > 0 {
 		return errors.Join(writeErrs...)
 	}
-	for _, legacy := range legacies {
-		raw, read := raws[legacy]
-		if !read {
-			continue
-		}
+	for _, index := range read {
 		backup, err := freeMemoryBackupPath(env, root)
 		if err != nil {
 			return err
 		}
-		if err := moveLegacyMemoryIndex(env, root, legacy, raw, backup); err != nil {
+		if err := moveLegacyMemoryIndex(env, root, index.path, index.raw, backup); err != nil {
 			return err
 		}
 	}

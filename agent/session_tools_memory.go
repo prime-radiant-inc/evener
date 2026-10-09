@@ -117,8 +117,10 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	// The page is stamped and its line patched under the path its scope
 	// lists it at, which on a case-insensitive filesystem can differ from
 	// file's case. It is looked up before the operation, while a page being
-	// deleted still exists, and again after a write, so a page it creates is
-	// listed under its own name.
+	// deleted still exists. A write looks again after it, so a page it
+	// creates is listed under its own name even beside one differing only in
+	// case; an edit needs no second look, as it only changes a file that
+	// exists.
 	listed := listedMemoryPagePath(env, filepath.ToSlash(file))
 	var notes string
 	stamp := func(raw []byte) []byte {
@@ -130,7 +132,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	if err != nil {
 		return out, err
 	}
-	if operation != "delete" {
+	if operation == "write" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
 	}
 	if text, ok := out.(string); ok && notes != "" {
