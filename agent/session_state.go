@@ -657,22 +657,19 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	if override := s.cfg.testOnly.needsResponseQuietPeriod; override != nil {
 		delay = *override
 	}
-	rest := func() bool {
-		// The cheap checks first, so a timer outliving its session or turn
-		// reads no work state.
-		if !s.restStillPending(generation) || moves() || s.autonomyInFlight() {
-			return false
-		}
-		return s.restAwaiting(generation)
-	}
 	if delay <= 0 {
-		// The input's SESSION_END, emitted right after this settle, carries
-		// the state.
-		rest()
+		// Nothing moved since the checks above, and the input's SESSION_END,
+		// emitted right after this settle, carries the state.
+		s.restAwaiting(generation)
 		return
 	}
 	s.sclock().AfterFunc(delay, func() {
-		if rest() {
+		// The cheap checks first, so a timer outliving its session or turn
+		// reads no work state.
+		if !s.restStillPending(generation) || moves() || s.autonomyInFlight() {
+			return
+		}
+		if s.restAwaiting(generation) {
 			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
 		}
 	})

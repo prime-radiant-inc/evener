@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,19 +17,18 @@ import (
 func newQuietPeriodSession(t *testing.T, steps ...func(llm.Request) llm.Response) (*Session, *agenttest.FakeClock) {
 	t.Helper()
 	fake := agenttest.NewFakeClock()
-	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{
-		MaxSubagentDepth: 1,
-		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
-		clock:            fake,
-	}))
-	return sess, fake
+	return newSession(t, withSteps(steps...), withClock(fake)), fake
 }
 
-// statusSettledStates lists the states the session announced through
-// EventStatusSettled.
-func statusSettledStates(evs []events.SessionEvent) []string {
+// settledStatesAfterClose closes sess, waits for its event stream to end, and
+// lists the states it announced through EventStatusSettled.
+func settledStatesAfterClose(sess *Session, evs *[]events.SessionEvent, mu *sync.Mutex, done <-chan struct{}) []string {
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
 	var states []string
-	for _, ev := range evs {
+	for _, ev := range *evs {
 		if data, ok := ev.Data.(events.StatusSettledData); ok && ev.Kind == events.EventStatusSettled {
 			states = append(states, data.State)
 		}
@@ -60,11 +59,7 @@ func TestNeedsResponseRestsAwaitingAfterTheQuietPeriod(t *testing.T) {
 	fake.Advance(time.Millisecond)
 	// TRIPWIRE: the timer fired during the advance; this only bounds a hang.
 	waitForCondition(t, 15*time.Second, "awaiting once the quiet period ends", func() bool { return sess.State() == SessionAwaiting })
-	sess.Close()
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	if got := statusSettledStates(*evs); len(got) != 1 || got[0] != string(SessionAwaiting) {
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
 		t.Fatalf("status settled events = %v, want one awaiting", got)
 	}
 }
@@ -93,11 +88,7 @@ func TestNeedsResponseRestartInsideTheQuietPeriodNeverArms(t *testing.T) {
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("state = %q, want idle: the restart moved past the question", got)
 	}
-	sess.Close()
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	if got := statusSettledStates(*evs); len(got) != 0 {
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
 		t.Fatalf("status settled events = %v, want none", got)
 	}
 }
@@ -117,11 +108,7 @@ func TestAskRestsAwaitingWithoutAQuietPeriod(t *testing.T) {
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state = %q, want awaiting at once for a pending question", got)
 	}
-	sess.Close()
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	if got := statusSettledStates(*evs); len(got) != 0 {
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
 		t.Fatalf("status settled events = %v, want none: SESSION_END carries a question's rest", got)
 	}
 }
@@ -172,11 +159,7 @@ func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("state = %q, want idle with a notification pending", got)
 	}
-	sess.Close()
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	if got := statusSettledStates(*evs); len(got) != 0 {
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
 		t.Fatalf("status settled events = %v, want none", got)
 	}
 }

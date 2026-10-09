@@ -172,6 +172,9 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
+	if ev.Kind == events.EventStatusSettled && s.restingStatusSupersededLocked() {
+		return
+	}
 	effect(s)
 }
 
@@ -226,11 +229,7 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		if !ok || d.State == "" {
 			return nil
 		}
-		return func(s *Server) {
-			if !s.restingStatusSupersededLocked() {
-				s.status.State = d.State
-			}
-		}
+		return func(s *Server) { s.status.State = d.State }
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
