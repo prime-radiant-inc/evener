@@ -2101,11 +2101,16 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 // sensitivity, result cap, output mode, and context window the caller asked
 // for.
 func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
-	ctxLines := 0
+	return e.GrepSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil)
+}
+
+// grepContextLines is the context window an optional contextLines argument
+// asks for: its first value when positive, else 0.
+func grepContextLines(contextLines []int) int {
 	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
+		return contextLines[0]
 	}
-	return e.GrepSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+	return 0
 }
 
 // GrepSkipping is Grep, except that it never searches a file for which skip,
@@ -2203,11 +2208,7 @@ func ripgrepOutputLines(stdout, dir string, oneFile bool) []string {
 }
 
 func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
-	ctxLines := 0
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
-	}
-	return e.grepNativeSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+	return e.grepNativeSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil)
 }
 
 // grepNativeSkipping is grepNative, never searching a file skip names (see
