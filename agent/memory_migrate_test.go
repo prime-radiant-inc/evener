@@ -86,8 +86,8 @@ func TestMemoryYAMLFieldRoundTrips(t *testing.T) {
 	}
 }
 
-// A page is found by a link or a bare path; the first line naming it wins and
-// anything that is not a local Markdown page is skipped.
+// A page is found by a link or a bare path; the first line describing it wins
+// and anything that is not a local Markdown page is skipped.
 func TestParseLegacyMemoryIndex(t *testing.T) {
 	t.Parallel()
 	index := "# Project memory\n\n" +
@@ -106,7 +106,14 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- **no-link** — [feedback] a line with no page\n" +
 		"- see old.md.txt for the old notes\n" +
 		"- a.md/foo is a directory path\n" +
-		"- [emph](emph.md) — **important** note\n"
+		"- [emph](emph.md) — **important** note\n" +
+		"- [spaced](<my notes (old).md>) — a path in angle brackets\n" +
+		"- [escaped](<x \\<y\\>.md>) — angle brackets escaped inside one\n" +
+		"- [[WIP\\] Fix](wip.md)\n" +
+		"- [paren](a(b).md) — balanced parentheses in a bare destination\n" +
+		"- [frag](notes.md#http://example) — a fragment holding a URL\n" +
+		"- [](quiet.md)\n" +
+		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
 		"testing.md":         "plain `go test` silently skips everything",
 		"money/cents.md":     "Money is integer cents",
@@ -116,10 +123,16 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"bold.md":            "bare path in bold",
 		"cpp.md":             "learned C++",
 		"emph.md":            "**important** note",
+		"quiet.md":           "a later line describes a page an empty one named",
+		"my notes (old).md":  "a path in angle brackets",
+		"x <y>.md":           "angle brackets escaped inside one",
+		"wip.md":             "[WIP] Fix",
+		"a(b).md":            "balanced parentheses in a bare destination",
+		"notes.md":           "a fragment holding a URL",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
-		got[entry.Link] = entry.Description
+		got[entry.Links[0]] = entry.Description
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
@@ -251,6 +264,31 @@ func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: the notes page\n---\nbody\n" {
 		t.Fatalf("notes.md=%q, %v", raw, err)
+	}
+}
+
+// A link target resolves to the listed page it names whole, else to the page
+// before its fragment: a#b.md is a page named so, and a.md#rule.md is a.md
+// with a fragment that happens to end in .md.
+func TestMigrateMemoryScopeResolvesFragmentsAgainstListedPages(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	index := "- [x](a.md#rule.md) — the a page\n- [y](b#c.md) — the hash page\n"
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b#c.md"} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte("body\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for name, description := range map[string]string{"a.md": "the a page", "b#c.md": "the hash page"} {
+		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != "---\ndescription: "+description+"\n---\nbody\n" {
+			t.Fatalf("%s=%q, %v", name, raw, err)
+		}
 	}
 }
 
@@ -449,5 +487,20 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
 		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	}
+}
+
+// Migration reads back the link a generated index line writes for any path,
+// so an index an older build copied from a generated one still migrates.
+func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, `a\>b.md`, "<x> y.md", "sub/half).md", "a#b.md"} {
+		for _, title := range []string{"T", `[WIP] Fix \ it`} {
+			line := memoryIndexLine(memoryPage{Path: rel, Title: title, Description: "d"})
+			got := parseLegacyMemoryIndex(line + "\n")
+			if len(got) != 1 || got[0].Links[0] != rel || got[0].Description != "d" {
+				t.Fatalf("%q from %q: got %+v", rel, line, got)
+			}
+		}
 	}
 }

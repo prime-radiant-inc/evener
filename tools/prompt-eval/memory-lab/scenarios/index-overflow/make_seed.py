@@ -53,6 +53,20 @@ def page(title, description, tags, updated, body):
             f"updated: {updated}\nby: seed-fixture\n---\n# {title}\n\n{body}")
 
 
+def seed_pages(filler=FILLER):
+    """The seed's pages, newest first, the target last."""
+    pages = []
+    for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), filler), 1):
+        description = TOPICS[tag].format(n=n)
+        pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
+                      "description": description, "tags": [tag] if n % 4 or tag == "tests" else [tag, "tests"],
+                      "updated": (NEWEST - datetime.timedelta(days=n - 1)).isoformat(),
+                      "body": description + ".\n"})
+    # The target stays the oldest page however many fillers sit in front of it.
+    updated = min(datetime.date.fromisoformat(TARGET["updated"]), NEWEST - datetime.timedelta(days=filler)).isoformat()
+    return pages + [{**TARGET, "updated": updated, "body": TARGET["body"].format(updated=updated)}]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--filler", type=int, default=FILLER, help="pages before the target (default %(default)s)")
@@ -61,16 +75,7 @@ def main():
     seed = os.path.join(args.out, "seed")
     shutil.rmtree(seed, ignore_errors=True)
     os.makedirs(seed)
-    pages = []
-    for n, tag in enumerate(itertools.islice(itertools.cycle(TOPICS), args.filler), 1):
-        description = TOPICS[tag].format(n=n)
-        pages.append({"path": f"{tag}/{tag}-{n:03d}.md", "title": f"{tag.capitalize()} note {n}",
-                      "description": description, "tags": [tag] if n % 4 else [tag, "tests"],
-                      "updated": (NEWEST - datetime.timedelta(days=n - 1)).isoformat(),
-                      "body": description + ".\n"})
-    # The target stays the oldest page however many fillers sit in front of it.
-    updated = min(datetime.date.fromisoformat(TARGET["updated"]), NEWEST - datetime.timedelta(days=args.filler)).isoformat()
-    pages.append({**TARGET, "updated": updated, "body": TARGET["body"].format(updated=updated)})
+    pages = seed_pages(args.filler)
     for p in pages:
         dest = os.path.join(seed, p["path"])
         os.makedirs(os.path.dirname(dest), exist_ok=True)

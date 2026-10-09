@@ -54,13 +54,8 @@ type grepAccum struct {
 	total        int
 }
 
-// newGrepAccum compiles the pattern (with optional case-insensitivity) and
-// initializes the accumulator; maxResults defaults to 100 when non-positive.
-// contextLines (0-10, validated by the caller) adds that many lines of
-// surrounding context around each match in "content"/"" output mode; it has no
-// effect on "files_with_matches" or "count", which report per-file, not
-// per-line.
-func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
+// compileGrepPattern compiles a grep pattern as the native search reads it.
+func compileGrepPattern(pattern string, caseInsensitive bool) (*regexp.Regexp, error) {
 	flags := ""
 	if caseInsensitive {
 		flags = "(?i)"
@@ -68,6 +63,31 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 	re, err := regexp.Compile(flags + pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return re, nil
+}
+
+// CheckGrepArgs reports the error a grep would give for its pattern or its
+// glob filter's brace syntax before searching anything, so a caller that
+// searches nothing can still refuse bad arguments.
+func CheckGrepArgs(pattern, globFilter string, caseInsensitive bool) error {
+	if _, err := expandGrepFilter(globFilter); err != nil {
+		return err
+	}
+	_, err := compileGrepPattern(pattern, caseInsensitive)
+	return err
+}
+
+// newGrepAccum compiles the pattern (with optional case-insensitivity) and
+// initializes the accumulator; maxResults defaults to 100 when non-positive.
+// contextLines (0-10, validated by the caller) adds that many lines of
+// surrounding context around each match in "content"/"" output mode; it has no
+// effect on "files_with_matches" or "count", which report per-file, not
+// per-line.
+func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
+	re, err := compileGrepPattern(pattern, caseInsensitive)
+	if err != nil {
+		return nil, err
 	}
 	if maxResults <= 0 {
 		maxResults = DefaultGrepMaxResults

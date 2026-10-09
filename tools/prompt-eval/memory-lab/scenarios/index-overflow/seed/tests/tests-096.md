@@ -1,6 +1,6 @@
 ---
 description: "Test helper 96 builds catalogs with prices in cents"
-tags: [tests, tests]
+tags: [tests]
 updated: 2026-06-27
 by: seed-fixture
 ---
