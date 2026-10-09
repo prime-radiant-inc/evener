@@ -161,6 +161,10 @@ under-invalidating a count. Revisit only against a measured win.
    every later frame for it would re-read. A genuinely new delegate sorts into
    the first page the read returns and is adopted. Clear the seen-unknown set on
    session replacement and dispose so it cannot grow for the store's lifetime.
+   Keep the latest frame per unknown delegate id (bounded the same way) and apply
+   it once a read admits the row, so a settle that arrives while a later-page
+   read is in flight is not dropped: the admitted row takes the buffered frame by
+   the same join, and an older page cannot leave a running row behind.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
    as today, but do not refresh `delegates`. `evener/thread/resync` still
    refreshes every observed resource.
@@ -245,9 +249,14 @@ never resolved by the hub: the client-facing connection `FeatureSet` is the hub'
 own constant (`cmd/evener-hub/app_rpc.go`), a remote "source" is itself a hub
 whose set is its own, and a local daemon's features are not read by the hub. The
 store enables the no-read merge only for a context that advertises
-`reportPreview`; otherwise it keeps today's behavior — read `delegates` on the
-invalidation — so reports still land. A negative-path test must pin that
-fallback.
+`reportPreview` **and** whose `availability` is `live`; otherwise it keeps
+today's behavior — read `delegates` on the invalidation — so reports still land.
+The `live` requirement matters: invalidations reach every ancestor target, but a
+delegate frame is emitted only through live ancestor runtimes
+(`delegate_update_routing_test.go` pins that a released ancestor gets none), so a
+`retained` context would otherwise suppress the read and never see the frames.
+Prefer extending frame routing to subscribed retained targets; until then, gate
+on `availability`. A negative-path test must pin the fallback.
 
 ## Test and acceptance obligations
 
@@ -289,9 +298,15 @@ fallback.
   covers the new row field and typechecks.
 - **Roster.** `SlimDelegateForRoster` strips the preview fields; a thread/read
   roster row never carries them.
-- **Capability.** A context advertising `reportPreview` merges without reading
-  the collection on an invalidation; a context that does not advertise it keeps
-  reading, so the report still lands.
+- **Capability.** A live context advertising `reportPreview` merges without
+  reading the collection on an invalidation; a context that does not advertise
+  it, or whose `availability` is `retained`, keeps reading, so the report still
+  lands.
+- **Retained delivery.** A real subtree stop with an observed *retained* ancestor
+  shows its descendants reaching stopping through the read path.
+- **Later-page race.** A settled frame for an unloaded delegate that arrives
+  during a later-page read is applied once the row is admitted; the older page
+  does not leave a running row.
 - **Counts.** A count-moving update still refreshes the summary; the Agents
   count never derives from loaded rows.
 - **Web.** Rows update from a frame with no collection read; the boundary test
@@ -319,7 +334,9 @@ fallback.
 | Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
-| Old source with no preview | producer-authored context capability; the read stays unless the source advertises, with a negative-path test. |
+| Old source with no preview | producer-authored context capability; the read stays unless the source advertises. |
+| Retained ancestor: invalidations but no frames | gate the no-read on a live context, or extend frame routing to retained targets. |
+| Later-page frame dropped after its one read | buffer the latest unknown-id frame until a read admits the row. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 
 ## Open questions for Jesse
