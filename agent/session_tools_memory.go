@@ -244,21 +244,28 @@ func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnviron
 // from the root's hand-written MEMORY.md, in any letter case: a match
 // "MEMORY.md:N:text", a context line "MEMORY.md-N-text", a count
 // "MEMORY.md:N" or the bare name.
-var legacyIndexSearchLine = regexp.MustCompile(`(?i)^memory\.md(?::\d+(?::|$)|-\d+-|$)`)
+var legacyIndexSearchLine = regexp.MustCompile(`(?i)^` + regexp.QuoteMeta(memoryIndexFile) + `(?::\d+(?::|$)|-\d+-|$)`)
 
 // withoutLegacyIndexLines is a search of the scope root's output without the
 // hand-written MEMORY.md's lines, and without a "--" group separator left
 // leading, trailing or doubled by dropping them.
 func withoutLegacyIndexLines(out string) string {
 	var kept []string
+	// A separator is written only ahead of the next kept line, and only once
+	// a line has been kept, so none is left leading, trailing or doubled.
+	separated := false
 	for line := range strings.SplitSeq(out, "\n") {
-		if legacyIndexSearchLine.MatchString(line) || line == "--" && (len(kept) == 0 || kept[len(kept)-1] == "--") {
-			continue
+		switch {
+		case legacyIndexSearchLine.MatchString(line):
+		case line == "--":
+			separated = len(kept) > 0
+		default:
+			if separated {
+				kept = append(kept, "--")
+				separated = false
+			}
+			kept = append(kept, line)
 		}
-		kept = append(kept, line)
-	}
-	if n := len(kept); n > 0 && kept[n-1] == "--" {
-		kept = kept[:n-1]
 	}
 	return strings.Join(kept, "\n")
 }

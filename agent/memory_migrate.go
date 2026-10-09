@@ -345,7 +345,7 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	}
 	var out []string
 	for _, entry := range entries {
-		if !entry.IsRegular || !strings.EqualFold(entry.Name, memoryIndexFile) {
+		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) {
 			continue
 		}
 		legacy := filepath.Join(root, entry.Name)
