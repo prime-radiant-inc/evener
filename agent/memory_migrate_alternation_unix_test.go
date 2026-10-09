@@ -214,14 +214,14 @@ func TestBackUpMemoryIndexKeepsItsOwnCopy(t *testing.T) {
 	}
 }
 
-// An index a crashed migration left under its staging name is migrated on
-// the next run: its lines reach their pages, it is backed up, and no
-// private file is left behind.
+// An index a crashed migration left under a private name, staged or
+// copied, is migrated on the next run: its lines reach their pages, it is
+// backed up once, and no private file is left behind.
 func TestMigrateMemoryScopeRecoversAStagedIndex(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
 	index := "- [Fact](fact.md) — the staged fact\n"
-	for name, body := range map[string]string{memoryIndexStagingPrefix + "crashed": index, "fact.md": "# Fact\n"} {
+	for name, body := range map[string]string{memoryIndexStagingPrefix + "crashed": index, memoryBackupCopyPrefix + "crashed": index, "fact.md": "# Fact\n"} {
 		if err := os.WriteFile(filepath.Join(scope, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}

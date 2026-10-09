@@ -156,6 +156,37 @@ func TestProjectMemoryIndexCapsTagLists(t *testing.T) {
 	}
 }
 
+// A scope whose full tag header overflows the cap but whose page lines fit
+// beside the capped header shows every page under that header, with no
+// closing line, so the projection is not truncated.
+func TestProjectMemoryIndexCapsTheHeaderAloneWhenEveryPageFits(t *testing.T) {
+	t.Parallel()
+	var pages []memoryPage
+	for i := range 60 {
+		tag := fmt.Sprintf("a-long-distinct-tag-name-that-takes-room-in-the-header-%03d", i)
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{tag}})
+	}
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	if len(full) <= memoryProjectionCap {
+		t.Fatalf("the whole index fits (%d bytes); the case needs it not to", len(full))
+	}
+	if truncated || len(content) > memoryProjectionCap {
+		t.Fatalf("truncated=%t len=%d, want every page under a capped header", truncated, len(content))
+	}
+	header, _, _ := strings.Cut(content, "\n")
+	if !strings.HasSuffix(header, " more tags") {
+		t.Fatalf("header %q, want it capped", header)
+	}
+	for _, p := range pages {
+		if !strings.Contains(content, memoryIndexLine(p)+"\n") {
+			t.Fatalf("%s missing from %q", p.Path, content)
+		}
+	}
+	if !strings.Contains(full, "a-long-distinct-tag-name-that-takes-room-in-the-header-059 (1)") {
+		t.Fatalf("the whole index's header does not list every tag: %.300q", full)
+	}
+}
+
 // Patching a page's line matches only each line's leading link: a description
 // that quotes another page's link shape is not that page's line.
 func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {

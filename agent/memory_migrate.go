@@ -60,7 +60,8 @@ var errLegacyMemoryIndexChanged = errors.New("hand-written memory index changed 
 const memoryIndexStagingPrefix = ".MEMORY.md.migrating-"
 
 // memoryBackupCopyPrefix starts the private name a backup's bytes are
-// written under before the copy is linked to its backup name.
+// written under before the copy is linked to its backup name. A file left
+// under it by a crash is found like a staged one (see legacyMemoryIndexes).
 const memoryBackupCopyPrefix = ".MEMORY.md.copying-"
 
 // moveLegacyMemoryIndex moves the migrated hand-written index at legacy,
@@ -480,9 +481,10 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 // excludes them all from the pages. Like a page, an index that is not a
 // regular file (a symlink, FIFO or directory) is skipped. The one named exactly
 // MEMORY.md comes first. A case-insensitive filesystem holds at most one,
-// under whatever case it was created with. An index a migration left under
-// its private staging name (removeMigratedMemoryIndex), after a crash, comes
-// last, so it is migrated and backed up too.
+// under whatever case it was created with. A file a crashed migration left
+// under a private name, staged (removeMigratedMemoryIndex) or copied
+// (backUpMemoryIndex), comes last, so it is migrated, backed up unless a
+// backup holds its bytes, and removed.
 func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
 	root := env.WorkingDirectory()
 	entries, err := env.ListDirectory(root, 1)
@@ -496,7 +498,7 @@ func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, erro
 	}
 	var out, stagedOut []string
 	for _, entry := range entries {
-		staged := strings.HasPrefix(entry.Name, memoryIndexStagingPrefix)
+		staged := strings.HasPrefix(entry.Name, memoryIndexStagingPrefix) || strings.HasPrefix(entry.Name, memoryBackupCopyPrefix)
 		if !entry.IsRegular || !isMemoryIndexPath(entry.Name) && !staged {
 			continue
 		}
