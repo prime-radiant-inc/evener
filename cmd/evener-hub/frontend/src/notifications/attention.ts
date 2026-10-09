@@ -24,6 +24,9 @@ export interface AttentionEntry {
   level: "needs_you" | "error";
   askPending: boolean;
   approvalPending: boolean;
+  // The session rests awaiting with no question: its turn ended asking for a
+  // reply (end_reason needs_response). A plain reply rests idle instead.
+  needsResponse: boolean;
 }
 
 export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[] | null): Map<string, AttentionEntry> {
@@ -42,6 +45,8 @@ export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[]
       level,
       askPending: row.ask_pending === true,
       approvalPending,
+      // The hub's AttentionEntry.NeedsResponse rule, for rows.
+      needsResponse: row.state === "awaiting" && row.ask_pending !== true,
     });
   }
   return snapshot;
@@ -65,7 +70,14 @@ export function detectFires(
   const fires: AttentionEntry[] = [];
   for (const [ref, entry] of next) {
     if (prev.has(ref)) continue;
-    if (loudScope === "all" || entry.askPending || entry.approvalPending || entry.level === "error") fires.push(entry);
+    if (
+      loudScope === "all" ||
+      entry.askPending ||
+      entry.approvalPending ||
+      entry.needsResponse ||
+      entry.level === "error"
+    )
+      fires.push(entry);
   }
   return fires;
 }

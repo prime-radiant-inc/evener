@@ -95,8 +95,17 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 		if !tierEligible(le.SessionID, roots, runningSubagents, decisions) {
 			continue
 		}
-		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
-		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk, ApprovalPending: le.PendingEscalation}
+		state := NormalizeState(le.Status)
+		level := promotedAttentionLevel(state, le.PendingEscalation)
+		e := appwire.AttentionEntry{
+			ID:              le.SessionID,
+			Level:           level,
+			AskPending:      le.PendingAsk,
+			ApprovalPending: le.PendingEscalation,
+			// Awaiting with no question is the needs_response rest
+			// (hubapi.StateWord's "Needs you").
+			NeedsResponse: state == "awaiting" && !le.PendingAsk,
+		}
 		if m, ok := meta(le.SessionID); ok {
 			e.Title = nodeTitle(m, nodeKind(m))
 			e.Project = projectName(m)
@@ -142,7 +151,7 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 	var changed []appwire.AttentionChanged
 	for id, e := range cur {
 		prev, had := w.prev[id]
-		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending || prev.ApprovalPending != e.ApprovalPending {
+		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending || prev.ApprovalPending != e.ApprovalPending || prev.NeedsResponse != e.NeedsResponse {
 			pl := "idle"
 			if had {
 				pl = prev.Level
@@ -156,6 +165,7 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 			gone.Level = "idle"
 			gone.AskPending = false
 			gone.ApprovalPending = false
+			gone.NeedsResponse = false
 			changed = append(changed, appwire.AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}
