@@ -225,6 +225,7 @@ export class SessionEntryCache {
       const database = await this.#connection.open();
       transaction = database.transaction([...WRITE_STORES], "readwrite");
       complete = transactionCompletion(transaction);
+      void complete.catch(() => {});
       const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
       const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
       const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);

@@ -4856,9 +4856,13 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "overlay/end": {
       if (!notificationTargetsThread(n, model)) return model;
       const roundId = n.params.roundId;
-      return applyOverlayChange(model, now, (overlay) =>
-        filterOverlay(overlay, (item) => item.kind !== "notice" && item.roundId === roundId),
-      );
+      return applyOverlayChange(model, now, (overlay) => {
+        const isEndedRound = (item: OverlayItem) => item.kind !== "notice" && item.roundId === roundId;
+        const remaining = filterOverlay(overlay, isEndedRound);
+        if (remaining === overlay) return overlay;
+        const ended = filterOverlay(overlay, (item) => !isEndedRound(item));
+        return { ...remaining, ...pruneCoveredOverlay(model.history?.turns ?? [], ended) };
+      });
     }
 
     case "thread/queueChanged": {

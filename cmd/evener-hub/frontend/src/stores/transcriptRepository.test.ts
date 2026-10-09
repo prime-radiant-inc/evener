@@ -6,9 +6,17 @@ import {
   type ThreadModel,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
+import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import {
+  ENTRY_COVERAGE_STORE,
+  ENTRY_ITEM_STORE,
+  entryHistoryKey,
+  type TranscriptResolvedIdentity,
+} from "./sessionCacheSchema";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
+import { holdIndexedDBEvent, holdNextTransaction } from "./testing/stalledIndexedDB";
 import { TranscriptRepository } from "./transcriptRepository";
 
 const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
@@ -116,6 +124,51 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
     seedModel,
     now: () => 100,
   });
+}
+
+function holdNextEntryPut(transcriptKey: string) {
+  const put = IDBObjectStore.prototype.put;
+  let transaction: IDBTransaction | undefined;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let released = false;
+  let markReached!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["put"]>
+  ) {
+    const request = put.apply(this, args);
+    const value = args[0] as { transcriptKey?: string };
+    if (!hold && this.name === ENTRY_ITEM_STORE && value.transcriptKey === transcriptKey) {
+      transaction = this.transaction;
+      request.addEventListener("success", markReached, { once: true });
+      hold = holdIndexedDBEvent(request, "success");
+      request.addEventListener("success", () => {}, { once: true });
+      const pulse = () => {
+        if (released) return;
+        const keepAlive = this.count();
+        keepAlive.addEventListener("success", pulse, { once: true });
+      };
+      pulse();
+    }
+    return request;
+  });
+  return {
+    reached,
+    commit() {
+      released = true;
+      spy.mockRestore();
+      hold?.release();
+    },
+    abort() {
+      transaction?.abort();
+      released = true;
+      spy.mockRestore();
+      hold?.release();
+    },
+  };
 }
 
 afterEach(async () => {
@@ -268,18 +321,65 @@ it("reopens committed nonresident history from bounded local rows without a serv
   writer.dispose();
 
   const summary = read("summary");
-  summary.thread.turns = [];
+  summary.thread.status = { type: "active" };
+  summary.thread.turns = [{ id: "turn_live", itemsView: "full", status: "inProgress", version: 1, items: [] }];
+  summary.thread.evener.activeTurnId = "turn_live";
+  summary.overlay = [
+    {
+      key: "stream:live/1:agentMessage",
+      kind: "stream",
+      turnId: "turn_live",
+      roundId: "live",
+      streamId: "live/1",
+      item: {
+        type: "agentMessage",
+        id: "live-stream",
+        turnId: "turn_live",
+        roundId: "live",
+        text: "live while opening local history",
+        status: "inProgress",
+      },
+    },
+  ];
   const seed = hydrateThread(summary, ref, 101);
   const localOnly = repository(fixture.cache, 2, seed);
   const reader = localOnly.attachReader();
+  const acceptedWireReads = vi.spyOn(localOnly, "acceptRead");
   const opened = await reader.openLocal(40);
   expect(opened.status).toBe("current");
-  expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["persisted"]);
-  expect(opened.model?.runningTurnId).toBe(seed.runningTurnId);
-  expect(localOnly.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(1);
+  expect(acceptedWireReads).not.toHaveBeenCalled();
+  expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual([
+    "live while opening local history",
+    "persisted",
+  ]);
+  expect(opened.model?.runningTurnId).toBe("turn_live");
+  expect(opened.model?.overlay).toMatchObject({
+    "stream:live/1:agentMessage": { item: { text: "live while opening local history" } },
+  });
+  expect(localOnly.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(2);
   reader.dispose();
-  expect(localOnly.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(0);
+  expect(
+    localOnly
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["live while opening local history"]);
   localOnly.dispose();
+});
+
+it("attaches a reader to an already-mounted model by reference without reconstructing history", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const mounted = hydrateThread(read("mounted"), ref, 101);
+  const owner = repository(fixture.cache, 2, mounted);
+  const localQuery = vi.spyOn(fixture.cache, "getLatestWindow");
+  const reader = owner.attachReader();
+
+  expect(reader.getSnapshot()).toBe(mounted);
+  expect(owner.getSnapshot()).toBe(mounted);
+  expect(localQuery).not.toHaveBeenCalled();
+  reader.dispose();
+  owner.dispose();
 });
 
 it("attaches before its local query and keeps the reader subscribed to later accepted reads", async () => {
@@ -313,14 +413,10 @@ it("merges an old local query with pending and later accepted versions without r
   const owner = repository(fixture.cache);
   owner.acceptRead(read("A"), { lifetime: 1, readId: "read-1", boundary: "read-boundary-1" });
   await owner.settled();
-  const oldWindow = await fixture.cache.getLatestWindow(historyKey, 40, "read-boundary-1");
-  let releaseQuery!: (value: typeof oldWindow) => void;
-  const pendingQuery = new Promise<typeof oldWindow>((resolve) => {
-    releaseQuery = resolve;
-  });
-  vi.spyOn(fixture.cache, "getLatestWindow").mockReturnValue(pendingQuery);
+  const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
   const reader = owner.attachReader();
   const opening = reader.openLocal(40);
+  await queryHold.reached;
   owner.acceptRead(read("B", 2), { lifetime: 1, readId: "read-2", boundary: "read-boundary-2" });
   owner.acceptRead(read("C", 3), { lifetime: 1, readId: "read-3", boundary: "read-boundary-3" });
   await owner.settled();
@@ -331,7 +427,7 @@ it("merges an old local query with pending and later accepted versions without r
       .filter((item) => item.transcriptKey === "item-A")
       .map(encodeTranscriptItem),
   ).toMatchObject([{ identityOnly: true, textOmitted: true }]);
-  releaseQuery(oldWindow);
+  queryHold.release();
   const opened = await opening;
   expect(opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["A", "B", "C"]);
   expect(opened.status).toBe("current");
@@ -346,6 +442,38 @@ it("merges an old local query with pending and later accepted versions without r
   reader.dispose();
   owner.dispose();
 });
+
+it.each(["reader disposal", "binding invalidation"] as const)(
+  "does not publish a held local query after %s",
+  async (retirement) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    owner.acceptRead(read("A"), { lifetime: 1, readId: "read-fence", boundary: "read-fence-boundary" });
+    await owner.settled();
+    const publications: ThreadModel[] = [];
+    owner.subscribe(() => {
+      const snapshot = owner.getSnapshot();
+      if (snapshot) publications.push(snapshot);
+    });
+    const queryHold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+    const reader = owner.attachReader();
+    const opening = reader.openLocal(40);
+    await queryHold.reached;
+
+    if (retirement === "reader disposal") reader.dispose();
+    else owner.invalidate();
+    const retiredSnapshot = owner.getSnapshot();
+    queryHold.release();
+    const result = await opening;
+
+    expect(result.status).toBe("recovery-needed");
+    expect(owner.getSnapshot()).toBe(retiredSnapshot);
+    expect(publications).toEqual([]);
+    if (retirement === "binding invalidation") reader.dispose();
+    owner.dispose();
+  },
+);
 
 it("rejects notification frames from an incompatible ref or lifetime", () => {
   const fixture = createEntryCacheFixture();
@@ -365,18 +493,14 @@ it("rejects notification frames from an incompatible ref or lifetime", () => {
   owner.dispose();
 });
 
-it("publishes a recorded item and covered stream retirement together while storage is pending", async () => {
+it("publishes a recorded item and covered stream retirement before the real IDB transaction commits", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
   const snapshots: Array<{ text: string[]; overlay: string[] }> = [];
   owner.acceptRead(read("base"), { lifetime: 1, readId: "read-1", boundary: "read-boundary-1" });
   await owner.settled();
-  let releaseWrite!: (value: { outcome: "committed"; coverage: "unchanged"; encodedBytes: number }) => void;
-  const writeHold = new Promise<{ outcome: "committed"; coverage: "unchanged"; encodedBytes: number }>((resolve) => {
-    releaseWrite = resolve;
-  });
-  const commit = vi.spyOn(fixture.cache, "commitBatch").mockReturnValue(writeHold);
+  const writeHold = holdNextEntryPut("recorded-item");
   const overlay: AnyNotification = {
     method: "overlay/upserted",
     params: {
@@ -400,7 +524,6 @@ it("publishes a recorded item and covered stream retirement together while stora
     },
   };
   owner.accept(overlay, { lifetime: 1 });
-  expect(commit).not.toHaveBeenCalled();
   owner.accept(
     {
       method: "overlay/delta",
@@ -408,7 +531,46 @@ it("publishes a recorded item and covered stream retirement together while stora
     } as AnyNotification,
     { lifetime: 1 },
   );
-  expect(commit).not.toHaveBeenCalled();
+  for (const item of [
+    {
+      key: "stream:round-1/2:reasoning",
+      kind: "stream",
+      turnId: "turn_1",
+      roundId: "round-1",
+      streamId: "round-1/2",
+      item: { type: "reasoning", id: "reasoning-live", turnId: "turn_1", roundId: "round-1", text: "thinking" },
+    },
+    {
+      key: "preview:preview-call",
+      kind: "preview",
+      turnId: "turn_1",
+      roundId: "round-1",
+      streamId: "round-1/2",
+      callId: "preview-call",
+      item: { type: "agentMessage", id: "preview-live", turnId: "turn_1", callId: "preview-call", text: "preview" },
+    },
+    {
+      key: "tool:tool-history",
+      kind: "tool",
+      turnId: "turn_1",
+      roundId: "round-1",
+      callId: "tool-call",
+      historyKey: "tool-history",
+      item: {
+        type: "commandExecution",
+        id: "tool-live",
+        turnId: "turn_1",
+        roundId: "round-1",
+        callId: "tool-call",
+        output: "tool output",
+        status: "inProgress",
+      },
+    },
+  ]) {
+    owner.accept({ method: "overlay/upserted", params: { ref, threadId, item } } as unknown as AnyNotification, {
+      lifetime: 1,
+    });
+  }
   expect(
     owner
       .getSnapshot()
@@ -441,21 +603,184 @@ it("publishes a recorded item and covered stream retirement together while stora
           roundId: "round-1",
           text: "recorded",
         },
+        {
+          type: "reasoning",
+          id: "reasoning-recorded",
+          transcriptKey: "reasoning-recorded",
+          turnId: "turn_1",
+          position: { entry: 3, item: 0 },
+          version: 2,
+          roundId: "round-1",
+          text: "reasoning recorded",
+        },
+        {
+          type: "agentMessage",
+          id: "preview-recorded",
+          transcriptKey: "preview-recorded",
+          turnId: "turn_1",
+          position: { entry: 4, item: 0 },
+          version: 2,
+          callId: "preview-call",
+          text: "preview recorded",
+        },
+        {
+          type: "commandExecution",
+          id: "tool-recorded",
+          transcriptKey: "tool-history",
+          turnId: "turn_1",
+          position: { entry: 5, item: 0 },
+          version: 2,
+          callId: "tool-call",
+          output: "tool recorded",
+          status: "completed",
+          completedAtEntry: 5,
+        },
       ],
     },
   };
   expect(owner.accept(replacement, { lifetime: 1 })).toBe(true);
   expect(snapshots).toHaveLength(1);
-  expect(snapshots[0]).toMatchObject({ text: expect.arrayContaining(["recorded"]), overlay: [] });
-  expect(commit).toHaveBeenCalledTimes(1);
-  expect(commit.mock.calls[0]?.[0]).toMatchObject({
-    items: [{ transcriptKey: "recorded-item" }],
-    turns: [{ id: "turn_1", items: [] }],
-    coverage: { kind: "suffix", representedSnapshot: 2 },
+  expect(snapshots[0]).toMatchObject({
+    text: expect.arrayContaining(["recorded", "reasoning recorded", "preview recorded"]),
+    overlay: [],
   });
-  releaseWrite({ outcome: "committed", coverage: "unchanged", encodedBytes: 0 });
+  await writeHold.reached;
+  let settled = false;
+  void owner.settled().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  writeHold.commit();
   await owner.settled();
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([
+    { transcriptKey: "item-base" },
+    { transcriptKey: "recorded-item", item: { text: "recorded" } },
+    { transcriptKey: "reasoning-recorded", item: { text: "reasoning recorded" } },
+    { transcriptKey: "preview-recorded", item: { text: "preview recorded" } },
+    { transcriptKey: "tool-history", item: { output: "tool recorded" } },
+  ]);
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-1")).resolves.toMatchObject({
+    representedSnapshot: 2,
+  });
+  expect(snapshots).toHaveLength(1);
+  owner.dispose();
+});
+
+it("keeps accepted publication after the real entry transaction aborts", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-abort", boundary: "read-abort-boundary" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const snapshots: string[][] = [];
+  owner.subscribe(() =>
+    snapshots.push(
+      owner
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text) ?? [],
+    ),
+  );
+  const writeHold = holdNextEntryPut("aborted-item");
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "aborted-item",
+            transcriptKey: "aborted-item",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 2,
+            text: "visible but aborted",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  await writeHold.reached;
+  expect(snapshots).toHaveLength(1);
+  expect(snapshots[0]).toContain("visible but aborted");
+  writeHold.abort();
+  await owner.settled();
+
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toContain("visible but aborted");
   await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([{ transcriptKey: "item-base" }]);
+  await expect(fixture.cache.getCoverage(historyKey, "read:read-abort")).resolves.toMatchObject({
+    representedSnapshot: 1,
+  });
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-abort")).resolves.toBeUndefined();
+  expect(snapshots).toHaveLength(1);
+  reader.dispose();
+  owner.dispose();
+});
+
+it("refuses a stale-epoch entry write after real Clear and keeps mounted content current only for display", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-clear", boundary: "read-clear-boundary" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const clearCache = new SessionCacheIndexedDB({
+    indexedDB: fixture.indexedDB,
+    databaseName: fixture.name,
+    databaseVersion: 3,
+  });
+  expect(await clearCache.clear()).toEqual({ committed: true, epoch: 1 });
+  clearCache.close();
+
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [
+          {
+            type: "agentMessage",
+            id: "after-clear",
+            transcriptKey: "after-clear",
+            turnId: "turn_1",
+            position: { entry: 2, item: 0 },
+            version: 2,
+            text: "visible after clear",
+          },
+        ],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  await owner.settled();
+
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toContain("visible after clear");
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([{ transcriptKey: "item-base" }]);
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-clear")).resolves.toBeUndefined();
+  reader.dispose();
   owner.dispose();
 });
 
@@ -508,6 +833,87 @@ it("extends producer-complete suffix coverage across an old update and distant n
   });
   const reader = owner.attachReader();
   expect((await reader.openLocal(40)).status).toBe("current");
+  reader.dispose();
+  owner.dispose();
+});
+
+it("does not certify isolated old-plus-distant input after history authority breaks", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(50);
+  baseline.snapshot = { incarnation: identity.incarnation, length: 8_004 };
+  owner.acceptRead(baseline, { lifetime: 1, readId: "read-broken", boundary: "read-broken-boundary" });
+  await owner.settled();
+
+  expect(
+    owner.accept(
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "2",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 12_000 },
+          items: [],
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(false);
+
+  expect(
+    owner.accept(
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 19_431 },
+          items: [
+            {
+              type: "agentMessage",
+              id: "isolated-old",
+              transcriptKey: "item-2",
+              turnId: "turn_1",
+              position: { entry: 2, item: 0 },
+              version: 52,
+              text: "isolated old update",
+            },
+            {
+              type: "agentMessage",
+              id: "isolated-distant",
+              transcriptKey: "item-51",
+              turnId: "turn_1",
+              position: { entry: 51, item: 0 },
+              version: 53,
+              text: "isolated distant entry",
+            },
+          ],
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  await owner.settled();
+
+  await expect(fixture.cache.getCoverage(historyKey, "suffix:read-broken")).resolves.toBeUndefined();
+  await expect(fixture.cache.getCoverage(historyKey, "read:read-broken")).resolves.toMatchObject({
+    representedSnapshot: 8_004,
+    end: { entry: 50 },
+  });
+  const rows = await fixture.cache.getLatest(historyKey, 100);
+  expect(rows).toHaveLength(51);
+  expect(rows[0]).toMatchObject({ transcriptKey: "item-1", item: { text: "row-1" } });
+  expect(rows.find((row) => row.transcriptKey === "item-2")).toMatchObject({
+    item: { text: "isolated old update" },
+  });
+  expect(rows.at(-1)).toMatchObject({ transcriptKey: "item-51", item: { text: "isolated distant entry" } });
+  const reader = owner.attachReader();
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
   reader.dispose();
   owner.dispose();
 });
