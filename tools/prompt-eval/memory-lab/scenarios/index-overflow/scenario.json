@@ -1,6 +1,7 @@
 {
   "arms": [
-    "on"
+    "on",
+    "off"
   ],
   "fixture_from": "migration",
   "stages": [
