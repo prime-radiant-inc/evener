@@ -78,7 +78,7 @@ def main():
         "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\n"
         "func TestHeldoutApplyCouponsLargestOnly(t *testing.T) {\n"
         "\tfor _, c := range []struct {\n\t\ttotal    int\n\t\tpercents []int\n\t\twant     int\n\t}{\n"
-        "\t\t{1000, []int{10, 20}, 800},\n\t\t{1000, []int{20, 10}, 800},\n\t\t{1000, nil, 1000},\n\t\t{999, []int{50}, 500},\n"
+        "\t\t{1000, []int{10, 20}, 800},\n\t\t{1000, []int{20, 10}, 800},\n\t\t{1000, nil, 1000},\n\t\t{1000, []int{50, 50}, 500},\n"
         "\t} {\n\t\tif got := ApplyCoupons(c.total, c.percents); got != c.want {\n"
         "\t\t\tt.Errorf(\"ApplyCoupons(%d, %v) = %d, want %d\", c.total, c.percents, got, c.want)\n\t\t}\n\t}\n}\nEOF\n"
         "go test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"

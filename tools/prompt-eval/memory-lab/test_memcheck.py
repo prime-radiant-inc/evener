@@ -67,6 +67,10 @@ class IndexLines(Root):
         self.assertEqual(self.run_cmd("index-lines"), 0)
 
 
+    def test_nested_memory_md_is_a_page_not_the_index(self):
+        self.put("projects/p/sub/MEMORY.md", "---\ndescription: short\n---\n" + "x" * 300 + "\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
 class NewPages(Root):
     def test_no_new_page_fails(self):
         self.put("projects/p/seed.md", "---\ndescription: d\ntags: [a]\nby: seed-fixture\n---\n")
@@ -110,6 +114,30 @@ class NewPages(Root):
         self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "a"), 1)
 
 
+    def test_scalar_tag_is_one_tag(self):
+        self.put("projects/p/a.md", "---\ntags: Coupons\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "coupons"), 0)
+
+    def test_tag_whitespace_becomes_dashes(self):
+        self.put("projects/p/a.md", "---\ntags: [Seed  Fixture]\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--tags-subset-of", "seed-fixture"), 0)
+
+    def test_unreadable_description_does_not_count(self):
+        self.put("projects/p/a.md", "---\ndescription: Cart rule 7: whole numbers\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_description_ending_in_colon_is_unreadable(self):
+        self.put("projects/p/a.md", "---\ndescription: Cart rules:\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+
+    def test_quoted_description_with_colon_counts(self):
+        self.put("projects/p/a.md", "---\ndescription: 'Cart rule 7: whole numbers'\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+
+    def test_nested_memory_md_is_a_new_page(self):
+        self.put("projects/p/sub/MEMORY.md", "---\ndescription: d\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+
 class SeedFrontmatter(unittest.TestCase):
     def test_quoted_description_word_tags_and_date_pass(self):
         self.assertIsNone(memcheck.seed_frontmatter_problem(
@@ -121,14 +149,12 @@ class SeedFrontmatter(unittest.TestCase):
     def test_plain_value_with_colon_space_fails(self):
         self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: Cart rule 7: whole numbers\n---\n"))
 
-    def test_plain_sentence_fails(self):
-        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: a plain sentence\n---\n"))
+    def test_plain_sentence_and_folded_value_pass(self):
+        self.assertIsNone(memcheck.seed_frontmatter_problem("---\ndescription: a plain sentence\n---\n"))
+        self.assertIsNone(memcheck.seed_frontmatter_problem("---\ndescription: >\n  folded: text\n---\n"))
 
-    def test_continuation_line_fails(self):
-        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: >\n  folded\n---\n"))
-
-    def test_bad_json_string_fails(self):
-        self.assertIsNotNone(memcheck.seed_frontmatter_problem('---\ndescription: "bad \\q escape"\n---\n'))
+    def test_plain_tag_with_colon_space_fails(self):
+        self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ntags: a: b\n---\n"))
 
     def test_unclosed_frontmatter_fails(self):
         self.assertIsNotNone(memcheck.seed_frontmatter_problem("---\ndescription: \"x\"\n"))

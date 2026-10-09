@@ -8,19 +8,19 @@ memory root as $XDG_STATE_HOME, so a scenario runs:
     python3 "$LAB_DIR/memcheck.py" new-pages --require-description --tags-subset-of a,b
 
 index-lines   Exit 1 when an index line is over 200 characters. A frontmatter
-              page's index line is its description; a MEMORY.md (a build without
-              the generated index) contributes each of its lines. Characters are
-              runes, not bytes.
-new-pages     Looks only at project pages the stage wrote (not MEMORY.md, not
-              marked `by: seed-fixture`). Exit 1 when it wrote none, or when
-              --require-description is set and one has no description, or when
-              --tags-subset-of is set and one has no tags or a tag outside the list.
+              page's index line is its description; a scope's root MEMORY.md (a
+              build without the generated index) contributes each of its lines.
+              Characters are runes, not bytes.
+new-pages     Looks only at project pages the stage wrote (not the root MEMORY.md,
+              not marked `by: seed-fixture`). Exit 1 when it wrote none, or when
+              --require-description is set and one has no readable description, or
+              when --tags-subset-of is set and one has no tags or a tag outside the list.
 
 memory-lab check also imports seed_frontmatter_problem to vet scenario seeds.
 
 Standard library only; run `python3 -B test_memcheck.py` for its tests.
 """
-import argparse, glob, json, os, re, sys
+import argparse, glob, os, re, sys
 
 MAX_INDEX_LINE = 200
 
@@ -43,13 +43,37 @@ def unquote(value):
     return value
 
 
+class Unreadable(ValueError):
+    """Frontmatter that is not valid YAML; the product lists its page as "(frontmatter unreadable)"."""
+
+
+def plain_value(value):
+    """value, an unquoted one-line scalar, or Unreadable when YAML would read a
+    mapping in it: a ": " inside it or a ":" at its end."""
+    if ": " in value or value.endswith(":"):
+        raise Unreadable(f"unquoted value {value!r} holds a ':' that YAML reads as a mapping")
+    return value
+
+
+def normalize_tags(items):
+    """The product's tag rules (normalizeMemoryTags): trimmed, lowercased, runs
+    of whitespace as "-", empty tags and duplicates dropped."""
+    tags = []
+    for item in items:
+        tag = "-".join(unquote(item).lower().split())
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
 def parse_frontmatter(text):
     """The page's top-level frontmatter keys as {key: value} and its tags list.
 
-    Returns None when there is no frontmatter block. A value may be plain,
-    quoted, or a folded/literal block scalar (> or |) with indented
-    continuation lines, which join with spaces. tags is a flow list
-    `[a, b]` or a block list of `- a` lines, lowercased."""
+    Returns None when there is no frontmatter block, and raises Unreadable on
+    the invalid YAML a model most often writes (plain_value). A value may be
+    plain, quoted, or a folded/literal block scalar (> or |) with indented
+    continuation lines, which join with spaces. tags is a flow list `[a, b]`,
+    a block list of `- a` lines, or one scalar tag (normalize_tags)."""
     block = split_frontmatter(text)
     if block is None:
         return None
@@ -65,45 +89,32 @@ def parse_frontmatter(text):
         while i < len(block) and (block[i].startswith((" ", "\t")) or (key == "tags" and block[i].startswith("- "))):
             rest.append(block[i].strip())
             i += 1
+        quoted = value[:1] in ("'", '"')
         if key == "tags":
             if value.startswith("["):
-                tags = [unquote(t) for t in value.strip("[]").split(",")]
+                tags = normalize_tags(value.strip("[]").split(","))
+            elif value:
+                tags = normalize_tags([value if quoted else plain_value(value)])
             else:
-                tags = [unquote(r[2:]) for r in rest if r.startswith("- ")]
-            tags = [t.lower() for t in tags if t]
+                tags = normalize_tags(r[2:] for r in rest if r.startswith("- "))
         elif re.match(r"^[>|][+-]?$", value):
             fields[key] = " ".join(rest).strip()
         else:
-            fields[key] = unquote(" ".join([value] + rest))
+            joined = " ".join([value] + rest)
+            fields[key] = unquote(joined) if quoted else plain_value(joined)
     return fields, tags
 
 
-# The frontmatter values a seed page may use: a JSON string, which is also a valid
-# YAML double-quoted scalar, a flow list of plain words, or one plain word or date.
-SEED_VALUE = re.compile(r'^(".*"|\[[\w-]+(, [\w-]+)*\]|[\w][\w.-]*)$')
-
-
 def seed_frontmatter_problem(text):
-    """Why a seeded page's frontmatter might not parse as YAML, or None when it will.
-
-    memory-lab check runs this over every seed page. Rather than parse YAML, it
-    accepts only `key: value` lines whose value is in SEED_VALUE: a bare value
-    holding ": " is invalid YAML, and the product lists a page whose
-    frontmatter fails to parse as "(frontmatter unreadable)" with no date."""
+    """Why a seeded page's frontmatter would not parse, or None when it will.
+    memory-lab check runs this over every seed page."""
     if text.split("\n", 1)[0].rstrip() != "---":
         return None
-    block = split_frontmatter(text)
-    if block is None:
-        return "frontmatter has no closing ---"
-    for line in block:
-        m = re.match(r"^[A-Za-z_][\w-]*: (.*)$", line)
-        if not (m and SEED_VALUE.match(m.group(1))):
-            return f"frontmatter line {line!r} is not key: followed by a JSON string, a [word, ...] list or one word"
-        if m.group(1).startswith('"'):
-            try:
-                json.loads(m.group(1))
-            except ValueError as e:
-                return f"frontmatter line {line!r}: {e}"
+    try:
+        if parse_frontmatter(text) is None:
+            return "frontmatter has no closing ---"
+    except Unreadable as e:
+        return str(e)
     return None
 
 
@@ -117,14 +128,29 @@ def memory_files(root, scopes):
         yield from sorted(glob.glob(os.path.join(root, "evener", "memory", scope, "**", "*.md"), recursive=True))
 
 
+def is_root_index(root, path):
+    """Whether path is a scope's root MEMORY.md (the product matches its name
+    without regard to case); a MEMORY.md further down is an ordinary page."""
+    rel = os.path.relpath(path, os.path.join(root, "evener", "memory")).split(os.sep)
+    return rel[-1].lower() == "memory.md" and len(rel) == (2 if rel[0] == "personal" else 3)
+
+
+def readable_frontmatter(path):
+    """The page's (fields, tags), with ({}, []) for a page without frontmatter or
+    with Unreadable frontmatter, as the product reads neither's description."""
+    try:
+        return parse_frontmatter(read(path)) or ({}, [])
+    except Unreadable as e:
+        print(f"{path}: frontmatter unreadable: {e}", file=sys.stderr)
+        return {}, []
+
+
 def index_lines_ok(root):
     for path in memory_files(root, ["personal", "projects/*"]):
-        text = read(path)
-        if os.path.basename(path) == "MEMORY.md":
-            lines = text.split("\n")
+        if is_root_index(root, path):
+            lines = read(path).split("\n")
         else:
-            parsed = parse_frontmatter(text)
-            lines = [parsed[0].get("description", "")] if parsed else []
+            lines = [readable_frontmatter(path)[0].get("description", "")]
         for line in lines:
             if len(line) > MAX_INDEX_LINE:
                 print(f"{path}: index line is {len(line)} characters", file=sys.stderr)
@@ -135,8 +161,10 @@ def index_lines_ok(root):
 def new_pages_ok(root, require_description, tags_subset):
     new = 0
     for path in memory_files(root, ["projects/*"]):
-        fields, tags = parse_frontmatter(read(path)) or ({}, [])
-        if os.path.basename(path) == "MEMORY.md" or fields.get("by") == "seed-fixture":
+        if is_root_index(root, path):
+            continue
+        fields, tags = readable_frontmatter(path)
+        if fields.get("by") == "seed-fixture":
             continue
         new += 1
         if require_description and not fields.get("description"):
