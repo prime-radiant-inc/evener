@@ -18,10 +18,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// The memory refresh delivers a scope's full index only when the session has
-// no baseline for it (start, resume, compaction) and never echoes the
-// session's own index writes. These tests drive the real turn loop with a
-// scripted provider and play other sessions by writing files under the
+// The memory refresh delivers a scope's full generated index only when the
+// session has no baseline for it (start, resume, compaction) and never echoes
+// the session's own page writes. These tests drive the real turn loop with a
+// scripted provider and play other sessions by writing pages under the
 // memory root between model calls.
 
 // memoryContextMessages counts the memory-context messages a request carries.
@@ -35,24 +35,17 @@ func memoryContextMessages(req llm.Request) int {
 	return n
 }
 
-func writeMemoryIndex(t *testing.T, path, body string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// Another session's index write during a turn reaches no later model call of
+// Another session's page write during a turn reaches no later model call of
 // that turn.
 func TestMemoryRefreshSkipsLaterRoundsOfATurn(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-round-1\n")
+	memorySeedPage(t, root, "personal", "a.md", "opaque-round-1")
 	var first int
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(req llm.Request) llm.Response {
 			first = memoryContextMessages(req)
-			writeMemoryIndex(t, path, "opaque-round-1\nopaque-round-2\n")
+			memorySeedPage(t, root, "personal", "b.md", "opaque-round-2")
 			return memoryCallResponse("memory_search", map[string]any{"scope": "personal", "pattern": "opaque-absent"})
 		},
 		func(req llm.Request) llm.Response {
@@ -70,18 +63,18 @@ func TestMemoryRefreshSkipsLaterRoundsOfATurn(t *testing.T) {
 	}
 }
 
-// The session's own memory_edit of MEMORY.md becomes its baseline: neither the
-// rest of the turn nor the next turn carries a refresh of it.
-func TestMemoryRefreshIgnoresOwnIndexEdit(t *testing.T) {
+// The session's own memory_edit of a page's description becomes its baseline:
+// neither the rest of the turn nor the next turn carries a refresh of it.
+func TestMemoryRefreshIgnoresOwnPageDescriptionEdit(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-own-1\n")
+	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-own-1")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "fact.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "old_string": "opaque-own-1", "new_string": "opaque-own-2"})
+			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "opaque-own-1", "new_string": "opaque-own-2"})
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
@@ -99,8 +92,8 @@ func TestMemoryRefreshIgnoresOwnIndexEdit(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(path); err != nil || string(got) != "opaque-own-2\n" {
-		t.Fatalf("index=%q err=%v, want the edit applied", got, err)
+	if got, err := os.ReadFile(path); err != nil || !strings.Contains(string(got), "description: opaque-own-2\n") {
+		t.Fatalf("page=%q err=%v, want the edit applied", got, err)
 	}
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
@@ -115,21 +108,21 @@ func TestMemoryRefreshIgnoresOwnIndexEdit(t *testing.T) {
 func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 	t.Parallel()
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-full-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-full-1")
 	s := newScriptedSummaryCompactSession(t, "memory-refresh-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-refresh-fold")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}))
-	wantFull := func(body string) func(llm.Request) llm.Response {
+	wantFull := func(marker string) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
 			state, got, _ := memoryRequestIndex(t, req, "personal")
-			if state != "current" || got != body {
-				t.Fatalf("personal index state=%s body=%q, want current %q", state, got, body)
+			if want := memoryExpectedIndex(t, root, "personal"); state != "current" || got != want || !strings.Contains(got, marker) {
+				t.Fatalf("personal index state=%s body=%q, want current %q with %s", state, got, want, marker)
 			}
 			return finalResponse("observed")
 		}
 	}
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("opaque-full-1\n"), wantFull("opaque-full-2\n"), wantFull("opaque-full-2\n"),
+		wantFull("opaque-full-1"), wantFull("opaque-full-2"), wantFull("opaque-full-2"),
 	}})
 	turn := func(sess *Session, wantContexts int) {
 		t.Helper()
@@ -141,7 +134,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 		}
 	}
 	turn(s, 1)
-	writeMemoryIndex(t, path, "opaque-full-2\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-full-2")
 	for range 12 {
 		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old"), llm.User("opaque-old"))
 	}
@@ -165,31 +158,33 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 	}
 	defer r.Close()
 	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("opaque-full-2\n"), wantFull("opaque-full-2\n"),
+		wantFull("opaque-full-2"), wantFull("opaque-full-2"),
 	}})
 	restored := memoryContextCount(r)
 	turn(r, restored+1)
 	turn(r, restored+1)
 }
 
-// A first empty index projects nothing and leaves the session without a
-// baseline, so content another session adds later arrives as the full index
+// A first scope with no pages projects nothing and leaves the session without
+// a baseline, so a page another session adds later arrives as the full index
 // at the next turn.
-func TestMemoryRefreshEmptyIndexThenContentDeliversFullIndex(t *testing.T) {
+func TestMemoryRefreshNoPagesThenAPageDeliversFullIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "")
+	if err := os.MkdirAll(filepath.Join(root, "memory", "personal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 0 {
-				t.Fatalf("empty index produced %d memory contexts, want 0", got)
+				t.Fatalf("a scope with no pages produced %d memory contexts, want 0", got)
 			}
 			return finalResponse("first")
 		},
 		func(req llm.Request) llm.Response {
 			state, body, _ := memoryRequestIndex(t, req, "personal")
-			if state != "current" || body != "opaque-later-1\n" {
-				t.Fatalf("personal index state=%s body=%q, want current %q", state, body, "opaque-later-1\n")
+			if want := memoryExpectedIndex(t, root, "personal"); state != "current" || body != want || !strings.Contains(body, "opaque-later-1") {
+				t.Fatalf("personal index state=%s body=%q, want current %q", state, body, want)
 			}
 			return finalResponse("second")
 		},
@@ -197,20 +192,21 @@ func TestMemoryRefreshEmptyIndexThenContentDeliversFullIndex(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
-	writeMemoryIndex(t, path, "opaque-later-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-later-1")
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// With no index at start, the session's own memory_write of MEMORY.md becomes
+// With no pages at start, the session's own memory_write of a page becomes
 // its baseline: neither the next round nor the next turn echoes it back.
-func TestMemoryRefreshIgnoresOwnIndexWriteWithoutIndex(t *testing.T) {
+func TestMemoryRefreshIgnoresOwnPageWriteWithoutPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
+	const page = "---\ndescription: opaque-own-page-1\n---\n"
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-own-index-1\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": page})
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 0 {
@@ -231,23 +227,23 @@ func TestMemoryRefreshIgnoresOwnIndexWriteWithoutIndex(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "MEMORY.md")); err != nil || string(got) != "opaque-own-index-1\n" {
-		t.Fatalf("index=%q err=%v, want the write applied", got, err)
+	if got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "fact.md")); err != nil || string(got) != strings.TrimSuffix(page, "---\n")+memoryOwnStamps(s)+"---\n" {
+		t.Fatalf("page=%q err=%v, want the write applied", got, err)
 	}
 }
 
-// The session's own memory_delete of its index is not echoed back as a
+// The session's own memory_delete of its only page is not echoed back as a
 // missing index at the next turn.
-func TestMemoryRefreshIgnoresOwnIndexDelete(t *testing.T) {
+func TestMemoryRefreshIgnoresOwnPageDelete(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-doomed-1\n")
+	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-doomed-1")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "fact.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "fact.md"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("deleted") },
 		func(req llm.Request) llm.Response {
@@ -261,34 +257,38 @@ func TestMemoryRefreshIgnoresOwnIndexDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		t.Fatalf("index still present after delete: %v", err)
+		t.Fatalf("page still present after delete: %v", err)
 	}
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// An index that is empty when compaction re-delivers it becomes no baseline,
-// so content another session adds afterwards arrives as the full index at the
-// next turn.
-func TestMemoryRefreshEmptyIndexAfterCompactionThenContentDeliversFullIndex(t *testing.T) {
+// A scope whose pages are gone when compaction re-delivers it is projected
+// as missing and becomes no baseline, so a page another session adds
+// afterwards arrives as the full index at the next turn.
+func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-before-fold-1\n")
+	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-before-fold-1")
 	s := newScriptedSummaryCompactSession(t, "memory-refresh-empty-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-empty-fold")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
-	wantFull := func(body string) func(llm.Request) llm.Response {
+	wantFull := func(wantState, marker string) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
 			state, got, _ := memoryRequestIndex(t, req, "personal")
-			if state != "current" || got != body {
-				t.Fatalf("personal index state=%s body=%q, want current %q", state, got, body)
+			want := ""
+			if wantState == "current" {
+				want = memoryExpectedIndex(t, root, "personal")
+			}
+			if state != wantState || got != want || !strings.Contains(got, marker) {
+				t.Fatalf("personal index state=%s body=%q, want %s %q with %q", state, got, wantState, want, marker)
 			}
 			return finalResponse("observed")
 		}
 	}
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("opaque-before-fold-1\n"), wantFull(""), wantFull("opaque-after-fold-2\n"),
+		wantFull("current", "opaque-before-fold-1"), wantFull("missing", ""), wantFull("current", "opaque-after-fold-2"),
 	}})
 	turn := func() {
 		t.Helper()
@@ -297,7 +297,9 @@ func TestMemoryRefreshEmptyIndexAfterCompactionThenContentDeliversFullIndex(t *t
 		}
 	}
 	turn()
-	writeMemoryIndex(t, path, "")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 	for range 12 {
 		s.appendTurnWithTranscriptMessage(schema.TurnUserInput, llm.User("opaque-old"), llm.User("opaque-old"))
 	}
@@ -305,16 +307,27 @@ func TestMemoryRefreshEmptyIndexAfterCompactionThenContentDeliversFullIndex(t *t
 		t.Fatal(err)
 	}
 	turn()
-	writeMemoryIndex(t, path, "opaque-after-fold-2\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-after-fold-2")
 	turn()
 }
 
-// The baseline holds the index as projected, cut at the projection's cap,
-// never the whole file.
-func TestMemoryRefreshBaselineIsBoundedByTheProjectionCap(t *testing.T) {
+// memorySeedManyPages writes count pages into scope, each stamped updated and
+// with a description long enough that the rendered index outgrows the
+// projection budget, and returns them as listed.
+func memorySeedManyPages(t *testing.T, root, scope string, count int, updated string) []memoryPage {
+	t.Helper()
+	for i := range count {
+		memorySeedPage(t, root, scope, fmt.Sprintf("p%03d.md", i), fmt.Sprintf("opaque-filler-%03d-%s", i, strings.Repeat("x", 40)), memorySeedUpdated(updated))
+	}
+	return memoryListedPages(t, root, scope)
+}
+
+// The baseline holds the whole rendered index, past the projection budget, so
+// a page moving past the budget is never a change.
+func TestMemoryRefreshBaselineIsTheFullRenderedIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", strings.Repeat("opaque-long-line\n", 2000))
+	pages := memorySeedManyPages(t, root, "personal", 200, "2026-10-01")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response { return finalResponse("observed") },
 	))
@@ -322,8 +335,8 @@ func TestMemoryRefreshBaselineIsBoundedByTheProjectionCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseline, known := s.memoryBaselineFor("personal")
-	if !known || len(baseline.index) > 8192 {
-		t.Fatalf("baseline known=%t holds %d bytes, want at most the 8192-byte projection cap", known, len(baseline.index))
+	if want := renderMemoryIndex(pages); !known || baseline.index != want || len(want) <= memoryProjectionCap {
+		t.Fatalf("baseline known=%t holds %d bytes, want the whole %d-byte rendering past the %d-byte budget", known, len(baseline.index), len(want), memoryProjectionCap)
 	}
 }
 
@@ -349,7 +362,7 @@ func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
 			close(r.release)
 		}
 	})
-	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryBeforeIO: func(scope, op string) error {
+	r.s = newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: r.clk, testOnly: testConfig{memoryRealBudget: true, memoryBeforeIO: func(scope, op string) error {
 		if op == "index_read" && scope == "personal" {
 			r.reads.Add(1)
 			if r.stall.Load() {
@@ -397,7 +410,7 @@ func (r *stalledMemoryRefresh) finish(flight *memoryIndexFlight) {
 func TestMemoryRefreshStalledReadOfKnownScopeAppendsNothing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-stall-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-stall-1")
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 1 {
@@ -417,16 +430,16 @@ func TestMemoryRefreshStalledReadOfKnownScopeAppendsNothing(t *testing.T) {
 	}
 }
 
-// The session's own index write while its turn-start read is still in flight
+// The session's own page write while its turn-start read is still in flight
 // is not echoed back by any later boundary.
-func TestMemoryRefreshOwnWriteDuringStalledReadIsNotEchoed(t *testing.T) {
+func TestMemoryRefreshOwnPageWriteDuringStalledReadIsNotEchoed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-before-write-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-before-write-1")
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	flight := r.stalledBoundary(t)
-	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-own-write-2\n"}); res.IsError {
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "---\ndescription: opaque-own-write-2\n---\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	// The next boundary meets the read the write made stale and lets it
@@ -453,13 +466,14 @@ func latestMemoryContext(req llm.Request, scope string) string {
 	return latest
 }
 
-// Another session's index write reaches the next turn as the changed lines
-// only, never the full index again; the unchanged turn after it carries
-// nothing new.
+// Another session's page changes reach the next turn as the changed index
+// lines only, never the full index again; the unchanged turn after it
+// carries nothing new.
 func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-kept-1\nopaque-dropped-2\n")
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept-1")
+	dropped := memorySeedPage(t, root, "personal", "dropped.md", "opaque-dropped-2")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(req llm.Request) llm.Response {
@@ -489,7 +503,10 @@ func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
 		}
 	}
 	turn()
-	writeMemoryIndex(t, path, "opaque-kept-1\nopaque-added-3\n")
+	if err := os.Remove(dropped); err != nil {
+		t.Fatal(err)
+	}
+	memorySeedPage(t, root, "personal", "added.md", "opaque-added-3")
 	turn()
 	if !strings.Contains(delta, "opaque-added-3") || !strings.Contains(delta, "opaque-dropped-2") {
 		t.Fatalf("delta lacks the added or removed line: %q", delta)
@@ -508,7 +525,7 @@ func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
 func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-small-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-small-1")
 	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response { return finalResponse("first") },
@@ -523,11 +540,9 @@ func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
-	var big strings.Builder
 	for i := range 200 {
-		fmt.Fprintf(&big, "opaque-bulk-line-%03d-%s\n", i, strings.Repeat("x", 20))
+		memorySeedPage(t, root, "personal", fmt.Sprintf("bulk-%03d.md", i), fmt.Sprintf("opaque-bulk-line-%03d-%s", i, strings.Repeat("x", 20)))
 	}
-	writeMemoryIndex(t, path, big.String())
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -536,39 +551,25 @@ func TestMemoryRefreshCapsLargeIndexDelta(t *testing.T) {
 	}
 }
 
-// Change blocks compare the index as projected, cut at the 8 KiB cap: a
-// change past the cap, which the model never saw, delivers nothing, while a
-// change inside it delivers a block.
-func TestMemoryRefreshIndexDeltaComparesTheProjectedIndex(t *testing.T) {
+// Change blocks compare the whole rendered index: a page added outside the
+// projected window and a description change each deliver a block, while a
+// page that merely moved past the budget delivers nothing about itself.
+func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	var filler strings.Builder
-	for i := range 600 {
-		fmt.Fprintf(&filler, "opaque-filler-line-%03d\n", i)
+	memorySeedManyPages(t, root, "personal", 200, "2026-01-01")
+	var deltas []string
+	deltaTurn := func(want int) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != want {
+				t.Fatalf("turn carries %d memory contexts, want %d", got, want)
+			}
+			deltas = append(deltas, latestMemoryContext(req, "personal"))
+			return finalResponse("observed")
+		}
 	}
-	head := "opaque-head-1\n" + filler.String()
-	path := memorySeed(t, root, "personal", head)
-	var delta string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
-		func(req llm.Request) llm.Response {
-			if got := memoryContextMessages(req); got != 1 {
-				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
-			}
-			return finalResponse("first")
-		},
-		func(req llm.Request) llm.Response {
-			if got := memoryContextMessages(req); got != 1 {
-				t.Fatalf("a change past the cap produced %d memory contexts, want 1", got)
-			}
-			return finalResponse("second")
-		},
-		func(req llm.Request) llm.Response {
-			if got := memoryContextMessages(req); got != 2 {
-				t.Fatalf("a change inside the cap produced %d memory contexts, want 2", got)
-			}
-			delta = latestMemoryContext(req, "personal")
-			return finalResponse("third")
-		},
+		deltaTurn(1), deltaTurn(2), deltaTurn(3), deltaTurn(4),
 	))
 	turn := func() {
 		t.Helper()
@@ -577,12 +578,26 @@ func TestMemoryRefreshIndexDeltaComparesTheProjectedIndex(t *testing.T) {
 		}
 	}
 	turn()
-	writeMemoryIndex(t, path, head+"opaque-past-the-cap\n")
+	if display, _ := apptranscript.ParseMemoryContext(deltas[0], "memory_personal"); !display.Truncated {
+		t.Fatal("fixture index fits the projection; it must outgrow it")
+	}
+	// The oldest page sorts last, outside the projected window.
+	memorySeedPage(t, root, "personal", "old.md", "opaque-old-page", memorySeedUpdated("2025-01-01"))
 	turn()
-	writeMemoryIndex(t, path, strings.Replace(head, "opaque-head-1", "opaque-head-2", 1)+"opaque-past-the-cap\n")
+	// p000 is the newest page: stamps tie, and ties sort by path.
+	memorySeedPage(t, root, "personal", "p000.md", "opaque-head-2", memorySeedUpdated("2026-01-01"))
 	turn()
-	if !strings.Contains(delta, "opaque-head-2") || strings.Contains(delta, "opaque-past-the-cap") {
-		t.Fatalf("delta should carry only the change inside the cap: %q", delta)
+	// A new newest page pushes the last shown page past the budget.
+	memorySeedPage(t, root, "personal", "new.md", "opaque-new-page", memorySeedUpdated("2026-06-01"))
+	turn()
+	if !strings.Contains(deltas[1], `+ "- [old](old.md) — opaque-old-page`) || strings.Contains(deltas[1], `- "`) {
+		t.Fatalf("a page outside the window should arrive as one added line: %q", deltas[1])
+	}
+	if !strings.Contains(deltas[2], `- "- [p000](p000.md) — opaque-filler-000`) || !strings.Contains(deltas[2], `+ "- [p000](p000.md) — opaque-head-2`) {
+		t.Fatalf("a description change should arrive as its old and new lines: %q", deltas[2])
+	}
+	if !strings.Contains(deltas[3], "opaque-new-page") || strings.Contains(deltas[3], `- "`) || strings.Count(deltas[3], `+ "`) != 1 {
+		t.Fatalf("a page pushed past the budget should not appear as a change: %q", deltas[3])
 	}
 }
 
@@ -591,10 +606,10 @@ func TestMemoryRefreshIndexDeltaComparesTheProjectedIndex(t *testing.T) {
 func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeed(t, root, "personal", "opaque-defer-1\n")
+	memorySeedPage(t, root, "personal", "a.md", "opaque-defer-1")
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
-	writeMemoryIndex(t, path, "opaque-defer-1\nopaque-defer-2\n")
+	memorySeedPage(t, root, "personal", "b.md", "opaque-defer-2")
 	flight := r.stalledBoundary(t)
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
@@ -608,6 +623,13 @@ func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
 	if got := memoryContextCount(r.s); got != 2 {
 		t.Fatalf("unchanged boundary appended %d contexts, want none", got-2)
 	}
+}
+
+// describedMemoryPage is a page body with a fixed description, so another
+// session changing its body changes no index line: the session hears of it
+// only through a page notice.
+func describedMemoryPage(body string) string {
+	return "---\ndescription: opaque-described-page\n---\n" + body
 }
 
 func writeMemoryPage(t *testing.T, root, name, body string) string {
@@ -626,9 +648,9 @@ func writeMemoryPage(t *testing.T, root, name, body string) string {
 func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
-	page := writeMemoryPage(t, root, "opaque-read-page.md", "opaque-page-body-1\n")
-	writeMemoryPage(t, root, "opaque-unread-page.md", "opaque-unread-body-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
+	page := writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-1\n"))
+	writeMemoryPage(t, root, "opaque-unread-page.md", describedMemoryPage("opaque-unread-body-1\n"))
 	var notices []string
 	noticeTurn := func(want int) func(llm.Request) llm.Response {
 		return func(req llm.Request) llm.Response {
@@ -639,7 +661,9 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 			return finalResponse("observed")
 		}
 	}
-	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(3), noticeTurn(3)
+	// Removing the read page also removes its index line: that turn carries a
+	// change block before the notice.
+	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(4), noticeTurn(4)
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
@@ -654,8 +678,8 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 		}
 	}
 	turn()
-	writeMemoryPage(t, root, "opaque-read-page.md", "opaque-page-body-2\n")
-	writeMemoryPage(t, root, "opaque-unread-page.md", "opaque-unread-body-2\n")
+	writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-2\n"))
+	writeMemoryPage(t, root, "opaque-unread-page.md", describedMemoryPage("opaque-unread-body-2\n"))
 	turn()
 	if err := os.Remove(page); err != nil {
 		t.Fatal(err)
@@ -677,7 +701,7 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 	page := writeMemoryPage(t, root, "opaque-own-page.md", "opaque-own-body-1\n")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
@@ -697,7 +721,7 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "edit", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(page); err != nil || string(got) != "opaque-own-body-2\n" {
+	if got, err := os.ReadFile(page); err != nil || string(got) != "---\n"+memoryOwnStamps(s)+"---\nopaque-own-body-2\n" {
 		t.Fatalf("page=%q err=%v, want the edit applied", got, err)
 	}
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
@@ -710,14 +734,14 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 func TestMemoryRefreshStalledReadDefersPageNotice(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
-	writeMemoryPage(t, root, "opaque-deferred-page.md", "opaque-page-body-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
+	writeMemoryPage(t, root, "opaque-deferred-page.md", describedMemoryPage("opaque-page-body-1\n"))
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	if res := memoryExec(t, r.s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-deferred-page.md"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	writeMemoryPage(t, root, "opaque-deferred-page.md", "opaque-page-body-2\n")
+	writeMemoryPage(t, root, "opaque-deferred-page.md", describedMemoryPage("opaque-page-body-2\n"))
 	flight := r.stalledBoundary(t)
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
@@ -750,14 +774,14 @@ func lastMemoryContextText(s *Session) string {
 func TestMemoryRefreshPublishesALateReadAtTheNextBoundary(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
-	writeMemoryPage(t, root, "opaque-late-page.md", "opaque-late-body-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
+	writeMemoryPage(t, root, "opaque-late-page.md", describedMemoryPage("opaque-late-body-1\n"))
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	if res := memoryExec(t, r.s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-late-page.md"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	writeMemoryPage(t, root, "opaque-late-page.md", "opaque-late-body-2\n")
+	writeMemoryPage(t, root, "opaque-late-page.md", describedMemoryPage("opaque-late-body-2\n"))
 	flight := r.stalledBoundary(t)
 	r.finish(flight)
 	readsBefore := r.reads.Load()
@@ -770,16 +794,16 @@ func TestMemoryRefreshPublishesALateReadAtTheNextBoundary(t *testing.T) {
 	}
 }
 
-// A read the session's own write made stale is discarded even once it has
-// completed: the next boundary reads again and echoes nothing.
+// A read the session's own page write made stale is discarded even once it
+// has completed: the next boundary reads again and echoes nothing.
 func TestMemoryRefreshDiscardsAStaleReadEvenWhenComplete(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-stale-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-stale-1")
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	flight := r.stalledBoundary(t)
-	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "content": "opaque-stale-own-2\n"}); res.IsError {
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "---\ndescription: opaque-stale-own-2\n---\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	r.finish(flight)
@@ -799,7 +823,7 @@ func TestMemoryRefreshDiscardsAStaleReadEvenWhenComplete(t *testing.T) {
 func TestMemoryRefreshTracksAtMostTheMostRecentlyReadPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	pages := memoryReadPageLimit + 1
@@ -828,8 +852,8 @@ func TestMemoryRefreshTracksAtMostTheMostRecentlyReadPages(t *testing.T) {
 func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
-	writeMemoryPage(t, root, "opaque-kept-page.md", "opaque-kept-body-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
+	writeMemoryPage(t, root, "opaque-kept-page.md", describedMemoryPage("opaque-kept-body-1\n"))
 	s := newScriptedSummaryCompactSession(t, "memory-page-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-page-fold")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
@@ -859,7 +883,7 @@ func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn()
-	writeMemoryPage(t, root, "opaque-kept-page.md", "opaque-kept-body-2\n")
+	writeMemoryPage(t, root, "opaque-kept-page.md", describedMemoryPage("opaque-kept-body-2\n"))
 	turn()
 	if !strings.Contains(notice, "opaque-kept-page.md") {
 		t.Fatalf("no notice for a page read before compaction: %q", notice)
@@ -871,7 +895,7 @@ func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 	t.Parallel()
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 	writeMemoryPage(t, root, "opaque-forgotten-page.md", "opaque-forgotten-body-1\n")
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
@@ -908,7 +932,8 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, text := range texts {
-		if strings.Contains(text, "opaque-forgotten-page.md") {
+		// The index itself lists the page; only a notice would name it outside one.
+		if _, index := apptranscript.ParseMemoryContext(text, "memory_personal"); !index && strings.Contains(text, "opaque-forgotten-page.md") {
 			t.Fatalf("resumed session noticed a page read only before the resume: %q", text)
 		}
 	}
@@ -919,7 +944,7 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 func TestMemoryRefreshUnreadablePageStaysUntracked(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	s.recordMemoryContent("personal", "opaque-unreadable.md", nil, os.ErrPermission, true)
 	if got := s.memoryReadPagesFor("personal"); len(got) != 0 {
@@ -932,7 +957,7 @@ func TestMemoryRefreshUnreadablePageStaysUntracked(t *testing.T) {
 func TestMemoryRefreshPageNoticeNotAppendedAfterClose(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 	writeMemoryPage(t, root, "opaque-closing-page.md", "opaque-closing-body-1\n")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "opaque-closing-page.md"}); res.IsError {
@@ -952,12 +977,12 @@ func TestMemoryRefreshPageNoticeNotAppendedAfterClose(t *testing.T) {
 func TestMemoryRefreshRecordsWhatMemoryReadSaw(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	memorySeed(t, root, "personal", "opaque-index-1\n")
-	page := writeMemoryPage(t, root, "opaque-raced-page.md", "opaque-raced-body-1\n")
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
+	page := writeMemoryPage(t, root, "opaque-raced-page.md", describedMemoryPage("opaque-raced-body-1\n"))
 	var changed atomic.Bool
 	change := func() {
 		if changed.CompareAndSwap(false, true) {
-			if err := os.WriteFile(page, []byte("opaque-raced-body-2\n"), 0o600); err != nil {
+			if err := os.WriteFile(page, []byte(describedMemoryPage("opaque-raced-body-2\n")), 0o600); err != nil {
 				t.Error(err)
 			}
 		}
@@ -993,14 +1018,16 @@ func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testi
 	if err := os.MkdirAll(filepath.Join(root, "memory", "personal"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	page := writeMemoryPage(t, root, "opaque-noticed-page.md", "opaque-noticed-body-1\n")
+	// A dot file is never a page, so the scope's index stays missing while the
+	// session reads the file and is told it changed.
+	page := writeMemoryPage(t, root, ".opaque-noticed-page.md", "opaque-noticed-body-1\n")
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-noticed-page.md"})
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": ".opaque-noticed-page.md"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("read") },
 		func(req llm.Request) llm.Response {
-			if !strings.Contains(latestMemoryContext(req, "personal"), "opaque-noticed-page.md") {
+			if !strings.Contains(latestMemoryContext(req, "personal"), ".opaque-noticed-page.md") {
 				t.Fatal("fixture produced no page notice")
 			}
 			return finalResponse("noticed")
@@ -1032,26 +1059,26 @@ func TestMemoryRefreshResumeIgnoresPageNoticesWhenSeedingObservedScopes(t *testi
 	}
 }
 
-// A full index projection reports size only when the index was cut at the
-// cap, and decodes as truncated either way it says so: it points at the
-// gardening-memory skill only while the session can load it. No projection
-// carries an explicit truncated flag any more.
-func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
+// A full index projection reports size only when it leaves pages out, with
+// the partial sentence, and decodes as truncated. It never points at the
+// gardening-memory skill, whether or not the session can load it. No
+// projection carries an explicit truncated flag any more.
+func TestMemoryProjectionReportsOnlyAPartialIndex(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
-		index     string
+		pages     int
 		truncated bool
 		withSkill bool
 	}{
-		{"short", "opaque-short-index\n", false, true},
-		{"too-long", strings.Repeat("opaque-long-index-line\n", 600), true, true},
-		{"too-long-without-skills", strings.Repeat("opaque-long-index-line\n", 600), true, false},
+		{"short", 1, false, true},
+		{"partial", 200, true, true},
+		{"partial-without-skills", 200, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			memorySeed(t, root, "personal", tc.index)
+			memorySeedManyPages(t, root, "personal", tc.pages, "2026-10-01")
 			var text string
 			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 				text = latestMemoryContext(req, "personal")
@@ -1070,8 +1097,11 @@ func TestMemoryProjectionReportsOnlyATooLongIndex(t *testing.T) {
 			if strings.Contains(text, ", truncated ") {
 				t.Fatalf("projection still carries an explicit truncated flag: %q", text[:min(len(text), 240)])
 			}
-			if want := tc.truncated && tc.withSkill; strings.Contains(text, "gardening-memory") != want {
-				t.Fatalf("gardening-memory pointer present=%t, want %t: %q", !want, want, text[:min(len(text), 240)])
+			if strings.Contains(text, memoryIndexPartial) != tc.truncated {
+				t.Fatalf("partial sentence present=%t, want %t: %q", !tc.truncated, tc.truncated, text[:min(len(text), 400)])
+			}
+			if strings.Contains(text, "gardening-memory") {
+				t.Fatalf("projection points at gardening-memory: %q", text[:min(len(text), 400)])
 			}
 		})
 	}
@@ -1106,12 +1136,14 @@ func TestMemoryReadNotesALongPage(t *testing.T) {
 		{"long-page", "opaque-long.md", long, true, true},
 		{"long-page-without-skills", "opaque-long.md", long, false, true},
 		{"short-page", "opaque-short.md", "opaque-short-page\n", true, false},
+		// The index never gets a page's size note. memory_read does not
+		// render the index yet, so this reads a raw root MEMORY.md.
 		{"long-index", "MEMORY.md", long, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			memorySeed(t, root, "personal", "opaque-index-1\n")
+			memorySeedPage(t, root, "personal", "fact.md", "opaque-index-1")
 			writeMemoryPage(t, root, tc.file, tc.body)
 			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 			if !tc.withSkill {
@@ -1130,5 +1162,305 @@ func TestMemoryReadNotesALongPage(t *testing.T) {
 				t.Fatalf("note names gardening-memory=%t, want %t: %q", !tc.withSkill, tc.withSkill, note)
 			}
 		})
+	}
+}
+
+// The first projection of a scope that still has a hand-written MEMORY.md
+// migrates it: its descriptions move into the pages and the projection is
+// the generated index.
+func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	scope := filepath.Join(root, "memory", "personal")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeMemoryPage(t, root, "MEMORY.md", "- [Cents](cents.md) — opaque-migrated-description\n")
+	writeMemoryPage(t, root, "cents.md", "# Cents\n")
+	var text string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+		text = latestMemoryContext(req, "personal")
+		return finalResponse("observed")
+	}))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+	if !ok || !strings.Contains(display.Content, "- [Cents](cents.md) — opaque-migrated-description") {
+		t.Fatalf("projection=%+v ok=%t", display, ok)
+	}
+	if _, err := os.Stat(filepath.Join(scope, memoryLegacyIndexBackup)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A page another session deletes reaches this session as a removed line; a
+// description change as the old line removed and the new one added; the tag
+// header never appears in a change block.
+func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	gone := memorySeedPage(t, root, "personal", "gone.md", "opaque-gone")
+	memorySeedPage(t, root, "personal", "changed.md", "opaque-before")
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(req llm.Request) llm.Response {
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("second")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	memorySeedPage(t, root, "personal", "changed.md", "opaque-after", memorySeedTags("newtag"))
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`- "- [gone](gone.md) — opaque-gone`, `- "- [changed](changed.md) — opaque-before`, `+ "- [changed](changed.md) — opaque-after [newtag]`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("delta lacks %q: %s", want, delta)
+		}
+	}
+	if strings.Contains(delta, "opaque-kept") || strings.Contains(delta, "Tags:") {
+		t.Fatalf("delta lists an unchanged line or the header: %s", delta)
+	}
+}
+
+// The session's own write of any page becomes its baseline: the next turn
+// carries no change block for it.
+func TestMemoryRefreshIgnoresOwnPageWriteOfAnyPage(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "new.md", "content": "---\ndescription: opaque-own-page\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("next turn carries %d memory contexts, want only the first projection", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	for range 2 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// An own page write while the model was last told the scope is unavailable
+// does not make the rendering a baseline: the model never saw the index, so
+// the next completed boundary delivers it in full, other pages included.
+func TestMemoryRefreshOwnPageWriteAfterUnavailableDeliversFullIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "other.md", "opaque-other-page")
+	r := newStalledMemoryRefresh(t, root)
+	flight := r.stalledBoundary(t)
+	if got := memoryContextCount(r.s); got != 1 {
+		t.Fatalf("stalled first boundary appended %d contexts, want the unavailable projection", got)
+	}
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine-page\n---\n"}); res.IsError {
+		t.Fatal(res.Output)
+	}
+	r.finish(flight)
+	r.boundary()
+	r.boundary()
+	text := lastMemoryContextText(r.s)
+	display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+	if got := memoryContextCount(r.s); got != 2 || !ok || display.State != "current" || !strings.Contains(display.Content, "opaque-other-page") {
+		t.Fatalf("contexts=%d last=%q, want the full index after the unavailable one", got, text)
+	}
+}
+
+// The session's own page write patches its baseline with that page's line
+// only: pages another session added or deleted since the last boundary still
+// reach the next turn as change lines, and the own page is not echoed.
+func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	gone := memorySeedPage(t, root, "personal", "gone.md", "opaque-gone")
+	var delta string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("first") },
+		func(llm.Request) llm.Response {
+			// Another session changes the scope after this turn's boundary.
+			memorySeedPage(t, root, "personal", "other.md", "opaque-other")
+			if err := os.Remove(gone); err != nil {
+				t.Fatal(err)
+			}
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(req llm.Request) llm.Response {
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("next")
+		},
+	))
+	for range 3 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{`+ "- [other](other.md) — opaque-other`, `- "- [gone](gone.md) — opaque-gone`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("delta lacks %q: %s", want, delta)
+		}
+	}
+	if strings.Contains(delta, "opaque-mine") || strings.Contains(delta, "opaque-kept") {
+		t.Fatalf("delta echoes the own page or an unchanged line: %s", delta)
+	}
+}
+
+// A session that cannot write, edit and delete memory never migrates: its
+// projection renders the pages as they are, with fallback descriptions, and
+// neither writes a page nor moves the hand-written index.
+func TestMemoryReadOnlySessionDoesNotMigrate(t *testing.T) {
+	t.Parallel()
+	for _, denied := range []string{"memory_write", "memory_edit", "memory_delete"} {
+		t.Run(denied, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			scope := filepath.Join(root, "memory", "personal")
+			if err := os.MkdirAll(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			const legacy = "- [Cents](cents.md) — opaque-legacy-description\n"
+			writeMemoryPage(t, root, "MEMORY.md", legacy)
+			writeMemoryPage(t, root, "cents.md", "# Cents\n")
+			var text string
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
+				text = latestMemoryContext(req, "personal")
+				return finalResponse("observed")
+			}))
+			s.reg.Remove(denied)
+			refreshModelFacingCaches(s)
+			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+				t.Fatal(err)
+			}
+			display, ok := apptranscript.ParseMemoryContext(text, "memory_personal")
+			if !ok || !strings.Contains(display.Content, "- [Cents](cents.md) — Cents (no description)") {
+				t.Fatalf("projection=%+v ok=%t", display, ok)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "cents.md")); err != nil || string(raw) != "# Cents\n" {
+				t.Fatalf("cents.md=%q, %v", raw, err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "MEMORY.md")); err != nil || string(raw) != legacy {
+				t.Fatalf("MEMORY.md=%q, %v", raw, err)
+			}
+		})
+	}
+}
+
+// On a case-insensitive filesystem a write or delete naming a page in
+// another case is still the session's own: the page's listed line is
+// patched, so neither the write nor the delete is echoed back.
+func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-cased-1")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "FACT.md")); err != nil {
+		t.Skip("the filesystem is case-sensitive")
+	}
+	nextTurn := func(after string) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the %s carries %d memory contexts, want only the first full index", after, got)
+			}
+			return finalResponse("next")
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "Fact.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Fact.md", "content": "---\ndescription: opaque-cased-2\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		nextTurn("write"),
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "Fact.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		nextTurn("delete"),
+	))
+	for _, input := range []string{"write", "next", "delete", "next"} {
+		if _, err := s.ProcessInput(context.Background(), input, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A page whose title holds a Markdown link is still matched by its own path
+// when the session rewrites it, so the rewrite replaces its line and is not
+// echoed back.
+func TestMemoryRefreshIgnoresOwnRewriteOfPageTitledWithALink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "kept.md", "opaque-kept")
+	write := func(description string) func(llm.Request) llm.Response {
+		return func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: " + description + "\n---\n# Use [Cents](money.md) ) — here\n"})
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		write("opaque-linked-1"),
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		write("opaque-linked-2"),
+		func(llm.Request) llm.Response { return finalResponse("rewrote") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the rewrites carries %d memory contexts, want only the first full index", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	for range 3 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// On a case-insensitive filesystem a page read under one spelling and
+// written under another, directories included, is one page: the write
+// replaces its listed line and its read record, so the next turn carries
+// neither a change block nor a page notice.
+func TestMemoryRefreshOwnWriteMatchesPageReadInAnotherCase(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := memorySeedPage(t, root, "personal", "notes/fact.md", "opaque-nested-1")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "FACT.md")); err != nil {
+		t.Skip("the filesystem is case-sensitive")
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "notes/fact.md"})
+		},
+		func(llm.Request) llm.Response {
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Notes/Fact.md", "content": "---\ndescription: opaque-nested-2\n---\n"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("wrote") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("turn after the write carries %d memory contexts, want only the first full index: %s", got, latestMemoryContext(req, "personal"))
+			}
+			return finalResponse("next")
+		},
+	))
+	for range 2 {
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -214,9 +214,8 @@ test.each(["wheel", "key"] as const)(
   "ordinary Session %s input supersedes reflow beside its real inspector",
   async (input) => {
     const { default: Session } = await import("../../panes/session/Session");
-    const { holdReaderFrames, readerWireTurns } = await import(
-      "../../panes/session/transcript/transcriptReaderTestUtils"
-    );
+    const { readerWireTurns } = await import("../../panes/session/transcript/transcriptReaderTestUtils");
+    const { holdReaderFrames } = await import("../../panes/session/transcript/transcriptReadingGeometryTestUtils");
     const context = (ref: string) => cascadeContext(ref, ref === "child" ? ["root"] : []);
     const client = cascadeClient(context);
     client.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {

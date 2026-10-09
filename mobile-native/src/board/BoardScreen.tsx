@@ -637,13 +637,11 @@ function Board({
 		}
 	};
 	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
-	 * them, the read marks on this phone, and Shut down and Rename as the
-	 * Session sends them (rulings 18-21), held when they can't go now. */
+	 * them, and Shut down and Rename as the Session sends them (rulings
+	 * 18-21), held when they can't go now. */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
-		if (action === "markRead") seen.markRead(actionsClient, [row]);
-		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
-		else if (action === "shutDown")
+		if (action === "shutDown")
 			confirmShutDown(row, () => {
 				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
@@ -1164,10 +1162,6 @@ function Board({
 		leaveSelect();
 		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
-	const markChosenRead = () => {
-		seen.markRead(actionsClient, selection.markRead);
-		leaveSelect();
-	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -1303,7 +1297,6 @@ function Board({
 						archive: selection.archive.length,
 						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
 						pin: Platform.OS === "ios" ? selection.pin.length : 0,
-						markRead: selection.markRead.length,
 					}}
 					onDone={leaveSelect}
 					onArchive={() => void archiveChosen(selection.archive)}
@@ -1312,7 +1305,6 @@ function Board({
 							pinChosen(selection.pin, section, name),
 						)
 					}
-					onMarkRead={markChosenRead}
 				/>
 			) : (
 				<BoardToolbar

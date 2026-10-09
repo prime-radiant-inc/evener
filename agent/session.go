@@ -635,6 +635,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restGeneration counts turn starts and drain-loop settles. A
+	// needs_response rest arms awaiting only if neither happened during its
+	// quiet period. Guarded by s.mu.
+	restGeneration uint64
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -1399,6 +1403,7 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
+	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -1893,6 +1898,14 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 	return s.comm.structured, s.comm.structured != nil
 }
 
+// communicateEndReason is why this input's terminal communicate call ended
+// the turn: "" when none was accepted, or on a delegate.
+func (s *Session) communicateEndReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.endReason
+}
+
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
 // communicate tool (issue #570). A call's message, reply, canonical output,
 // and raw structured value are accepted together under s.mu — the first
@@ -1901,7 +1914,7 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
@@ -1913,6 +1926,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		reply:      reply,
 		output:     output,
 		structured: structured,
+		endReason:  endReason,
 	}
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)

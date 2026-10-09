@@ -95,8 +95,15 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 		if !tierEligible(le.SessionID, roots, runningSubagents, decisions) {
 			continue
 		}
-		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
-		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk, ApprovalPending: le.PendingEscalation}
+		state := NormalizeState(le.Status)
+		level := promotedAttentionLevel(state, le.PendingEscalation)
+		e := appwire.AttentionEntry{
+			ID:              le.SessionID,
+			Level:           level,
+			AskPending:      le.PendingAsk,
+			ApprovalPending: le.PendingEscalation,
+			NeedsResponse:   hubapi.NeedsResponse(state, le.PendingAsk),
+		}
 		if m, ok := meta(le.SessionID); ok {
 			e.Title = nodeTitle(m, nodeKind(m))
 			e.Project = projectName(m)
@@ -142,7 +149,7 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 	var changed []appwire.AttentionChanged
 	for id, e := range cur {
 		prev, had := w.prev[id]
-		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending || prev.ApprovalPending != e.ApprovalPending {
+		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending || prev.ApprovalPending != e.ApprovalPending || prev.NeedsResponse != e.NeedsResponse {
 			pl := "idle"
 			if had {
 				pl = prev.Level
@@ -152,10 +159,8 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 	}
 	for id, prev := range w.prev {
 		if _, still := cur[id]; !still {
-			gone := prev
-			gone.Level = "idle"
-			gone.AskPending = false
-			gone.ApprovalPending = false
+			// Built from the labels only, so every pending flag clears.
+			gone := appwire.AttentionEntry{ID: prev.ID, Title: prev.Title, Project: prev.Project, Level: "idle"}
 			changed = append(changed, appwire.AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}

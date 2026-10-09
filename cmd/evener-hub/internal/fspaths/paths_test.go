@@ -501,7 +501,12 @@ func checkResolveInRoot_AllowsNestedFile(t *testing.T) {
 }
 
 func TestResolveInRoot_CurrentTrustedAlias(t *testing.T) {
-	base := t.TempDir()
+	// Canonical, so the only alias in play is the one made here: on macOS
+	// t.TempDir() sits under the /var -> /private/var link.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	realRoot := filepath.Join(base, "real")
 	if err := os.Mkdir(realRoot, 0o755); err != nil {
 		t.Fatal(err)

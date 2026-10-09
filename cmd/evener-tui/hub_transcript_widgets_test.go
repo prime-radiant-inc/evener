@@ -113,7 +113,7 @@ func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 }
 
 // A truncated index refresh renders its quoted index whether it is the
-// current form (a too-long sentence) or an earlier build's explicit
+// current form (the partial sentence) or an earlier build's explicit
 // "truncated true".
 func TestMemoryContextTruncatedIndexRendersInBothForms(t *testing.T) {
 	for _, name := range []string{"truncated-project", "legacy-truncated-project"} {
@@ -121,6 +121,14 @@ func TestMemoryContextTruncatedIndexRendersInBothForms(t *testing.T) {
 		if !strings.Contains(rendered, strings.Repeat("x", 64)) {
 			t.Fatalf("%s lost its quoted index: %.200s", name, rendered)
 		}
+	}
+}
+
+// A partial index refresh shows the line counting the pages it leaves out.
+func TestMemoryContextPartialIndexRendersNotShownLine(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
+	if !strings.Contains(rendered, "Not shown: ") || !strings.Contains(rendered, "untagged") {
+		t.Fatalf("partial index lost its Not shown line: %.400s", rendered)
 	}
 }
 

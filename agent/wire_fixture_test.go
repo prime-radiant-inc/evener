@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,22 +39,29 @@ func checkWireFixture(t *testing.T, path string, value any, readers string) {
 	if err != nil {
 		t.Fatalf("encode %s: %v", path, err)
 	}
-	encoded = append(encoded, '\n')
-	if *updateWireFixtures {
+	checkGolden(t, path, append(encoded, '\n'), *updateWireFixtures,
+		fmt.Sprintf("Regenerate with `go test ./agent -run 'WireFixtures$' -update-wire`, then re-run %s.", readers))
+}
+
+// checkGolden pins got to the golden file at path, relative to the agent
+// package: update rewrites the file, and otherwise any drift fails with both
+// versions and hint, which says how to regenerate.
+func checkGolden(t *testing.T, path string, got []byte, update bool, hint string) {
+	t.Helper()
+	if update {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("create %s: %v", filepath.Dir(path), err)
 		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
 		return
 	}
 	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with -update-wire)", path, err)
+		t.Fatalf("read %s: %v. %s", path, err, hint)
 	}
-	if !bytes.Equal(want, encoded) {
-		t.Fatalf("the wire drifted from %s.\n got: %s\nwant: %s\nRegenerate with `go test ./agent -run 'WireFixtures$' -update-wire`, then re-run %s.",
-			path, encoded, want, readers)
+	if !bytes.Equal(want, got) {
+		t.Fatalf("%s drifted.\n got: %s\nwant: %s\n%s", path, got, want, hint)
 	}
 }

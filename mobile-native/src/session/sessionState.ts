@@ -38,6 +38,8 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	// A question outranks an approval, as on the Board.
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
+	// Awaiting without a question: the turn ended on needs_response (#4093).
+	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
 	if (type === "active") {
 		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);

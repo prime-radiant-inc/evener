@@ -93,6 +93,10 @@ type promptData struct {
 	// when ask_user is registered, i.e. an interactive root session (spec §7).
 	HasAskUser bool
 
+	// HasEndReason gates the end_reason guidance: true exactly when the
+	// session's communicate takes end_reason, i.e. a root someone can answer.
+	HasEndReason bool
+
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session
 	// has a grantable allowance (> 0) and the delegation tools are actually
 	// callable. Drives the subagent template's conditional delegation/background-

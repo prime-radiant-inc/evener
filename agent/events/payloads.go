@@ -557,9 +557,10 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
-	CallID  string `json:"call_id,omitempty"`
-	EndTurn bool   `json:"end_turn"`
-	Message string `json:"message"`
+	CallID    string `json:"call_id,omitempty"`
+	EndTurn   bool   `json:"end_turn"`
+	Message   string `json:"message"`
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.
@@ -905,6 +906,12 @@ type EnvironmentData struct {
 // EnvironmentChangedData is the payload for an EventEnvironmentChanged event.
 type EnvironmentChangedData struct {
 	WorkingDir string `json:"working_dir"`
+}
+
+// StatusSettledData is the payload for an EventStatusSettled event: the
+// session's wire state after the change.
+type StatusSettledData struct {
+	State string `json:"state"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

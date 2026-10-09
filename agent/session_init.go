@@ -1546,13 +1546,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or more generally any turn the agent moved
-	// last in with nothing else pending, rests awaiting (spec §6, generalized
-	// by attention-status-model v5's resume rule; deriveRestoredState's own
-	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle. steeringOrigins() gives the boundary
-	// its durable steering provenance, so a kindless legacy human-note turn
-	// is still read as a note rather than an answering steer.
+	// unanswered ask_user call, or a last input that ended on needs_response,
+	// rests awaiting (deriveRestoredState's own doc comment has the full
+	// walk). NewSession never runs this scan — a fresh session always starts
+	// idle. steeringOrigins() gives the boundary its durable steering
+	// provenance, so a kindless legacy human-note turn is still read as a
+	// note rather than an answering steer.
 	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
 	// and still in the same units s.history uses since escaping never
 	// changes its length) scopes the provenance to this session's own turns
@@ -1598,8 +1597,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}, promptSources)
 	// Recompute the settle decision now that history, goal restore, and (unless
 	// deferred for nested delegate reconstruction) notification/watch-send side
-	// effects are all in place: an agent-last transcript with no autonomy in
-	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
+	// effects are all in place: a transcript that ended on needs_response
+	// with no autonomy in flight resumes awaiting rather than idle.
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume

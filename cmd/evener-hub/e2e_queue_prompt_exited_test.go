@@ -130,10 +130,8 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 	return context.DeadlineExceeded
 }
 
-// requestDaemonRetire asks the resident daemon serving ref to retire, once.
-// The daemon answers Accepted false, with the blocking obligations, while it
-// has work in flight.
-func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+// residentDaemonIdentity is the identity of the resident daemon serving ref.
+func residentDaemonIdentity(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonIdentity {
 	t.Helper()
 	list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
 	if err != nil {
@@ -143,6 +141,15 @@ func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Clie
 	if !found {
 		t.Fatalf("no resident daemon for %s in %+v", ref, list.Daemons)
 	}
+	return identity
+}
+
+// requestDaemonRetire asks the resident daemon serving ref to retire, once.
+// The daemon answers Accepted false, with the blocking obligations, while it
+// has work in flight.
+func requestDaemonRetire(ctx context.Context, t *testing.T, client *appwire.Client, ref string) appwire.DaemonRetireResponse {
+	t.Helper()
+	identity := residentDaemonIdentity(ctx, t, client, ref)
 	resp, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity})
 	if err != nil {
 		t.Fatalf("evener/daemon/retire: %v", err)

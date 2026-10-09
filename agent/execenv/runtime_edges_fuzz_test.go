@@ -257,7 +257,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal(err)
 		}
 		entryInfoOrig := secureEntryInfo
-		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0, fs.ErrPermission }
+		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0, time.Time{}, fs.ErrPermission }
 		if _, err := rootFS.listDir("list_directory", root, 1); err != nil {
 			t.Fatal(err)
 		}
@@ -266,7 +266,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		readDirForInfo := secureReadDirEntries
 		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, nil }
 		entryInfoForSynth := secureEntryInfo
-		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0o755, nil }
+		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0o755, time.Time{}, nil }
 		var synthetic []DirEntry
 		if err := rootFS.walkDirFd(-1, "", root, 1, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
@@ -292,16 +292,16 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			_ = fn("denied", nil, fs.ErrPermission)
 			return nil
 		}
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseWalkDir = func(fs.FS, string, fs.WalkDirFunc) error { return fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err == nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err == nil {
 			t.Fatal("browse walk fault succeeded")
 		}
 		secureBrowseWalkDir = browseWalkOrig
 		secureBrowseReadFile = func(fs.FS, string) ([]byte, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseReadFile = browseReadOrig

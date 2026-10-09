@@ -53,6 +53,12 @@ func (s *Session) isSubagentSession() bool {
 	return s.cfg.spawn.parentSessionID != "" || s.restoredMetaIsSubagent
 }
 
+// hasHumanPartnerToAsk reports whether someone can answer this session: an
+// interactive root. It gates ask_user and communicate's end_reason alike.
+func (s *Session) hasHumanPartnerToAsk() bool {
+	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
+}
+
 // askPendingCount returns the number of questions currently pending this turn
 // (spec §5.1's per-turn pending set) — a later round-boundary check uses this
 // to decide whether the round just posted question(s).
@@ -67,10 +73,9 @@ func (s *Session) askPendingCount() int {
 // refusal predicate (session_lifecycle.go's processInputKindWithProvenance,
 // spec §5.3) exactly: cmd/evener/serve.go's pre-dispatch status shadow-write
 // hold must skip the write for precisely the wakes the entry gate will
-// refuse. Keying on the pending set rather than raw SessionState matters
-// since attention-status-model v5: SessionAwaiting no longer implies a
-// pending question on its own (the general inbox-semantics upgrade also
-// rests a session awaiting after any clean, output-producing turn).
+// refuse. Keying on the pending set rather than raw SessionState matters:
+// SessionAwaiting does not imply a pending question on its own (a turn that
+// ended on needs_response also rests awaiting).
 func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
@@ -472,7 +477,7 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
-			if s.cfg.noOneToAsk() || s.isSubagentSession() {
+			if !s.hasHumanPartnerToAsk() {
 				return nil, errors.New(askUserUnavailableErr)
 			}
 
@@ -617,13 +622,11 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 }
 
 // deriveRestoredState re-derives a restored session's at-rest state from its
-// history tail. It is the single resume-derivation function, unifying two
-// rules that were designed independently and must both hold everywhere:
-// ask_user's pending definition (spec §6: "an interrupted ack-less ask is
-// never pending") and attention-status-model v5's general resume rule ("agent
-// moved last" resumes awaiting, round-3 A2) — the ask rule is that general
-// rule's specific instance, not a competing one, since an ack is just the
-// terminal tool result of the round the agent last moved in.
+// history tail. It is the single resume-derivation function, and it derives
+// what the live settle (armAwaitingAtSettle) decided: awaiting while a
+// question is pending (spec §6: "an interrupted ack-less ask is never
+// pending") or when the agent's last completed turn ended on needs_response,
+// idle otherwise.
 //
 // Walking backward from the most recent turn, the first decisive turn wins:
 //
@@ -631,7 +634,7 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     TurnSteering, a steering-carrier TurnFailure) resolve to idle — a
 //     reply already resolved whatever was pending, or nothing ever was.
 //   - TurnAssistant with no tool calls: a plain final response with nothing
-//     else after it — the agent moved last — awaiting.
+//     else after it — the agent moved last, asking nothing — idle.
 //   - TurnAssistant WITH tool calls: not decisive, the scan continues past
 //     it. Ordinarily a tool call is immediately followed by a matching
 //     TurnToolResults, so the scan reaches that turn first — but when every
@@ -641,8 +644,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     plain completed response: it is the same interrupted round, not a
 //     second, earlier one.
 //   - TurnToolResults carrying at least one completed (non-error) result:
-//     the round ended its turn on a real completion — a communicate, an
-//     ask_user ack, or any other terminal tool — awaiting.
+//     the round ended its turn on a real completion. It rests awaiting only
+//     when its communicate said needs_response (endedOnNeedsResponse), as
+//     the live settle does; any other completion rests idle.
 //   - TurnToolResults carrying ONLY error results: not decisive: the scan
 //     continues past it. This is the ask-specific carve-out generalized:
 //     when a tool call (ask_user or otherwise) is interrupted before its
@@ -660,6 +664,10 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     resume anchor ResumeHistory already truncated to, not a new decisive
 //     event.
 //
+// A pending question outranks all of this: when deriveRestoredAskPending
+// finds an ask round, the session rests awaiting, as the live settle does
+// whenever a question is pending.
+//
 // No decisive turn anywhere in the (possibly compacted) history defaults to
 // idle, matching a fresh session. origins is turnResolvesAskBoundary's same
 // steering-provenance lookup (nil when there is nothing to look up).
@@ -669,6 +677,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 // reused client mutation id in the child's OWN journal must never reclassify
 // a turn the parent wrote.
 func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) SessionState {
+	if _, isAskRound := deriveRestoredAskPending(history, divergenceTurn, origins); isAskRound {
+		return SessionAwaiting
+	}
 	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	for i := range slices.Backward(history) {
 		turn := history[i]
@@ -682,15 +693,21 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 		switch turn.Kind {
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
-				return SessionAwaiting
+				return SessionIdle
 			}
 			// This turn's calls resolved to an all-error placeholder we
 			// already scanned past (or repair guarantees one exists ahead of
 			// it) — not a completion. Keep scanning past it too.
 		case schema.TurnToolResults:
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError {
-					return SessionAwaiting
+				// An accepted turn-ending communicate is a completion even when
+				// a PostToolUse hook failure turned its result into an error:
+				// its tool state still carries the end reason.
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && (!part.ToolResult.IsError || communicateEndReasonOf(part.ToolResult) != "") {
+					if endedOnNeedsResponse(history, i) {
+						return SessionAwaiting
+					}
+					return SessionIdle
 				}
 			}
 			// Every result here is an error placeholder (orphan repair, a
@@ -699,6 +716,53 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 		}
 	}
 	return SessionIdle
+}
+
+// endedOnNeedsResponse reports whether the input whose last round's tool
+// results sit at toolResultsIdx ended its turn on needs_response. The live
+// settle reads the turn-ending communicate call the input accepted
+// (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
+// input on past it), and that call alone records its end reason in its
+// result's tool state, so this looks for that state among the input's
+// rounds: the turns sharing the decisive turn's TurnID. The latest state
+// wins, because a recovery reopen reruns an input under the same TurnID and
+// the rerun's own accepted call is the one live settled on. A history
+// without turn ids predates end_reason, so only the decisive round is read
+// there. Two cases can still differ from live: rounds a mid-input
+// compaction dropped, and a rerun that failed before accepting a
+// communicate, where this can return the earlier attempt's reason. The
+// second is harmless: restingFailureLocked makes the session publish
+// systemError whether it rests idle or awaiting.
+func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
+	turnID := history[toolResultsIdx].TurnID
+	for j := toolResultsIdx; j >= 0; j-- {
+		turn := history[j]
+		if j != toolResultsIdx && (turnID == "" || turn.TurnID != turnID) {
+			break
+		}
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			if reason := communicateEndReasonOf(part.ToolResult); reason != "" {
+				return reason == tool.CommunicateEndReasonNeedsResponse
+			}
+		}
+	}
+	return false
+}
+
+// communicateEndReasonOf is the end reason an accepted turn-ending
+// communicate call recorded in its result's tool state, or "".
+func communicateEndReasonOf(result *llm.ToolResultData) string {
+	var state communicateEndState
+	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	return state.EndReason
 }
 
 // deriveRestoredAskPending rebuilds the pending-ask SET from a restored

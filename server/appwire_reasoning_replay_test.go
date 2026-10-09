@@ -497,3 +497,42 @@ func TestServerAppWireQueuedClosedSessionEndClosesThePublishedExecution(t *testi
 		t.Fatalf("closed queued read=(%q,%q), want closed/empty", read.Status.Type, read.Evener.ActiveTurnID)
 	}
 }
+
+// A resting status that settles after the next turn has been published as
+// running never reaches subscribers: the running turn's own end restates the
+// state.
+func TestServerAppWireStatusSettledDuringATurnIsNotPublished(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_settled_late")
+	srv.SetProcessingTurn("next-turn")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_late", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	if read := readThreadOverWire(t, srv, "local:th_settled_late"); read.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("read status = %q, want the running turn's active", read.Status.Type)
+	}
+	srv.SetProcessing(false)
+
+	statuses := statusNotifications(t, srv, "th_settled_late")
+	for _, status := range statuses {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the stale awaiting over the running turn: %+v", statuses)
+		}
+	}
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("statuses = %+v, want the turn's end to settle idle", statuses)
+	}
+}
+
+// A quiet-period timer that fires after the session closed must not reopen it
+// on the wire: no awaiting frame follows the closing SESSION_END.
+func TestServerAppWireStatusSettledAfterCloseIsNotPublished(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_settled_closed")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_settled_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_closed", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+
+	for _, status := range statusNotifications(t, srv, "th_settled_closed") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting after the session closed: %+v", status)
+		}
+	}
+}

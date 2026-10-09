@@ -1205,6 +1205,29 @@ func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
 	}
 }
 
+// A re-registration that changes the parameters validates against its own
+// schema, not the one compiled for the earlier parameters.
+func TestRegister_CompilesChangedParametersOnReregistration(t *testing.T) {
+	reg := NewRegistry()
+	closed := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"message": map[string]any{"type": "string"}},
+	}
+	noop := func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }
+	if err := reg.Register(RegisteredTool{Definition: llm.ToolDefinition{Name: "say", Parameters: closed}, Exec: noop}); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	widened := CloneSchemaMap(closed)
+	widened["properties"].(map[string]any)["reason"] = map[string]any{"type": "string"}
+	if err := reg.Register(RegisteredTool{Definition: llm.ToolDefinition{Name: "say", Parameters: widened}, Exec: noop}); err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	if err := reg.Get("say").Schema.Validate(map[string]any{"message": "hi", "reason": "why"}); err != nil {
+		t.Fatalf("the widened parameters do not validate: %v", err)
+	}
+}
+
 func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 	reg := NewRegistry()
 	imgData := encodeRasterFixture(t, "png")

@@ -7,6 +7,45 @@ export interface TranscriptTestGeometry {
   entryBoxes?: Readonly<Record<string, { top: number; height: number }>>;
 }
 
+// A held frame runs these first, as a browser's rendering update runs its scroll
+// steps before it takes that frame's animation frame callbacks.
+const scrollStepCallbacks = new WeakSet<FrameRequestCallback>();
+
+/** Holds browser scheduling, never the virtualizer's request or direction fields. */
+export function holdReaderFrames() {
+  const request = window.requestAnimationFrame;
+  const cancel = window.cancelAnimationFrame;
+  const pending = new Map<number, FrameRequestCallback>();
+  let nextId = 0;
+  window.requestAnimationFrame = (callback) => {
+    const id = ++nextId;
+    pending.set(id, callback);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => {
+    pending.delete(id);
+  };
+  return {
+    pending,
+    release() {
+      const run = (scrollSteps: boolean) => {
+        for (const [id, callback] of [...pending]) {
+          if (scrollStepCallbacks.has(callback) !== scrollSteps) continue;
+          pending.delete(id);
+          callback(performance.now());
+        }
+      };
+      // A scroll handler's frame request joins this frame; its writes' events wait for the next.
+      run(true);
+      run(false);
+    },
+    restore() {
+      window.requestAnimationFrame = request;
+      window.cancelAnimationFrame = cancel;
+    },
+  };
+}
+
 export function installTranscriptGeometry(
   geometryFor: (element: HTMLElement) => TranscriptTestGeometry,
   findPort?: (element: HTMLElement) => HTMLElement | undefined,
@@ -18,6 +57,16 @@ export function installTranscriptGeometry(
   const nativeObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
   const offsets = new WeakMap<HTMLElement, number>();
   let active = true;
+  // A browser fires one scroll event per scrolled element in the next rendering
+  // update's scroll steps, never synchronously. They run at the next held frame
+  // or notify(); with frames unheld, at jsdom's timer-driven animation frame.
+  const scrolled = new Set<HTMLElement>();
+  const runScrollSteps = () => {
+    const targets = [...scrolled];
+    scrolled.clear();
+    for (const target of targets) if (active && target.isConnected) target.dispatchEvent(new Event("scroll"));
+  };
+  scrollStepCallbacks.add(runScrollSteps);
   const portFor = (element: HTMLElement): HTMLElement | undefined => {
     if (findPort) return findPort(element);
     const child = element.closest('[data-testid="transcript-virtual-list"]')?.firstElementChild;
@@ -85,10 +134,9 @@ export function installTranscriptGeometry(
     set(this: HTMLElement, value: number) {
       const previous = this.scrollTop;
       offsets.set(this, Math.max(0, Math.min(value, Math.max(0, this.scrollHeight - this.clientHeight))));
-      if (this.scrollTop !== previous)
-        queueMicrotask(() => {
-          if (active && this.isConnected) this.dispatchEvent(new Event("scroll"));
-        });
+      if (this.scrollTop === previous || scrolled.has(this)) return;
+      if (scrolled.size === 0) requestAnimationFrame(runScrollSteps);
+      scrolled.add(this);
     },
   });
   replace("scrollTo", {
@@ -137,6 +185,8 @@ export function installTranscriptGeometry(
       return [...observers].flatMap((observer) => [...observer.targets]);
     },
     notify(include = () => true) {
+      // Each delivery is a new rendering update, whose scroll steps come first.
+      runScrollSteps();
       for (const observer of [...observers]) {
         const entries: ResizeObserverEntry[] = [...observer.targets].flatMap((target) => {
           if (!(target instanceof HTMLElement) || !target.isConnected || !include(target)) return [];

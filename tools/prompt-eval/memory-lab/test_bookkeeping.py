@@ -326,6 +326,28 @@ class TrialStateTest(unittest.TestCase):
     def test_inside_the_trial(self):
         self.check(work_root=False)
 
+    def test_session_state_leaves_the_results_tree_under_work_root(self):
+        # Delegate worktrees live under the session state dir, so its path is shown to agents.
+        self.run_trial(work_root=True)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        state = bookkeeping.lab.stage_state_dir(trial, "A")
+        self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
+
+    def test_a_stage_session_runs_with_its_state_outside_the_results_tree(self):
+        self.run_trial(work_root=True)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        args = argparse.Namespace(model="m", effort="high", max_rounds=None, timeout=1)
+        with mock.patch.object(bookkeeping.lab, "run_bounded", return_value=(0, "")) as run:
+            bookkeeping.lab.run_session(args, "evener", "on", self.root, {"name": "A", "prompt": "p"}, trial, {})
+        cmd = run.call_args.args[0]
+        state = cmd[cmd.index("--state-dir") + 1]
+        self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
+
+    def test_session_state_stays_in_the_trial_without_work_root(self):
+        self.run_trial(work_root=False)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        self.assertEqual(bookkeeping.lab.stage_state_dir(trial, "A"), os.path.join(trial, "sessions", "A"))
+
     def test_relative_config_paths_resolve_against_the_launch_dir(self):
         _, env = self.run_trial(work_root=True, providers="config/providers.toml")
         self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
@@ -466,6 +488,31 @@ class CompactionTest(unittest.TestCase):
             event("TOOL_CALL_END", tool_name="shell", output="x" * 30)])
         calls, _, _, _ = bookkeeping.lab.parse_events(path)
         self.assertEqual([c["output_chars"] for c in calls], [0, 0])
+
+
+class ScenarioValidationTest(unittest.TestCase):
+    """load_scenario refuses a scenario that can't run as written."""
+
+    def load(self, stage):
+        scen = tempfile.TemporaryDirectory()
+        self.addCleanup(scen.cleanup)
+        with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+            json.dump({"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}, f)
+        return bookkeeping.lab.load_scenario(scen.name)
+
+    def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
+        # A fixture stage whose workspace already exists skips its setup and runs there: the trial's
+        # state dirs, or an earlier stage's outputs.
+        for name in ("sessions", "xdg", "A.memory", "A.events.ndjson", "A.stdout", "A.grade.json", "..", "a/b"):
+            with self.subTest(workspace=name):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load({"fixture": "fixture2", "workspace": name})
+                self.assertIn('"workspace" must be work or work followed by digits', str(refused.exception))
+
+    def test_a_work_numbered_workspace_loads(self):
+        for name in ("work2", "work10"):
+            with self.subTest(workspace=name):
+                self.assertEqual(self.load({"fixture": "fixture2", "workspace": name})["stages"][1]["workspace"], name)
 
 
 if __name__ == "__main__":

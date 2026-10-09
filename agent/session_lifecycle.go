@@ -1151,16 +1151,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// must reach the model rather than wait behind a question the user has
 	// already moved past.
 	//
-	// Gated on the pending set, not raw state (attention-status-model v5
-	// reconciliation): SessionAwaiting used to imply "a question is pending" —
-	// the only producer of the state before the merge — but the general
-	// inbox-semantics upgrade (armAwaitingAtSettle) now also rests a session
-	// awaiting after any clean, output-producing turn with nothing else in
-	// flight, no ask involved. Their spec's own consequence for that case is
-	// the opposite of a hold: "async wakes re-arm by design." Only a genuine
+	// Gated on the pending set, not raw state: armAwaitingAtSettle also rests
+	// a session awaiting after a turn that ended on needs_response, no ask
+	// involved, and an async wake may move that session on. Only a genuine
 	// pending question is a stronger stop than the wake (a delegate finishing
 	// while the user reads a QUESTION must not silently resolve it out from
-	// under them); a general re-arm has nothing pending to protect.
+	// under them); a needs_response rest has nothing pending to protect.
 	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
@@ -2026,6 +2022,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
+	// A turn starting ends any needs_response quiet period still running:
+	// whichever boundary this turn rests on, the older rest no longer applies.
+	s.restGeneration++
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
