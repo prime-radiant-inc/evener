@@ -61,8 +61,8 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 
 // memoryIndexFile is the scope's generated index, rendered from page
 // frontmatter; once a writing session migrates a scope, no file by this name
-// remains. memory_read does not render it yet: it reads whatever file stands
-// at this name.
+// remains. memory_read renders the index for this name, the write tools
+// refuse it, and memory_search never searches a file by this name.
 const memoryIndexFile = "MEMORY.md"
 
 // memoryIndexBaseline is the index the session already knows for a scope:
