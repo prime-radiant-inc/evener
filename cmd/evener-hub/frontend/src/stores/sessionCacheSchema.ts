@@ -1,3 +1,6 @@
+import type { ThreadItemPosition, TurnModel } from "@evener/appwire-client";
+
+export const SESSION_CACHE_DATABASE_NAME = "evener-session-cache";
 export const ENTRY_ITEM_STORE = "transcriptItems";
 export const ENTRY_TURN_STORE = "transcriptTurns";
 export const ENTRY_COVERAGE_STORE = "transcriptCoverage";
@@ -11,9 +14,55 @@ const CLEAR_EPOCH_KEY = "__clearEpoch";
 export interface TranscriptItemRow<T = unknown> {
   historyKey: string;
   transcriptKey: string;
-  position: { entry: number; item: number; sub?: number };
+  position: ThreadItemPosition;
   version: number;
   item: T;
+}
+
+export interface TranscriptTurnRow {
+  historyKey: string;
+  turnId: string;
+  version?: number;
+  metadata: Omit<TurnModel, "id" | "items">;
+}
+
+export interface TranscriptCoverageRow {
+  historyKey: string;
+  rangeId: string;
+  kind: "read" | "suffix";
+  start: ThreadItemPosition | null;
+  end: ThreadItemPosition | null;
+  representedSnapshot: number;
+  serverCursor?: string;
+  readId?: string;
+  continuityId?: string;
+  boundary: string;
+  suffixBlocked?: boolean;
+}
+
+export interface TranscriptHistoryMetaRow {
+  historyKey: string;
+  encodedBytes: number;
+  itemCount: number;
+}
+
+export interface TranscriptAggregateMetaRow {
+  historyKey: "__aggregate";
+  encodedBytes: number;
+}
+
+export interface EntryClearEpochRow {
+  ref: typeof CLEAR_EPOCH_KEY;
+  epoch: number;
+}
+
+export function entryHistoryKey(identity: {
+  clientId: string;
+  hostId: string;
+  sessionId: string;
+  incarnation: string;
+}): string {
+  return JSON.stringify([identity.clientId, identity.hostId, identity.sessionId, identity.incarnation]);
 }
 
 export function upgradeSessionCache(database: IDBDatabase, includeEntryStores = false): void {
@@ -35,14 +84,17 @@ export function upgradeSessionCache(database: IDBDatabase, includeEntryStores = 
   if (!includeEntryStores) return;
   if (!database.objectStoreNames.contains(ENTRY_ITEM_STORE)) {
     const items = database.createObjectStore(ENTRY_ITEM_STORE, { keyPath: ["historyKey", "transcriptKey"] });
-    items.createIndex("historyKey_position", ["historyKey", "position.entry", "position.item"], { unique: false });
+    items.createIndex("historyKey_position", ["historyKey", "position.entry", "position.item", "positionSub"], {
+      unique: false,
+    });
     items.createIndex("historyKey", "historyKey", { unique: false });
   }
   if (!database.objectStoreNames.contains(ENTRY_TURN_STORE)) {
     database.createObjectStore(ENTRY_TURN_STORE, { keyPath: ["historyKey", "turnId"] });
   }
   if (!database.objectStoreNames.contains(ENTRY_COVERAGE_STORE)) {
-    database.createObjectStore(ENTRY_COVERAGE_STORE, { keyPath: ["historyKey", "rangeId"] });
+    const coverage = database.createObjectStore(ENTRY_COVERAGE_STORE, { keyPath: ["historyKey", "rangeId"] });
+    coverage.createIndex("historyKey_boundary", ["historyKey", "boundary"], { unique: false });
   }
   if (!database.objectStoreNames.contains(ENTRY_META_STORE)) {
     database.createObjectStore(ENTRY_META_STORE, { keyPath: "historyKey" });

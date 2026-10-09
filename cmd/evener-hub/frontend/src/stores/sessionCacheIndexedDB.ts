@@ -5,10 +5,10 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { trackProjectionWork } from "./projectionWork";
-import { upgradeSessionCache } from "./sessionCacheSchema";
+import { SESSION_CACHE_DATABASE_NAME, upgradeSessionCache } from "./sessionCacheSchema";
 import { countUtf8Bytes } from "./transcriptPayloadBudget";
 
-const DATABASE_NAME = "evener-session-cache";
+const DATABASE_NAME = SESSION_CACHE_DATABASE_NAME;
 const DATABASE_VERSION = 2;
 const RECORDS_STORE = "records";
 const META_STORE = "meta";

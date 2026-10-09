@@ -3513,6 +3513,12 @@ export function mergeTranscriptItemVersioned(
   return mergeReplacedItem(held, incoming);
 }
 
+/** Applies the recorded turn-version precedence while keeping hydrated items owned by history. */
+export function mergeTranscriptTurnVersioned(held: TurnModel | undefined, incoming: TurnModel): TurnModel {
+  if (held !== undefined && !supersedes(held.version, incoming.version)) return held;
+  return { ...incoming, items: held?.items ?? [] };
+}
+
 // Orders by (entry, item, sub). An item with no position sorts after every
 // positioned one. Exported for transcriptProjector.ts, which ranks items by
 // real document position rather than turn-then-item array order (turns can

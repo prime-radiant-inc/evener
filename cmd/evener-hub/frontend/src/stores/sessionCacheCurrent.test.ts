@@ -75,6 +75,23 @@ function historyRecord(ref: string, savedAt: number) {
 }
 
 describe("current session checkpoints", () => {
+  it("keeps production on version 2 without fixture-only entry stores", async () => {
+    const indexedDB = new IDBFactory();
+    const cache = new SessionCacheIndexedDB({ indexedDB });
+    await cache.getCurrent(["owner", "ref"], 1);
+    const request = indexedDB.open("evener-session-cache");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    expect(database.version).toBe(2);
+    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptItems");
+    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptTurns");
+    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptCoverage");
+    database.close();
+    cache.close();
+  });
+
   it("creates the owner-scoped current store in the existing database", async () => {
     const indexedDB = new IDBFactory();
     const cache = new SessionCacheIndexedDB({ indexedDB });

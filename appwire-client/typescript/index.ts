@@ -472,6 +472,7 @@ export {
   mergeOlderItemPageWithFolds,
   mergeTailTurns,
   mergeTranscriptItemVersioned,
+  mergeTranscriptTurnVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,

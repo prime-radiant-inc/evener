@@ -20,6 +20,7 @@ import {
   markItemTextOmitted,
   mergeOlderItemPage,
   mergeTranscriptItemVersioned,
+  mergeTranscriptTurnVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
@@ -77,6 +78,16 @@ test("versioned entry merge rejects older input and preserves richer equal-versi
 
   expect(mergeTranscriptItemVersioned(held, 4, stale, 3)).toBe(held);
   expect(mergeTranscriptItemVersioned(held, 4, omitted, 4)).toMatchObject({ text: "known text" });
+});
+
+test("versioned turn merge rejects older and equal metadata without copying item arrays", () => {
+  const item: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "body" };
+  const held: TurnModel = { id: "turn-1", status: "completed", version: 8, items: [item] };
+  expect(mergeTranscriptTurnVersioned(held, { ...held, status: "stale", version: 7, items: [] })).toBe(held);
+  expect(mergeTranscriptTurnVersioned(held, { ...held, status: "equal", items: [] })).toBe(held);
+  const newer = mergeTranscriptTurnVersioned(held, { ...held, status: "new", version: 9, items: [] });
+  expect(newer).toMatchObject({ status: "new", version: 9 });
+  expect(newer.items).toBe(held.items);
 });
 
 // Each fixture is newline-delimited JSON: the first line is

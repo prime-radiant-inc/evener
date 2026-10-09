@@ -124,7 +124,9 @@ codec for one item. They preserve omitted text separately from explicit empty
 text, identity-only markers, images, reasoning summaries, tool output and
 errors. `mergeTranscriptItemVersioned` ignores an older item version and uses
 the reducer's omission-tolerant replacement rules for equal or newer versions.
-These helpers do not establish range coverage or turn metadata.
+`mergeTranscriptTurnVersioned` applies the same recorded version precedence to
+turn scalars while retaining the already-owned item array. These helpers do not
+establish range coverage or own persisted turn metadata.
 
 ## Host-scoped requests
 
