@@ -55,7 +55,6 @@ import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
-	boardState,
 	type ClassifiedRow,
 	hostLabeler,
 	type LiveSummary,
@@ -293,13 +292,7 @@ function Board({
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
-	const projectRow = useCallback(
-		(row: NavigationSessionSummary): ClassifiedRow => {
-			const isSeen = seen.isSeen(row);
-			return { row, state: boardState(row, false, isSeen), unseen: !isSeen };
-		},
-		[seen],
-	);
+	const projectRow = useMemo(() => rowClassifier([], (row) => seen.isSeen(row)), [seen]);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
 	const toast = useToast();
