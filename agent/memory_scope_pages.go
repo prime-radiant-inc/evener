@@ -10,6 +10,7 @@ type MemoryScopePage struct {
 	Path           string   `json:"path"`
 	Description    string   `json:"description"`
 	HasDescription bool     `json:"has_description"`
+	Frontmatter    bool     `json:"frontmatter"`
 	Unreadable     bool     `json:"unreadable"`
 	Tags           []string `json:"tags"`
 	Updated        string   `json:"updated"`
@@ -28,7 +29,7 @@ func ListMemoryScopePages(dir string) ([]MemoryScopePage, error) {
 	out := make([]MemoryScopePage, 0, len(pages))
 	for _, p := range pages {
 		out = append(out, MemoryScopePage{
-			Path: p.Path, Description: p.Description, HasDescription: p.HasDescription,
+			Path: p.Path, Description: p.Description, HasDescription: p.HasDescription, Frontmatter: p.Frontmatter,
 			Unreadable: p.Unreadable, Tags: p.Tags, Updated: p.Updated, By: p.By,
 		})
 	}

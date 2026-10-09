@@ -16,6 +16,8 @@ func TestListMemoryScopePages(t *testing.T) {
 		"a.md":      "---\ndescription: alpha   one\ntags: [Coupons]\nupdated: 2026-03-02\nby: seed-fixture\n---\n# A\n",
 		"bad.md":    "---\ndescription: Cart rule 7: whole numbers\n---\n# Bad\n",
 		"MEMORY.md": "root index is never a page\n",
+		"crlf.md":   "---\r\ndescription: d\r\n---\r\n",
+		"plain.md":  "---\ntags: [x]\n---\nno description\n",
 	} {
 		path := filepath.Join(scope, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -30,8 +32,10 @@ func TestListMemoryScopePages(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []MemoryScopePage{
-		{Path: "a.md", Description: "alpha one", HasDescription: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
-		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Unreadable: true},
+		{Path: "a.md", Description: "alpha one", HasDescription: true, Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
+		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true},
+		{Path: "crlf.md", Description: "--- " + memoryNoDescription},
+		{Path: "plain.md", Description: "no description " + memoryNoDescription, Frontmatter: true, Tags: []string{"x"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)

@@ -143,11 +143,13 @@ class SeedProblems(Root):
         self.put("seed/c.md", "---\r\ndescription: d\r\n---\r\n")
         self.put("seed/d.md", "---\ndescription: never closed\n")
         self.put("seed/e.md", "---\ndescription: fine\n---\n")
+        self.put("seed/f.md", "---\ntags: [x]\n---\nno description is fine\n")
+        self.put("seed/g.txt", "---\nnot markdown, never parsed\n")
         seed = os.path.join(self.root, "evener", "memory", "seed")
         self.assertEqual(memcheck.seed_problems([seed]), {seed: [
             "a.md: frontmatter unreadable",
-            "c.md: starts with --- but evener reads no description from it",
-            "d.md: starts with --- but evener reads no description from it"]})
+            "c.md: starts with --- but evener finds no frontmatter block",
+            "d.md: starts with --- but evener finds no frontmatter block"]})
 
     def test_every_scenario_seed_reads(self):
         seeds = sorted(glob.glob(os.path.join(HERE, "scenarios", "*", "seed")))

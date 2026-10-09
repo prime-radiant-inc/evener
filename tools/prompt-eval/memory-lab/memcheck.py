@@ -76,16 +76,16 @@ def root_index(scope_dir):
 
 def seed_problems(seed_dirs):
     """{seed dir: [problem, ...]} for the seed pages that won't read as written:
-    frontmatter evener can't parse, or a page that opens with --- but that evener
-    reads no description from (a CRLF or padded delimiter, or no closing ---).
-    memory-lab check runs this; seeds with no problems are left out."""
+    frontmatter evener can't parse, or a Markdown page that opens with --- in
+    which evener finds no frontmatter block (a CRLF or padded delimiter, or no
+    closing ---). memory-lab check runs this; seeds with no problems are left out."""
     problems = {}
     for seed, pages in scope_pages(seed_dirs).items():
         for p in pages:
             if p["unreadable"]:
                 problem = "frontmatter unreadable"
-            elif not p["has_description"] and read(os.path.join(seed, p["path"])).startswith("---"):
-                problem = "starts with --- but evener reads no description from it"
+            elif not p["frontmatter"] and p["path"].endswith(".md") and read(os.path.join(seed, p["path"])).startswith("---"):
+                problem = "starts with --- but evener finds no frontmatter block"
             else:
                 continue
             problems.setdefault(seed, []).append(f"{p['path']}: {problem}")
