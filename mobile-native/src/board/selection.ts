@@ -5,7 +5,7 @@ import type { ClassifiedRow } from "./attention";
 import { archiveTarget, isTopLevel } from "./rowActions";
 
 export interface SelectedRow {
-	item: ClassifiedRow;
+	item: Pick<ClassifiedRow, "row">;
 	/** The row was chosen in an archived tier. */
 	archived: boolean;
 }

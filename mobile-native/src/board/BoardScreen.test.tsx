@@ -1619,21 +1619,18 @@ const pinnedUnseen = session("local:pinned-unseen", {
 	turn_ended_at: minutesAgo(80),
 	unseen: true,
 });
+// A device adopted an hour ago (adoptedAnHourAgo) reads Hub seen as unseen.
 const hubFleet: Fleet = {
 	...fleet,
 	live: [[failing, working, hubUnseen, hubSeen, finished]],
 	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
 };
-/** A device an hour past first run, so Hub seen reads unseen to it. */
-function deviceDisagrees(hub: string) {
-	adoptedAnHourAgo(hub);
-}
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
 it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1651,7 +1648,7 @@ it("takes Finished or Idle from the hub for a row that carries its turn end, wha
 
 it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const shape = { ...hubFleet };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -1693,7 +1690,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 
 it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1706,7 +1703,7 @@ it("marks a row without a turn end on the device, and sends the hub nothing", as
 
 it("sends a mark made while the connection was down once it's ready again", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -3136,13 +3133,13 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 
 it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub({
 		...hubFleet,
 		catalogs: { projects: [evenerProject()] },
 		projectPages: {
 			"evener:current": [
-				// The device holds an unread mark for this ref; the hub says seen.
+				// The device's first run predates this ref; the hub says seen.
 				session("local:hub-seen", {
 					title: "Project hub seen",
 					live: false,

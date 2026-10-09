@@ -24,10 +24,9 @@ const MAX_MARKS_PER_CALL = 500;
 // service) say nothing about the mark, which goes again on the next flush.
 const INVALID_PARAMS = -32602;
 
-/** A mark as seen/set carries it, less its ref. */
-type PendingMark = { seenThrough: number };
 interface PendingEntry {
-	mark: PendingMark;
+	/** The turn end the mark reads the session through, in ms. */
+	seenThrough: number;
 	/** The hub answered a call carrying this very entry. */
 	acknowledged: boolean;
 }
@@ -57,7 +56,7 @@ export class HubSeenMarks {
 		const ended = hubTurnEnd(row);
 		if (ended === null) return null;
 		const entry = this.pending.get(row.ref);
-		if (entry && ended <= entry.mark.seenThrough) return true;
+		if (entry && ended <= entry.seenThrough) return true;
 		return row.unseen !== true;
 	}
 
@@ -68,9 +67,9 @@ export class HubSeenMarks {
 		let changed = false;
 		for (const { ref, seenThrough } of marks) {
 			if (!Number.isFinite(seenThrough) || seenThrough <= 0) continue;
-			const current = this.pending.get(ref)?.mark;
+			const current = this.pending.get(ref);
 			if (current && current.seenThrough >= seenThrough) continue;
-			this.pending.set(ref, { mark: { seenThrough }, acknowledged: false });
+			this.pending.set(ref, { seenThrough, acknowledged: false });
 			changed = true;
 		}
 		if (changed) this.changed();
@@ -96,7 +95,7 @@ export class HubSeenMarks {
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
 			if (ended === null) continue;
-			if (row.unseen !== true || ended > entry.mark.seenThrough) {
+			if (row.unseen !== true || ended > entry.seenThrough) {
 				this.pending.delete(row.ref);
 				changed = true;
 			}
@@ -123,7 +122,7 @@ export class HubSeenMarks {
 				if (!client || withoutSeenSet.has(client)) return;
 				const batch = [...this.pending].filter(([, entry]) => !entry.acknowledged).slice(0, MAX_MARKS_PER_CALL);
 				if (batch.length === 0) return;
-				const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) => ({ ref, ...mark }));
+				const sessions: SessionSeenMark[] = batch.map(([ref, { seenThrough }]) => ({ ref, seenThrough }));
 				// An entry replaced while its call was out is a newer mark: only the
 				// entry that was sent takes the call's outcome.
 				const stillSent = ([ref, entry]: [string, PendingEntry]) => this.pending.get(ref) === entry;
