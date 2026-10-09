@@ -585,6 +585,11 @@ type testConfig struct {
 	// production default.
 	needsResponseQuietPeriod *time.Duration
 
+	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
+	// timer after the session rests awaiting and before STATUS_SETTLED is
+	// emitted, with restMu held, so a test can start a turn in that gap.
+	needsResponseRestBeforeAnnounce func()
+
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
 	// keeps the production default. Inherited by child configs like every

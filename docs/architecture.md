@@ -252,8 +252,7 @@ timer checks everything the settle checked again: a new turn or settle, a close,
 runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
 announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
 reserved, or the session has closed. A turn start waits for a rest that is arming to finish
-its announcement, so the announcement always reaches the event feed before the turn's own
-events. Restore derives awaiting at once, with no quiet period.
+its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
 
 ### The repeated-call breaker
 

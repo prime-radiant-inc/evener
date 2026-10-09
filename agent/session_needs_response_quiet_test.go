@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,4 +265,87 @@ func TestNeedsResponseSteeringArrivingInsideTheQuietPeriodNeverArms(t *testing.T
 	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
 		t.Fatalf("status settled events = %v, want none", got)
 	}
+}
+
+// A turn that starts while a rest is arming waits for the rest's
+// announcement, so STATUS_SETTLED reaches the feed before the turn's own
+// EXECUTION_STARTED: a client never hears awaiting after the turn began.
+func TestNeedsResponseRestAnnouncesBeforeATurnThatStartsWhileItArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t,
+		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+		func(llm.Request) llm.Response { return endReasonResponse("done", "done") },
+	)
+	armed := make(chan struct{})
+	release := make(chan struct{})
+	sess.cfg.testOnly.needsResponseRestBeforeAnnounce = func() {
+		close(armed)
+		<-release
+	}
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	go fake.Advance(needsResponseQuietPeriodDefault)
+	select {
+	case <-armed:
+	case <-ctx.Done():
+		t.Fatal("the rest never armed")
+	}
+	turnDone := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(ctx, "next", nil)
+		turnDone <- err
+	}()
+	// The turn must park on restMu while the announcement is pending.
+	for !turnParkedOnRestMu() {
+		select {
+		case err := <-turnDone:
+			t.Fatalf("turn finished (err %v) while the rest's announcement was pending", err)
+		case <-ctx.Done():
+			t.Fatal("the turn never reached its start")
+		case <-time.After(time.Millisecond): // TRIPWIRE: poll interval only; ctx bounds the wait.
+		}
+	}
+	close(release)
+	if err := <-turnDone; err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	settled, secondStart, starts := -1, -1, 0
+	for i, ev := range *evs {
+		switch ev.Kind {
+		case events.EventStatusSettled:
+			settled = i
+		case events.EventExecutionStarted:
+			starts++
+			if starts == 2 {
+				secondStart = i
+			}
+		}
+	}
+	if settled < 0 || secondStart < 0 || settled > secondStart {
+		kinds := make([]events.EventKind, 0, len(*evs))
+		for _, ev := range *evs {
+			kinds = append(kinds, ev.Kind)
+		}
+		t.Fatalf("STATUS_SETTLED at %d, second EXECUTION_STARTED at %d: want the announcement first; events %v", settled, secondStart, kinds)
+	}
+}
+
+// turnParkedOnRestMu reports whether some goroutine is waiting for a mutex
+// inside processOneInput: the turn start blocked on restMu.
+func turnParkedOnRestMu() bool {
+	for _, stack := range strings.Split(goroutineDump(), "\n\n") {
+		if strings.Contains(stack, "sync.(*Mutex).Lock") && strings.Contains(stack, ").processOneInput(") {
+			return true
+		}
+	}
+	return false
 }
