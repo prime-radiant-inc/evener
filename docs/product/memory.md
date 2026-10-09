@@ -293,20 +293,25 @@ frontmatter can't take it is left alone (the backup keeps its line). The first
 line naming a page wins, except that within one index a link in the page's
 exact case wins over an earlier line naming it in another case. Across indexes,
 the one named exactly `MEMORY.md` is read first, and an earlier index wins over
-a later one. Migration does not stamp. Each old index is then renamed to a
+a later one. Migration does not stamp. Each old index is then moved to a
 `.MEMORY.md.pre-generated` backup, a dot name that is never a page or searched,
-numbered `.2`, `.3` and so on when taken, so no backup is overwritten. A page
-that fails to write does not stop the others, but leaves the old index in
-place. A failed migration never blocks rendering; the next rendering retries.
-Other sessions render the pages as they are, with fallback descriptions, until
-a writing session migrates.
+numbered `.2`, `.3` and so on when taken. This matters while older Evener builds
+still share the scope, since one of them can write `MEMORY.md` again after
+migration. No backup is ever replaced or removed; an index whose bytes repeat an
+existing backup is removed instead of backed up again. If the move fails for
+any reason other than a taken name (for example a filesystem without hard
+links), the old index stays and each later rendering retries. A page that fails
+to write does not stop the others, but leaves the old index in place. A failed
+migration never blocks rendering; the next rendering retries. Other sessions
+render the pages as they are, with fallback descriptions, until a writing
+session migrates.
 
 Migration takes no lock, because no cross-session memory lock exists and it
 does not need one. It is idempotent: two migrators read the same old index and
 write the same descriptions, a page that already has a description is skipped,
 and a move that finds `MEMORY.md` already gone counts as done. The move links
 `MEMORY.md` to its backup name, which never replaces an existing backup (a
-taken name moves on to the next number), and removes `MEMORY.md` only when the
+taken name moves on to the next free one), and removes `MEMORY.md` only when the
 linked bytes are the ones that migration read; an index an older build wrote in
 between stays for the next rendering to migrate. A crash midway
 leaves some pages described and the old file in place, so the next rendering
