@@ -287,6 +287,11 @@ func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
 func legacyMemoryIndexes(env *execenv.LocalExecutionEnvironment) ([]string, error) {
 	root := env.WorkingDirectory()
 	entries, err := env.ListDirectory(root, 1)
+	if errors.Is(err, fs.ErrNotExist) {
+		// A scope directory that does not exist (or, on Linux, was removed under
+		// the environment's open handle) holds no index.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
