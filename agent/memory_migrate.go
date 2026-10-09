@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"io/fs"
 	"maps"
@@ -47,6 +48,10 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 	return filepath.Join(root, backup), nil
 }
 
+// errLegacyMemoryIndexChanged reports that a hand-written index changed
+// after migration read it, so it stays in place for the next run.
+var errLegacyMemoryIndexChanged = errors.New("hand-written memory index changed during migration; it stays for the next run")
+
 // moveLegacyMemoryIndex moves the migrated hand-written index at legacy,
 // whose bytes the migration read as raw, to a backup in root, trying the
 // name backup first. A backup is never replaced or removed, since each holds
@@ -57,41 +62,51 @@ func freeMemoryBackupPath(env *execenv.LocalExecutionEnvironment, root string) (
 // No lock guards the move, and another migration or an older build may have
 // changed the scope since backup was chosen. So the index is hard-linked to
 // the backup name, which fails rather than replace a file put there
-// meanwhile, and a taken name moves on to the next free one. Any other link
-// failure, such as a filesystem without hard links, returns an error and
-// leaves the index in place. The index is removed only once its bytes are
-// the ones the migration read: an older build may have written it again
-// since, and those lines are not in the pages yet, so that file stays for the
-// next run. A rewrite landing between that check and the removal would
-// still be lost; the window is two system calls wide.
+// meanwhile, and a taken name moves on to the next free one, unless a backup
+// of the same bytes appeared meanwhile. Any other link failure, such as a
+// filesystem without hard links, returns an error and leaves the index in
+// place. The index is removed only once its bytes are the ones the migration
+// read: an older build may have written it again since, and those lines are
+// not in the pages yet, so that file stays and errLegacyMemoryIndexChanged
+// says so.
+//
+// A rewrite landing between that last check and the removal would still be
+// lost. No filesystem call removes a name only if its contents match, and a
+// lock would not help, since the older build writing MEMORY.md takes none;
+// the window is the two system calls between the read and the unlink.
 func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
 	repeated, err := memoryBackupHolds(env, root, raw)
 	if err != nil {
 		return err
 	}
-	if !repeated {
-		for {
-			err := env.LinkConfinedFile(legacy, backup)
-			if err == nil {
-				break
+	for !repeated {
+		err := env.LinkConfinedFile(legacy, backup)
+		if err == nil {
+			// A link to bytes this migration did not read backs up nothing it
+			// migrated; the index still holds them.
+			if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
+				return cmp.Or(errors.Join(err, env.RemoveConfinedFile(backup)), errLegacyMemoryIndexChanged)
 			}
-			if !errors.Is(err, fs.ErrExist) {
-				// fs.ErrNotExist: another migration moved the index first.
-				return ignoreNotExist(err)
-			}
-			if backup, err = freeMemoryBackupPath(env, root); err != nil {
-				return err
-			}
+			break
 		}
-		// A link to bytes this migration did not read backs up nothing it
-		// migrated; the index still holds them.
-		if moved, err := env.ReadFileRaw(backup); err != nil || !bytes.Equal(moved, raw) {
-			return errors.Join(err, env.RemoveConfinedFile(backup))
+		if !errors.Is(err, fs.ErrExist) {
+			// fs.ErrNotExist: another migration moved the index first.
+			return ignoreNotExist(err)
+		}
+		// Another migration may have just backed up the same bytes.
+		if repeated, err = memoryBackupHolds(env, root, raw); err != nil {
+			return err
+		}
+		if backup, err = freeMemoryBackupPath(env, root); err != nil {
+			return err
 		}
 	}
 	current, err := env.ReadFileRaw(legacy)
-	if err != nil || !bytes.Equal(current, raw) {
+	if err != nil {
 		return ignoreNotExist(err)
+	}
+	if !bytes.Equal(current, raw) {
+		return errLegacyMemoryIndexChanged
 	}
 	return ignoreNotExist(env.RemoveConfinedFile(legacy))
 }

@@ -123,8 +123,8 @@ func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 	recreatedIndex, _ := oldBuildRound(t, scope, 2)
 	// B moves the index it read, the original, to the name it chose before
 	// A's move.
-	if err := moveLegacyMemoryIndex(env, scope, legacy, []byte(original), backupB); err != nil {
-		t.Fatal(err)
+	if err := moveLegacyMemoryIndex(env, scope, legacy, []byte(original), backupB); !errors.Is(err, errLegacyMemoryIndexChanged) {
+		t.Fatalf("move of a rewritten index returned %v, want errLegacyMemoryIndexChanged", err)
 	}
 
 	backup, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup))
@@ -136,6 +136,31 @@ func TestMigrateMemoryScopeRaceKeepsTheOriginalBackup(t *testing.T) {
 	}
 	if backups := memoryBackups(t, scope); len(backups) != 1 {
 		t.Errorf("index backups %q, want only the original", backups)
+	}
+}
+
+// A backup name taken after it was chosen, here by a different index, is
+// never replaced: the move links the index to the next free name instead.
+func TestMoveLegacyMemoryIndexSkipsATakenBackupName(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	index, earlier := "- [a](a.md) — this index\n", "- [b](b.md) — an earlier index\n"
+	legacy := filepath.Join(scope, memoryIndexFile)
+	chosen := filepath.Join(scope, memoryLegacyIndexBackup)
+	for path, body := range map[string]string{legacy: index, chosen: earlier} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := moveLegacyMemoryIndex(env, scope, legacy, []byte(index), chosen); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{memoryLegacyIndexBackup: earlier, memoryLegacyIndexBackup + ".2": index}
+	if got := memoryBackups(t, scope); !maps.Equal(got, want) {
+		t.Fatalf("backups %q, want %q", got, want)
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("MEMORY.md kept after its move: %v", err)
 	}
 }
 

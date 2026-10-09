@@ -224,6 +224,8 @@ func TestListVisibleDirectoryPrunesDotDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer confined.Cleanup()
+	secureRead, plainRead := secureReadDirEntries, listReadDir
+	defer func() { secureReadDirEntries, listReadDir = secureRead, plainRead }()
 	for name, env := range map[string]*LocalExecutionEnvironment{"confined": confined, "unconfined": NewLocalExecutionEnvironment(t.TempDir())} {
 		root := env.WorkingDirectory()
 		for _, file := range []string{"a.md", ".dotfile", "sub/b.md", "sub/.hidden/c.md", ".git/objects/00/x"} {
@@ -236,11 +238,9 @@ func TestListVisibleDirectoryPrunesDotDirectories(t *testing.T) {
 			}
 		}
 		reads := 0
-		secureRead, plainRead := secureReadDirEntries, listReadDir
 		secureReadDirEntries = func(fd int) ([]os.DirEntry, error) { reads++; return secureRead(fd) }
 		listReadDir = func(dir string) ([]os.DirEntry, error) { reads++; return plainRead(dir) }
 		entries, err := env.ListVisibleDirectory(root, 64)
-		secureReadDirEntries, listReadDir = secureRead, plainRead
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
