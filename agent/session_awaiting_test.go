@@ -586,3 +586,41 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 		t.Fatalf("tool state = %s, want the original kept", res.ToolState)
 	}
 }
+
+// A delegate's report already armed as root attention moves the parent on,
+// so a needs_response settle rests idle even once the reporter's runtime is
+// only warm: settle reads the same pending work restore does.
+func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+	}}
+	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}), withAdapter(f))
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Settle again from idle, now beside a warm idle reporter whose report is
+	// armed: the delegate finished while the turn was writing its question.
+	sess.mu.Lock()
+	sess.state = SessionIdle
+	sess.mu.Unlock()
+	child := newTestSessionForState(t)
+	sess.subagents.mu.Lock()
+	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child}
+	sess.subagents.mu.Unlock()
+	const id = "delegate:dlg_x/delivery/1"
+	if ok, err := sess.appendDelegateNotificationDurably(id, `<delegate-notification delegate_id="dlg_x">done</delegate-notification>`); err != nil || !ok {
+		t.Fatalf("append delegate notification: %v %v", ok, err)
+	}
+	if err := sess.armDelegateAttention(id); err != nil {
+		t.Fatal(err)
+	}
+	sess.armAwaitingAtSettle(true, false)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle while a delegate report is pending", got)
+	}
+}
