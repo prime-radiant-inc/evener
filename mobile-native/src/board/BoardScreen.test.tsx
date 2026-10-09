@@ -2146,9 +2146,11 @@ const writing = session("local:write", { title: "Write tests", state: "active", 
 it("keeps a later-page parent's Working pulse and quiet failure history through questions, refresh and reconnect", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	// A parent whose child is still running rests idle (#4093); the child's
+	// work is what the row shows.
 	const parent = session("local:parent", {
 		title: "Coordinate children",
-		state: "awaiting",
+		state: "idle",
 		subagents: { running: 1, failed: 1, done: 0 },
 	});
 	const shape: Fleet = { ...fleet, live: [[working], [parent]], needsYou: [], pins: [], pinned: {} };
@@ -2186,7 +2188,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 		await settleMicrotasks();
 		await layOut(tree);
 	};
-	const question = { ...parent, ask_pending: true };
+	const question = { ...parent, state: "awaiting", ask_pending: true };
 	shape.live = [[working], [question]];
 	shape.needsYou = [question];
 	await refresh(1);

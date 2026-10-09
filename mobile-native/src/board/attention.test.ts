@@ -45,8 +45,10 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "awaiting", ask_pending: true }, true, false, "question"],
 		[{ state: "active" }, true, false, "approval"],
 		[{ state: "active" }, false, false, "working"],
-		[{ state: "awaiting" }, false, false, "finished"],
-		[{ state: "awaiting" }, false, true, "idle"],
+		// Awaiting without a question is a turn that ended on needs_response:
+		// it needs you, seen or not (#4093).
+		[{ state: "awaiting" }, false, false, "needsYou"],
+		[{ state: "awaiting" }, false, true, "needsYou"],
 		[{ state: "idle" }, false, false, "finished"],
 		[{ state: "idle", dormant: true }, false, false, "idle"],
 		[{ state: "ended" }, false, false, "shutDown"],
@@ -98,7 +100,7 @@ describe("a row's Board state (spec 13.1)", () => {
 
 	it.each([
 		[{ state: "idle" }, false, false, "working"],
-		[{ state: "awaiting" }, false, true, "working"],
+		[{ state: "awaiting" }, false, true, "needsYou"],
 		[{ state: "idle", dormant: true }, false, false, "working"],
 		[{ state: "warning" }, false, false, "working"],
 		[{ state: "warning", ask_pending: true }, false, false, "warning"],
@@ -254,9 +256,9 @@ describe("Live bands (spec 7.1)", () => {
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
 		const live = [
 			row("work-b", { state: "active", updated_at: at(1) }),
-			row("done-old", { state: "awaiting", updated_at: at(2) }),
+			row("done-old", { state: "idle", updated_at: at(2) }),
 			row("work-a", { state: "active", updated_at: at(40) }),
-			row("done-new", { state: "awaiting", updated_at: at(50) }),
+			row("done-new", { state: "idle", updated_at: at(50) }),
 			row("seen-old", { state: "idle", updated_at: at(3) }),
 			row("seen-new", { state: "idle", updated_at: at(4) }),
 		];
@@ -292,9 +294,9 @@ describe("Live bands (spec 7.1)", () => {
 	it("orders Finished and Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
 		const live = [
 			// Renamed lately, but its turn ended long ago.
-			row("done-renamed", { state: "awaiting", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
-			row("done-ended", { state: "awaiting", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
-			row("done-older-hub", { state: "awaiting", updated_at: at(20) }),
+			row("done-renamed", { state: "idle", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
+			row("done-ended", { state: "idle", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
+			row("done-older-hub", { state: "idle", updated_at: at(20) }),
 			row("seen-renamed", { state: "idle", updated_at: at(58), turn_ended_at: at(1) }),
 			row("seen-ended", { state: "idle", updated_at: at(2), turn_ended_at: at(40) }),
 			row("seen-garbled", { state: "idle", updated_at: at(5), turn_ended_at: "not a time" }),
@@ -310,9 +312,9 @@ describe("Live bands (spec 7.1)", () => {
 
 	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
 		const live = [
-			row("done-dated", { state: "awaiting", updated_at: at(10) }),
-			row("done-missing", { state: "awaiting" }),
-			row("done-garbled", { state: "awaiting", updated_at: "not a time" }),
+			row("done-dated", { state: "idle", updated_at: at(10) }),
+			row("done-missing", { state: "idle" }),
+			row("done-garbled", { state: "idle", updated_at: "not a time" }),
 			row("failed-dated", { state: "errored", updated_at: at(10) }),
 			row("failed-missing", { state: "errored" }),
 		];

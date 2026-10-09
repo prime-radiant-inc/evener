@@ -10,6 +10,7 @@ export type Glyph = { name: SFSymbol; tint: Tint; size: number };
 const GLYPHS: Record<BoardState, Glyph | null> = {
 	failed: { name: "xmark.octagon.fill", tint: "danger", size: 20 },
 	question: { name: "questionmark.circle.fill", tint: "attention", size: 20 },
+	needsYou: { name: "exclamationmark.bubble.fill", tint: "attention", size: 20 },
 	approval: { name: "hand.raised.circle.fill", tint: "attention", size: 20 },
 	warning: { name: "exclamationmark.triangle.fill", tint: "attention", size: 20 },
 	restartNeeded: { name: "arrow.triangle.2.circlepath.circle.fill", tint: "attention", size: 20 },

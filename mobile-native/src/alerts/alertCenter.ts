@@ -8,7 +8,7 @@
 import type { WhyLine } from "../board/attention";
 
 /** The Board states that put a session in Needs you (spec 13.2). */
-export type NeedsYouKind = "failed" | "question" | "approval" | "warning" | "restartNeeded";
+export type NeedsYouKind = "failed" | "question" | "needsYou" | "approval" | "warning" | "restartNeeded";
 
 export interface SessionAlert {
 	/** "started": a session you started opened while you were somewhere else
@@ -115,6 +115,7 @@ const RECENT_LIMIT = 20;
 const NEEDS_YOU: Record<Alert["kind"], boolean> = {
 	failed: true,
 	question: true,
+	needsYou: true,
 	approval: true,
 	warning: true,
 	restartNeeded: true,
@@ -347,7 +348,8 @@ export class AlertCenter {
 		if (alert.kind === "startFailed") return true;
 		const { failures, questions, finished } = this.preferences;
 		if (alert.kind === "failed" && !failures) return false;
-		if ((alert.kind === "question" || alert.kind === "approval") && !questions) return false;
+		if ((alert.kind === "question" || alert.kind === "needsYou" || alert.kind === "approval") && !questions)
+			return false;
 		if (alert.kind === "finished" && !finished) return false;
 		// Nothing alerts about what is on screen: the session you're looking
 		// at, or a notice while the Board, which lists it, is up.

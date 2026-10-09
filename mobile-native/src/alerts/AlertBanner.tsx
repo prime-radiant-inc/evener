@@ -23,6 +23,7 @@ const DRAFT_KEPT_LINE = "Your draft is kept.";
 const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
 	failed: "failed",
 	question: "question",
+	needsYou: "needsYou",
 	approval: "approval",
 	warning: "warning",
 	restartNeeded: "restartNeeded",

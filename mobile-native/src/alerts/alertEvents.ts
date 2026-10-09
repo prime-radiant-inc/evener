@@ -1,5 +1,5 @@
 // Turns what the hub says into alerts (spec 13.3): a session that becomes
-// Failed, Question, Approval, Warning or Restart needed (from any other
+// Failed, Question, Needs you, Approval, Warning or Restart needed (from any other
 // state, another needs-you state included), a working session that finishes
 // its turn, and a hub notice that appears. A session that stays in one
 // needs-you state says nothing more, whatever it now asks: one alert is
@@ -12,7 +12,7 @@ import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./ale
 
 export type SessionStates = ReadonlyMap<string, BoardState>;
 
-const NEEDS_YOU = new Set<BoardState>(["failed", "question", "approval", "warning", "restartNeeded"]);
+const NEEDS_YOU = new Set<BoardState>(["failed", "question", "needsYou", "approval", "warning", "restartNeeded"]);
 
 export function detectSessionAlerts(
 	previous: SessionStates | null,

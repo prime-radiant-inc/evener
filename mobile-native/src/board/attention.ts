@@ -17,6 +17,7 @@ import { compactDuration } from "../session/format";
 export type BoardState =
 	| "failed"
 	| "question"
+	| "needsYou"
 	| "approval"
 	| "warning"
 	| "restartNeeded"
@@ -42,6 +43,7 @@ export interface LiveBands {
 const WORDS: Record<BoardState, string> = {
 	failed: "Failed",
 	question: "Question",
+	needsYou: "Needs you",
 	approval: "Approval",
 	warning: "Warning",
 	restartNeeded: "Restart needed",
@@ -99,6 +101,10 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
+	// Awaiting without a question is a turn that ended on needs_response: it
+	// waits on a person like a question does, ahead of any running work
+	// (#4093).
+	if (row.state === "awaiting") return "needsYou";
 	if (row.state === "active") return "working";
 	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
 	if (runningSubagents) return "working";
@@ -121,6 +127,7 @@ export function rowClassifier(
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
+	needsYou: "needsYou",
 	approval: "needsYou",
 	warning: "needsYou",
 	restartNeeded: "needsYou",
@@ -176,7 +183,8 @@ function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 // signal such a row has.
 function needsYouRank(item: ClassifiedRow): number {
 	if (item.state === "failed") return 0;
-	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval") return 1;
+	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval" || item.state === "needsYou")
+		return 1;
 	return 2;
 }
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
@@ -267,6 +275,7 @@ export interface WhyLine {
 const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	failed: { hue: "danger", text: "open the session to see what went wrong" },
 	question: { hue: "attention", text: "waiting for your answer" },
+	needsYou: { hue: "attention", text: "waiting for your reply" },
 	approval: { hue: "attention", text: "waiting for your permission" },
 	warning: { hue: "attention", text: "open the session to see it" },
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
