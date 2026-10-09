@@ -251,7 +251,8 @@ a turn and starts the next one at once never flickers to awaiting. When the peri
 timer checks everything the settle checked again: a new turn or settle, a close, queued input,
 runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
 announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
-reserved, or the session has closed. Restore derives awaiting at once, with no quiet period.
+reserved, or the session has closed. A turn start waits for a rest that is arming to finish
+its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
 
 ### The repeated-call breaker
 

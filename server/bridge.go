@@ -96,8 +96,9 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // by construction, and the assert would sit in a branch no test reaches.
 //
 // The other direction — a facet that SAMPLES under a lock an emitter holds —
-// has no self-deadlock to lean on and needed its own mechanism. Four locks are
-// held across live emits TODAY: Session.queueEventsMu
+// has no self-deadlock to lean on and needed its own mechanism. Five locks are
+// held across live emits TODAY: Session.restMu (agent/session_state.go's
+// needs_response quiet-period timer), Session.queueEventsMu
 // (agent/session_client_mutation_queue.go's reflectDurableInputQueue,
 // agent/session_queue.go's popSteeringHead), queuePersistMu
 // (persistQueuesSnapshot), responseSideEffectsMu (agent/session_tools.go's
