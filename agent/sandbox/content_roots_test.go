@@ -116,6 +116,9 @@ func TestProbeFindsEvenerConfigAndContentRoots(t *testing.T) {
 	}{
 		{"default", nil, "/Users/tester/.config/evener"},
 		{"XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "/xdg"}, "/xdg/evener"},
+		// Evener resolves a relative XDG_CONFIG_HOME against its working
+		// directory; the probe records that absolute root so the mask can apply.
+		{"relative XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "rel"}, mustAbs(filepath.Join("rel", "evener"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -307,4 +310,12 @@ func TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustAbs(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		panic(err)
+	}
+	return abs
 }

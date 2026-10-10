@@ -726,7 +726,11 @@ func withEvenerConfigMask(masked []string, host HostFacts) (all, configMasks []s
 // its own place under the mask (carveOutEscapes). guardedHostRoots only cleans
 // a candidate, without resolving symlinks, so these checks see its literal
 // spelling: a cache -> plugins symlink is refused
-// (TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask).
+// (TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask). Masking is by
+// path, so a hard link placed inside a carve-out to a masked file is readable
+// through it, the same documented residual as a hard link in the worktree
+// (docs/sandboxing.md, "Known residuals"); the sandboxed session cannot create
+// one, since it can neither write the carve-out nor see the masked file.
 func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string) []string {
 	var out []string
 	for _, root := range guardedHostRoots(candidates, home, worktree) {

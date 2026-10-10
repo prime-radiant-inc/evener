@@ -370,7 +370,7 @@ const gitWalkBudget = 50_000
 func gitDirsUnder(root string, budget int) ([]string, bool) {
 	var found []string
 	visited := 0
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err := gitWalkDir(root, func(p string, d os.DirEntry, err error) error {
 		// An unreadable directory is unreadable inside the sandbox too.
 		if err != nil && (d == nil || d.IsDir()) {
 			return filepath.SkipDir

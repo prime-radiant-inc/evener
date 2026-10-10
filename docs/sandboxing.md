@@ -608,9 +608,10 @@ raw stderr never becomes the model's opening context.
 
 Three boundary edges are deliberately documented as open rather than claimed closed:
 
-- **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
-  *readable* through the worktree (path-based masking cannot see that two names share
-  an inode). A *write* through such a hardlink does not propagate to the original —
+- **A pre-existing hardlink** inside the worktree, or inside the read-only
+  plugin and skills carve-out, to an out-of-tree secret is *readable* through it
+  (path-based masking cannot see that two names share an inode). Nothing Evener
+  installs creates one: plugin installs clone or copy file contents. A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
   a fresh inode. This read residual is out of the running-amok threat model.
 - **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap

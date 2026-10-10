@@ -229,6 +229,13 @@ func probeHost(system probeSystem) HostFacts {
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.EvenerConfigRoot = userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
+	// Evener resolves a relative XDG_CONFIG_HOME against its working directory,
+	// as this process does here, so the mask covers the directory it really uses.
+	if facts.EvenerConfigRoot != "" && !filepath.IsAbs(facts.EvenerConfigRoot) {
+		if abs, err := filepath.Abs(facts.EvenerConfigRoot); err == nil {
+			facts.EvenerConfigRoot = abs
+		}
+	}
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
