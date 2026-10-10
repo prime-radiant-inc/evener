@@ -884,16 +884,19 @@ link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
 match a symlink: that link shows as untracked in `git status`, so keep it
 out of commits by path, not by ignore.
 
-Focused experiments can run against a read-only lane with
-`--configLoader runner --cache=false` (the default config loader writes a
-temporary bundle through shared `node_modules`). Give the scratch-rooted
+The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+`vitest_run_args` selects `--configLoader runner` (Vite's default loader
+writes a bundled config under `node_modules/.vite-temp`), and the plugin
+that restores `dist/PLACEHOLDER` applies to builds only. Its one remaining
+write is the dependency cache in the checkout's `.vite-cache`, so a
+read-only lane still needs a scratch config for focused experiments: run
+it with `--configLoader runner --cache=false`, and give the scratch-rooted
 Vite config a `server.fs.allow` that names the checkout, the AppWire
 package and the dependency realpath, or external setup imports fail as
 `Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
 the custom config, test files, cacheDir and dependency symlink in scratch,
-reuse the frontend's resolve aliases and test setup, omit build plugins
-that write checkout files, and keep at least two workers (the vmThreads
-isolation floor explained below). These runs are
+reuse the frontend's resolve aliases and test setup, and keep at least two
+workers (the vmThreads isolation floor explained below). These runs are
 probes; canonical verdicts stay with `make test-web`.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
