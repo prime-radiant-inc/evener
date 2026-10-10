@@ -596,3 +596,62 @@ func TestFilteredWakeOnAFreshSessionStaysIdle(t *testing.T) {
 		t.Fatalf("status settled events = %v, want none", got)
 	}
 }
+
+// A stale notification queued during the needs_response turn runs inline in
+// the same input and is filtered out: it runs no turn, so the input still
+// ends on needs_response and rests awaiting after the quiet period.
+func TestFilteredWakeInsideTheNeedsResponseInputStillRestsAwaiting(t *testing.T) {
+	t.Parallel()
+	var sess *Session
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response {
+		sess.enqueueJobNotification(jobNotification{WatchSend: &watchSendToken{ChildSessionID: "gone"}})
+		return endReasonResponse("which?", "needs_response")
+	})
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state once the quiet period ends = %q, want awaiting", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
+		t.Fatalf("status settled events = %v, want one awaiting", got)
+	}
+}
+
+// A real turn inside the quiet period that ends the wait, then a filtered
+// wake, leaves the session idle: the wake has no rest of its own to resume.
+func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t,
+		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+		func(llm.Request) llm.Response { return endReasonResponse("got it", "done") },
+	)
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	if _, err := sess.ProcessInput(ctx, "blue", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle: the second turn moved past the question", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}

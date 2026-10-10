@@ -653,10 +653,16 @@ type Session struct {
 	// quietRestArmed is the restGeneration of the needs_response rest whose
 	// quiet period was last scheduled; 0 before any. Guarded by s.mu.
 	quietRestArmed uint64
-	// quietRestBeforeInput records that the current input started inside a
-	// needs_response quiet period, which its turn start cancelled. Guarded by
+	// quietRestBeforeInput records that the current input started while a
+	// needs_response rest was still owed: scheduled, or its timer stood down
+	// for work in flight. The input's turn start cancelled it. Guarded by
 	// s.mu.
 	quietRestBeforeInput bool
+	// endReasonBeforeInput is the communicate end reason the current input's
+	// turn start reset. A wake that runs no turn puts it back, so the
+	// drain-loop settle reads the end reason of the last turn that ran.
+	// Guarded by s.mu.
+	endReasonBeforeInput string
 	// resumeQuietRest tells the drain-loop settle that a wake which ran no
 	// turn left that cancelled rest standing, so the settle arms it again.
 	// Guarded by s.mu.
