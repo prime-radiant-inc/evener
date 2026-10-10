@@ -151,13 +151,12 @@ export class SessionActivityStore {
   private runtimeThreadId: string | null = null;
   private statusRevision = 0;
   private statusUpdate: { revision: number; threadId: string; status: ThreadStatus } | null = null;
-  /** The applied merge order per delegate id: strictly-greater revision wins
-   * the snapshot fields, latestActivityAt is the independent maximum. Cleared
-   * on a source epoch change, a session replacement and dispose. */
-  private readonly appliedDelegates = new Map<
-    string,
-    { projectionRevision: number; latestActivityAt: string | undefined }
-  >();
+  /** The applied merge order per loaded delegate row: a frame is admitted over
+   * it only by a strictly greater revision (the row itself carries the
+   * independent latestActivityAt maximum). Keyed by the row's identity, because
+   * a read can hold two rows under one delegate id. Cleared on a source epoch
+   * change, a session replacement and dispose. */
+  private readonly appliedDelegates = new Map<string, number>();
   /** Delegate ids that triggered a root read for membership; at most once per
    * id. Cleared with the applied map. */
   private readonly seenUnknownDelegates = new Set<string>();
@@ -640,7 +639,8 @@ export class SessionActivityStore {
    * with no frame, so the flip reconciles the observed delegates with a read. */
   private noteContext(context: SessionActivityContext): void {
     const next = context.reportPreview === true && context.availability === "live";
-    if (this.pushEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
+    const wasEligible = this.pushEligible;
+    if (wasEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
       this.reconcileDelegates();
     }
     this.pushEligible = next;
@@ -654,7 +654,7 @@ export class SessionActivityStore {
     // gate that turns on re-reads them too. Retiring on every other collection's
     // context would spend a read on state this store is not merging into.
     const loaded = this.reads.delegates.epoch;
-    if ((this.pushEligible || next) && loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
+    if ((wasEligible || next) && loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
   }
   /** The delegate merge ordering is invalid across a source replacement: a
    * replacement journal rebuilds projectionRevision from 1, so an older epoch's
@@ -680,15 +680,9 @@ export class SessionActivityStore {
     this.change("delegates", { permanent: false });
     void this.request("delegates", "root");
   }
-  /** Record the merge order a loaded delegate row has reached: a frame is
-   * admitted over it only by a strictly greater revision, and latestActivityAt
-   * is the independent maximum. Keyed by the row's identity, because a read can
-   * hold two rows under one delegate id. */
+  /** Record the merge order a loaded delegate row has reached. */
   private recordAppliedDelegate(row: SessionDelegate): void {
-    this.appliedDelegates.set(rowIdentity("delegates", row), {
-      projectionRevision: row.projectionRevision,
-      latestActivityAt: row.latestActivityAt,
-    });
+    this.appliedDelegates.set(rowIdentity("delegates", row), revisionOf(row.projectionRevision));
   }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
@@ -773,14 +767,11 @@ export class SessionActivityStore {
    * revision may advance it, a higher one never moves it backward. */
   private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
     const incoming = delegateRowFromFrame(current, frame);
-    const applied = this.appliedDelegates.get(rowIdentity("delegates", current)) ?? {
-      projectionRevision: current.projectionRevision,
-      latestActivityAt: current.latestActivityAt,
-    };
+    const applied = this.appliedDelegates.get(rowIdentity("delegates", current));
     const merged = joinDelegateState(
       incoming,
       current,
-      revisionOf(incoming.projectionRevision) > revisionOf(applied.projectionRevision),
+      revisionOf(incoming.projectionRevision) > (applied ?? revisionOf(current.projectionRevision)),
     );
     return delegateRowsEqual(merged, current) ? current : merged;
   }
@@ -809,11 +800,7 @@ export class SessionActivityStore {
         // A served row is an authoritative snapshot: it wins at equal revision
         // (parity with a same-revision frame) and only loses to a strictly
         // newer applied frame, which it must not clobber.
-        const candidate = joinDelegateState(
-          row,
-          existing ?? row,
-          revisionOf(row.projectionRevision) >= revisionOf(applied.projectionRevision),
-        );
+        const candidate = joinDelegateState(row, existing ?? row, revisionOf(row.projectionRevision) >= applied);
         merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
       }
       // Record the served row's order before folding a buffered frame in, so the
@@ -1060,11 +1047,26 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
   };
 }
 /** time.RFC3339Nano, the layout internal/appprojector parses activity
- * timestamps with: Date.parse is looser, so a value only it accepts must not
- * advance the stored activity. */
-const activityTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-function activityMillis(value: string): number {
-  return activityTimestamp.test(value) ? Date.parse(value) : Number.NaN;
+ * timestamps with. Date.parse is looser and keeps only milliseconds, so the
+ * comparison tests this shape and reads the fraction itself. */
+const activityTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:[.,](\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
+/** The whole seconds since the epoch (offset applied) and the fractional
+ * nanoseconds of an RFC3339Nano activity timestamp, or null when the value is
+ * not one -- so a value only Date.parse accepts never orders against a real
+ * one, and two values that differ below a millisecond order exactly as the
+ * projector's time.Time does. */
+function activityInstant(value: string): { seconds: number; nanos: number } | null {
+  const match = activityTimestamp.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction, , sign, offsetHour, offsetMinute] = match;
+  const monthValue = Number(month);
+  const dayValue = Number(day);
+  if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) return null;
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 60) return null;
+  const seconds = Date.UTC(Number(year), monthValue - 1, dayValue, Number(hour), Number(minute), Number(second)) / 1000;
+  const offsetSeconds =
+    sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(offsetHour) * 3600 + Number(offsetMinute) * 60);
+  return { seconds: seconds - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
 }
 /** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
  * wins, a blank current loses to any non-blank candidate, and otherwise the
@@ -1072,9 +1074,11 @@ function activityMillis(value: string): number {
 function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
   if (!candidate || candidate.trim() === "") return false;
   if (!current || current.trim() === "") return true;
-  const candidateMs = activityMillis(candidate);
-  const currentMs = activityMillis(current);
-  return !Number.isNaN(candidateMs) && !Number.isNaN(currentMs) && candidateMs > currentMs;
+  const candidateAt = activityInstant(candidate);
+  const currentAt = activityInstant(current);
+  if (!candidateAt || !currentAt) return false;
+  if (candidateAt.seconds !== currentAt.seconds) return candidateAt.seconds > currentAt.seconds;
+  return candidateAt.nanos > currentAt.nanos;
 }
 /** The projector's join for one delegate: `incomingWins` picks the snapshot
  * fields, while latestActivityAt is the independent maximum of the two -- a

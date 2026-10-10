@@ -1,7 +1,9 @@
 # Session activity push updates (design)
 
-**Status:** Proposed. Awaiting Jesse's approval and execution choice. No product
-code is changed by this document.
+**Status:** Accepted and implemented. The design ships in this series: the shared
+bounded text helper (`agent/activitybound`), the pushed report preview and
+logical owner, the capability-gated merge in the shared store, and the web and
+native coverage. This document records the contract and the decisions behind it.
 
 **Goal:** While the Activity sidebar (or the native subagent tree) is open, a
 delegate field update must cost no delegates-collection read. The pushed
