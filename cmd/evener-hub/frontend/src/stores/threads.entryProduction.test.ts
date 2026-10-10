@@ -4,6 +4,7 @@ import {
   hydrateThread,
   type ThreadReadResponse,
   type Turn,
+  WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
@@ -12,6 +13,7 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
@@ -710,5 +712,309 @@ it("ordinary migration does not read a second legacy blob while the first source
     first.release();
     observed.mockRestore();
     legacy.close();
+  }
+});
+
+it("ordinary recorded notifications persist during busy input without a whole-model publication or debounce", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  for (let entry = 2; entry <= 7; entry += 1) {
+    client.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:a",
+        threadId: "thread-a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-a", length: entry + 1 },
+        items: turn(`busy-${entry}`, entry).items,
+      },
+    });
+  }
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
+    "recorded",
+    "busy-2",
+    "busy-3",
+    "busy-4",
+    "busy-5",
+    "busy-6",
+    "busy-7",
+  ]);
+  expect(await legacyCounts()).toEqual([0, 0]);
+});
+
+it("ordinary final pane release saves its fresh finite read before dropping the model", async () => {
+  const storage = cache();
+  const client = connect();
+  let latest = response();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    return { ...latest, requestGeneration: params.requestGeneration };
+  });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const before = reads;
+  latest = response("local:a", [turn("final-pane", 2)]);
+  expect(await threadsStore.getState().releaseThreadAndWait("local:a")).toEqual({ kind: "saved" });
+  expect(reads).toBe(before + 1);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("final-pane");
+  expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+});
+
+it("ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor", async () => {
+  const storage = cache();
+  const client = connect();
+  let latest = response("local:a", [turn("window", 30)]);
+  latest.snapshot = { incarnation: "inc-a", length: 60 };
+  latest.olderCursor = "page-1";
+  client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+  client.on("thread/turns/list", (params) => ({
+    data: [turn(params.cursor === "page-1" ? "older" : "oldest", params.cursor === "page-1" ? 10 : 0)],
+    nextCursor: params.cursor === "page-1" ? "page-2" : "deep",
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-a", length: 60 },
+  }));
+  await threadsStore.getState().ensureThread("local:a");
+  await threadsStore.getState().loadOlderTurns("local:a");
+  await threadsStore.getState().loadOlderTurns("local:a");
+  latest = response("local:a", [turn("overlap", 25)]);
+  latest.snapshot = { incarnation: "inc-a", length: 60 };
+  latest.olderCursor = "shallow";
+  await threadsStore.getState().refreshThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.map((turn) => turn.id),
+  ).toEqual(["oldest", "older", "overlap", "window"]);
+  expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("deep");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
+    "oldest",
+    "older",
+    "overlap",
+    "window",
+  ]);
+});
+
+it("ordinary reconnect keeps a same-turn tail outside the recovered window without certifying the intervening hole", async () => {
+  const storage = cache();
+  const client = connect(response("local:a", [turn("window", 30)]));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  let releaseRead: (() => void) | undefined;
+  let markArmed: (() => void) | undefined;
+  const armed = new Promise<void>((resolve) => {
+    markArmed = resolve;
+  });
+  client.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        releaseRead = () => {
+          const read = response("local:a", [turn("window", 40)]);
+          read.requestGeneration = params.requestGeneration;
+          read.snapshot = { incarnation: "inc-a", length: 4 };
+          resolve(read);
+        };
+        markArmed?.();
+      }),
+  );
+  client.emitStateChange("reconnecting");
+  client.emitStateChange("ready");
+  await armed;
+  const tail = turn("tail", 50).items?.[0];
+  if (!tail) throw new Error("missing tail item");
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 5 },
+      items: [{ ...tail, turnId: "window" }],
+    },
+  });
+  if (!releaseRead) throw new Error("source read was not issued");
+  releaseRead();
+  await settleEntryTranscriptForTests("local:a");
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.find((turn) => turn.id === "window")
+      ?.items.map((item) => item.transcriptKey),
+  ).toContain("tail");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("tail");
+  const window = await storage.getLatestWindow(key, 10);
+  expect(window.coverage.every((range) => range.end === null || range.end.entry <= 40)).toBe(true);
+});
+
+it("ordinary sibling Clear permits a genuinely fresh explicit acquisition to cache the new epoch", async () => {
+  const storage = cache();
+  connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(await storage.clear()).toEqual({ committed: true, epoch: 1 });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  expect(await storage.getClearEpoch()).toBe(1);
+});
+
+it("ordinary read-proven deletion fences the model, heals entry storage and broadcasts once", async () => {
+  const storage = cache();
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(
+    await storage.commitBatch({
+      historyKey: key,
+      clearEpoch: 0,
+      items: [],
+      sessionMetadata: {
+        historyKey: key,
+        requestedRefs: [{ clientId: location.origin, ref: "local:a" }],
+        resolvedIdentity: { ...identity, clientId: location.origin },
+        savedAt: storage.now(),
+        accessedAt: storage.now(),
+        formatVersion: 3,
+      },
+    }),
+  ).toMatchObject({ outcome: "committed" });
+  const posted: unknown[] = [];
+  const channel = Object.assign(new EventTarget(), {
+    name: "evener.session-cache.v1",
+    onmessage: null,
+    onmessageerror: null,
+    postMessage(message: unknown) {
+      posted.push(message);
+    },
+    close() {},
+  });
+  setCacheChannelFactoryForTests(() => channel);
+  const client = connect();
+  client.on("thread/read", () => {
+    throw new WireError("target deleted", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleProjectionWorkForTests();
+  expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
+  expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+  expect(await countCachedSessions()).toBe(0);
+  expect(posted).toEqual([{ version: 1, sourceId: expect.any(String), kind: "deletion", refs: ["local:a"] }]);
+});
+
+it("ordinary content clear retires the old entry history so a late old push cannot restore it", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toHaveLength(1);
+  client.on("thread/clear", (params) => {
+    const thread = response("local:a", []).thread;
+    thread.id = "cleared-thread";
+    thread.evener.instanceId = thread.id;
+    return {
+      thread,
+      ref: "local:a",
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: thread.id,
+        instanceId: thread.id,
+        projectionState: "reflected",
+      },
+    };
+  });
+  await threadsStore.getState().clearThread("local:a");
+  await settleProjectionWorkForTests();
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 5 },
+      items: turn("old-after-content-clear", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("old-after-content-clear");
+});
+
+it("ordinary mutation-pin release saves a fresh final read before removing the last pinned model", async () => {
+  const storage = cache();
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, createMutationId: () => "entry-pin-drain" });
+  try {
+    await outbox.enqueueIntent({
+      targetRef: "local:a",
+      method: "turn/queue",
+      payload: { ref: "local:a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    const client = connect();
+    let latest = response();
+    let finalReadSawModel = false;
+    let retiring = false;
+    client.on("thread/read", (params) => {
+      if (retiring) finalReadSawModel = threadsStore.getState().threads.has("local:a");
+      const read = { ...latest, requestGeneration: params.requestGeneration };
+      read.thread.evener.mutationStateAuthoritative = true;
+      return read;
+    });
+    client.on("turn/queue", () => new Promise(() => {}));
+    await threadsStore.getState().ensureThread("local:a");
+    await settleProjectionWorkForTests();
+    await settleEntryTranscriptForTests("local:a");
+    threadsStore.getState().releaseThread("local:a");
+    expect(threadsStore.getState().threads.has("local:a")).toBe(true);
+    const removed = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (!state.threads.has("local:a")) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    latest = response("local:a", [turn("pin-final", 3)]);
+    retiring = true;
+    const applied = turn("pin-settled", 2).items?.[0];
+    if (!applied) throw new Error("missing settlement item");
+    client.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:a",
+        threadId: "thread-a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-a", length: 4 },
+        items: [{ ...applied, clientMutationId: "entry-pin-drain" }],
+      },
+    });
+    await removed;
+    expect(finalReadSawModel).toBe(true);
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("pin-final");
+  } finally {
+    outbox.close();
   }
 });
