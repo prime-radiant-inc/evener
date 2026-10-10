@@ -303,7 +303,10 @@ for a delegate it has not loaded, for a delegate id that names more than one
 loaded row, and for one no final row set has yet proved unique, since a page the
 collection continues past can still serve that id for another child. It also
 reads on observe/paging/resync/reconnect, and when an epoch change retires its
-push state; a frame that arrives while a sibling announces the replacement merges
+push state; a resync and a reconnect both turn the merge off until a refreshed
+live context confirms the source again, so a frame racing their re-reads is
+recovered by the invalidation read rather than merged and then cleared. A frame
+that arrives while a sibling announces the replacement merges
 under the announced epoch, and only a row a response served seeds the new epoch's
 ordering. A frame the loaded rows cannot be proved to own waits for the read
 whose row set is final, which places it on the row the id names, drops it when

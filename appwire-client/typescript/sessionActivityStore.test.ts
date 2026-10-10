@@ -3678,6 +3678,73 @@ test("a frame waits while a page the collection continues past holds its id only
   expect(twins()).toEqual(["running", "running"]);
 });
 
+test("a resync re-establishes the push gate, so a delegate settling across it still lands", async () => {
+  const client = pushClient();
+  const racedDelegates = deferred<SessionDelegatesResponse>();
+  const racedSummary = deferred<SessionActivitySummary>();
+  let summaryCalls = 0;
+  let delegateCalls = 0;
+  client.on("evener/thread/activity/read", ({ scope }) => {
+    summaryCalls += 1;
+    if (summaryCalls === 1) return { ...summaryFixture(scope), context: pushContext() };
+    // The resync's own refresh is still out when the delegate settles.
+    return racedSummary.promise;
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => {
+    delegateCalls += 1;
+    if (delegateCalls === 1) {
+      return {
+        context: pushContext(),
+        scope: scope ?? "session",
+        page: { complete: true, issues: [] },
+        delegates: [delegateRow({ status: "running" })],
+      };
+    }
+    if (delegateCalls === 2) return racedDelegates.promise;
+    // The invalidation's read runs after the settle, so it serves the report.
+    return {
+      context: pushContext({ epoch: "epoch-2" }),
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [
+        delegateRow({
+          status: "completed",
+          projectionRevision: 2,
+          reportPreview: "settled",
+          reportPreviewTruncated: false,
+        }),
+      ],
+    };
+  });
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("running");
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  // The delegate settles while the resync's reads are still out. A merge must not
+  // be trusted across the resync boundary: the read it races is answered from a
+  // snapshot the settle predates, so the invalidation is what recovers it.
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 2, status: "completed", reportPreview: "settled" })),
+  );
+  activityChanged(client, ["delegates"]);
+  racedDelegates.resolve({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  racedSummary.resolve({ ...summaryFixture("session"), context: pushContext({ epoch: "epoch-2" }) });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row).toMatchObject({ status: "completed", reportPreview: "settled" });
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

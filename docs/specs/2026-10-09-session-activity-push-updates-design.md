@@ -335,6 +335,10 @@ on `availability`. A negative-path test must pin the fallback.
 - **Announced epoch fences a frame.** A frame that arrives after a sibling
   announces the replacement, while the forced delegates read is in flight, is not
   overwritten by that read's older row.
+- **Resync restates the gate.** A delegate that settles while a resync's reads are
+  out is not merged across the resync boundary and then cleared by those reads:
+  the gate waits for the refreshed context and the invalidation's read carries the
+  settle, so the row shows the completed status and report.
 - **Ambiguous id.** A frame whose id names two loaded rows patches neither, is
   dropped by the next reconciled read, and asks for a read again only on a
   strictly newer revision.
@@ -394,6 +398,7 @@ on `availability`. A negative-path test must pin the fallback.
 | Later-page frame dropped after its one read | buffer the latest frame per id and place it from the reconciled row set, never from a single page's `complete` flag. |
 | Frame overwritten by the read that replaces its epoch | merge and record frames under the announced epoch, not the loaded one. |
 | Retained old-epoch row rejects its replacement | record only rows the response served; a row it did not serve is first sight for the new epoch. |
+| Delegate settles across a resync | turn the push gate off and clear the merge state on resync; the invalidation's read carries the settle into the refreshed row set. |
 | Provisional page takes a frame for another child | patch a loaded row only while the row set is final; otherwise buffer the frame and read. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 

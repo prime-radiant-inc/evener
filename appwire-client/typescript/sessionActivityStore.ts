@@ -1107,6 +1107,14 @@ export class SessionActivityStore {
         this.runtimeThreadId = notification.params.threadId;
         if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
         if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
+        // A resync re-establishes the source identity, so the pushed-frame merge
+        // waits for the refreshed context as it does across a reconnect. Without
+        // this a frame racing the resync's delegate read merges against the epoch
+        // that read is about to replace, and the read's own rows then clear it,
+        // leaving the row at the snapshot the settle predates.
+        this.pushEligible = false;
+        this.clearDelegates();
+        for (const resource of resources) this.reads[resource].announcedEpoch = undefined;
         changed = resources;
         break;
       default:
