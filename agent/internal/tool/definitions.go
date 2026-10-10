@@ -11,12 +11,20 @@ import (
 // at a memory scope's root, which Evener generates from the pages.
 const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
 
-// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
+// selection. Its path parameter is described as relative to the scope root,
+// since the ordinary tool's description invites a workspace or absolute path.
 func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	base.Name = name
 	base.Parameters = CloneSchemaMap(base.Parameters)
 	props := base.Parameters["properties"].(map[string]any)
-	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}, "description": "Which memory to use: personal or project."}
+	if param, ok := props["file_path"].(map[string]any); ok {
+		param["description"] = "Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory."
+	}
+	if param, ok := props["path"].(map[string]any); ok {
+		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
+	}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
@@ -30,7 +38,7 @@ func DefMemoryRead() llm.ToolDefinition {
 
 func DefMemoryDelete() llm.ToolDefinition {
 	return MemoryDefinition(llm.ToolDefinition{
-		Description: "Remove one memory file, not a directory. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
+		Description: "Remove one memory file, not a directory; directories it leaves empty go too. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
 		Parameters: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
