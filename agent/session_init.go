@@ -1711,7 +1711,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// project, and explicitly added skills, not the operator's own (#3227).
 	if envvars.EVENERNoUserSkills.Getenv() != "1" {
 		home, _ = os.UserHomeDir()
-		userSkillsDir = userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills")
+		userSkillsDir = userdirs.UserSkills(userdirs.DefaultConfigRoot())
 		sources, diagnostics = plugin.SkillSources(s.cfg.PluginDirs)
 	}
 	s.skills = skill.Discover(s.currentEnv(), skill.DiscoverOptions{

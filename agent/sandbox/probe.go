@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
@@ -110,6 +111,18 @@ type HostFacts struct {
 	// masked. A path that does not exist contributes nothing and never fails
 	// session start.
 	GitGlobalConfigPaths []string
+
+	// EvenerContentRoots are the installed plugin files in Evener's plugin store
+	// and the user's skills directory at their configured locations (see
+	// ResolvedPolicy.UnmaskedRoots).
+	// Missing directories are listed anyway, so one created mid-session is
+	// readable at its next spawn.
+	EvenerContentRoots []string
+
+	// EvenerConfigRoot is Evener's config root ($XDG_CONFIG_HOME/evener, else
+	// ~/.config/evener). Resolve masks it wherever it lives, since that is where
+	// hub configuration and credentials are kept.
+	EvenerConfigRoot string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -215,6 +228,15 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.EvenerConfigRoot = userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
+	// Evener resolves a relative XDG_CONFIG_HOME against its working directory,
+	// as this process does here, so the mask covers the directory it really uses.
+	if facts.EvenerConfigRoot != "" && !filepath.IsAbs(facts.EvenerConfigRoot) {
+		if abs, err := filepath.Abs(facts.EvenerConfigRoot); err == nil {
+			facts.EvenerConfigRoot = abs
+		}
+	}
+	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -274,6 +296,17 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// evenerContentRoots returns the plugin store's installed plugin files and the
+// user skills directory under Evener's config root, or nothing when the root is
+// unresolved. The store's metadata, which records marketplace URLs that may
+// carry tokens, is left out and stays masked.
+func evenerContentRoots(root string) []string {
+	if root == "" {
+		return nil
+	}
+	return append(userdirs.PluginContentDirs(userdirs.PluginStore(root)), userdirs.UserSkills(root))
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

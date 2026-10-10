@@ -284,10 +284,8 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 
 	roots := slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots)
 	for _, r := range roots {
-		for _, m := range rp.MaskedPaths {
-			if r == m || pathUnder(r, m) {
-				t.Errorf("case %s: granted root %q is at/under masked path %q", tc.Name, r, m)
-			}
+		if rp.Masks(r) {
+			t.Errorf("case %s: granted root %q is masked: %v", tc.Name, r, rp.MaskedPaths)
 		}
 	}
 }

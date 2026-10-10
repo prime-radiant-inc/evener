@@ -91,8 +91,8 @@ func (rp *ResolvedPolicy) ControlPolicy(mainRepoRoot string) (*ResolvedPolicy, e
 	out.FileTool.WriteRoots = dedupeRoots(append(append([]string{}, out.FileTool.WriteRoots...), registry))
 	out.Spawned.WriteRoots = dedupeRoots(append(append([]string{}, out.Spawned.WriteRoots...), registry))
 	// Uphold the fail-closed invariant: never grant a masked path.
-	out.FileTool.WriteRoots = filterMasked(out.FileTool.WriteRoots, out.MaskedPaths)
-	out.Spawned.WriteRoots = filterMasked(out.Spawned.WriteRoots, out.MaskedPaths)
+	out.FileTool.WriteRoots = filterMasked(out.FileTool.WriteRoots, out)
+	out.Spawned.WriteRoots = filterMasked(out.Spawned.WriteRoots, out)
 	return &out, nil
 }
 
@@ -125,10 +125,10 @@ func (rp ResolvedPolicy) WithSessionScratch(dir string) ResolvedPolicy {
 		return rp
 	}
 	rp.FileTool.WriteRoots = filterMasked(
-		dedupeRoots(append(append([]string{}, rp.FileTool.WriteRoots...), dir)), rp.MaskedPaths)
+		dedupeRoots(append(append([]string{}, rp.FileTool.WriteRoots...), dir)), rp)
 	if rp.FileTool.Read == ReadWorktreeOnly {
 		rp.FileTool.ReadRoots = filterMasked(
-			dedupeRoots(append(append([]string{}, rp.FileTool.ReadRoots...), dir)), rp.MaskedPaths)
+			dedupeRoots(append(append([]string{}, rp.FileTool.ReadRoots...), dir)), rp)
 	}
 	return rp
 }

@@ -548,7 +548,7 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 	}
 	catalog := skill.Discover(env, skill.DiscoverOptions{
 		HomeDir:       home,
-		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		UserSkillsDir: userdirs.UserSkills(userdirs.DefaultConfigRoot()),
 		ExtraDirs:     entry.Meta.Config.SkillsDirs,
 		Plugins:       sources,
 	})

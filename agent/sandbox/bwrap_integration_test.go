@@ -416,3 +416,42 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 		})
 	}
 }
+
+// The plugin store and the user skills directory are carved out of the masked
+// ~/.config/evener read-only in every mode (#4171): the shell reads a plugin
+// skill's files and runs its hook script, cannot write either, and still sees
+// nothing else of ~/.config/evener.
+func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
+	facts := requireRealBwrap(t)
+	// Outside /tmp, so the private /tmp tmpfs is not what hides the secret.
+	home, err := os.MkdirTemp("/var/tmp", "evener-content-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	fx := writeEvenerContentFixture(t, home)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			f := facts
+			f.Home = home
+			f.EvenerContentRoots = fx.contentRoots()
+			rp, err := Resolve(SandboxPolicy{Mode: mode, InfraReadRoots: []string{fx.plugin}}, f, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := w.Wrap(fx.scriptCommand("/bin/bash"), cwd)
+			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, w.SessionTmp())
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+			}
+			assertEvenerContentOutput(t, string(out))
+		})
+	}
+}

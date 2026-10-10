@@ -446,3 +446,87 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 		})
 	}
 }
+
+// The plugin store is re-bound read-only after the tmpfs that masks
+// ~/.config/evener, so the carve-out wins over the mask (#4171).
+func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			maskIdx := seqIndex(args, "--tmpfs", config)
+			bindIdx := seqIndex(args[maskIdx+1:], "--ro-bind", store, store)
+			if maskIdx < 0 || bindIdx < 0 {
+				t.Fatalf("the store %q must be re-bound read-only after the mask of %q: %v", store, config, args)
+			}
+			if seqIndex(args, "--bind", store, store) >= 0 {
+				t.Errorf("the store must never be bound writable: %v", args)
+			}
+		})
+	}
+}
+
+// Inside the carve-out, an installed copy's .git (where a cloned plugin keeps
+// its remote URL) is masked again after the read-only re-bind.
+func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	gitDir := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			bindIdx := seqIndex(args, "--ro-bind", cache, cache)
+			if bindIdx < 0 || seqIndex(args[bindIdx:], "--tmpfs", gitDir) < 0 {
+				t.Errorf("%q must be masked after the carve-out's re-bind: %v", gitDir, args)
+			}
+		})
+	}
+}
+
+// bwrap masks a .git at any depth inside the carve-out, matching the file
+// tools and Seatbelt. A tree too large to inspect fully at spawn stays masked
+// for spawned processes rather than being re-granted with .git entries unseen.
+func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	deepGit := filepath.Join(skills, "a", "b", "c", "d", "e", ".git")
+	if err := os.MkdirAll(deepGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--tmpfs", deepGit) {
+		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
+	}
+
+	if _, complete := gitDirsUnder(skills, 3); complete {
+		t.Errorf("a tree larger than the walk budget must be reported incomplete, so its root is not re-granted")
+	}
+}

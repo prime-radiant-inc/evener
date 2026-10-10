@@ -566,3 +566,58 @@ func TestSeatbeltReadRootGrantsBothSymlinkSpellings(t *testing.T) {
 		t.Errorf("the write allow must not reference a link alias:\n%s", text)
 	}
 }
+
+// The plugin store is re-granted read-only AFTER the authoritative denials, for
+// both firmlink spellings, since under Seatbelt the last matching rule wins; it
+// never gets a write grant (#4171).
+func TestSeatbeltRegrantsEvenerContentAfterTheMask(t *testing.T) {
+	t.Parallel()
+	host := seatbeltHost()
+	config := filepath.Join(host.Home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	host.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, host, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+			maskRule := "(deny file-read* file-write* " + literalAndSubpath(paramKeyForPath(params, config)) + ")"
+			maskIdx := strings.Index(text, maskRule)
+			if maskIdx < 0 {
+				t.Fatalf("missing the mask of %q:\n%s", config, text)
+			}
+			for _, path := range []string{store, "/System/Volumes/Data" + store} {
+				var keys []string
+				for _, p := range params {
+					if p.Path == path {
+						keys = append(keys, p.Key)
+					}
+				}
+				regranted := false
+				for _, key := range keys {
+					if i := strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")"); i > maskIdx {
+						regranted = true
+					}
+					for rule := range strings.SplitSeq(text, "\n(") {
+						if strings.HasPrefix(rule, "allow file-write*") && strings.Contains(rule, quoteParam(key)) {
+							t.Errorf("%q must never be writable:\n%s", path, text)
+						}
+					}
+				}
+				if !regranted {
+					t.Errorf("%q must be re-granted read-only after the mask:\n%s", path, text)
+				}
+				// Any .git inside the carve-out is denied again after the re-grant.
+				for _, key := range keys {
+					gitDeny := "(deny file-read* file-write* (require-all (subpath (param " + quoteParam(key) + ")) (regex #\"/\\.[Gg][Ii][Tt](/|$)\")))"
+					if i := strings.Index(text, gitDeny); i < strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")") {
+						t.Errorf("%q must deny .git after its re-grant (want %s):\n%s", path, gitDeny, text)
+					}
+				}
+			}
+		})
+	}
+}

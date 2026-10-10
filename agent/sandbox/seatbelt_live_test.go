@@ -877,3 +877,29 @@ func TestSeatbeltLiveDenylistBeatsDeveloperToolRoots(t *testing.T) {
 		t.Errorf("the denylist must beat the developer-tools grant, but %q was still readable:\n%s", probeFile, out)
 	}
 }
+
+// TestSeatbeltLiveReadsEvenerContentThroughTheMask: under the real sandbox-exec,
+// every mode reads and runs Evener content carved out of the masked
+// ~/.config/evener, cannot write it, and still cannot read the rest (#4171).
+func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
+	requireLiveSeatbelt(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := writeEvenerContentFixture(t, home)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := RealProber{}.Probe()
+	facts.Home = home
+	facts.EvenerContentRoots = fx.contentRoots()
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{fx.plugin}}, facts, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, _ := runUnderSeatbelt(t, rp, cwd, fx.scriptCommand("/bin/sh")...)
+			assertEvenerContentOutput(t, out)
+		})
+	}
+}
