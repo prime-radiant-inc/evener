@@ -3320,7 +3320,6 @@ export function ConversationScreen({
 							<LiveStatusTray
 								session={conversation}
 								frames={frames}
-								// The hub reports activity only for top-level sessions.
 								activity={sessionActivity}
 								row={fleetRow}
 								connected={connected}

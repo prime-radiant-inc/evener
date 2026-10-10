@@ -5,7 +5,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubTime } from "./attention";
-import { type BoardSeen, hubSeenMarks } from "./hubSeen";
+import { type BoardSeen, hubSeenMarks, tracksSeenThrough } from "./hubSeen";
 
 /** Marks the session seen while the screen is in front, so a turn that ends
  * while you watch goes straight to Idle (Jesse's ruling, 2026-09-29, over the
@@ -64,11 +64,11 @@ export function useMarkSeenInFront(
 	// session's last motion as each activity read moves it, and the hub's
 	// controller sends only a mark that advances. Only a hub that tracks
 	// seen-through marks (the row carries seen_through) takes one.
-	const tracksSeenThrough = fleetRow?.seen_through !== undefined;
+	const tracksMotion = fleetRow !== undefined && tracksSeenThrough(fleetRow);
 	useEffect(() => {
-		if (!inFront || lastMovedAt === undefined || !tracksSeenThrough) return;
+		if (!inFront || lastMovedAt === undefined || !tracksMotion) return;
 		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: lastMovedAt }]);
-	}, [inFront, lastMovedAt, tracksSeenThrough, hubId, ref, client]);
+	}, [inFront, lastMovedAt, tracksMotion, hubId, ref, client]);
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);

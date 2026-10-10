@@ -123,7 +123,7 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 export function rowClassifier(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
-	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean,
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
 	return (row) => {
@@ -138,8 +138,9 @@ export function rowClassifier(
  * hub alone (its unseen flag, or motion after its seen mark), never this
  * device's own markers; a resting one also counts a turn the device's
  * fallback hasn't seen. */
-export function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
-	if (!row.live || row.offline || row.dormant || state === "shutDown") return false;
+function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
+	// An offline row is shutDown (boardState).
+	if (!row.live || row.dormant || state === "shutDown") return false;
 	if (state === "working") return row.unseen === true || moved;
 	return !seen || moved;
 }

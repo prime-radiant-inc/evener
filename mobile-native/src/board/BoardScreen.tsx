@@ -258,11 +258,11 @@ function Board({
 
 	// Whether a session moved after the person last looked, from the activity
 	// read's last-moved time against the hub's seen mark (the blue dot).
-	const movedSinceSeen = useCallback(
-		(row: NavigationSessionSummary) => seen.movedSinceSeen(row, activityOf(row.ref)?.lastMovedAt),
-		[seen, activityOf],
-	);
 	const lastMovedAt = useCallback((row: NavigationSessionSummary) => activityOf(row.ref)?.lastMovedAt, [activityOf]);
+	const movedSinceSeen = useCallback(
+		(row: NavigationSessionSummary) => seen.movedSinceSeen(row, lastMovedAt(row)),
+		[seen, lastMovedAt],
+	);
 	const bands = useMemo(
 		() =>
 			liveBands(

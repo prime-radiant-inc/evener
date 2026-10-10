@@ -161,6 +161,13 @@ export class HubSeenMarks {
 	}
 }
 
+/** Whether the row's hub tracks seen-through marks, so a mark can follow the
+ * session's motion as well as its turn end: an older hub sends no
+ * seen_through. */
+export function tracksSeenThrough(row: NavigationSessionSummary): boolean {
+	return row.seen_through !== undefined;
+}
+
 /** When the row's last turn ended, in ms, if the hub decides the row: a row
  * without a readable turn_ended_at is the device's to decide. */
 function hubTurnEnd(row: Pick<HubRow, "turn_ended_at">): number | null {
@@ -214,7 +221,7 @@ export class BoardSeen {
 		const marks: { ref: string; seenThrough: number }[] = [];
 		for (const row of rows) {
 			const ended = hubTurnEnd(row);
-			const moved = row.seen_through === undefined ? undefined : lastMovedAt(row);
+			const moved = tracksSeenThrough(row) ? lastMovedAt(row) : undefined;
 			if (ended === null) this.markers.markSeen(row);
 			const through = Math.max(ended ?? 0, moved ?? 0);
 			if (through > 0) marks.push({ ref: row.ref, seenThrough: through });
