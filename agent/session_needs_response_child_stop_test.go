@@ -22,10 +22,15 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 			t.Parallel()
 			fixture := newColdStableDelegateFixture(t, "")
 			// The child sits in its model call until the stop cancels it; the
-			// parent asks for a reply, then answers the stop report.
+			// parent asks for a reply, then answers the stop report. Any other
+			// call also waits to be cancelled, so an unexpected extra turn
+			// fails the test instead of passing with a plain "done".
+			// reports needs no lock: the parent's report turn appends to it
+			// inside ProcessInputKind, which returns before the test reads it.
 			var reports []string
-			fixture.client.Register(newSessionScriptAdapter("openai").
-				script(fixture.childID, awaitCancelStep).
+			adapter := newSessionScriptAdapter("openai")
+			adapter.otherwise = awaitCancelStep
+			fixture.client.Register(adapter.
 				script(fixture.meta.ID,
 					answerStep(endReasonResponse("which?", "needs_response")),
 					func(_ context.Context, req llm.Request) (llm.Response, error) {
