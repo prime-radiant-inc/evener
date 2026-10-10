@@ -3277,7 +3277,7 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 					}
 				}
 			}
-			checkGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,
+			agenttest.CheckGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,
 				"Regenerate with `go test ./agent -run 'TestMemoryGuidanceFollowsCapabilities$' -count=1 -update-prompt` and read the diff.")
 		})
 	}

@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// checkpointConversationHeading heads the conversation a compaction turn
+// carries verbatim.
+const checkpointConversationHeading = "## Conversation"
+
 type checkpointConversationEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
@@ -21,7 +25,7 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("## Conversation\n\n")
+	b.WriteString(checkpointConversationHeading + "\n\n")
 	for _, entry := range entries {
 		switch entry.Role {
 		case "agent":
@@ -51,6 +55,42 @@ func renderCheckpointWorkingNotes(notes []string) string {
 		b.WriteString("### Note\n\n")
 		writeMarkdownFence(&b, note)
 	}
+	return b.String()
+}
+
+// renderCheckpointEarlierSummaries renders the LLM summaries a checkpoint folds,
+// each whole and fenced, so their own "## " headings stay inside the section
+// and a later checkpoint can extract them again.
+func renderCheckpointEarlierSummaries(summaries []string) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Earlier Summaries\n\n")
+	for _, summary := range summaries {
+		b.WriteString("### Summary\n\n")
+		writeMarkdownFence(&b, summary)
+	}
+	return b.String()
+}
+
+func extractCheckpointEarlierSummaries(text string) []string {
+	var summaries []string
+	for _, block := range parseMarkdownBlocks(markdownSection(text, "## Earlier Summaries")) {
+		summaries = append(summaries, block.Text)
+	}
+	return summaries
+}
+
+// renderCompactionModelText renders a model-written compaction turn's own text
+// under heading, fenced. It comes first in the turn: a summarizer reads a
+// previous compaction from its head, so the model's text must not sit behind
+// the partner's messages the turn carries. Fencing it keeps its own headings
+// and code fences from being read as the sections that follow.
+func renderCompactionModelText(heading, text string) string {
+	var b strings.Builder
+	b.WriteString(heading + "\n\n")
+	writeMarkdownFence(&b, text)
 	return b.String()
 }
 
@@ -117,7 +157,7 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 }
 
 func extractMarkdownConversation(text string) []checkpointConversationEntry {
-	section := markdownSection(text, "## Conversation")
+	section := markdownSection(text, checkpointConversationHeading)
 	if section == "" {
 		return nil
 	}
@@ -152,48 +192,65 @@ func extractCheckpointWorkingNotes(text string) []string {
 }
 
 func markdownSection(text, heading string) string {
-	bodyStart := -1
-	prefix := heading + "\n"
-	if strings.HasPrefix(text, prefix) {
-		bodyStart = len(prefix)
-	} else if idx := strings.Index(text, "\n"+prefix); idx >= 0 {
-		bodyStart = idx + 1 + len(prefix)
-	}
-	if bodyStart < 0 {
+	_, body, end, ok := markdownSectionSpan(text, heading)
+	if !ok {
 		return ""
 	}
-	rest := text[bodyStart:]
-	// End the section at the next top-level "## " (or [END CHECKPOINT]) line — but
-	// skip any such line INSIDE a fenced code block. Conversation content
-	// legitimately contains lines like "## 0" (a user message), and the renderer
-	// wraps every entry in a fence; a fence-blind scan would truncate the section
-	// there and drop entries on a render/extract round-trip. This mirrors the fence
-	// tracking parseMarkdownBlocks applies to the section body.
-	end := len(rest)
+	return text[body:end]
+}
+
+// withoutMarkdownSection returns text with heading's section removed, or text
+// unchanged when it has no such section.
+func withoutMarkdownSection(text, heading string) string {
+	start, _, end, ok := markdownSectionSpan(text, heading)
+	if !ok {
+		return text
+	}
+	return text[:start] + text[end:]
+}
+
+// markdownSectionSpan locates heading's section in text: start is where the
+// heading line begins, body where the section body begins, and end where the
+// next top-level "## " (or [END CHECKPOINT]) line begins. Both the heading and
+// the end are looked for only OUTSIDE fenced code blocks. Rendered entries are
+// fenced and legitimately contain lines like "## 0" (a user message), a pasted
+// "## Earlier Summaries", or an earlier summary's own "## Working Notes"; a
+// fence-blind scan would take those for section boundaries and misread the
+// checkpoint on a render/extract round-trip. This mirrors the fence tracking
+// parseMarkdownBlocks applies to the section body.
+func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 	inFence := false
 	fenceMarker := ""
+	start = -1
 	offset := 0
-	first := true
-	for _, line := range strings.SplitAfter(rest, "\n") {
+	for _, line := range strings.SplitAfter(text, "\n") {
 		if line == "" {
 			break
 		}
 		content := strings.TrimSuffix(line, "\n")
-		if marker := markdownFenceMarker(content); marker != "" {
+		marker := markdownFenceMarker(content)
+		switch {
+		case marker != "":
 			if !inFence {
 				inFence, fenceMarker = true, marker
 			} else if strings.TrimSpace(content) == fenceMarker {
 				inFence, fenceMarker = false, ""
 			}
-		} else if !inFence && !first &&
-			(strings.HasPrefix(content, "## ") || strings.HasPrefix(content, "[END CHECKPOINT]")) {
-			end = offset
-			break
+		case inFence:
+		case start < 0:
+			if line == heading+"\n" {
+				start, body = offset, offset+len(line)
+			}
+		// The body's first line never ends the section.
+		case offset > body && (strings.HasPrefix(content, "## ") || strings.HasPrefix(content, "[END CHECKPOINT]")):
+			return start, body, offset, true
 		}
 		offset += len(line)
-		first = false
 	}
-	return rest[:end]
+	if start < 0 {
+		return 0, 0, 0, false
+	}
+	return start, body, len(text), true
 }
 
 func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {

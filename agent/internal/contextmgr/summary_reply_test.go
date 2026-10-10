@@ -152,7 +152,7 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 }
 
 func TestSummaryPromptSectionsComeFromThePrompt(t *testing.T) {
-	want := []string{"Conversation Timeline", "Progress", "Key Decisions", "Current State", "Pending Work", "Analytical Findings", "Critical Context"}
+	want := []string{"Permissions and Holds", "Conversation Timeline", "Progress", "Key Decisions", "Current State", "Pending Work", "Analytical Findings", "Critical Context"}
 	if strings.Join(summarySections, "|") != strings.Join(want, "|") {
 		t.Fatalf("summarySections = %q, want %q", summarySections, want)
 	}
