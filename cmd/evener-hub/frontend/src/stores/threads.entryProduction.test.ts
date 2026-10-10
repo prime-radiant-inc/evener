@@ -172,3 +172,29 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
     restore();
   }
 });
+
+it("entry store and cache share one clock for metadata and TTL", async () => {
+  const now = Date.now() + 15 * 24 * 60 * 60 * 1000;
+  const storage = new SessionEntryCache({
+    databaseName: SESSION_CACHE_DATABASE_NAME,
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    now: () => now,
+  });
+  caches.push(storage);
+  const fixture = installEntryTranscriptFixtureForTests({
+    ref: "local:a",
+    cache: storage,
+    clientId: identity.clientId,
+    hostId: identity.hostId,
+  });
+  try {
+    connect();
+    await threadsStore.getState().ensureThread("local:a");
+    await fixture.settled();
+    expect((await storage.getLatest(historyKey, 1)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+    expect(await storage.getSessionMetadata(historyKey)).toMatchObject({ savedAt: now, accessedAt: now });
+  } finally {
+    fixture.dispose();
+  }
+});
