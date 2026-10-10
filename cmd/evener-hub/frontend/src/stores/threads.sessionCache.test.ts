@@ -3852,6 +3852,15 @@ describe("exclusive entry transcript fixture route", () => {
 
       // A composer draft is independent of cache ownership and must survive.
       writeComposerDraft(selected, { text: "keep me", skillNames: [] });
+      // And so is a queued mutation in the outbox.
+      const outbox = new MutationOutboxIndexedDB({ createMutationId: () => "task4-delete-outbox" });
+      const outboxRecord = await outbox.enqueueIntent({
+        targetRef: selected,
+        method: "turn/queue",
+        payload: { ref: selected, expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+        attachments: [],
+        optimisticDisplay: { text: "queued" },
+      });
 
       markCacheSessionsDeleted([selected]);
       await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
@@ -3860,10 +3869,236 @@ describe("exclusive entry transcript fixture route", () => {
       // refused rather than resurrecting the rows.
       expect(await entryCache.getHistoryGeneration(historyKey)).toBe(generationBefore + 1);
       expect(readComposerDraft(selected).text).toBe("keep me");
+      await expect(outbox.getOutbox(outboxRecord.clientMutationId)).resolves.toMatchObject({
+        clientMutationId: outboxRecord.clientMutationId,
+        targetRef: selected,
+        state: outboxRecord.state,
+      });
+      outbox.close();
       // The store's own model is gone and the route retires without touching an
       // unrelated ref.
       expect(threadsStore.getState().deletedRefs.has(selected)).toBe(true);
     } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a delete while the entry route's authority read is held never adopts the post-delete authorities", async () => {
+    const selected = "local:entry-delete-held";
+    const entryDatabase = "entry-delete-held-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-delete-held", "DELETE_HELD_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-delete-held-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      // Open the cache connection before parking the reads, so the later
+      // deleteHistory is not the first open.
+      const realEpoch = entryCache.getClearEpoch.bind(entryCache);
+      const realGeneration = entryCache.getHistoryGeneration.bind(entryCache);
+      await realEpoch();
+      // Park the durable authority reads before their real work.
+      const releases: Array<() => void> = [];
+      entryCache.getClearEpoch = (() =>
+        new Promise<number>((resolve, reject) => {
+          releases.push(() => void realEpoch().then(resolve, reject));
+        })) as typeof entryCache.getClearEpoch;
+      entryCache.getHistoryGeneration = ((historyKeyValue: string) =>
+        new Promise<number>((resolve, reject) => {
+          releases.push(() => void realGeneration(historyKeyValue).then(resolve, reject));
+        })) as typeof entryCache.getHistoryGeneration;
+
+      const opening = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+
+      // Delete while the authority read is in flight, then let it read the new
+      // generation. The old response must not be relabelled fresh.
+      markCacheSessionsDeleted([selected]);
+      await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
+      expect(await realGeneration(historyKey)).toBe(1);
+      for (const release of releases.splice(0)) release();
+      await opening;
+      await settleBackgroundTranscriptsForTests();
+
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+      await expect(entryCache.getCoverage(historyKey, "read:fixture-read-1")).resolves.toBeUndefined();
+      // No replacement repository was installed with the old response.
+      expect(fixture.inspect().model).toBeUndefined();
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a same-tab Clear clears the entry cache and retires its route, and a fresh explicit open re-caches", async () => {
+    const selected = "local:entry-same-tab-clear";
+    const entryDatabase = "entry-same-tab-clear-test";
+    const legacy = new SessionCacheIndexedDB();
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-same-tab-clear", "SAME_TAB_CLEAR_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-same-tab-clear-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      await expect(clearCachedSessions()).resolves.toEqual({ committed: true });
+      await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
+      // The entry route's reader, subscription and repository are retired.
+      expect(await entryCache.getClearEpoch()).toBe(1);
+      expect(fixture.inspect().model).toBeUndefined();
+
+      // A fresh explicit foreground acquisition re-caches under the new epoch.
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      // The replacement reader/subscription owns publication: an accepted
+      // recorded notification reaches the store model.
+      const threadId = threadsStore.getState().threads.get(selected)?.threadId;
+      if (!threadId) throw new Error("expected a published model after re-acquisition");
+      requireConnectedClient("entry fixture notification").emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-clear-live", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "clear-live-item",
+              transcriptKey: "clear-live-item",
+              turnId: "entry-clear-live",
+              version: 2,
+              text: "CLEAR_LIVE_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("CLEAR_LIVE_BODY");
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a failed entry authority read does not reject an otherwise successful hydration", async () => {
+    const selected = "local:entry-authority-reject";
+    const entryDatabase = "entry-authority-reject-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-authority-reject", "AUTHORITY_REJECT_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [
+            { ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-authority-reject-item", version: 1 }] },
+          ],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      const realEpoch = entryCache.getClearEpoch.bind(entryCache);
+      entryCache.getClearEpoch = (() =>
+        Promise.reject(new Error("cache read failed"))) as typeof entryCache.getClearEpoch;
+      await expect(threadsStore.getState().ensureThread(selected)).resolves.toBeUndefined();
+      await fixture.settled();
+      // The source hydration still published, and the durable read still works.
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+      await expect(realEpoch()).resolves.toBe(0);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a held entry authority read is bounded by the lookup deadline and does not stall the opening", async () => {
+    const selected = "local:entry-authority-held";
+    const entryDatabase = "entry-authority-held-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-authority-held", "AUTHORITY_HELD_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-authority-held-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      const realEpoch = entryCache.getClearEpoch.bind(entryCache);
+      const realGeneration = entryCache.getHistoryGeneration.bind(entryCache);
+      entryCache.getClearEpoch = (() => new Promise<number>(() => {})) as typeof entryCache.getClearEpoch;
+      entryCache.getHistoryGeneration = (() => new Promise<number>(() => {})) as typeof entryCache.getHistoryGeneration;
+      const started = Date.now();
+      await expect(threadsStore.getState().ensureThread(selected)).resolves.toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(2_000);
+      entryCache.getClearEpoch = realEpoch;
+      entryCache.getHistoryGeneration = realGeneration;
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
       await deleteIndexedDatabase(entryDatabase);

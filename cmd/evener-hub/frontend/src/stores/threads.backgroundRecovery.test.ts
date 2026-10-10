@@ -1868,4 +1868,75 @@ describe("background transcript recovery", () => {
       });
     }
   });
+
+  test("a sibling Clear leaves an alive foreground holder uncached and does not restart caching", async () => {
+    const selected = "local:entry-sibling-holder";
+    const factory = new IDBFactory();
+    const databaseName = `entry-sibling-holder-${crypto.randomUUID()}`;
+    const entryCache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
+    const sibling = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
+    resetThreadsStoreForTests();
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = new FakeClient("ready");
+      fake.on("thread/read", (params) => {
+        const response = currentRead(params.ref ?? selected);
+        response.snapshot = { incarnation: "inc-1", length: 1 };
+        response.thread.turns = [
+          {
+            id: "turn_1",
+            itemsView: "full",
+            status: "completed",
+            version: 1,
+            items: [
+              {
+                type: "agentMessage",
+                id: "item-1",
+                transcriptKey: "item-1",
+                turnId: "turn_1",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                text: "SIBLING_HOLDER_BODY",
+              },
+            ],
+          },
+        ];
+        return response;
+      });
+      fake.on("thread/unsubscribe", () => ({}));
+      connectionStore.getState().connect(fake);
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      // A sibling Clear with no broadcast while the foreground holder stays alive.
+      await expect(sibling.clear()).resolves.toEqual({ committed: true, epoch: 1 });
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+      // Re-entering with the holder alive neither hydrates nor restarts caching.
+      await threadsStore.getState().ensureThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      sibling.close();
+      resetThreadsStoreForTests();
+      await new Promise<void>((resolve) => {
+        const request = factory.deleteDatabase(databaseName);
+        request.onsuccess = () => resolve();
+        request.onerror = () => resolve();
+      });
+    }
+  });
 });

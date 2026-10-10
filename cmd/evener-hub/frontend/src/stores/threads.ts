@@ -427,6 +427,16 @@ const cacheLifetimeHeld = new Map<string, boolean>();
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
 const ensureGenerations = new Map<string, number>();
+// A per-ref counter of retirement events (an entry-route delete or same-tab
+// Clear) that invalidate a hydration's claim to adopt newly observed durable
+// cache authorities. `acceptEntryTranscriptHydration` awaits durable reads
+// after its response published; a hydration that began before a retirement
+// must not be relabelled fresh by authorities read after it, so it captures
+// this counter at `beginThreadHydration` and refuses when it moved.
+const entryRouteRetirements = new Map<string, number>();
+function noteEntryRouteRetirement(ref: string): void {
+  entryRouteRetirements.set(ref, (entryRouteRetirements.get(ref) ?? 0) + 1);
+}
 // A generation changes at every local goal request and every accepted goal
 // authority (a matching notification or full hydration). A request response may
 // publish its derived local state only while its generation is still current, so
@@ -744,18 +754,32 @@ async function acceptEntryTranscriptHydration(
   };
   const historyKey = entryHistoryKey(identity);
   fixture.historyKey = historyKey;
-  // Read the durable Clear epoch and deletion generation BEFORE deciding
-  // whether the installed repository is still current: a genuinely
-  // post-Clear/post-delete acquisition captures the new authorities and may
-  // cache, while an old capture keeps carrying its stale ones and is refused by
-  // the cache fence.
-  const [clearEpoch, historyGeneration] = await Promise.all([
-    fixture.cache.getClearEpoch(),
-    fixture.cache.getHistoryGeneration(historyKey),
-  ]);
+  // The source response was issued before this point. Capture the acquisition's
+  // retirement claim now, then read the durable authorities with the lookup
+  // deadline: a delete or same-tab Clear that retires this route while the read
+  // is in flight must not let the old response adopt the new authorities.
+  const claimedRetirement = pending.entryRetirement ?? entryRouteRetirements.get(ref) ?? 0;
+  const authorities = await readEntryRouteAuthorities(fixture, historyKey);
   if (entryTranscriptFixtureForTests !== fixture || pending.client !== wiredClient || pending.epoch !== readyEpoch) {
     return;
   }
+  const state = threadsStore.getState();
+  const retired =
+    state.deletedRefs.has(ref) ||
+    (entryRouteRetirements.get(ref) ?? 0) !== claimedRetirement ||
+    state.cacheLifetimes.get(ref)?.suppressed === true;
+  if (retired) {
+    // The acquisition is no longer eligible: retire the installed route's
+    // publication and persistence claims and leave the response unpublished, so
+    // the durable fence never sees the old work relabelled as fresh.
+    retireEntryTranscriptRoute(fixture);
+    return;
+  }
+  // A failed or held-out authority read keeps the installed repository rather
+  // than adopting unread authorities; a brand-new route falls back to the
+  // epoch-0/generation-0 baseline and lets the durable fence decide.
+  const clearEpoch = authorities?.clearEpoch ?? fixture.clearEpoch ?? 0;
+  const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
   const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
   if (
     !fixture.repository ||
@@ -763,8 +787,7 @@ async function acceptEntryTranscriptHydration(
     fixture.clearEpoch !== clearEpoch ||
     fixture.historyGeneration !== historyGeneration
   ) {
-    fixture.reader?.dispose();
-    fixture.repository?.dispose();
+    retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
     fixture.historyGeneration = historyGeneration;
@@ -787,6 +810,43 @@ async function acceptEntryTranscriptHydration(
   });
   for (const update of hydration.fixtureNotifications) {
     repository.accept(update.notification, { lifetime: fixture.lifetime });
+  }
+}
+
+// Dispose the entry route's reader, publication subscription and repository
+// together. `openEntryTranscriptFixture` uses `??=`, so leaving a disposed
+// reader or a subscription bound to the old repository installed would let a
+// later open reuse them.
+function retireEntryTranscriptRoute(fixture: EntryTranscriptFixtureForTests): void {
+  fixture.reader?.dispose();
+  fixture.reader = undefined;
+  fixture.unsubscribeRepository?.();
+  fixture.unsubscribeRepository = undefined;
+  fixture.repository?.dispose();
+  fixture.repository = undefined;
+}
+
+// Read the durable Clear epoch and deletion generation under the existing
+// lookup deadline, with a storage-failure fallback: a held or failed durable
+// read must not delay or reject an otherwise successful source hydration.
+async function readEntryRouteAuthorities(
+  fixture: EntryTranscriptFixtureForTests,
+  historyKey: string,
+): Promise<{ clearEpoch: number; historyGeneration: number } | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.all([fixture.cache.getClearEpoch(), fixture.cache.getHistoryGeneration(historyKey)]).then(
+        ([clearEpoch, historyGeneration]) => ({ clearEpoch, historyGeneration }),
+      ),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 type CacheLookup = { record?: CachedSessionRecord; epoch: number };
@@ -896,6 +956,11 @@ type PendingThreadHydration = {
   // (ThreadReadParams.requestGeneration), echoed by the response and used to
   // discard a superseded ErrorTranscriptHistoryFailed rejection.
   requestGeneration?: number;
+  // The entry-route retirement counter captured before this hydration's source
+  // read was issued. A delete or same-tab Clear that lands before the durable
+  // authority read resolves moves the counter, so the acquisition is refused
+  // rather than granted the new authorities.
+  entryRetirement?: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
@@ -3688,6 +3753,7 @@ function beginThreadHydration(
     attempt,
     baseModel,
     requestGeneration,
+    entryRetirement: entryRouteRetirements.get(ref) ?? 0,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -6310,6 +6376,7 @@ export function markCacheSessionsDeleted(refs: string[]): void {
   for (const ref of refs) {
     cancelCacheWrite(ref);
     residencyIfCreated?.revoke(ref, "deleted");
+    noteEntryRouteRetirement(ref);
   }
   // The entry fixture route owns its recorded history in the repository and the
   // entry cache, not the legacy records store: retire its claims and remove its
@@ -6346,6 +6413,11 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
+  // The separately installed entry route retires its publication/persistence
+  // claims with the same-tab Clear: a hydration that began before it must not
+  // adopt the post-Clear epoch, and its installed repository is retired.
+  const entryFixture = entryTranscriptFixtureForTests;
+  if (entryFixture) noteEntryRouteRetirement(entryFixture.ref);
   // Synchronous logical retirement, before the transaction resolves: a
   // pre-Clear hydration must not publish into the same-tab clear window. Issued
   // reads keep their capacity charge; only their claim to publish is retired.
@@ -6364,6 +6436,13 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     residencyIfCreated?.releaseClearClaim();
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
     return { committed: false };
+  }
+  // The entry cache is a separate store from the legacy/residency cache; clear
+  // it too and retire the entry route's reader, subscription and repository so a
+  // later explicit foreground acquisition rebuilds under the new epoch.
+  if (entryFixture) {
+    const entryResult = await entryFixture.cache.clear();
+    if (entryResult.committed) retireEntryTranscriptRoute(entryFixture);
   }
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);
@@ -6701,6 +6780,7 @@ export function resetThreadsStoreForTests(): void {
   canonicalThreadOwnerGenerations.clear();
   backgroundLeaseSequences.clear();
   ensureGenerations.clear();
+  entryRouteRetirements.clear();
   olderPageGenerations.clear();
   goalUpdateGenerations.clear();
   notesUpdateGenerations.clear();
