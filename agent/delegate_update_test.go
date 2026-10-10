@@ -757,6 +757,13 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	if coordinator.hasPendingDelegateUpdateAttention() {
 		t.Fatal("the coordinator's drain counts the sibling's report as an update")
 	}
+	// Three requests so far: two delegate calls and the end of the first turn.
+	// The sibling's report ran no turn of its own. Worker B's own report may
+	// later run a successor turn or ride the drain's end, depending on when it
+	// lands, so the total after the update is not pinned.
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
+		t.Fatalf("the sibling's report ran a turn: the coordinator made %d model requests, want 3", got)
+	}
 	releaseUpdate()
 	select {
 	case text := <-presented:
@@ -772,11 +779,6 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 		t.Fatal("the draining coordinator was never woken by the update")
 	}
 	awaitRootReport(t, root)
-	// Four scripted steps: two delegate calls, the end of the first turn and
-	// the update's turn. A request past them would be answered by default.
-	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
-		t.Fatalf("the coordinator made %d model requests, want its 4 scripted steps", got)
-	}
 }
 
 // A coordinator that is mid-run when its worker's update arrives sees it at
