@@ -82,7 +82,9 @@ interface ResourceRead {
   timer: unknown | null;
   cursor: string | undefined;
   epoch: string | undefined;
-  sessionId: string | undefined;
+  /** Epochs this collection has left: a reply naming one was superseded in
+   * flight by a source replacement. */
+  retired: string[];
   incomplete: boolean;
   boundary: string | undefined;
   refresh: RefreshWalk | null;
@@ -93,6 +95,10 @@ interface ResourceRead {
 /** Cap on the buffered latest frame per unknown delegate id; the per-ID
  * seen-unknown set bounds reads, so this only guards an unbounded store. */
 const MAX_BUFFERED_DELEGATE_FRAMES = 128;
+/** How many superseded source epochs a reply may still name and be recognized
+ * as stale rather than as a replacement. Replies are short-lived, so a handful
+ * covers a replacement that lands while another is still in flight. */
+const RETIRED_EPOCHS = 4;
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -123,7 +129,7 @@ const resourceRead = (): ResourceRead => ({
   timer: null,
   cursor: undefined,
   epoch: undefined,
-  sessionId: undefined,
+  retired: [],
   incomplete: false,
   boundary: undefined,
   refresh: null,
@@ -322,7 +328,7 @@ export class SessionActivityStore {
       this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
-      read.sessionId = undefined;
+      read.retired.length = 0;
       read.incomplete = false;
       read.boundary = undefined;
       read.refresh = null;
@@ -432,6 +438,30 @@ export class SessionActivityStore {
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
         if (stale()) continue;
+        // A source replacement is visible only in a response: the invalidation
+        // carries no epoch. A retired epoch names a reply the replacement
+        // superseded while it was still in flight, so its rows must not be
+        // grafted; a page cannot cross epochs either, because its rows extend a
+        // retired walk. A root read is the fresh read for the new epoch.
+        const epoch = result.context.epoch;
+        const previousEpoch = read.epoch;
+        const superseded = read.retired.includes(epoch);
+        const crossing = previousEpoch !== undefined && previousEpoch !== epoch;
+        if (crossing) {
+          read.retired.push(previousEpoch);
+          if (read.retired.length > RETIRED_EPOCHS) read.retired.shift();
+        }
+        read.epoch = epoch;
+        if (superseded || (crossing && !root)) {
+          read.cursor = undefined;
+          read.refresh = null;
+          read.rootQueued = true;
+          continue;
+        }
+        // The delegate merge ordering is epoch-scoped, so the delegates
+        // collection's own replacement retires it here (a superseded reply
+        // leaves the live ordering alone).
+        if (crossing && !superseded && resource === "delegates") this.clearDelegates();
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -456,28 +486,6 @@ export class SessionActivityStore {
           } else if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
-          // A changed epoch is a source replacement. The pushed merge state is
-          // epoch-scoped -- a replacement journal rebuilds projectionRevision
-          // from 1, so an old epoch's higher revision would otherwise win
-          // forever -- so any response that sees the change retires it, root
-          // reads included. The comparison must skip while the stored epoch is
-          // unset or the first read of every store loops. A page still restarts
-          // its walk and drops its stale rows; a root read is already the fresh
-          // read, so it is accepted and records the new epoch below.
-          const epochMismatch = page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId;
-          if (read.epoch !== undefined && epochMismatch) {
-            this.appliedDelegates.clear();
-            this.seenUnknownDelegates.clear();
-            this.bufferedUnknownDelegates.clear();
-          }
-          if (!root && epochMismatch) {
-            read.cursor = undefined;
-            read.refresh = null;
-            read.epoch = page.context.epoch;
-            read.sessionId = page.context.sessionId;
-            read.rootQueued = true;
-            continue;
-          }
           const current = this.state[resource];
           const walk = read.refresh;
           const last = page.rows[page.rows.length - 1];
@@ -538,8 +546,6 @@ export class SessionActivityStore {
             if (reconciled) read.boundary = undefined;
           }
           read.cursor = page.page.nextCursor;
-          read.epoch = page.context.epoch;
-          read.sessionId = page.context.sessionId;
           read.incomplete = !page.page.complete || issues.length > 0 || read.refresh !== null;
           this.publishCollection(resource, {
             ...current,
@@ -655,6 +661,28 @@ export class SessionActivityStore {
       void this.request("delegates", "root");
     }
     this.pushEligible = next;
+    // A source replacement is visible only in a response, and the delegate
+    // merge ordering is epoch-scoped. When another collection is the first to
+    // see the replacement the loaded delegates rows are a retired generation's,
+    // so retire the ordering and re-read them: an eligible context suppresses
+    // the invalidation-driven delegate read, so nothing else would.
+    const loaded = this.reads.delegates.epoch;
+    if (loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
+  }
+  /** The delegate merge ordering is invalid across a source replacement: a
+   * replacement journal rebuilds projectionRevision from 1, so an older epoch's
+   * higher revision would otherwise win forever. */
+  private clearDelegates(): void {
+    this.appliedDelegates.clear();
+    this.seenUnknownDelegates.clear();
+    this.bufferedUnknownDelegates.clear();
+  }
+  /** Retire the ordering and re-read the observed delegates, because an
+   * eligible context suppresses the invalidation-driven delegate read. */
+  private retireDelegates(): void {
+    this.clearDelegates();
+    const delegates = this.reads.delegates;
+    if (delegates.observers > 0 || delegates.oneShot) void this.request("delegates", "root");
   }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
@@ -692,7 +720,10 @@ export class SessionActivityStore {
   private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
     const read = this.reads.delegates;
     if (read.observers === 0 && !read.oneShot) return;
-    this.bufferedUnknownDelegates.set(frame.delegateId, frame);
+    // Frames can arrive out of order, so a later arrival must not replace a
+    // newer settlement: keep the projector's join, exactly as a loaded row does.
+    const buffered = this.bufferedUnknownDelegates.get(frame.delegateId);
+    this.bufferedUnknownDelegates.set(frame.delegateId, buffered ? mergeDelegateFrames(buffered, frame) : frame);
     if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
       const oldest = this.bufferedUnknownDelegates.keys().next();
       if (!oldest.done) this.bufferedUnknownDelegates.delete(oldest.value);
@@ -998,6 +1029,14 @@ function laterActivity(candidate: string | undefined, current: string | undefine
  * real frame, and two unset rows compare equal. */
 function revisionOf(value: number | undefined): number {
   return typeof value === "number" && !Number.isNaN(value) ? value : 0;
+}
+/** The projector's join for two frame snapshots of one delegate: the strictly
+ * greater revision supplies the fields, latestActivityAt is the independent
+ * maximum. Mirrors `mergeDelegateFrame` for a row not yet loaded. */
+function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateInfo): EvenerDelegateInfo {
+  const winner = revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision) ? frame : current;
+  const activity = laterActivity(current.latestActivityAt, frame.latestActivityAt);
+  return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
 }
 function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
   return (

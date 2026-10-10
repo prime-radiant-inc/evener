@@ -2911,6 +2911,103 @@ test("an epoch change retires a buffered unknown-id frame", async () => {
   expect(row?.status).toBe("running");
 });
 
+test("an epoch change observed only by the summary retires the delegate merge ordering", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ projectionRevision: 5, status: "completed", reportPreview: "frame", reportPreviewTruncated: false }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.projectionRevision).toBe(5);
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ epoch: "epoch-2" }),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 1, status: "replacement", reportPreview: "replacement" })],
+  }));
+  activityChanged(client, ["summary"]);
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.context?.epoch === "epoch-2" && !store.getSnapshot().delegates.loading,
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(1);
+  expect(row?.reportPreview).toBe("replacement");
+});
+
+test("a sibling collection catching up to the epoch keeps the current delegate ordering", async () => {
+  const client = pushClient();
+  client.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().delegates.complete && store.getSnapshot().jobs.complete);
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 1, status: "replacement" })],
+  }));
+  await store.refresh("delegates");
+  expect(store.getSnapshot().delegates.context?.epoch).toBe("epoch-2");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 3, status: "running" })));
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
+  client.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  }));
+  activityChanged(client, ["jobs"]);
+  await activityState(store, () => store.getSnapshot().jobs.context?.epoch === "epoch-2");
+  await store.refresh("delegates");
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
+});
+
+test("an older unknown-delegate frame arrival cannot replace a newer settlement", async () => {
+  const client = pushClient();
+  let admit = false;
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: admit
+      ? [delegateRow(), delegateRow({ delegateId: "delegate-2", projectionRevision: 1, status: "running" })]
+      : [delegateRow()],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 10, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 4, status: "running", reportPreview: "stale" }),
+    ),
+  );
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  admit = true;
+  await store.refresh("delegates");
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.projectionRevision).toBe(10);
+  expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
 test("a buffered unknown-id frame is applied once a read admits the row", async () => {
   const client = pushClient();
   let admit = false;
