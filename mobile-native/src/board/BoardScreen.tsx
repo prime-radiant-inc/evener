@@ -1690,7 +1690,13 @@ function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap
 	if (before.size !== after.size) return false;
 	for (const [key, shown] of after) {
 		const was = before.get(key);
-		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state) return false;
+		if (
+			!was ||
+			was.item.row !== shown.item.row ||
+			was.item.state !== shown.item.state ||
+			was.item.unseen !== shown.item.unseen
+		)
+			return false;
 	}
 	return true;
 }
