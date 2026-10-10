@@ -826,11 +826,15 @@ export class SessionActivityStore {
   private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
     const incoming = delegateRowFromFrame(current, frame);
     const applied = this.appliedRevision(rowIdentity("delegates", current));
-    const merged = joinDelegateState(
-      incoming,
-      current,
-      revisionOf(incoming.projectionRevision) > (applied ?? revisionOf(current.projectionRevision)),
-    );
+    // No record for the current epoch means the map was retired (or this row was
+    // never recorded): the loaded row's revision belongs to a retired journal, so
+    // comparing against it would reject the replacement's frames, which rebuild
+    // from 1. The frame is first sight for this epoch, as a read's row is.
+    if (applied === undefined) {
+      const merged = joinDelegateState(incoming, current, true);
+      return delegateRowsEqual(merged, current) ? current : merged;
+    }
+    const merged = joinDelegateState(incoming, current, revisionOf(incoming.projectionRevision) > applied);
     return delegateRowsEqual(merged, current) ? current : merged;
   }
   private joinDelegateRows(
