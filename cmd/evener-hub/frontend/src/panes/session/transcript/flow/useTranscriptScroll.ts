@@ -1177,7 +1177,17 @@ export function useTranscriptScroll({
   const openingPending = useStore(threadsStore, (state) => state.localOpenings.has(ref));
   const openingPendingRef = useRef(openingPending);
   openingPendingRef.current = openingPending;
-  const wasOpeningPendingRef = useRef(openingPending);
+  // The previous-pending transition is scoped to the ref AND the port it was
+  // observed on. Session persists across ref changes (see refForInitRef below),
+  // so an unkeyed boolean would read the NEXT session's ordinary state as THIS
+  // session's opening settling and submit the next session's older-page demand
+  // before its own initial scroll placement. A ref or port change is
+  // navigation, not settlement: reseed and take no load action.
+  const openingTransitionRef = useRef<{ ref: string; port: HTMLElement | null; pending: boolean }>({
+    ref,
+    port: null,
+    pending: openingPending,
+  });
 
   // While the recorded opening is pending, hold BOTH paging triggers: stamp the
   // scroll port so the short-page row's own geometry check holds (that row owns
@@ -1190,16 +1200,27 @@ export function useTranscriptScroll({
   useLayoutEffect(() => {
     const port = listRef.current?.getScrollElement();
     if (!port) return;
+    const previous = openingTransitionRef.current;
+    if (previous.ref !== ref || previous.port !== port) {
+      openingTransitionRef.current = { ref, port, pending: openingPending };
+      if (openingPending) port.setAttribute("data-opening-hold", "");
+      else port.removeAttribute("data-opening-hold");
+      return;
+    }
     if (openingPending) {
       port.setAttribute("data-opening-hold", "");
-      wasOpeningPendingRef.current = true;
+      openingTransitionRef.current = { ref, port, pending: true };
       return;
     }
     port.removeAttribute("data-opening-hold");
-    if (!wasOpeningPendingRef.current) return;
-    wasOpeningPendingRef.current = false;
+    if (!previous.pending) return;
+    openingTransitionRef.current = { ref, port, pending: false };
+    // Resume only through the SAME readiness gates the normal triggers keep:
+    // near-top demand still requires measured content, and short-page demand
+    // still goes through shouldAutoLoadOlder (whose own guards apply).
     const metrics = measure(port);
-    if (isNearTop(metrics.scrollTop) || shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
+    else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
   });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
