@@ -76,9 +76,11 @@ Their `personal`/`project` scope and relative paths cannot select arbitrary host
 roots or another project. Shared confinement rejects escapes and symlink
 indirection even when the session's workspace sandbox is off.
 
-A read-only role can write its authorized memory without workspace writes.
-Memory permissions do not grant shell or network access. Fresh and restored
-delegates retain their parent's effective memory tool/scope ceilings. Memory
+A root session's read-only role can write its authorized memory without
+workspace writes. A delegate only reads and searches memory, whatever its role;
+see [memory](product/memory.md). Memory permissions do not grant shell or
+network access. Fresh and restored delegates retain their parent's effective
+memory tool/scope ceilings. Memory
 tool names do not count as workspace-mutation tools for the delegate safety
 floor described above.
 
@@ -153,6 +155,20 @@ All sandboxed modes share a common floor: a per-session writable temp directory
 layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
 minimal `/dev`, the environment floor, and no inherited evener file descriptors or
 sockets beyond stdio.
+
+On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
+the table below means anywhere except the rest of the host `/tmp`. The private
+`/tmp` exists because bubblewrap cannot stop a process connecting to a Unix socket
+it can see, and the host `/tmp` holds tmux and ssh-agent sockets that would let a
+sandboxed command act outside the box. Inside it the shell sees the cwd, its grants,
+its own scratch (writable), and, in the read-anywhere modes, the root session's
+whole scratch tree read-only. That tree holds the parent's and sibling delegates'
+scratch, which the file tools of those modes already read, so a delegate handed a
+file from its parent's scratch can open it from the shell too. The tree is also
+every sandboxed session's `TMPDIR`, so a socket a sibling's daemon puts there
+(an ssh-agent started with its default socket path, say) is connectable from the
+shell. That reaches only what that sibling's own sandbox already allows; an
+unsandboxed root's `TMPDIR` is not in the tree.
 
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
@@ -390,7 +406,13 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
   redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
   granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH.
+  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
+  session scratch as its first entry too: Go records the checksum database's tree
+  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
+  module or toolchain download needs it writable. In `workspace-write` the ambient
+  GOPATH (or Go's `$HOME/go` default) stays after it, so GOPATH-mode builds still
+  find the packages already there; `restricted` cannot read it and gets the
+  scratch alone.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -409,8 +431,8 @@ spawned process:
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
 - Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
-  there.
+  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
+  `CARGO_HOME` there.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

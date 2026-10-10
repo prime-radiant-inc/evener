@@ -906,8 +906,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
-	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil && cfg.MemoryProjectID != *ceiling {
-		cfg.MemoryProjectID = ""
+	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil {
+		cfg.MemoryProjectID = delegateMemoryProjectID(cfg.MemoryProjectID, *ceiling)
+	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {
+		// A delegate's binding comes from its parent, so only a root session
+		// binds from its home; an unbound delegate resumed on its own stays so.
+		cfg.MemoryProjectID = homeMemoryProjectID(env, meta)
 	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
 	// alias; canonicalize so the loop detector's and request builder's
@@ -1685,7 +1689,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && s.depth == 0 {
+	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)

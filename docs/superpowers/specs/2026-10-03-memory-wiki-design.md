@@ -109,7 +109,10 @@ identity. Distinct project identities and hosts remain separate.
 
 Bind identity at session creation and preserve it through resume, compaction,
 and delegates, including isolated-worktree delegates. A command's working
-directory does not rebind memory. Resolve memory identity independently of a
+directory does not rebind memory. A root session saved without a binding binds
+on resume from its own home (the root it left for a worktree, else its working
+directory), never from where the resume ran, and persists it; its delegates
+take that binding. Resolve memory identity independently of a
 session-history `StateDir` override. A project-resolution failure leaves
 personal memory and ordinary work available; never guess another project.
 

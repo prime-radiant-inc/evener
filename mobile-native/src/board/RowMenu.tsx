@@ -65,7 +65,7 @@ export function RowPreviewCard({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
-	// Finished, Idle and Shut down have no reason: the word says it.
+	// Idle and Shut down have no reason: the word says it.
 	const why = whyLine(item) ?? { text: stateWord(state) };
 	return (
 		<Pressable

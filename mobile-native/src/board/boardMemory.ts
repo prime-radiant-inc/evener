@@ -31,7 +31,7 @@ function parseSeen(value: unknown): SeenState {
 	if (!isPlainObject(value)) return state;
 	// First run stands only with an epoch that reads as a hub time, or with
 	// none because the fleet it read had no timestamps. A garbled epoch runs
-	// first run again rather than flooding Finished.
+	// first run again rather than flooding the Board with blue dots.
 	const epoch = typeof value.epoch === "string" && hubTime(value.epoch) !== null ? value.epoch : null;
 	if (value.adopted === true && (epoch !== null || value.epoch === null)) {
 		state.adopted = true;
@@ -45,8 +45,8 @@ function parseSeen(value: unknown): SeenState {
 	return state;
 }
 
-/** Whether you have opened each session since its last turn ended: Finished
- * until seen, then Idle (spec 13.1). Every comparison is between the hub's
+/** Whether you have opened each session since its last turn ended: the
+ * row's blue dot until seen (spec 13.1). Every comparison is between the hub's
  * own timestamps (a row's updated_at against the updated_at stored when you
  * opened it), so the phone's clock never matters. The first load on a device
  * adopts the newest updated_at it sees as an epoch, so sessions that ended
