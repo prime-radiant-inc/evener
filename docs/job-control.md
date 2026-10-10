@@ -71,10 +71,14 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
-  conversation. From within a delegate, `delegate_send(to="caller")` sends a
-  non-terminal update to its controlling caller. Observer completion and final
-  results still use `communicate(end_turn=true)`. `delegate_send` rejects
-  `job_id`, `transcript_ref`, and unsupported runtime aliases.
+  conversation. A delegate's non-terminal update to its parent is
+  `communicate(end_turn=false)`; observer completion and final results use
+  `communicate(end_turn=true)`. `delegate_send` rejects `job_id`,
+  `transcript_ref`, and unsupported runtime aliases.
+- A delegate's `communicate(end_turn=false)` is an update its parent receives
+  and may be woken by: delegates send one only when the parent needs to know
+  something or act, never as narration, and finish with
+  `communicate(end_turn=true)`.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
@@ -483,7 +487,7 @@ creates a fallback activation JobRecord.
 
 ### `delegate_send`
 
-`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. From inside a delegate, the contextual `caller` target sends a non-terminal update to that delegate's controlling caller. Final results and observer completion still use `communicate(end_turn=true)`.
+`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. A delegate's non-terminal update to its parent is `communicate(end_turn=false)`, and final results and observer completion use `communicate(end_turn=true)`. From inside a delegate, the contextual `caller` target steers the delegate's controlling caller; it is not the update channel.
 
 Target shape:
 
@@ -500,7 +504,7 @@ Core target resolution:
 | Target | Meaning |
 | --- | --- |
 | `dlg_...` | A durable delegate conversation owned by this session. |
-| `caller` | The current delegate's controlling caller. This contextual target is unavailable at the root. |
+| `caller` | The current delegate's controlling caller, steered rather than sent an update. This contextual target is unavailable at the root. |
 
 `delegate_send` rejects `job_id` handles because they identify shell work, not
 delegates. It also rejects `transcript_ref` handles and unsupported runtime or
@@ -529,7 +533,7 @@ Semantics:
   is ignored explicitly through `wait_ignored_reason`.
 - `max_wait_ms` applies to concrete delegate targets.
 
-Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate may use the contextual `caller` target for a non-terminal update without ending its turn; that route does not replace the observer callback or final result.
+Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate sends a non-terminal update without ending its turn with `communicate(end_turn=false)`; an update does not replace the observer callback or final result.
 
 ```mermaid
 stateDiagram-v2
@@ -733,13 +737,13 @@ Observer/sidecar pattern:
 1. Parent starts a child with delegate(watch_parent:true).
 2. The child creates job_watch(operation="create", source="parent", ...).
 3. Matching parent frames are delivered to that child.
-4. The child reports useful findings with communicate(end_turn=true).
+4. The child sends updates with communicate(end_turn=false) while it watches and reports its findings with communicate(end_turn=true).
 5. The parent treats that communicate as the observer callback and finishes from it.
 ```
 
 Observer sidecars are composition, not a separate model-facing observer tool.
 Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
-`delegate_send(to="caller")` for a non-terminal update to the controlling caller.
+`communicate(end_turn=false)` for a non-terminal update to the parent.
 Use `communicate(end_turn=true)` for observer completion and final results.
 
 Practical observer guidance for agents:
@@ -747,7 +751,7 @@ Practical observer guidance for agents:
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
 - When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
-- Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
+- Send an update with `communicate(end_turn=false)` only when the parent needs to know something or act: it reaches the parent and may wake it.
 - Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
@@ -1377,6 +1381,27 @@ conversation stays available through the delegate's `transcript_ref`. A
 `delegate_send` reply that carries an update ahead of its result lists it in
 `earlier_results` with `action: "update"` and the message as `output`.
 
+A running delegate's `communicate(end_turn=false)` is an update for its owner.
+Evener records it in the delegate's journal and delivers it through the same
+ordered queue and receiver-transcript attention as the terminal packet.
+
+- An idle owner is woken, and its notification turn takes everything pending
+  at once. A running owner sees the update at its next model boundary; an owner
+  waiting on that delegate in `delegate_send(max_wait_ms)` gets it in the
+  reply's `earlier_results`, ahead of the report. An owner awaiting an
+  `ask_user` reply gets it after the reply.
+- One delegate's updates arrive in the order sent, before that generation's
+  report, and survive restart like any pending attention.
+- The `communicate` result carries `delivery`: `delivered` (in the owner's
+  transcript), `queued` (durable and waiting behind the owner's turn or an
+  earlier delivery of the same delegate), or `not_delivered` with a `reason`
+  (the delegate is stopping or finishing, its run is stale, or the route to the
+  owner is closed). Delivery never fails the call: the message is already in
+  the delegate's transcript.
+- Updates never feed Activity's `reportPreview`.
+- A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
+  human partner.
+
 When a shell excerpt contains the complete output, the body says
 `Complete output below.` instead of nudging a redundant read. Otherwise it
 points to `job:<job_id>`.
@@ -1396,8 +1421,9 @@ Rules:
 - A delegate whose turn has ended while its generation waits on its own
   delegates is idle, and an update from one of them wakes it: the wait runs a
   turn that presents the update and consumes it, so no further generation
-  starts for it. A report from one of them waits for the generation to end,
-  when the next attention generation takes it with everything else pending.
+  starts for it. A report from one of them gets no turn of its own: it waits
+  for the generation's end, when the next attention generation takes it with
+  everything else pending, unless an update's turn presents it first.
 - Receiver transcripts are the sole durable attention authority. Attention is
   appended and fsynced by exact private ID before a process-local wake. A
   successful notification turn appends and fsyncs the matching consumed marker;

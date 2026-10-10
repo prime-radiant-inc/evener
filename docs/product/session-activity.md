@@ -209,6 +209,12 @@ preview as a compact message from the delegate's name, with the name resolving
 through the standard delegate entity card and transcript-open control. Opening
 the child transcript remains the path to the full conversation.
 
+A delegate's mid-work updates (`communicate(end_turn=false)`) never contribute
+to `reportPreview`. Each reaches its owner's transcript as its own
+`<delegate-notification kind="update">` row, which the browser renders as a
+"Delegate update" card and the phone as "<name> sent an update", with the
+delegate's message beneath.
+
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and
 nonzero generation match. A resumed or settling run cannot borrow the previous
