@@ -3,6 +3,7 @@ import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { ENTRY_COVERAGE_STORE, ENTRY_ITEM_STORE, ENTRY_META_STORE, ENTRY_TURN_STORE } from "./sessionCacheSchema";
 import { holdNextWriteTransaction, neverSettlingFactory } from "./testing/stalledIndexedDB";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -75,8 +76,11 @@ function historyRecord(ref: string, savedAt: number) {
 }
 
 describe("current session checkpoints", () => {
-  it("keeps production on version 2 without fixture-only entry stores", async () => {
+  it("opens production version 3 with entry stores and fences the old tab", async () => {
     const indexedDB = new IDBFactory();
+    const diagnostic = vi.fn();
+    const oldTab = new SessionCacheIndexedDB({ indexedDB, databaseVersion: 2, onOpenDiagnostic: diagnostic });
+    await oldTab.getCurrent(["old-owner", "ref"], 1);
     const cache = new SessionCacheIndexedDB({ indexedDB });
     await cache.getCurrent(["owner", "ref"], 1);
     const request = indexedDB.open("evener-session-cache");
@@ -84,12 +88,16 @@ describe("current session checkpoints", () => {
       request.addEventListener("success", () => resolve(request.result), { once: true });
       request.addEventListener("error", () => reject(request.error), { once: true });
     });
-    expect(database.version).toBe(2);
-    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptItems");
-    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptTurns");
-    expect(Array.from(database.objectStoreNames)).not.toContain("transcriptCoverage");
+    expect(database.version).toBe(3);
+    for (const name of [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE]) {
+      expect(Array.from(database.objectStoreNames)).toContain(name);
+    }
+    expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ path: "versionchange-retire", version: 2 }));
+    expect(await oldTab.getCurrent(["old-owner", "ref"], 1)).toBeUndefined();
+    expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ path: "version-fence", version: 2 }));
     database.close();
     cache.close();
+    oldTab.close();
   });
 
   it("creates the owner-scoped current store in the existing database", async () => {
@@ -123,7 +131,16 @@ describe("current session checkpoints", () => {
       );
       request.addEventListener("error", () => reject(request.error), { once: true });
     });
-    expect(schema.names).toEqual(["current", "currentMeta", "meta", "records"]);
+    expect(schema.names).toEqual([
+      "current",
+      "currentMeta",
+      "meta",
+      "records",
+      "transcriptCoverage",
+      "transcriptItems",
+      "transcriptMeta",
+      "transcriptTurns",
+    ]);
     expect(schema.keyPath).toEqual(["ownerToken", "ref"]);
     expect(schema.currentIndex).toContain("ref");
     expect(schema.metadataKeyPath).toEqual(["ownerToken", "ref"]);
@@ -463,7 +480,7 @@ describe("current session checkpoints", () => {
 
   it("bounds a current lookup while a database version upgrade is blocked", async () => {
     const indexedDB = new IDBFactory();
-    const setup = new SessionCacheIndexedDB({ indexedDB });
+    const setup = new SessionCacheIndexedDB({ indexedDB, databaseVersion: 2 });
     await setup.getCurrent(["tab-a", "local:blocker"], 1);
     setup.close();
     const request = indexedDB.open("evener-session-cache");
@@ -471,7 +488,7 @@ describe("current session checkpoints", () => {
       request.addEventListener("success", () => resolve(request.result), { once: true });
       request.addEventListener("error", () => reject(request.error), { once: true });
     });
-    const blocked = new SessionCacheIndexedDB({ indexedDB, databaseVersion: 3 });
+    const blocked = new SessionCacheIndexedDB({ indexedDB });
     vi.useFakeTimers();
     try {
       const lookup = blocked.getCurrent(["tab-b", "local:blocked"], 1);
@@ -541,9 +558,9 @@ describe("current session checkpoints", () => {
       );
       request.addEventListener("error", () => reject(request.error), { once: true });
     });
-    const v2 = new SessionCacheIndexedDB({ indexedDB });
-    expect((await v2.get(history.ref, savedAt + 1))?.record).toEqual(history);
-    expect(await indexedDB.databases()).toEqual([{ name: "evener-session-cache", version: 2 }]);
-    v2.close();
+    const production = new SessionCacheIndexedDB({ indexedDB });
+    expect((await production.get(history.ref, savedAt + 1))?.record).toEqual(history);
+    expect(await indexedDB.databases()).toEqual([{ name: "evener-session-cache", version: 3 }]);
+    production.close();
   });
 });

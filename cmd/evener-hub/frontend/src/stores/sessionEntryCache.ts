@@ -633,6 +633,9 @@ export class SessionEntryCache {
   readonly #writeListeners = new Set<() => void>();
 
   constructor(options: SessionEntryCacheOptions) {
+    if (options.databaseName === "evener-session-cache") {
+      throw new Error("entry storage requires an isolated fixture database");
+    }
     this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;

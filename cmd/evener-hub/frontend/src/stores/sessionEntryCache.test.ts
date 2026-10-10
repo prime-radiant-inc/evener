@@ -199,10 +199,18 @@ it("writes and reads one entry by history identity and transcript key", async ()
   database.close();
 });
 
-it("refuses to enable entry stores on the production cache database name", () => {
-  expect(() => new SessionEntryCache({ databaseName: "evener-session-cache", indexedDB: new IDBFactory() })).toThrow(
-    "entry storage requires an isolated fixture database",
-  );
+it("permits entry stores on the production cache database name through the real constructor", async () => {
+  const factory = new IDBFactory();
+  let cache: SessionEntryCache | undefined;
+  expect(() => {
+    cache = new SessionEntryCache({ databaseName: "evener-session-cache", indexedDB: factory });
+  }).not.toThrow();
+  if (!cache) throw new Error("constructor did not return its real cache");
+  try {
+    expect(await cache.getClearEpoch()).toBe(0);
+  } finally {
+    cache.close();
+  }
 });
 
 it("opens only the latest bounded rows for the requested history identity", async () => {

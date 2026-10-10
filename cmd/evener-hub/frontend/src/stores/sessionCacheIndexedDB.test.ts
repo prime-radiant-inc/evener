@@ -431,7 +431,7 @@ describe("SessionCacheIndexedDB get", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await pending;
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 3, path: "open-timeout", versionchangeTransaction: false },
       ]);
     } finally {
       vi.useRealTimers();
@@ -827,7 +827,7 @@ describe("SessionCacheIndexedDB open discipline", () => {
     adapter.close(); // supersede it before its upgrade arrives
     expect(await pending).toBeUndefined();
     expect(diagnostics).toEqual([
-      { database: "evener-session-cache", version: 2, path: "upgrade-abandoned", versionchangeTransaction: true },
+      { database: "evener-session-cache", version: 3, path: "upgrade-abandoned", versionchangeTransaction: true },
     ]);
     // The schema the abandoned attempt committed is durable: the records store
     // a fresh connection reads was already there, with no upgrade to run.
@@ -845,14 +845,14 @@ describe("SessionCacheIndexedDB open discipline", () => {
       const pending = adapter.get("local:thr_1", 1_000);
       await vi.advanceTimersByTimeAsync(10_000); // the watchdog abandons the attempt
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 3, path: "open-timeout", versionchangeTransaction: false },
       ]);
       // The upgrade finally arrives on the abandoned attempt, transaction live.
       request.transaction = { objectStore: () => ({ put: () => undefined }) } as unknown as IDBTransaction;
       request.dispatchEvent(new Event("upgradeneeded"));
       expect(diagnostics).toEqual([
-        { database: "evener-session-cache", version: 2, path: "open-timeout", versionchangeTransaction: false },
-        { database: "evener-session-cache", version: 2, path: "upgrade-abandoned", versionchangeTransaction: true },
+        { database: "evener-session-cache", version: 3, path: "open-timeout", versionchangeTransaction: false },
+        { database: "evener-session-cache", version: 3, path: "upgrade-abandoned", versionchangeTransaction: true },
       ]);
       expect(await pending).toBeUndefined(); // still just a miss
     } finally {
