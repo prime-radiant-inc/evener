@@ -215,7 +215,7 @@ printf 'resolved=%s\nbudget=%s\n' "$(command -v load_aware_workers)" "$(gate_bud
 // the flags package.json hands `vitest run` carry the worker count sized to the
 // machine's spare capacity, floored at two, and the pre-helper ceiling of four
 // when the helper is unavailable. Every variant also selects the runner config
-// loader, which writes no bundled config under node_modules/.vite-temp (#4179).
+// loader (see vitest_run_args).
 func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

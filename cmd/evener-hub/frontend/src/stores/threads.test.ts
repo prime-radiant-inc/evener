@@ -6309,40 +6309,51 @@ describe("useThreadsStore.listModels", () => {
   });
 });
 
-// A send whose durable write the browser refuses pins nothing of its own:
-// with no earlier work for the ref it goes out directly, and behind an
-// undelivered durable send the fallback refuses rather than jump it. Either
-// way only the durable row (if any) keeps the ref.
-test.each([false, true])(
-  "a failed enqueue preserves only durable pins (existing mutation: %s)",
-  async (existingMutation) => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await threadsStore.getState().ensureThread("ref_a");
-    // The earlier durable send never settles, so it stays undelivered.
-    fake.on("turn/start", (params) =>
-      existingMutation
-        ? new Promise<never>(() => undefined)
-        : {
-            turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-            receipt: mutationReceipt(params.clientMutationId),
-          },
-    );
-    if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
-    const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
-    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
-      throw new DOMException("storage full", "QuotaExceededError");
-    });
-    const send = threadsStore.getState().send("ref_a", "not saved");
-    if (existingMutation) await expect(send).rejects.toThrow("storage full");
-    else await expect(send).resolves.toBeUndefined();
-    expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
-    threadsStore.getState().releaseThread("ref_a");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
-    await unsubscribed;
-  },
-);
+// A full origin is not a wedge: IndexedDB refuses the write at once with
+// QuotaExceededError. The outbox is local persistence only, so the send still
+// goes out as a plain RPC, exactly as it does through a wedge; the refusal is
+// final, so the ladder does not retry it. Nothing durable pins the ref.
+test("a send whose durable write the browser refuses for quota goes out directly and pins nothing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+  const unsubscribed = nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
+  const add = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await threadsStore.getState().send("ref_a", "sent from a full origin");
+  expect(add).toHaveBeenCalledTimes(1);
+  const sent = fake.calls.filter((call) => call.method === "turn/start");
+  expect(sent, "the send from a full origin never reached the daemon").toHaveLength(1);
+  expect((sent[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+  expect(await storage.listOutbox()).toEqual([]);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  await unsubscribed;
+});
+
+// Behind an undelivered durable send the fallback refuses rather than jump
+// it, and only that earlier durable row keeps the ref pinned.
+test("a refused write behind an undelivered durable send fails and preserves only the durable pin", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await threadsStore.getState().send("ref_a", "already saved");
+  vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+  expect(await storage.listOutbox()).toHaveLength(1);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+});
 
 test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
   const storage = new MutationOutboxIndexedDB();
@@ -16224,38 +16235,6 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(captureReads).toBe(1);
     // The write never committed, so the send went out as a plain RPC.
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
-    expect(await storage.listOutbox("ref_a")).toEqual([]);
-  });
-
-  // A full origin is not a wedge: IndexedDB answers at once, refusing the
-  // write with QuotaExceededError. Nothing about that refusal says the send
-  // itself is wrong - the outbox is local persistence only - so the send still
-  // goes out as a plain RPC, exactly as it does through a wedge, and the
-  // composer's draft follows the send's own outcome. The refusal is final, so
-  // the ladder does not retry it the way it retries a slow write.
-  test("a send whose durable write the browser refuses for quota still reaches the daemon and leaves no durable row", async () => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
-    fake.on("turn/start", (params) => ({
-      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-      receipt: mutationReceipt(params.clientMutationId),
-    }));
-    let writeAttempts = 0;
-    storage.enqueueIntent = async () => {
-      writeAttempts += 1;
-      throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
-    };
-
-    await threadsStore.getState().send("ref_a", "sent from a full origin");
-
-    expect(writeAttempts).toBe(1);
-    const sent = fake.calls.find((call) => call.method === "turn/start");
-    expect(sent, "the send from a full origin never reached the daemon").toBeDefined();
-    const sentParams = sent?.params as { clientMutationId?: string; input?: unknown } | undefined;
-    expect(sentParams?.clientMutationId).toBeTruthy();
-    expect(sentParams?.input).toBeDefined();
     expect(await storage.listOutbox("ref_a")).toEqual([]);
   });
 

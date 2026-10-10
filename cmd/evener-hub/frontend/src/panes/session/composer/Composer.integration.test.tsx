@@ -1008,9 +1008,8 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   expect(message.textContent).toBe("next draft");
 });
 
-// A durable write the browser refuses no longer fails the send: it goes out
-// directly, so the failure the person sees is the daemon's refusal of that
-// direct send. The paused write keeps the send in flight while focus moves.
+// A refused durable write sends directly; the paused write keeps that send in
+// flight while focus moves, and the daemon's refusal is what the person sees.
 test("ordinary Send retains draft and reports a refused send without late focus theft", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
@@ -1020,7 +1019,7 @@ test("ordinary Send retains draft and reports a refused send without late focus 
   });
   const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
     await failure;
-    throw new Error("focus proof storage failure");
+    throw new DOMException("storage full", "QuotaExceededError");
   });
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   fake.on("turn/start", () => {

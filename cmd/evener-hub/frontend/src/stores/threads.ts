@@ -2909,9 +2909,11 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
 
 // The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
 // builder and this set cannot drift. These are the only mutations the direct
-// fallback answers when the durable outbox cannot be written: each has no
-// response-side local commit beyond the wire call itself, so a plain RPC looks
-// to the rest of the store exactly like the dispatched row would have. Every
+// fallback answers when the durable outbox cannot be written, whatever the
+// write's failure: each has no response-side local commit beyond the wire call
+// itself (and passes no onCommitted), so a plain RPC looks to the rest of the
+// store exactly like the dispatched row would have, and the daemon still
+// judges the mutation itself. Every
 // other durable write keeps its own contract and stays fail-closed - see the
 // catch in enqueueMutationIntent.
 const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
@@ -3091,23 +3093,18 @@ async function enqueueMutationIntent(
       disarmQuiescedMutationArm(ref);
       throw error;
     }
-    // The durable write of a composer send could not be made. Whatever the
-    // failure - the watchdog giving up on a wedge, or the browser refusing the
-    // write outright (a full origin's QuotaExceededError, a VersionError, a
-    // retired connection's InvalidStateError) - it comes from local
-    // persistence alone: the send verbs pass no onCommitted, so nothing in the
-    // durable write is a verdict on the mutation, and the daemon's own answer
-    // to the RPC below still is. So send it as a plain RPC right now, exactly
-    // as the non-durable operations do (setModel, rename, compact, ...). The
-    // outbox row, the dispatcher, the receipt/settle machinery and the
-    // recovery list are all skipped - there is nothing durable to settle or
-    // replay.
+    // The durable write of a composer send could not be made - timed out or
+    // refused outright (see DIRECT_FALLBACK_METHODS) - so send it as a plain
+    // RPC right now, exactly as the non-durable operations do (setModel,
+    // rename, compact, ...). The outbox row, the dispatcher, the
+    // receipt/settle machinery and the recovery list are all skipped - there
+    // is nothing durable to settle or replay.
     //
     // It must still re-earn the admission the dispatcher would grant, because
     // it is NOT the ref's durable FIFO head. currentDispatchClient is that
     // exact admission (the dispatcher asks it per ref and method), so re-run
     // it: it re-checks the wired client and readyEpoch - both may have changed
-    // across the watchdogs - the client's ready state, and the ref's fences (a
+    // across the failed write - the client's ready state, and the ref's fences (a
     // pending reconciliation, a reconciliation failure, a Stop drain via
     // stoppingRefs, the restart obligation with turn/start's resume-only
     // carve-out, and restartRequired). requireArmed is off: the fallback's own
@@ -3131,7 +3128,7 @@ async function enqueueMutationIntent(
     // this ref still in flight, one that has not committed (so not undelivered
     // work yet) and whose dispatch arm a background refresh can clear. The
     // precise answer - whether the ref's nextDispatchable head is this send -
-    // lives in storage, which is unavailable here; these two are what the
+    // lives in storage, which just failed this send; these two are what the
     // in-memory state proves, and the fallback refuses on either rather than
     // reorder.
     // The fallback's own timeout is the same storage the reconcile reads, so
@@ -3141,10 +3138,8 @@ async function enqueueMutationIntent(
     // meets the pending fence and dies with the wedge's error - the exact
     // window the fallback exists to close. A reconcile that later succeeds
     // clears the record, so a read that was healthy after all self-corrects.
-    // Only a timeout says the reconcile shares the wedge: a write the browser
-    // refused at once (a full origin) leaves reads answering, so that reconcile
-    // keeps its ordinary pending fence.
-    if (isStorageUnavailable(error) && pendingMutationReconciliations.has(ref)) {
+    // A refused write leaves reads answering, so only a timeout says so.
+    if (isStorageTimeout(error) && pendingMutationReconciliations.has(ref)) {
       threadsStore.setState((state) => ({
         mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
       }));
@@ -3206,8 +3201,8 @@ async function enqueueMutationIntent(
 // awaited ONCE here, before the ladder, and every attempt reuses that same
 // observation: re-reading it would let a Stop landing between attempts become
 // the retry's own baseline (the fence the capture exists to hold). Only a
-// timeout is retried: a write the browser refused outright (QuotaExceededError,
-// VersionError, a retired connection) would be refused again. A rejecting
+// timeout is retried: a write the browser refused outright would be refused
+// again. A rejecting
 // capture, or a write that is not retried, propagates, and
 // enqueueMutationIntent decides between the fallback and a hard failure.
 const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
@@ -3228,17 +3223,15 @@ async function enqueueDurableMutation(
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
         : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
     } catch (error) {
-      if (!isStorageUnavailable(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
+      if (!isStorageTimeout(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
       await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
     }
   }
 }
 
-// Whether an error is the storage-unavailable signal (the IndexedDB watchdog
-// gave up on an open or a transaction): storage that may only be slow, so the
-// durable write is worth a second attempt, and a wedge that fails every read
-// beside it, so a reconcile it failed is storage-blocked rather than failed.
-function isStorageUnavailable(error: unknown): boolean {
+// Whether the IndexedDB watchdog gave up on an open or a transaction: storage
+// that may only be slow (worth a second write attempt), wedged for reads too.
+function isStorageTimeout(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
 }
 
@@ -3829,7 +3822,7 @@ async function publishAndReconcileThreadHydration(
         // meaning and supersedes the storage-blocked state, being the
         // stricter fence: record it in failures and clear the storage-blocked
         // record. A successful reconcile clears both.
-        const storageBlocked = isStorageUnavailable(error);
+        const storageBlocked = isStorageTimeout(error);
         threadsStore.setState((state) => {
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
@@ -4756,7 +4749,7 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
 // both attempts land. The one mutation that does wait here is
-// enqueueMutationIntent's storage-unavailable fallback send
+// enqueueMutationIntent's storage-failure fallback send
 // (dispatchMutationDirectly): it reuses ONE clientMutationId across its
 // attempts, so the daemon dedups a replay and the double-land reason above
 // does not hold.
