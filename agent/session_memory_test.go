@@ -1250,7 +1250,7 @@ func memoryWaitChild(t *testing.T, parent *Session, id string) *subagent {
 // adopts a binding on resume.
 func TestMemoryDelegateRestore(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"disabled-parent", "child-disabled", "project-adopted", "project-different", "tool-ceiling", "worktree-binding"} {
+	for _, mode := range []string{"disabled-parent", "child-disabled", "project-adopted", "project-unresolved", "project-different", "tool-ceiling", "worktree-binding"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			host, history := t.TempDir(), t.TempDir()
@@ -1324,6 +1324,11 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			switch mode {
 			case "project-adopted":
 				meta.Config.MemoryProjectID = ""
+			case "project-unresolved":
+				// An unbound parent whose home cannot bind stays unbound, so the
+				// child's saved binding exceeds the parent's ceiling.
+				meta.Config.MemoryProjectID = ""
+				meta.EnvInfo.WorkingDir = "."
 			case "project-different":
 				meta.Config.MemoryProjectID = "different-project"
 			}
@@ -1383,7 +1388,10 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				if got := memoryWaitChild(t, r, fresh.ChildSessionID).sess.cfg.MemoryProjectID; got != project.ID {
 					t.Fatalf("fresh child of adopted parent=%q want %q", got, project.ID)
 				}
-			case "project-different":
+			case "project-unresolved", "project-different":
+				if mode == "project-unresolved" && r.cfg.MemoryProjectID != "" {
+					t.Fatalf("parent with an unresolvable home bound %q", r.cfg.MemoryProjectID)
+				}
 				if restored.sess.cfg.MemoryProjectID != "" {
 					t.Fatalf("cold child recovered project=%q", restored.sess.cfg.MemoryProjectID)
 				}

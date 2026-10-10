@@ -35,8 +35,8 @@ resume the same way, from its own absolute home: the root it left for a
 worktree, else its working directory, never the directory the resume ran from. The restore
 persists that binding, and a saved binding is never replaced. Delegates take
 their parent's binding; a restored delegate saved without one takes its
-parent's, one saved with a different binding gets none, and one resumed on its
-own stays unbound.
+parent's, one saved with a different binding gets none, and an unbound one
+resumed on its own stays unbound.
 Project-resolution failure leaves personal memory and ordinary work available
 without guessing another project. Unbound library sessions have no memory
 capability or home fallback. Tests supply fixture roots.
