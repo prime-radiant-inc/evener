@@ -204,6 +204,13 @@ const (
 // postDelegateUpdate hands a delegate's communicate(end_turn=false) message
 // to its parent as an update. ok is false for a root, whose end_turn=false
 // message is a checkpoint for its human partner and goes nowhere else.
+//
+// An update carries the message and nothing else, the way a report does: it
+// travels the delegate delivery path, which has never carried a watch's causal
+// provenance. A feedback loop between an observer and the parent it watches is
+// bounded the same way for updates as for reports: the update is a communicate
+// event, which the watch on the sender counts toward watchDeliveryBudget, and
+// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
 func (s *Session) postDelegateUpdate(ctx context.Context, message string) (delegateUpdateDelivery, bool) {
 	if !s.reportsToParent() {
 		return delegateUpdateDelivery{}, false

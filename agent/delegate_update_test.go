@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -837,6 +838,105 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 			}
 		}
 	}
+}
+
+// An update from another worker that reaches the coordinator during an update
+// turn, in time for a later request of that turn, was shown to the model. When
+// the consumed-marker write fails twice, the drain runs no further turn for
+// either update: it drives from what the turn's settled requests credited, so
+// a mid-turn arrival counts as shown. (One worker's second update cannot
+// arrive mid-turn: it queues behind its first until that is acknowledged.)
+func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+	coordinatorIdle, secondGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	defer releaseReport()
+	var coordinator atomic.Pointer[Session]
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("a", "WORKER-A: send an update, then finish.")
+		},
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("b", "WORKER-B: send an update, then finish.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on both workers") },
+		// Worker A's update turn: hold the tool round until worker B has
+		// posted its update, which a running coordinator receives at its next
+		// model boundary, so the next request presents both.
+		func(llm.Request) llm.Response {
+			close(secondGate)
+			adapter.waitForRequests(t, "WORKER-B", 2)
+			return jobListResponse("hold")
+		},
+		func(llm.Request) llm.Response { return finalResponse("told both workers") },
+	)
+	adapter.script("WORKER-A",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+			return updateResponse("first", "FIRST_UPDATE: which table holds the drain cursor?")
+		},
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the marker writes to fail")
+			return finalResponse("worker a done")
+		},
+	)
+	adapter.script("WORKER-B",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, secondGate, "the coordinator's update turn to start")
+			return updateResponse("second", "SECOND_UPDATE: and which column?")
+		},
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the marker writes to fail")
+			return finalResponse("worker b done")
+		},
+	)
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 3)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
+		children := root.subagents.sessions()
+		if len(children) != 1 || children[0].State() != SessionIdle {
+			return false
+		}
+		coordinator.Store(children[0])
+		return true
+	})
+	failingWrites := installResolutionSyncFailuresWriter(t, coordinator.Load(), 2)
+	close(coordinatorIdle)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the marker writes to fail", func() bool {
+		return failingWrites.injectedFailures() == 2
+	})
+	// The workers are still held, so only a rerun for an update could add a
+	// request beyond the five scripted steps. A rerun follows the failed retry
+	// at once; a quiet second is the absence this test pins.
+	// TRIPWIRE: a bounded negative wait; a passing run costs the full second.
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && len(adapter.requestsFor("COORD-BRIEF")) == 5; {
+		time.Sleep(10 * time.Millisecond)
+	}
+	requests := adapter.requestsFor("COORD-BRIEF")
+	if len(requests) != 5 {
+		t.Fatalf("the coordinator made %d model requests, want its 5 scripted steps", len(requests))
+	}
+	if text := messagesText(requests[4].Messages); !strings.Contains(text, "FIRST_UPDATE") || !strings.Contains(text, "SECOND_UPDATE") {
+		t.Fatalf("the update turn's later request did not present both updates:\n%s", text)
+	}
+	releaseReport()
+	awaitRootReport(t, root)
 }
 
 // A coordinator that is mid-run when its worker's update arrives sees it at

@@ -336,7 +336,7 @@ func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to a child delegate you created or, from a delegate, to its controlling caller. " +
-			"Use the contextual `caller` route for a non-terminal update that should not end your turn; use communicate for your final result or observer completion. " +
+			"Use the contextual `caller` route to steer your controlling caller. Send a non-terminal update with `communicate(end_turn=false)`, and your final result or observer completion with communicate. " +
 			"Send child follow-ups by durable delegate_id. `to` accepts a `dlg_...` delegate_id or contextual `caller`; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",

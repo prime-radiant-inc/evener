@@ -1129,7 +1129,6 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// queue holds only completions and frames armed during the drain;
 			// frames queued before the pre-drain final answer were cut at entry
 			// (discardTerminalWatchLeftovers).
-			updatesBefore := s.pendingDelegateUpdateAttentionIDs()
 			res, err := process(ctx, "", nil, EntryNotification)
 			if err != nil {
 				return lastResult, err
@@ -1147,11 +1146,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
 				}
 			}
-			updatesAfter := s.pendingDelegateUpdateAttentionIDs()
-			for _, id := range updatesBefore {
-				if slices.Contains(updatesAfter, id) {
-					drivenUpdates[id] = struct{}{}
-				}
+			for _, id := range s.presentedDelegateUpdateAttentionIDs() {
+				drivenUpdates[id] = struct{}{}
 			}
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall

@@ -211,6 +211,20 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	return updates
 }
 
+// presentedDelegateUpdateAttentionIDs lists the pending updates the turn that
+// just ran showed the model: the ones its settled requests credited
+// (attentionCoveredIDs). An update that arrived after the turn's last request
+// is not among them.
+func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
+	pending := s.pendingDelegateUpdateAttentionIDs()
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return slices.DeleteFunc(pending, func(id string) bool {
+		_, covered := s.attentionCoveredIDs[id]
+		return !covered
+	})
+}
+
 // hasPendingDelegateUpdateAttention reports whether any update from this
 // session's own delegates is unconsumed.
 func (s *Session) hasPendingDelegateUpdateAttention() bool {
