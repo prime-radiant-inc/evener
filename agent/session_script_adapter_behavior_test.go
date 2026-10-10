@@ -13,9 +13,9 @@ func textResponse(text string) llm.Response {
 	return llm.Response{Message: llm.Assistant(text)}
 }
 
-func scriptedText(t *testing.T, a *sessionScriptAdapter, ctx context.Context, sessionID string) string {
+func scriptedText(t *testing.T, a *sessionScriptAdapter, sessionID string) string {
 	t.Helper()
-	resp, err := a.Complete(ctx, llm.Request{SessionID: sessionID, Model: "m"})
+	resp, err := a.Complete(context.Background(), llm.Request{SessionID: sessionID, Model: "m"})
 	if err != nil {
 		t.Fatalf("Complete(%s): %v", sessionID, err)
 	}
@@ -33,7 +33,6 @@ func TestSessionScriptAdapterKeepsAScriptPerSession(t *testing.T) {
 		script("parent", answerStep(textResponse("p1")), answerStep(textResponse("p2"))).
 		script("child", answerStep(textResponse("c1")))
 	a.otherwise = answerStep(textResponse("other"))
-	ctx := context.Background()
 	for _, call := range []struct{ session, want string }{
 		{"child", "c1"},
 		{"parent", "p1"},
@@ -42,12 +41,12 @@ func TestSessionScriptAdapterKeepsAScriptPerSession(t *testing.T) {
 		{"stranger", "other"},
 		{"parent", "other"},
 	} {
-		if got := scriptedText(t, a, ctx, call.session); got != call.want {
+		if got := scriptedText(t, a, call.session); got != call.want {
 			t.Fatalf("%s call = %q, want %q", call.session, got, call.want)
 		}
 	}
 	a.otherwise = nil
-	if got := scriptedText(t, a, ctx, "parent"); got != "done" {
+	if got := scriptedText(t, a, "parent"); got != "done" {
 		t.Fatalf("call with nothing scripted = %q, want done", got)
 	}
 }
@@ -71,7 +70,7 @@ func TestSessionScriptAdapterHoldsNoLockDuringAStep(t *testing.T) {
 	}()
 	<-entered
 	parentDone := make(chan string, 1)
-	go func() { parentDone <- scriptedText(t, a, context.Background(), "parent") }()
+	go func() { parentDone <- scriptedText(t, a, "parent") }()
 	select {
 	case got := <-parentDone:
 		if got != "parent" {
