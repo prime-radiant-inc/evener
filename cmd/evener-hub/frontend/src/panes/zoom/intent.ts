@@ -133,6 +133,16 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
   return { ancestryKnown: true, scopes };
 }
 
+/** The index of the first readable scope in the cascade track. The leaf and
+ * its immediate parent are readable, except when that parent is the cascade's
+ * live origin conversation: its pane is already on screen, so the cascade does
+ * not repeat it and the leaf stays the only readable scope. */
+export function firstReadableIndex(scopes: CascadeScope[], originRef: string | null): number {
+  const parent = scopes[scopes.length - 2];
+  const duplicateOrigin = originRef !== null && parent !== undefined && parent.requestedRef === originRef;
+  return duplicateOrigin ? scopes.length - 1 : Math.max(0, scopes.length - 2);
+}
+
 export function drillZoomIntent(params: SessionZoomParams, edge: DelegateEdgeIntent): SessionZoomParams {
   const refs = deriveCascadePath(params, null).scopes.map((scope) => scope.requestedRef);
   const owner = refs.indexOf(edge.ownerRef);
