@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -172,11 +173,23 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// missing ones (prepareCacheRoots), so one is skipped here only when that
 	// failed.
 	if rp.CacheStrategy == CacheOverlay {
+		var overlaid []string
 		for _, c := range rp.CacheRoots {
 			// Only a directory can be an overlay lower; overlayfs rejects anything
 			// else and bwrap would abort the whole sandbox over it.
 			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
 				add("--overlay-src", c, "--tmp-overlay", c)
+				overlaid = append(overlaid, c)
+			}
+		}
+		// A persistent writable location inside an overlaid root (an extra
+		// writable root, a linked worktree's git metadata, the session scratch)
+		// was hidden by the overlay's discarded upper layer, so it is bound
+		// writable again on top: writes there persist, the rest of the cache
+		// stays write-private.
+		for _, w := range appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), sessionTmp) {
+			if pathExists(w) && slices.ContainsFunc(overlaid, func(c string) bool { return pathUnder(w, c) }) {
+				add("--bind", w, w)
 			}
 		}
 	}

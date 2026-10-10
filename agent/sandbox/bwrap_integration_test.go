@@ -421,3 +421,52 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 		})
 	}
 }
+
+// Under a real cache overlay, writes to an extra writable root and to the
+// session scratch inside the overlaid cache root persist on the host, while a
+// write elsewhere in the cache is discarded with the overlay's upper layer.
+func TestBwrapWritesInsideACacheOverlayPersistOnlyWhereGranted(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	home, err := os.MkdirTemp("/var/tmp", "evener-overlay-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	cache := filepath.Join(home, ".cache")
+	library := filepath.Join(cache, "library")
+	sessionTmp := filepath.Join(cache, "tmp", "session")
+	for _, dir := range []string{library, sessionTmp} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	facts.Home = home
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rp.CacheStrategy != CacheOverlay {
+		t.Skipf("cache strategy is %v, not overlay", rp.CacheStrategy)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `echo kept > "$1/kept" && echo kept > "$2/kept" && echo gone > "$3/discarded"`
+	argv := w.Wrap([]string{"/bin/sh", "-c", script, "overlay-test", library, sessionTmp, cache}, cwd)
+	if out, err := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+	}
+	for _, p := range []string{filepath.Join(library, "kept"), filepath.Join(sessionTmp, "kept")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("a write to %s must persist: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cache, "discarded")); !os.IsNotExist(err) {
+		t.Errorf("a write elsewhere in the overlaid cache must be discarded: %v", err)
+	}
+}

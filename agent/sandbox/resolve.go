@@ -415,7 +415,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, masked)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, masked)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, masked)
-	rp.CacheRoots = dropCacheRootsOverWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
+	rp.CacheRoots = dropCacheRootsInWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
@@ -550,19 +550,18 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	}
 }
 
-// dropCacheRootsOverWriteRoots drops each cache root at, above or inside a
-// persistent write root (an extra writable root, a linked worktree's git
-// metadata), by spelling or resolved location. The cache overlay mounts after
-// the writable binds, so it would hide such a root behind an upper layer
-// discarded when the command exits, and writes there (a commit, an edit to a
-// granted library) would silently vanish. cacheRootsFor already drops roots
-// over the worktree.
-func dropCacheRootsOverWriteRoots(cacheRoots, writeRoots []string) []string {
-	overlaps := func(a, b string) bool { return a == b || pathUnder(a, b) || pathUnder(b, a) }
+// dropCacheRootsInWriteRoots drops each cache root at or inside a persistent
+// write root (an extra writable root, a linked worktree's git metadata), by
+// spelling or resolved location: an overlay there would discard writes the
+// user granted for good, as it would inside the worktree (which cacheRootsFor
+// already drops). A write root inside a cache root keeps the overlay and is
+// bound writable again on top of it (buildBwrapArgv).
+func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
+	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
 		rc := resolveExistingPrefix(c)
 		return slices.ContainsFunc(writeRoots, func(w string) bool {
-			return overlaps(c, w) || overlaps(rc, resolveExistingPrefix(w))
+			return within(c, w) || within(rc, resolveExistingPrefix(w))
 		})
 	})
 }
