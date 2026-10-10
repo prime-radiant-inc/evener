@@ -483,7 +483,8 @@ function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): vo
       retireEntryTranscriptRoute(fixture);
       if (productionEntryRoutes.get(ref) === fixture) productionEntryRoutes.delete(ref);
       fixture.lifetime++;
-      noteEntryRouteRetirement(ref);
+      // readyEpoch already rejects outgoing reads. Do not supersede a fresh
+      // replacement-client hydration that handleReady has already armed.
       removeThreadModel(ref);
     }
     fixture.retirement = undefined;
