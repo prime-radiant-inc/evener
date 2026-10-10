@@ -474,11 +474,20 @@ function canonicalThreadOwnerActive(ref: string): boolean {
 function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): void {
   const fixture = entryTranscriptRoute(ref);
   if (fixture?.ref === ref && fixture.retirement) {
-    // The wire membership and page authority never ended. Cancel the final
-    // read's claim, not this still-live binding, so a same-connection reopen
-    // can restore its already-certified older pages.
-    fixture.repository?.cancelRetirement();
+    if (fixture.retirementEpoch === readyEpoch) {
+      // Same connection, the wire membership and page authority never ended.
+      fixture.repository?.cancelRetirement();
+    } else {
+      // A replacement client or reconnect cannot inherit the outgoing model
+      // through the already-hydrated fast path.
+      retireEntryTranscriptRoute(fixture);
+      if (productionEntryRoutes.get(ref) === fixture) productionEntryRoutes.delete(ref);
+      fixture.lifetime++;
+      noteEntryRouteRetirement(ref);
+      removeThreadModel(ref);
+    }
     fixture.retirement = undefined;
+    fixture.retirementEpoch = undefined;
     finalReleaseOwners.delete(ref);
   }
   if (finalReleaseCuts.delete(ref)) {
@@ -611,6 +620,7 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   reader?: TranscriptReader;
   unsubscribeRepository?: () => void;
   retirement?: Promise<TranscriptRetirementOutcome>;
+  retirementEpoch?: number;
   lifetime: number;
   readSequence: number;
   historyKey?: string;
@@ -948,8 +958,10 @@ function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetireme
   backgroundLeaseSequences.set(ref, generation);
   finalReleaseOwners.set(ref, generation);
   syncThreadSubscription(ref);
-  fixture.retirement = repository.retire().then((outcome) => {
-    if (fixture.repository !== repository || canonicalThreadOwnerActive(ref)) return { kind: "cancelled" };
+  fixture.retirementEpoch = readyEpoch;
+  const retirement: Promise<TranscriptRetirementOutcome> = repository.retire().then((outcome) => {
+    if (fixture.retirement !== retirement || fixture.repository !== repository || canonicalThreadOwnerActive(ref))
+      return { kind: "cancelled" };
     fixture.unsubscribeRepository?.();
     fixture.unsubscribeRepository = undefined;
     fixture.reader?.dispose();
@@ -957,12 +969,14 @@ function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetireme
     repository.dispose();
     fixture.repository = undefined;
     fixture.retirement = undefined;
+    fixture.retirementEpoch = undefined;
     if (finalReleaseOwners.get(ref) === generation) finalReleaseOwners.delete(ref);
     dropUnpinnedModel(ref, false);
     syncThreadSubscription(ref);
     return outcome;
   });
-  return fixture.retirement;
+  fixture.retirement = retirement;
+  return retirement;
 }
 
 async function runEntryHistoryRequest<T>(
