@@ -1,0 +1,121 @@
+/* Comment-box controls for the browser reader's annotation surface (Task 5).
+ *
+ * Only the comment controls live here; the later selection/highlight checkpoint
+ * may extend this shared file. Every value references an existing design token
+ * (see src/styles/tokens.css). */
+.commentBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+}
+
+/* The retained captured passage the pending Send will annotate. It is inert
+ * literal text (never parsed markup), bounded so a long passage stays usable. */
+.passage {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent-edge);
+  border-radius: var(--radius-control);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6lh;
+  overflow-y: auto;
+}
+
+.label {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+}
+
+.status {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* Saved-highlight overlay and note surface (Task 5 selection/highlight
+ * checkpoint). Band geometry (left/top/width/height) is set inline from the
+ * measured ranges; these rules carry only the decoration, stacking and the
+ * note surface. The overlay is a non-text sibling of the mapped prose. */
+.highlightOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--z-raised);
+}
+
+.highlightBand {
+  position: absolute;
+  pointer-events: auto;
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-chip);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-edge);
+}
+
+.highlightBand:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.highlightNotes {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: auto;
+  /* The stack is bounded (inline maxWidth/maxHeight, measured against the
+   * visible scroll clip) and owns its own vertical scrolling, so long or
+   * multiple revealed notes stay readable at the reading position instead of
+   * running past the document's actual scroll body. */
+  overflow-y: auto;
+}
+
+.annotationNote {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  /* Wrap unbroken tokens so a long single-word note cannot escape horizontally. */
+  overflow-wrap: anywhere;
+}
+
+/* The complete snapshot reference for a saved pending handoff: inert,
+ * selectable plain text the user can copy into a draft of their choice. Bounded
+ * so a long reference stays usable. */
+.annotationReference {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  max-height: 12lh;
+  overflow-y: auto;
+}

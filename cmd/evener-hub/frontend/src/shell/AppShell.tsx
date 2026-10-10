@@ -11,6 +11,7 @@ import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
+import { disposeDocumentAnnotationPorts } from "../panes/doc/documentReadState";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
@@ -372,6 +373,14 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // ever acts on `owned`, never the interface-typed `client`.
     return () => owned?.close();
   }, [client, owned]);
+
+  // Application teardown owns the ONE production annotation singleton. The empty
+  // dependency list makes this the app-wide lifetime: the client effect above
+  // re-runs on a banner client replacement/reconnect, so disposing there would
+  // wrongly tear down annotation resources on reconnect. Only unmounting
+  // AppShell (genuine app teardown) disposes the singleton and retires retained
+  // readers; the shared draft authority is untouched.
+  useEffect(() => () => disposeDocumentAnnotationPorts(), []);
 
   // Global chord wiring (floor §2.1 + the UX-fix chords), now driven by the
   // keybindings dispatcher (src/keybindings/, installed app-wide by

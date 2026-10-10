@@ -4252,3 +4252,83 @@ test("an aborted ordinary drain cleanup preserves the composer text and its orig
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) throw new AggregateError(errors, "aborted drain cleanup test teardown failed");
 });
+
+// Composer readiness failure and recovery. When the real storage platform is
+// unavailable the real source's readiness rejects at the platform boundary; the
+// source reports that honestly and stays usable with the user's text retained.
+// This case drives a real composer through the fault, then restores the
+// platform (an intentional in-test recovery, distinct from the shared
+// afterEach restoration) and settles the SAME source so the retained text
+// becomes durable through real storage. The composer's own unhandled readiness
+// rejection is left to the runner's real unhandled-rejection guard.
+test("a storage-platform readiness fault reports honestly, preserves typed text, and the same real source becomes durable after the platform recovers", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_ready_fault";
+  const key = browserDraftKey(ref);
+  const typed = "retained draft text";
+  const originalIndexedDB = globalThis.indexedDB;
+  // Drop the repository singleton captured against the harness factory, then
+  // remove the platform so the real source's ensureDeps throws inside the real
+  // BrowserDraftRepositoryImpl constructor.
+  resetBrowserDraftRepositoryForTests();
+  vi.stubGlobal("indexedDB", undefined);
+  const source = createTestComposerSource(ref);
+  let failure: unknown;
+  try {
+    // The real source's readiness fails at the platform boundary with the
+    // platform's own error, not a fabricated one.
+    await expect(source.ready()).rejects.toThrow("IndexedDB is unavailable");
+    // The source reports the initialization fault honestly and stays usable.
+    await waitFor(() =>
+      expect(
+        getToasts().some((toast) => toast.kind === "error" && toast.text === "Couldn't load the draft. Try again."),
+      ).toBe(true),
+    );
+
+    // The real composer mounts against the failing source and stays healthy.
+    await mountComposer(ref, {}, source);
+    const editor = textarea();
+    if (editor === null) throw new Error("composer editor did not render");
+    await user.type(editor, typed);
+    // The typed value is retained visibly and in the source's own public state.
+    expect(editor.textContent).toBe(typed);
+    expect(source.getSnapshot()).toMatchObject({ text: typed });
+
+    // Intentional platform recovery: restore the real fake-indexeddb factory
+    // (not the shared afterEach restoration) and run the existing deliberate
+    // readiness/settlement retry on the SAME source (no replacement source).
+    vi.stubGlobal("indexedDB", originalIndexedDB);
+    await act(async () => {
+      await source.whenSettled();
+    });
+    // The retained text is durable through the real repository the source owns.
+    expect(await getBrowserDraftRepository().load(key)).toMatchObject({ text: typed, skillNames: [] });
+    expect(editor.textContent).toBe(typed);
+  } catch (error) {
+    failure = error;
+  } finally {
+    // Join the owned source's async work, then retire it, each attempted
+    // independently so an unexpected cleanup error is preserved without
+    // skipping disposal or masking the original test failure.
+    const cleanupErrors: unknown[] = [];
+    try {
+      await act(async () => {
+        await source.whenSettled();
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await act(async () => {
+        source.dispose();
+      });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (failure !== undefined) cleanupErrors.unshift(failure);
+    if (cleanupErrors.length === 1) failure = cleanupErrors[0];
+    else if (cleanupErrors.length > 1)
+      failure = new AggregateError(cleanupErrors, "composer readiness recovery cleanup failed");
+  }
+  if (failure !== undefined) throw failure;
+});

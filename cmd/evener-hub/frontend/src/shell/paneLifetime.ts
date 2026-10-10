@@ -1,3 +1,4 @@
+import { disposeDocumentReaderWork } from "../panes/doc/documentReadState";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { parseZoomParams } from "../panes/zoom/intent";
@@ -88,6 +89,10 @@ onPaneRetype((previous, replacement) => {
 workspaceStore.subscribe((state, previous) => {
   if (state.panes === previous.panes) return;
   for (const pane of previous.panes) {
-    if (!state.panes.includes(pane)) disposeConversationPaneLifetime(pane);
+    if (state.panes.includes(pane)) continue;
+    disposeConversationPaneLifetime(pane);
+    // A committed document-viewer removal also retires that viewer's retained
+    // annotation work; a conversation-only WeakMap entry is simply absent.
+    if (pane.type === "doc") disposeDocumentReaderWork(pane.id);
   }
 });

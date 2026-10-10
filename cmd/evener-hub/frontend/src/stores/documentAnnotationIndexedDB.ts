@@ -82,8 +82,21 @@ export interface DocumentAnnotationOptions {
   onStorageSuccess?: () => void;
 }
 
+// Operation-scoped cancellation for ONE in-flight save. The runtime owns the
+// handle and its lifetime; the repository only observes it while its save
+// transaction is alive, and MUST release its listener when the transaction
+// settles. Kept local to this adapter: no shared package contract or schema
+// change.
+export interface AnnotationSaveCancellation {
+  readonly cancelled: boolean;
+  // Register a listener invoked once if the save is cancelled before it commits.
+  // If cancellation already happened, the listener runs immediately. The
+  // returned release removes the listener; call it at settlement.
+  onCancel(listener: () => void): () => void;
+}
+
 export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepository {
-  saveAnnotation(operation: PreparedAnnotation): Promise<SaveReceipt>;
+  saveAnnotation(operation: PreparedAnnotation, cancellation?: AnnotationSaveCancellation): Promise<SaveReceipt>;
   listAnnotations(key: DocumentKey): Promise<AnnotationView[]>;
   finishExpiry(receipt: ExpiryReceipt): Promise<void>;
   retryPending(reason: AnnotationRetryReason): Promise<void>;
@@ -160,6 +173,15 @@ function evidenceMatches(content: DocFileContent, evidence: PreparedAnnotation["
   return JSON.stringify(evidence.fingerprint) === JSON.stringify(displayedFingerprint(content.text, content.truncated));
 }
 
+// Exact identity between two accepted observations. Unlike evidenceMatches, which
+// is deliberately tolerant of missing metadata for compatibility, every
+// distinguishing field must match here: the displayed text, the revision value
+// (including both-absent) and the truncation coverage. Absence or any inconclusive
+// comparison is NOT identity.
+function contentIdentical(left: DocFileContent, right: DocFileContent): boolean {
+  return left.text === right.text && left.revision === right.revision && left.truncated === right.truncated;
+}
+
 // The two-element namespace key carried inside a serialized document or session
 // key. Reset scopes by this exact identity, never by an origin substring, so one
 // namespace (or a sibling whose origin shares a prefix) is never caught.
@@ -178,6 +200,11 @@ function documentKeyNamespace(documentKey: string): string | undefined {
 // Raised when the durable identity a fence intended to replace has already moved,
 // so an obsolete validation must not rewrite newer state.
 class SupersededFenceError extends Error {}
+
+// Raised when an operation-scoped cancellation is already known before its save
+// transaction opens. The runtime owns the cancellation handle and treats this as
+// a handled, non-retryable dismissal.
+class SaveCancelledError extends Error {}
 
 interface SuppressionEntry {
   requestId: string;
@@ -483,6 +510,46 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (head && (contentChanged || epochSuppressed)) {
           return { kind: "fence", head, namespaceIncarnation: namespaceRow.incarnation } as const;
         }
+        // An exactly identical re-acceptance must not manufacture a new lease
+        // identity: when the incoming content is byte-identical to the latest
+        // durable accepted observation the current head points at, preserve the
+        // accepted head revision and displayed snapshot identity so an immutable
+        // operation captured from the previous lease still matches the durable
+        // head. Identity is exact and against that ONE observation only: a first
+        // read with no accepted evidence row, missing/inconclusive metadata, or an
+        // identical older observation elsewhere in retained history is not identity.
+        const latest = head
+          ? await requestResult<AnnotationEvidenceRow | undefined>(
+              transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(head.evidenceKey),
+            )
+          : undefined;
+        if (head && latest && contentIdentical(latest.content, content)) {
+          // readGeneration still advances so a later issuance supersedes this
+          // ticket and the accepted ticket stays single-use.
+          const preservedHead: AnnotationHeadRow = {
+            documentKey,
+            namespaceIncarnation: namespaceRow.incarnation,
+            epoch: head.epoch,
+            headRevision: head.headRevision,
+            readGeneration: head.readGeneration + 1,
+            displayedSnapshotId: head.displayedSnapshotId,
+            evidenceKey: head.evidenceKey,
+          };
+          await requestResult(transaction.objectStore(ANNOTATION_HEADS_STORE).put(preservedHead));
+          this.#options.beforeCommit?.("acceptRead");
+          const observations: DocFileContent[] = [...retained, content];
+          return {
+            kind: "accepted",
+            lease: {
+              key: ticket.key,
+              namespaceIncarnation: namespaceRow.incarnation,
+              epoch: head.epoch,
+              headRevision: preservedHead.headRevision,
+              displayedSnapshotId: preservedHead.displayedSnapshotId,
+            } satisfies AcceptedSourceLease,
+            observations,
+          } as const;
+        }
         const epoch = head?.epoch ?? createSecureUUID();
         const evidenceKey = createSecureUUID();
         const nextHead: AnnotationHeadRow = {
@@ -665,7 +732,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return fenced;
   }
 
-  async saveAnnotation(operation: PreparedAnnotation): Promise<SaveReceipt> {
+  async saveAnnotation(operation: PreparedAnnotation, cancellation?: AnnotationSaveCancellation): Promise<SaveReceipt> {
     // Capture the caller's attempt synchronously, before any await, so later
     // caller mutations cannot change what is validated or persisted.
     const captured = structuredClone(operation);
@@ -675,86 +742,91 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const documentKey = annotationDocumentKey(captured.lease.key);
     const sessionKey = serializeSessionKey({ namespace, sessionRef: captured.lease.key.sessionRef });
     let newlySaved = false;
-    const receipt = await this.#transaction(SAVE_STORES, "readwrite", async (transaction) => {
-      const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
-      const existing = await requestResult<AnnotationOperationRow | undefined>(operations.get(operationKey));
-      if (existing) {
-        // Every receipt state compares against the payload that still exists;
-        // an expired/reset payload is absent, so a terminal replay is returned
-        // unchanged rather than recreated.
-        // payloadKey equals the serialized operationKey, so an applied receipt
-        // (which retains no payloadKey) still finds its unexpired payload.
-        const priorPayload = await requestResult<AnnotationPayloadRow | undefined>(
-          transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(operationKey),
-        );
-        if (priorPayload && JSON.stringify(priorPayload.operation) !== JSON.stringify(captured)) {
-          throw new Error("duplicate operation id with a different payload");
+    const receipt = await this.#transaction(
+      SAVE_STORES,
+      "readwrite",
+      async (transaction) => {
+        const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
+        const existing = await requestResult<AnnotationOperationRow | undefined>(operations.get(operationKey));
+        if (existing) {
+          // Every receipt state compares against the payload that still exists;
+          // an expired/reset payload is absent, so a terminal replay is returned
+          // unchanged rather than recreated.
+          // payloadKey equals the serialized operationKey, so an applied receipt
+          // (which retains no payloadKey) still finds its unexpired payload.
+          const priorPayload = await requestResult<AnnotationPayloadRow | undefined>(
+            transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(operationKey),
+          );
+          if (priorPayload && JSON.stringify(priorPayload.operation) !== JSON.stringify(captured)) {
+            throw new Error("duplicate operation id with a different payload");
+          }
+          return {
+            operationId: captured.operationId,
+            epoch: existing.epoch,
+            sessionSequence: existing.sessionSequence,
+          } satisfies SaveReceipt;
         }
-        return {
-          operationId: captured.operationId,
-          epoch: existing.epoch,
-          sessionSequence: existing.sessionSequence,
-        } satisfies SaveReceipt;
-      }
-      const namespaceRow = await requestResult<NamespaceRow | undefined>(
-        transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
-      );
-      if (!namespaceRow || namespaceRow.incarnation !== captured.lease.namespaceIncarnation) {
-        throw new Error("accepted lease incarnation is not current");
-      }
-      const head = await requestResult<AnnotationHeadRow | undefined>(
-        transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
-      );
-      if (
-        !head ||
-        head.namespaceIncarnation !== namespaceRow.incarnation ||
-        head.epoch !== captured.lease.epoch ||
-        head.headRevision !== captured.lease.headRevision
-      ) {
-        throw new Error("accepted lease does not match the durable head");
-      }
-      const evidence = await requestResult<AnnotationEvidenceRow | undefined>(
-        transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(head.evidenceKey),
-      );
-      if (!evidence || !evidenceMatches(evidence.content, captured.capture.evidence)) {
-        throw new Error("accepted source evidence does not match the durable evidence");
-      }
-      const sequence = await requestResult<AnnotationSequenceRow | undefined>(
-        transaction.objectStore(ANNOTATION_SEQUENCES_STORE).get(sessionKey),
-      );
-      const sessionSequence = (sequence?.lastSequence ?? 0) + 1;
-      await requestResult(
-        transaction.objectStore(ANNOTATION_PAYLOADS_STORE).put({
-          payloadKey: operationKey,
-          documentKey,
-          epoch: head.epoch,
-          operation: captured,
-        } satisfies AnnotationPayloadRow),
-      );
-      await requestResult(
-        operations.put({
-          operationKey,
-          namespaceKey: annotationNamespaceKey(namespace),
-          namespaceIncarnation: namespaceRow.incarnation,
-          documentKey,
-          sessionKey,
-          sessionSequence,
-          operationId: captured.operationId,
-          epoch: head.epoch,
-          state: "pending",
-          destination: captured.destination,
-          payloadKey: operationKey,
-        } satisfies AnnotationOperationRow),
-      );
-      await requestResult(
-        transaction
-          .objectStore(ANNOTATION_SEQUENCES_STORE)
-          .put({ documentKey: sessionKey, lastSequence: sessionSequence } satisfies AnnotationSequenceRow),
-      );
-      this.#options.beforeCommit?.("save");
-      newlySaved = true;
-      return { operationId: captured.operationId, epoch: head.epoch, sessionSequence } satisfies SaveReceipt;
-    });
+        const namespaceRow = await requestResult<NamespaceRow | undefined>(
+          transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
+        );
+        if (!namespaceRow || namespaceRow.incarnation !== captured.lease.namespaceIncarnation) {
+          throw new Error("accepted lease incarnation is not current");
+        }
+        const head = await requestResult<AnnotationHeadRow | undefined>(
+          transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
+        );
+        if (
+          !head ||
+          head.namespaceIncarnation !== namespaceRow.incarnation ||
+          head.epoch !== captured.lease.epoch ||
+          head.headRevision !== captured.lease.headRevision
+        ) {
+          throw new Error("accepted lease does not match the durable head");
+        }
+        const evidence = await requestResult<AnnotationEvidenceRow | undefined>(
+          transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(head.evidenceKey),
+        );
+        if (!evidence || !evidenceMatches(evidence.content, captured.capture.evidence)) {
+          throw new Error("accepted source evidence does not match the durable evidence");
+        }
+        const sequence = await requestResult<AnnotationSequenceRow | undefined>(
+          transaction.objectStore(ANNOTATION_SEQUENCES_STORE).get(sessionKey),
+        );
+        const sessionSequence = (sequence?.lastSequence ?? 0) + 1;
+        await requestResult(
+          transaction.objectStore(ANNOTATION_PAYLOADS_STORE).put({
+            payloadKey: operationKey,
+            documentKey,
+            epoch: head.epoch,
+            operation: captured,
+          } satisfies AnnotationPayloadRow),
+        );
+        await requestResult(
+          operations.put({
+            operationKey,
+            namespaceKey: annotationNamespaceKey(namespace),
+            namespaceIncarnation: namespaceRow.incarnation,
+            documentKey,
+            sessionKey,
+            sessionSequence,
+            operationId: captured.operationId,
+            epoch: head.epoch,
+            state: "pending",
+            destination: captured.destination,
+            payloadKey: operationKey,
+          } satisfies AnnotationOperationRow),
+        );
+        await requestResult(
+          transaction
+            .objectStore(ANNOTATION_SEQUENCES_STORE)
+            .put({ documentKey: sessionKey, lastSequence: sessionSequence } satisfies AnnotationSequenceRow),
+        );
+        this.#options.beforeCommit?.("save");
+        newlySaved = true;
+        return { operationId: captured.operationId, epoch: head.epoch, sessionSequence } satisfies SaveReceipt;
+      },
+      cancellation,
+    );
     this.#notifyStorageSuccess();
     // A duplicate save wrote nothing, so only a newly persisted operation wakes readers.
     if (newlySaved) this.#publishDocumentWake(documentKey);
@@ -1159,9 +1231,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     stores: readonly string[],
     mode: "readonly" | "readwrite",
     body: (transaction: IDBTransaction) => Promise<T>,
+    cancellation?: AnnotationSaveCancellation,
   ): Promise<T> {
+    if (cancellation?.cancelled) throw new SaveCancelledError();
     const database = await this.#connection.open();
     const transaction = database.transaction([...stores], mode);
+    // Observe operation-scoped cancellation for the life of THIS transaction. The
+    // listener aborts before commit, and registering it synchronously here also
+    // covers a cancellation that lands between the open and the body. It is
+    // released at settlement so no listener/handle outlives the save.
+    const release = cancellation?.onCancel(() => {
+      tryAbortTransaction(transaction);
+    });
     const completed = transactionCompletion(transaction);
     void completed.catch(() => undefined);
     try {
@@ -1172,6 +1253,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       tryAbortTransaction(transaction);
       await completed.catch(() => undefined);
       throw error;
+    } finally {
+      release?.();
     }
   }
 }

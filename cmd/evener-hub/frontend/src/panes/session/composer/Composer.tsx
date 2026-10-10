@@ -97,6 +97,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { retryDocumentReaders } from "../../doc/documentReadState";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
@@ -452,6 +453,25 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   useEffect(() => {
     source.refreshRecovery();
+  }, [source]);
+
+  // The approved browser-reader ready trigger: once this composer's source is
+  // ready, nudge retained document annotation retries. Host cleanup cancels only
+  // this listener; it never retires the shared reader work or runtime. The
+  // source's own eager ready() already reports an initialization fault, so this
+  // observer handles its own derived rejection without leaking it unobserved or
+  // duplicating the source's toast.
+  useEffect(() => {
+    let mounted = true;
+    void source
+      .ready()
+      .then(() => {
+        if (mounted) void retryDocumentReaders("composer-open");
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
   }, [source]);
 
   useEffect(() => {
