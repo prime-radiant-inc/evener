@@ -990,10 +990,16 @@ async function runEntryHistoryRequest<T>(
       fixture.ref,
       heldCountsAtStore(fixture.ref) ? "foreground" : "background",
       async (scheduledSignal) => {
-        if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+        if (!current() || scheduledSignal.aborted)
+          throw new Error(
+            `entry history request was retired, pre, callerAborted=${signal?.aborted}, schedulerAborted=${scheduledSignal.aborted}, repositoryChanged=${fixture.repository !== repository}, clear=${fixture.clearInert}, epochChanged=${epoch !== readyEpoch}`,
+          );
         ran = true;
         result = await run();
-        if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+        if (!current() || scheduledSignal.aborted)
+          throw new Error(
+            `entry history request was retired, post, callerAborted=${signal?.aborted}, schedulerAborted=${scheduledSignal.aborted}, repositoryChanged=${fixture.repository !== repository}, clear=${fixture.clearInert}, epochChanged=${epoch !== readyEpoch}`,
+          );
       },
     );
     // A previous same-ref read occupies this slot. Join its settlement, never
