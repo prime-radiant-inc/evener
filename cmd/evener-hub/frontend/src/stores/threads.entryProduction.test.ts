@@ -25,10 +25,10 @@ import {
   acquireBackgroundThread,
   clearCachedSessions,
   countCachedSessions,
-  installEntryTranscriptFixtureForTests,
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
+  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
   threadsStore,
@@ -542,12 +542,7 @@ it("production cache writes and reopens keyed entries on the real database", asy
 it("entry store repairs aggregate overflow through an automatic authoritative read", async () => {
   const restore = installBackgroundTranscriptOptionsForTests({ pendingBytes: 2048 });
   const storage = cache();
-  const fixture = installEntryTranscriptFixtureForTests({
-    ref: "local:a",
-    cache: storage,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  setProductionEntryCacheForTests(storage);
   const client = connect();
   let reads = 0;
   let latest = response();
@@ -560,7 +555,7 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
   const admission = entryWriteAdmissionFor(storage);
   try {
     await threadsStore.getState().ensureThread("local:a");
-    await fixture.settled();
+    await settleEntryTranscriptForTests("local:a");
     const before = reads;
     expect(admission.retain(bodies, owner, "writing")).toBe(true);
     latest = response("local:a", [turn("recorded"), turn("recovered", 2, "r".repeat(300))]);
@@ -589,7 +584,7 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
   } finally {
     vi.useRealTimers();
     admission.release(bodies, owner);
-    fixture.dispose();
+    resetThreadsStoreForTests();
     restore();
   }
 });
@@ -603,20 +598,15 @@ it("entry store and cache share one clock for metadata and TTL", async () => {
     now: () => now,
   });
   caches.push(storage);
-  const fixture = installEntryTranscriptFixtureForTests({
-    ref: "local:a",
-    cache: storage,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  setProductionEntryCacheForTests(storage);
   try {
     connect();
     await threadsStore.getState().ensureThread("local:a");
-    await fixture.settled();
+    await settleEntryTranscriptForTests("local:a");
     expect((await storage.getLatest(historyKey, 1)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
     expect(await storage.getSessionMetadata(historyKey)).toMatchObject({ savedAt: now, accessedAt: now });
   } finally {
-    fixture.dispose();
+    resetThreadsStoreForTests();
   }
 });
 

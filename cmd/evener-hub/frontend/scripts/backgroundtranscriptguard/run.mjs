@@ -120,7 +120,7 @@ let TRACE_PATH = "";
 let MILESTONE_PATH = "";
 let SESSION_A = "";
 let SESSION_B = "";
-let ENTRY_SLICE = false;
+let ENTRY_PRODUCTION = false;
 
 function loadConfig(argv) {
   const args = parseArgs(argv);
@@ -155,7 +155,7 @@ function loadConfig(argv) {
   MILESTONE_PATH = args.get("milestone-path");
   SESSION_A = args.get("session-a");
   SESSION_B = args.get("session-b");
-  ENTRY_SLICE = args.get("entry-slice") === "true";
+  ENTRY_PRODUCTION = args.get("entry-production") === "true";
   mkdirSync(ARTIFACT_DIR, { recursive: true });
   console.log(`backgroundtranscriptguard artifacts: ${ARTIFACT_DIR}`);
 }
@@ -878,8 +878,7 @@ async function main() {
       // the Vite origin (same hostname, cookies are port-agnostic), then load the
       // guard's own nested HTML through Vite.
       await navigateTo(page, AUTH_URL, { retryDelayMs: 250 });
-      const entryQuery = ENTRY_SLICE ? `?entryRef=${encodeURIComponent(SESSION_B)}` : "";
-      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html${entryQuery}`;
+      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html`;
       try {
         await navigateTo(page, harnessUrl, BOOT);
       } catch (error) {
@@ -901,7 +900,7 @@ async function main() {
           `${error instanceof Error ? error.message : String(error)}\npage errors:\n${pageErrors.join("\n") || "(none captured)"}\ndom: ${JSON.stringify(dump)}`,
         );
       }
-      await runJourney(driver, ENTRY_SLICE);
+      await runJourney(driver, ENTRY_PRODUCTION);
     } finally {
       try {
         await driver.dumpState?.("final");
@@ -919,9 +918,9 @@ async function main() {
   }
 }
 
-async function runEntrySliceJourney(driver) {
+async function runEntryProductionJourney(driver) {
   const installed = await waitForEvidenceGlobal(driver);
-  if (!installed) throw new Error("entry-slice dev entry did not expose the real app evidence global");
+  if (!installed) throw new Error("production-entry dev entry did not expose the real app evidence global");
   await driver.waitPage("(() => document.querySelector(\"[data-testid='rail-brand']\") !== null ? true : null)()", {
     timeoutMs: 30000,
     label: "real app shell",
@@ -988,7 +987,7 @@ async function runEntrySliceJourney(driver) {
   await waitForTargetRunning(driver, SESSION_B);
   driver.phase("finish");
   await driver.waitForTurnIdle(SESSION_B, { timeoutMs: 60000 });
-  await evaluate(driver.send, "window.backgroundTranscriptEvidence.entrySettled()");
+  await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
   const completed = await waitForNativeEntryEvidence(
     driver,
     (value) =>
@@ -1155,51 +1154,46 @@ async function runEntrySliceJourney(driver) {
   if (activation.reads !== 0 || activation.pages !== 0) {
     throw new Error(`selected pane opening issued network history requests: ${JSON.stringify(activation)}`);
   }
-  driver.milestone("done", { mode: "entry-slice" });
+  driver.milestone("done", { mode: "entry-production" });
 }
 
 function nativeEntryEvidenceExpression() {
   return `(async () => {
-    const fixture = window.backgroundTranscriptEvidence.entryFixture();
-    if (!fixture?.historyKey) return null;
-    const databaseName = window.backgroundTranscriptEvidence.entryCacheDatabase;
+    const evidence = window.backgroundTranscriptEvidence;
+    const databaseName = evidence.entryCacheDatabase;
+    const version = evidence.entryCacheVersion;
+    const ref = ${JSON.stringify(SESSION_B)};
+    // Never create the database as an observation side effect. The real cache
+    // must have opened and committed its schema before native inspection starts.
+    const databases = await indexedDB.databases();
+    if (!databases.some((database) => database.name === databaseName && database.version === version)) return null;
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(databaseName, 3);
+      const request = indexedDB.open(databaseName, version);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
-      request.onupgradeneeded = () => reject(new Error("entry database was not opened by the real cache"));
+      request.onupgradeneeded = () => reject(new Error("production database was not opened by the real cache"));
     });
     const stores = ["transcriptItems", "transcriptTurns", "transcriptCoverage", "transcriptMeta"];
+    for (const legacy of ["records", "current"]) if (db.objectStoreNames.contains(legacy)) stores.push(legacy);
     const transaction = db.transaction(stores, "readonly");
     const values = await Promise.all(stores.map((name) => new Promise((resolve, reject) => {
       const request = transaction.objectStore(name).getAll();
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     })));
-    const rows = values[0].filter((row) => row.historyKey === fixture.historyKey);
-    const turns = values[1].filter((row) => row.historyKey === fixture.historyKey);
-    const coverage = values[2].filter((row) => row.historyKey === fixture.historyKey);
-    const metadata = values[3].find((row) => row.historyKey === fixture.historyKey) ?? null;
+    const metadata = values[3].find((row) => row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === location.origin));
+    if (!metadata) { db.close(); return null; }
+    const historyKey = metadata.historyKey;
+    const rows = values[0].filter((row) => row.historyKey === historyKey);
+    const turns = values[1].filter((row) => row.historyKey === historyKey);
+    const coverage = values[2].filter((row) => row.historyKey === historyKey);
+    const legacyCount = (name) => {
+      const index = stores.indexOf(name);
+      return index < 0 ? 0 : values[index].filter((row) => row.ref === ref).length;
+    };
+    const legacyRecordCount = legacyCount("records") + legacyCount("current");
     db.close();
-    const databases = await indexedDB.databases();
-    let legacyRecordCount = 0;
-    if (databases.some((database) => database.name === "evener-session-cache")) {
-      const legacy = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("evener-session-cache");
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      if (legacy.objectStoreNames.contains("records")) {
-        const records = await new Promise((resolve, reject) => {
-          const request = legacy.transaction("records", "readonly").objectStore("records").getAll();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
-        legacyRecordCount = records.filter((row) => row.ref === fixture.ref).length;
-      }
-      legacy.close();
-    }
-    return { historyKey: fixture.historyKey, rows, turns, coverage, metadata, legacyRecordCount };
+    return { historyKey, rows, turns, coverage, metadata, legacyRecordCount };
   })()`;
 }
 
@@ -1213,8 +1207,8 @@ async function waitForNativeEntryEvidence(driver, predicate, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-async function runJourney(driver, entrySlice = false) {
-  if (entrySlice) return runEntrySliceJourney(driver);
+async function runJourney(driver, entryProduction = false) {
+  if (entryProduction) return runEntryProductionJourney(driver);
   const failures = [];
 
   // ---- assertion 0: the dev entry installed the tiny budgets BEFORE the app ----

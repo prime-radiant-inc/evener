@@ -247,7 +247,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 		t.Skip("browser guard requires a real Chrome and real daemons")
 	}
 	if _, err := exec.LookPath("node"); err != nil {
-		t.Fatalf("node is required for the entry-slice browser guard: %v", err)
+		t.Fatalf("node is required for the production-entry browser guard: %v", err)
 	}
 	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
 		t.Fatalf("the production frontend is not built: run `make build-web` first: %v", err)
@@ -256,7 +256,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	for i, role := range []string{"sustained", "target"} {
 		for _, command := range []map[string]string{{"command": "background-mode"}, {"command": "background-role", "phase": role}} {
 			if err := appendFileLine(fixture.control[i], command); err != nil {
-				t.Fatalf("arm entry-slice fixture helper %d: %v", i, err)
+				t.Fatalf("arm production-entry fixture helper %d: %v", i, err)
 			}
 		}
 	}
@@ -345,7 +345,7 @@ func runBackgroundDriverMode(ctx context.Context, t *testing.T, fixture *skillGu
 		"--session-b", skillGuardSessionRef(entries[1]),
 	)
 	if entrySlice {
-		cmd.Args = append(cmd.Args, "--entry-slice", "true")
+		cmd.Args = append(cmd.Args, "--entry-production", "true")
 	}
 	configureBackgroundDriverCommand(cmd)
 	cmd.Dir = frontend
@@ -939,11 +939,11 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	t.Helper()
 	milestones, err := backgroundReadMilestones(milestonesPath)
 	if err != nil {
-		t.Fatalf("read entry-slice milestones: %v", err)
+		t.Fatalf("read production-entry milestones: %v", err)
 	}
 	for _, name := range []string{"entry-baseline", "entry-opened", "entry-completed", "done"} {
 		if !backgroundMilestonePresent(milestones, name) {
-			t.Errorf("entry-slice browser report is missing %q", name)
+			t.Errorf("production-entry browser report is missing %q", name)
 		}
 	}
 	var baseline struct {
@@ -1234,7 +1234,7 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 			t.Errorf("raw browser audit contains an incomplete coverage boundary: %+v", coverage)
 		}
 	}
-	t.Logf("entry-slice artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
+	t.Logf("production-entry artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
 }
 
 type backgroundEntryProducer struct {

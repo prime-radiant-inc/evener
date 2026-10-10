@@ -582,6 +582,11 @@ function currentEntryCache(): SessionEntryCache {
   productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME });
   return productionEntryCache;
 }
+
+/** @internal Replace only the ordinary route's storage/clock boundary before acquisition. */
+export function setProductionEntryCacheForTests(cache: SessionEntryCache): void {
+  productionEntryCache = cache;
+}
 // This process-local token scopes current checkpoints to this browser instance.
 // It is deliberately regenerated on reload and never persisted as identity.
 const currentAppliedSequences = new Map<string, number>();
