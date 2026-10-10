@@ -3838,6 +3838,35 @@ test("a delegates-only observer keeps reading when its ancestor's runtime is rel
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
 });
 
+test("a delegates-and-jobs store without a summary still reads on its invalidation", async () => {
+  const client = pushClient();
+  client.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().delegates.complete && store.getSnapshot().jobs.complete);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  // The producer pairs the summary with every delegate change, but this store
+  // never started the summary, so this invalidation refreshes no other resource:
+  // without the delegates read nothing here could reveal the retained context.
+  activityChanged(client, ["summary", "delegates"]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeGreaterThan(before);
+  await activityState(store, () => store.getSnapshot().context?.availability === "retained");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

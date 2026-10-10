@@ -183,9 +183,11 @@ under-invalidating a count. Revisit only against a measured win.
    because the read is the only way rows a frame cannot address can change and
    the id cannot stay silent for the store's whole life.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
-   as today, but do not refresh `delegates`, unless the store observes nothing
-   but `delegates`: then no other read's response can carry a gate or
-   availability change back, so the invalidation keeps its read.
+   as today, but do not refresh `delegates`, unless this invalidation refreshes
+   no other observed resource: a store that observes nothing else, one whose
+   other observed resource is absent from the notification, and one whose other
+   read has permanently failed all keep the delegates read, because nothing else
+   in this notification can carry a gate or availability change back.
    `evener/thread/resync` still refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
 6. Treat a response whose context `epoch` differs from the loaded one as a source
@@ -337,9 +339,11 @@ on `availability`. A negative-path test must pin the fallback.
   the first read nor misses a real epoch change, and records the new epoch; a
   read that reveals an unannounced replacement queues exactly one reconciliation
   read, bounded by the change rather than a loop.
-- **Delegates-only store.** A store that observes no other collection keeps the
-  invalidation-driven delegate read, so a runtime released without any frame
-  still lands as a retained context with refreshed rows.
+- **Unguarded invalidation.** A store that observes no other collection, one
+  whose other observed resource is absent from the notification, and one whose
+  other read has permanently failed all keep the invalidation-driven delegate
+  read, so a runtime released without any frame still lands as a retained
+  context with refreshed rows.
 - **Raced settlement.** A delegate settlement that arrives while the read first
   revealing the replacement epoch is pending shows the completed status and
   report once that read's reconciliation read settles.
@@ -408,7 +412,7 @@ on `availability`. A negative-path test must pin the fallback.
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
 | Old source with no preview | producer-authored context capability; the read stays unless the source advertises. |
-| Retained ancestor: invalidations but no frames | gate the no-read on a live context and on another observed collection, or extend frame routing to retained targets. |
+| Retained ancestor: invalidations but no frames | gate the no-read on a live context and on another resource this invalidation refreshes, or extend frame routing to retained targets. |
 | Live→retained release hides an update | catch-up read when an accepted context turns ineligible. |
 | Old-epoch buffered frame wins | clear the unknown-id buffer with the map on replacement. |
 | Later-page frame dropped after its one read | buffer the latest frame per id and place it from the reconciled row set, never from a single page's `complete` flag. |

@@ -1125,10 +1125,13 @@ export class SessionActivityStore {
         return;
     }
     // The no-read merge covers delegate field changes; summary, jobs and
-    // watches refresh as today. A resync still refreshes every observed
-    // resource, delegates included.
+    // watches refresh as today, and the merge holds only while this invalidation
+    // refreshes one of them. A resync still refreshes every observed resource,
+    // delegates included.
     const skipDelegates =
-      notification.method === "evener/thread/activity/changed" && this.pushEligible && this.otherResourceObserved();
+      notification.method === "evener/thread/activity/changed" &&
+      this.pushEligible &&
+      this.refreshesAnotherResource(changed);
     for (const resource of changed) {
       if (resource === "delegates" && skipDelegates) continue;
       if (this.reads[resource].observers > 0 || this.reads[resource].oneShot) {
@@ -1136,15 +1139,19 @@ export class SessionActivityStore {
       }
     }
   }
-  /** Whether a resource other than delegates is being read, so an accepted
-   * response can carry a capability or availability change back to this store.
-   * Suppressing the invalidation-driven delegate read assumes one can: a store
-   * that only observes delegates would otherwise never learn that its ancestor's
-   * runtime was released, since a released runtime sends invalidations and no
-   * frames. */
-  private otherResourceObserved(): boolean {
-    return resources.some(
-      (resource) => resource !== "delegates" && (this.reads[resource].observers > 0 || this.reads[resource].oneShot),
+  /** Whether this invalidation refreshes a resource other than delegates, so an
+   * accepted response can carry a capability or availability change back to this
+   * store. Suppressing the invalidation-driven delegate read assumes one can: a
+   * store that observes no other collection, one whose other resource is absent
+   * from this invalidation, or one whose other read has permanently failed still
+   * has no way to learn that its ancestor released the runtime, which sends
+   * invalidations and no frames. */
+  private refreshesAnotherResource(changed: readonly SessionActivityResource[]): boolean {
+    return changed.some(
+      (resource) =>
+        resource !== "delegates" &&
+        (this.reads[resource].observers > 0 || this.reads[resource].oneShot) &&
+        !this.readState(resource).permanent,
     );
   }
   private releaseIdle(): void {

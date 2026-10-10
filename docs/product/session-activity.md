@@ -316,9 +316,9 @@ drops it when
 the id turns out to name two, and leaves it waiting while that read does not
 serve it. A source that
 does not advertise the capability, a retained context
-whose released runtime receives invalidations but no frames, or a store that
-observes no collection but delegates (where no other read's response could
-reveal either change) keeps the
+whose released runtime receives invalidations but no frames, or an invalidation
+that refreshes no other observed resource (the store observes none, the
+notification omits it, or its read has permanently failed) keeps the
 invalidation read. Delegate membership is append-only within a source epoch;
 jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these
