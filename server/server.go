@@ -901,7 +901,7 @@ func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJo
 // publishes nothing when processing starts: the running execution's TurnID is
 // published by SetProcessingTurn, which the session calls before recording the
 // execution's first entry. When processing ends, finishProcessing publishes the
-// thread idle.
+// state the session's events stored (finishProcessing).
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
 		s.finishProcessing()
@@ -921,6 +921,9 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		s.mu.Lock()
 		s.processing = true
 		s.appActiveTurnID = turnID
+		// A new turn's end has not been stated yet, whatever the turn before
+		// it stated.
+		s.appTurnEndStated = false
 		// A rest held while the input was being taken settled before this
 		// turn started (Session.restMu), and the turn's end restates it.
 		s.appHeldSettledEffect = nil

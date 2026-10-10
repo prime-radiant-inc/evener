@@ -63,8 +63,11 @@ type idlePublicationServer struct {
 
 	mu            sync.Mutex
 	sawProcessing bool
-	idlePublished chan struct{}
+	passFinished  chan struct{}
 	publishOnce   sync.Once
+	// stateWrites counts SetState calls once an input pass has started: the
+	// serve loop must leave the stored state to the session's own events.
+	stateWrites int
 
 	// One turn's status is published from two goroutines. The serve loop
 	// ends processing at the tail of every input pass, which publishes an
@@ -85,7 +88,7 @@ type idlePublicationServer struct {
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
 		Server:         server.NewServer(cfg),
-		idlePublished:  make(chan struct{}),
+		passFinished:   make(chan struct{}),
 		turnProjected:  make(chan struct{}),
 		releaseCarrier: make(chan struct{}),
 	}
@@ -99,7 +102,7 @@ func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
 		return
 	}
 	select {
-	case <-s.idlePublished:
+	case <-s.passFinished:
 	case <-s.releaseCarrier:
 	}
 }
@@ -122,8 +125,23 @@ func (s *idlePublicationServer) SetProcessingTurn(turnID string) {
 	s.observeProcessing(true)
 }
 
-// observeProcessing opens idlePublished the first time processing ends after
+// observeProcessing opens passFinished the first time processing ends after
 // it started: the serve loop's finish of the turn's input pass.
+func (s *idlePublicationServer) SetState(state string) {
+	s.Server.SetState(state)
+	s.mu.Lock()
+	if s.sawProcessing {
+		s.stateWrites++
+	}
+	s.mu.Unlock()
+}
+
+func (s *idlePublicationServer) stateWritesAfterStart() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stateWrites
+}
+
 func (s *idlePublicationServer) observeProcessing(processing bool) {
 	s.mu.Lock()
 	finished := !processing && s.sawProcessing
@@ -132,7 +150,7 @@ func (s *idlePublicationServer) observeProcessing(processing bool) {
 	}
 	s.mu.Unlock()
 	if finished {
-		s.publishOnce.Do(func() { close(s.idlePublished) })
+		s.publishOnce.Do(func() { close(s.passFinished) })
 	}
 }
 
@@ -579,7 +597,7 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	select {
-	case <-observedServer.idlePublished:
+	case <-observedServer.passFinished:
 	case <-ctx.Done():
 		t.Fatalf("post-turn finish: %v", ctx.Err())
 	}
@@ -597,6 +615,9 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 
 	if got := observedServer.GetStatus().State; got != appwire.ThreadStatusSystemError {
 		t.Fatalf("stored server state = %q, want %q", got, appwire.ThreadStatusSystemError)
+	}
+	if got := observedServer.stateWritesAfterStart(); got != 0 {
+		t.Fatalf("the serve loop wrote the stored state %d times during the pass, want none: it comes from the session's events", got)
 	}
 	streamCalls, completeCalls := adapter.calls()
 	if streamCalls != 1 || completeCalls != 0 {

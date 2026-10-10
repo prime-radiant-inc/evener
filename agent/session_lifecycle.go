@@ -2097,8 +2097,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
-			// it the session reports itself busy with nothing running, and the
-			// serve loop republishes that from WireState.
+			// it the session reports itself busy with nothing running.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
 			// that got us here is consumed, and the drain loop deliberately does

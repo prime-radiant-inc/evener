@@ -203,6 +203,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appHeldSettledEffect = nil
@@ -607,11 +608,15 @@ func (s *Server) finishProcessing() {
 		if len(pending) == 0 && wasProcessing && threadID != "" {
 			// The stored state is what the session's own events stated: a
 			// pass that ran no turn left it as it was, and a held rest or an
-			// interrupted turn's end restated it.
-			if awaitingTurnEnd {
-				s.status.State = appwire.ThreadStatusIdle
-			}
+			// interrupted turn's end restated it. Nothing runs once processing
+			// ends, so a stored active (a forecast that work would follow)
+			// reads idle, stored and published alike; work that does follow
+			// publishes its own turn.
 			status := appStatus(s.status.State, false, false)
+			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+				s.status.State = appwire.ThreadStatusIdle
+				status = appwire.ThreadStatusIdle
+			}
 			pending = append(pending, pendingAppNotification{
 				threadID: threadID,
 				ref:      ref,
