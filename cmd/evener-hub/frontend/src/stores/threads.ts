@@ -887,7 +887,7 @@ function startProductionEntryMigration(route: EntryTranscriptRoute): void {
   // Only a foreground open schedules conversion. It is never an automatic
   // background blob read, and the UI does not await it. The converter owns the
   // real transaction's source removal, so failure leaves the blob for retry.
-  route.migration = Promise.resolve()
+  route.migration = productionEntryMigrationTail
     .then(async () => {
       if (!current()) return;
       const sources: EntryMigrationSource[] = [
