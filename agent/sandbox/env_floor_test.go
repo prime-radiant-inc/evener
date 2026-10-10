@@ -277,3 +277,36 @@ func TestEnvFloorRedirectsGoCachesWhenTheGoEnvFileWasUnreadable(t *testing.T) {
 		}
 	}
 }
+
+// An unreadable go env file (a FIFO, a device) would block or flood any go the
+// session spawns, as it would have blocked the probe, so the floor turns the
+// file off for them.
+func TestEnvFloorTurnsAnUnreadableGoEnvFileOff(t *testing.T) {
+	for _, strategy := range []CacheStrategy{CacheOverlay, CacheSessionPrivate} {
+		policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: strategy, resolveHost: HostFacts{GoEnvUnreadable: true}}
+		out := ApplyEnvFloor([]string{"GOENV=/tmp/fifo"}, policy, "/tmp/s")
+		if v, _ := envValue(out, "GOENV"); v != "off" {
+			t.Errorf("%v: GOENV must be off, got %q", strategy, v)
+		}
+	}
+}
+
+// Under the overlay, a Go cache go resolves from the host's settings rather
+// than the spawn's environment (a go env -w GOMODCACHE, or the default under a
+// GOPATH) is redirected too when the overlay does not serve it, such as one
+// dropped for lying inside the worktree.
+func TestEnvFloorRedirectsResolvedGoCachesTheOverlayDoesNotServe(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", GoModCache: "/work/project/.mod", GoPath: "/work/project/gopath"}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	out := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved go env -w GOMODCACHE must move into the session scratch, got %q", v)
+	}
+	if v, _ := envValue(out, "GOPATH"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved GOPATH must get the session scratch first, got %q", v)
+	}
+	if _, ok := envValue(out, "GOCACHE"); ok {
+		t.Errorf("a GOCACHE the overlay serves (~/.cache/go-build) must be left alone: %v", out)
+	}
+}

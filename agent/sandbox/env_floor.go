@@ -67,9 +67,17 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if redirected[name] {
 			continue // re-added below, pointing into the session scratch
 		}
+		if name == envvars.GoEnv.Name && policy.resolveHost.GoEnvUnreadable {
+			continue // re-added below as off
+		}
 		out = append(out, kv)
 	}
 
+	// The go env file the probe refused (a FIFO, a device) would block or
+	// flood any go the session spawns, so it is turned off for them.
+	if policy.resolveHost.GoEnvUnreadable {
+		out = append(out, envvars.GoEnv.Assignment("off"))
+	}
 	out = applyToolchainPath(out, policy.ToolchainBinDir)
 	out = ApplySessionScratchEnv(out, sessionScratch)
 	if sessionScratch != "" {
@@ -91,9 +99,10 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // redirectedCacheVars names the cache variables the floor points into the
 // session scratch: every one under the session-private strategy. Under the
 // overlay, the Go caches when the go env file was unreadable at session start
-// (the overlay cannot know where go will write), and a GOCACHE or GOMODCACHE
-// the overlay does not serve (its root was dropped, say inside the worktree),
-// which would otherwise stay persistently writable.
+// (the overlay cannot know where go will write), and any Go cache whose
+// directory the overlay does not serve (overlayGoCacheDirs; its root was
+// dropped, say inside the worktree), which would otherwise stay persistently
+// writable.
 //
 // GOMODCACHE goes alongside GOCACHE because an ambient value can name any
 // directory. GOPATH goes because Go writes the checksum database's tree heads to
@@ -114,12 +123,56 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 		if policy.resolveHost.GoEnvUnreadable {
 			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
 		}
-		for _, kv := range env {
-			name, val, _ := strings.Cut(kv, "=")
-			if (name == envvars.GoCache.Name || name == envvars.GoModCache.Name) && val != "" && !isUnderAnyRoot(val, policy.CacheRoots) {
+		for name, dir := range overlayGoCacheDirs(env, policy.resolveHost) {
+			if filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots) {
 				out[name] = true
 			}
 		}
+	}
+	return out
+}
+
+// overlayGoCacheDirs returns, for each Go cache variable, the directory a
+// spawned go would write that cache to: the spawn's own setting, else the
+// host's resolved one (env or go env -w), else Go's default. GOPATH maps to its
+// first entry's pkg, where the checksum database lives.
+func overlayGoCacheDirs(env []string, host HostFacts) map[string]string {
+	vars := map[string]string{}
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		vars[name] = val
+	}
+	firstOr := func(values ...string) string {
+		for _, v := range values {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	home := firstOr(vars[envvars.Home.Name], host.Home)
+	gopath := ""
+	if entries := filepath.SplitList(vars[envvars.GoPath.Name]); len(entries) > 0 && filepath.IsAbs(entries[0]) {
+		gopath = entries[0]
+	} else if entries := goPathEntries(HostFacts{Home: home, GoPath: host.GoPath}); len(entries) > 0 {
+		gopath = entries[0]
+	}
+	cacheHome := firstOr(vars[envvars.XDGCacheHome.Name], host.XDGCacheHome)
+	if cacheHome == "" && home != "" {
+		cacheHome = filepath.Join(home, ".cache")
+	}
+	out := map[string]string{
+		envvars.GoModCache.Name: firstOr(vars[envvars.GoModCache.Name], host.GoModCache),
+		envvars.GoCache.Name:    firstOr(vars[envvars.GoCache.Name], host.GoCache),
+	}
+	if gopath != "" {
+		out[envvars.GoPath.Name] = filepath.Join(gopath, "pkg")
+		if out[envvars.GoModCache.Name] == "" {
+			out[envvars.GoModCache.Name] = filepath.Join(gopath, "pkg", "mod")
+		}
+	}
+	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
+		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
 	return out
 }

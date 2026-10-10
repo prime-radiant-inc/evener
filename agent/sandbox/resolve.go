@@ -509,8 +509,8 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME. ~/.cache gives way to $XDG_CACHE_HOME
-// when that is set, and Go's roots follow the host's go settings (goCacheRoots).
+// strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
+// set, and Go's roots follow the host's go settings (goCacheRoots).
 var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
@@ -522,11 +522,12 @@ var defaultCacheRoots = []string{".npm", ".cargo"}
 func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		cache := filepath.Join(host.Home, ".cache")
+		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
+		// write it whatever XDG says.
+		out := []string{filepath.Join(host.Home, ".cache")}
 		if filepath.IsAbs(host.XDGCacheHome) {
-			cache = host.XDGCacheHome
+			out = append(out, host.XDGCacheHome)
 		}
-		out := []string{cache}
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}

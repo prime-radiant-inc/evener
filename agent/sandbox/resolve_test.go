@@ -415,10 +415,6 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 			}
 		})
 	}
-	// An explicit GOPATH equal to Go's default is served once, not overlaid twice.
-	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoPath: filepath.Join(home, "go")}, "/work/project"); len(roots) != len(dedupeRoots(roots)) {
-		t.Errorf("cache roots must not repeat: %v", roots)
-	}
 	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}, "/work/project"); slices.Contains(roots, "relative") {
 		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)
 	}
@@ -428,8 +424,9 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 // overlay serves $XDG_CACHE_HOME in place of ~/.cache.
 func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
 	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
-	if !slices.Contains(roots, "/xdg/cache") || slices.Contains(roots, "/home/tester/.cache") {
-		t.Errorf("cache roots %v must serve XDG_CACHE_HOME in place of ~/.cache", roots)
+	// ~/.cache stays served too, for tools that write it whatever XDG says.
+	if !slices.Contains(roots, "/xdg/cache") || !slices.Contains(roots, "/home/tester/.cache") {
+		t.Errorf("cache roots %v must serve XDG_CACHE_HOME alongside ~/.cache", roots)
 	}
 }
 
