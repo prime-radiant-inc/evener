@@ -1568,30 +1568,29 @@ async function settleReload(ref: string): Promise<void> {
   });
 }
 
-describe("the live gap rule", () => {
-  // Ruling 33 disposition 6: mapped. Original: scenario 6: an overlapping window merges and the deepest cursor is kept (the pinned reducer rule)
-  // Overlapping recorded windows preserve both older pages and the deepest cursor, without a blob-shell anchor.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
-  // Ruling 33 disposition 7: retired. Original: scenario 6: a window beginning exactly at the captured position's successor replaces (the accepted abut cost)
-  // The accepted one-item abut cost is specific to the blob captured-position predicate, entry paging uses causal certificates and reconciles an uncertain boundary instead.
-  // Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
-  // Ruling 33 disposition 8: retired. Original: scenario 7: a window starting entirely above the anchor replaces, and the response's cursor is taken
-  // The entirely-above-blob-anchor replacement predicate is retired, currentness instead follows the new source baseline and its returned cursor.
-  // Entry protection: src/stores/threads.history.test.ts — "a same-thread reconnect with unchanged source identifiers retires the outgoing page authority".
-  // Ruling 33 disposition 9: mapped. Original: scenario 7: a fold newer than the response replaces and replays the fold tail
-  // Preserve actual arrived input outside a delayed response window in UI and disk, blob-shell replacement and timer plumbing are retired.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
-  // Ruling 33 disposition 10: mapped. Original: scenario 7: a fold arriving with a dropped notification behind it replays what arrived, carrying today's hole
-  // Mirror the tail that arrived and do not invent the missing item, the original assertion did not prohibit a later suffix certificate.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
-  // Ruling 33 disposition 11: mapped. Original: scenario 8: stale identity: the server rejects the held snapshot, the retry replaces, and the cached turns do not survive
-  // A real stale-cursor rejection still drops held identity and stale older turns, its replacement intent now reaches the entry owner.
-  // Entry protection: src/stores/threads.history.test.ts — "a stale-cursor rejection retries thread/read without the held snapshot".
-  // Entry protection: src/stores/threads.history.test.ts — "a stale-cursor retry discards an older held turn outside the recovered window, not merges it".
-  // Ruling 33 disposition 12: mapped. Original: an empty record takes the ordinary cold merge and the predicate holds (the gap rule's empty case, scenario 15's tail)
-  // An empty history still cold-opens safely and accepts later input, the empty whole-blob anchor predicate itself is retired.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary empty source cold-opens and accepts later recorded input without a blob anchor".
-});
+// The live gap rule's default-blob cases are individually mapped below.
+// Ruling 33 disposition 6: mapped. Original: scenario 6: an overlapping window merges and the deepest cursor is kept (the pinned reducer rule)
+// Overlapping recorded windows preserve both older pages and the deepest cursor, without a blob-shell anchor.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
+// Ruling 33 disposition 7: retired. Original: scenario 6: a window beginning exactly at the captured position's successor replaces (the accepted abut cost)
+// The accepted one-item abut cost is specific to the blob captured-position predicate, entry paging uses causal certificates and reconciles an uncertain boundary instead.
+// Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
+// Ruling 33 disposition 8: retired. Original: scenario 7: a window starting entirely above the anchor replaces, and the response's cursor is taken
+// The entirely-above-blob-anchor replacement predicate is retired, currentness instead follows the new source baseline and its returned cursor.
+// Entry protection: src/stores/threads.history.test.ts — "a same-thread reconnect with unchanged source identifiers retires the outgoing page authority".
+// Ruling 33 disposition 9: mapped. Original: scenario 7: a fold newer than the response replaces and replays the fold tail
+// Preserve actual arrived input outside a delayed response window in UI and disk, blob-shell replacement and timer plumbing are retired.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
+// Ruling 33 disposition 10: mapped. Original: scenario 7: a fold arriving with a dropped notification behind it replays what arrived, carrying today's hole
+// Mirror the tail that arrived and do not invent the missing item, the original assertion did not prohibit a later suffix certificate.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
+// Ruling 33 disposition 11: mapped. Original: scenario 8: stale identity: the server rejects the held snapshot, the retry replaces, and the cached turns do not survive
+// A real stale-cursor rejection still drops held identity and stale older turns, its replacement intent now reaches the entry owner.
+// Entry protection: src/stores/threads.history.test.ts — "a stale-cursor rejection retries thread/read without the held snapshot".
+// Entry protection: src/stores/threads.history.test.ts — "a stale-cursor retry discards an older held turn outside the recovered window, not merges it".
+// Ruling 33 disposition 12: mapped. Original: an empty record takes the ordinary cold merge and the predicate holds (the gap rule's empty case, scenario 15's tail)
+// An empty history still cold-opens safely and accepts later input, the empty whole-blob anchor predicate itself is retired.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary empty source cold-opens and accepts later recorded input without a blob anchor".
 
 // The scroll-back bed (Task 8; spec, "Scroll-back: the deepest held cursor",
 // Testing scenario 12). olderPageResponse answers a thread/turns/list with
@@ -1652,14 +1651,13 @@ function settledWindowResponse(ref: string): ThreadReadResponse {
   });
 }
 
-describe("scroll-back, the volume case", () => {
-  // Ruling 33 disposition 13: mapped. Original: renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor
-  // Retain older-page volume and causal continuation, block stale paging publication during hydration, the pre-authoritative whole-blob shell and its boolean gate are retired.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
-  // Entry protection: src/stores/threads.history.test.ts — "a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor".
-  // Entry protection: src/stores/threads.history.test.ts — "an already-read local page does not publish across a pending hydration".
-  // Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
-});
+// The scroll-back volume case now uses real entry paging and currentness.
+// Ruling 33 disposition 13: mapped. Original: renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor
+// Retain older-page volume and causal continuation, block stale paging publication during hydration, the pre-authoritative whole-blob shell and its boolean gate are retired.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
+// Entry protection: src/stores/threads.history.test.ts — "a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor".
+// Entry protection: src/stores/threads.history.test.ts — "an already-read local page does not publish across a pending hydration".
+// Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
 
 // The deletion bed (Task 9; spec, "The write seam" deletion bullets): the
 // response-keyed hook, the deletion fence's cache re-arm, and cross-tab
