@@ -613,5 +613,27 @@ class MemoryWritesValidationTest(unittest.TestCase):
         self.assertEqual(self.load({"max": 0})["stages"][0]["memory_writes"][0]["max"], 0)
 
 
+class TrialJobsTest(unittest.TestCase):
+    """run --arm limits a run to one arm of each scenario that declares it."""
+
+    def scenario(self, arms):
+        scen = tempfile.TemporaryDirectory()
+        self.addCleanup(scen.cleanup)
+        with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+            json.dump({"arms": arms, "stages": [{"name": "A", "prompt": "p"}]}, f)
+        return scen.name
+
+    def test_every_declared_arm_runs_by_default(self):
+        both = self.scenario(["on", "off"])
+        jobs = bookkeeping.lab.trial_jobs([both], {"base": "/b"}, 2, None)
+        self.assertEqual([(label, arm, rep) for label, _, arm, _, rep in jobs],
+                         [("base", "on", 1), ("base", "on", 2), ("base", "off", 1), ("base", "off", 2)])
+
+    def test_arms_keeps_only_the_named_arms_a_scenario_declares(self):
+        both, on_only = self.scenario(["on", "off"]), self.scenario(["on"])
+        jobs = bookkeeping.lab.trial_jobs([both, on_only], {"base": "/b"}, 1, ["off"])
+        self.assertEqual([(scen, arm) for _, _, arm, scen, _ in jobs], [(both, "off")])
+
+
 if __name__ == "__main__":
     unittest.main()

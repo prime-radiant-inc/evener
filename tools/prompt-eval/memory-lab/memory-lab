@@ -9,7 +9,7 @@ stream, the workspace and the memory files.
 
 Usage:
   memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
-      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] \
+      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] [--arm on] \
       [--effort high] [--timeout 1200] [--work-root DIR] [--context-window TOKENS]
                                       # one line per stage as trials finish, then the pass-rate table;
                                       # --work-root DIR puts each workspace at DIR/<project>-<random> (see README);
@@ -897,6 +897,21 @@ def load_scenario(scen):
     return spec
 
 
+def trial_jobs(scenarios, versions, reps, arms=None):
+    """(label, binary, arm, scenario, rep) for every trial: each version runs each arm a scenario declares,
+    or only those of them named in arms, reps times."""
+    jobs = []
+    for scen in scenarios:
+        declared = load_scenario(scen).get("arms", ["on"])
+        for label, binpath in versions.items():
+            for arm in declared:
+                if arms is not None and arm not in arms:
+                    continue
+                for rep in range(1, reps + 1):
+                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    return jobs
+
+
 def cmd_run(args):
     args.out = os.path.abspath(args.out)
     if args.work_root:
@@ -921,14 +936,8 @@ def cmd_run(args):
         args.providers_path = write_run_providers(context_window_config(args.model, args.context_window))
         print(f"memory-lab: this run's providers.toml, a copy of yours with the override: {args.providers_path} "
               "(owner-only; delete it when you're done with ask)", flush=True)
-    jobs = []
-    for scen in args.scenarios.split(","):
-        scen = os.path.abspath(scen)
-        arms = load_scenario(scen).get("arms", ["on"])
-        for label, binpath in versions.items():
-            for arm in arms:
-                for rep in range(1, args.reps + 1):
-                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    jobs = trial_jobs([os.path.abspath(scen) for scen in args.scenarios.split(",")], versions, args.reps,
+                      [args.arm] if args.arm else None)
     os.makedirs(args.out, exist_ok=True)
     print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
     grades = []
@@ -1173,6 +1182,8 @@ def main():
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=positive_int, default=1200, help="seconds per stage")
     r.add_argument("--jobs", type=positive_int, default=4)
+    r.add_argument("--arm", choices=["on", "off"],
+                   help="run only this arm of each scenario that declares it (default: every arm it declares)")
     r.add_argument("--work-root", metavar="DIR", help="create each workspace at DIR/<project>-<random> instead of inside the "
                    "results tree; the trial's work/ is a symlink to it. The dirs are left in place")
     r.add_argument("--context-window", type=positive_int, metavar="TOKENS",
