@@ -363,7 +363,7 @@ func DefModelList() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
 				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
@@ -892,7 +892,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root)."},
 				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
 				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
-				"range":     map[string]any{"type": "string", "description": "transcript: turn window: last:N | start:N | A-B."},
+				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Entries read_transcript omits carry no turn number and render with the turn before them."},
 				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
 				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
 				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
@@ -1059,8 +1059,8 @@ func DefReadTranscript() llm.ToolDefinition {
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
 				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{

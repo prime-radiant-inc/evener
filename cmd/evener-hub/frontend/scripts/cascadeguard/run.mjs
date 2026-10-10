@@ -14,8 +14,10 @@ const inspectorFooter = `${inspectorRoot} ~ [data-testid="pane-edge-footer"] [da
 const inspectorIdExpr = `document.querySelector(${q(`${inspectorFooter} [data-pane-id]`)})?.dataset.paneId`;
 const sourceFooter = `[data-pane-scaffold=${q(`session:${fixture.rootRef}`)}] ~ [data-testid="pane-edge-footer"] [data-testid="statusbar"]`;
 const sourceAgents = `${sourceFooter} button[aria-label^="Agents,"]`;
+const rootCrumb = 'nav[aria-label="Agent path"] button:first-child';
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
+const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
 const wait = (expression, label) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label });
@@ -306,7 +308,7 @@ async function sharedWidthJourney() {
   await assertSourceDom();
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
-  await driver.click('nav[aria-label="Agent path"] button:first-child');
+  await driver.click(rootCrumb);
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "real root pop supplies a read-only cascade reader");
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
   const portExpr = `document.querySelector(${q(scroll(fixture.rootRef))})`;
@@ -731,19 +733,22 @@ async function providerHeld() {
   });
 }
 
-const readableGeometrySettled = `(() => {
+const readableGeometrySettled = (expectedColumns) => `(() => {
   const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
   const grid = columns[0]?.closest('.dv-grid-view'), shell = grid?.closest('.dv-shell');
-  if (!grid || !shell) return false;
+  if (!grid || !shell || columns.length !== ${expectedColumns}) return false;
   // Wait for the shell's current size before computing native input coordinates.
   const gridSize = grid.getBoundingClientRect(), shellSize = shell.getBoundingClientRect();
   if (gridSize.width !== Math.round(shellSize.width) || gridSize.height !== Math.round(shellSize.height)) return false;
-  return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
+  const leaf = columns[columns.length - 1];
+  const readableParent = columns.length === 2 ? columns[0] : null;
+  return leaf.getBoundingClientRect().width >= 439.5
+    && (!readableParent || Math.abs(readableParent.getBoundingClientRect().width - 400) < .75)
     && columns.every(node => getComputedStyle(node).transform === 'none');
 })()`;
 
 async function observeGeometryAndFocus(ref) {
-  await wait(readableGeometrySettled, "settled geometry before live status updates");
+  await wait(readableGeometrySettled(2), "settled geometry before live status updates");
   await read(`(() => {
     document.querySelector(${q(peekChip(ref, "Tasks"))}).focus();
     window.__cascadeFocused = document.activeElement;
@@ -803,7 +808,7 @@ async function sourceMutationJourney() {
   await assertSpineStatus(ref, "active");
   const screenshotViewport = await read("({ width: innerWidth, height: innerHeight })");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1050, deviceScaleFactor: 1, mobile: false });
-  await wait(readableGeometrySettled, "settled compact-status screenshot geometry");
+  await wait(readableGeometrySettled(2), "settled compact-status screenshot geometry");
   const screenshotTrack = await wait(`(() => {
     const track = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]')?.parentElement;
     if (!track) return null;
@@ -1073,7 +1078,11 @@ async function reloadAndMobileJourney() {
   fixture.sourceTabCount++;
   const removedInspectorId = fixture.inspectorPaneId;
   await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
-  await wait(`document.querySelector(${q(column(fixture.rootRef))}) !== null && ${inspectorIdExpr} === ${q(removedInspectorId)}`, "the same inspector is active before its original-conversation action");
+  // The origin parent is a spine at the first drill. Popping to the root
+  // restores the origin conversation as the readable leaf, whose Open
+  // conversation action resolves the original source pane.
+  await driver.click(rootCrumb);
+  await wait(`document.querySelector(${q(column(fixture.rootRef))}) !== null && ${inspectorIdExpr} === ${q(removedInspectorId)}`, "the root pop keeps the same inspector active before its original-conversation action");
   await clickColumnAction(fixture.rootRef, "Open conversation");
   await wait(`document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`, "original Open closes inspection and focuses its existing source editor");
   const baseline = await wait(`(() => {
@@ -1296,8 +1305,13 @@ async function drill(edge, level) {
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
-  const expected = fixture.refs.slice(Math.max(0, level - 1), level + 1);
-  await wait(`JSON.stringify([...document.querySelectorAll('[data-testid="cascade-column"]')].map(n => n.dataset.scopeRef)) === ${q(JSON.stringify(expected))}`, `exact column pair ${level}`);
+  // The drill whose immediate parent is the live origin conversation
+  // collapses that parent to a spine: the origin pane is already mounted
+  // beside the cascade, so the leaf is the only readable column.
+  const readableFrom = fixture.refs[level - 1] === fixture.rootRef ? level : level - 1;
+  const expected = fixture.refs.slice(readableFrom, level + 1);
+  const expectedSpines = fixture.refs.slice(0, readableFrom);
+  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(expected))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(expectedSpines))}`, `exact column and spine sets ${level}`);
   await wait(`document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`, `real retained transcript ${level}`);
   const id = await wait(inspectorIdExpr, "secondary inspector has a committed pane ID");
   assert.notEqual(id, fixture.sourcePaneId, "inspection never replaces the source panel");
@@ -1477,18 +1491,15 @@ try {
   await driver.click(sourceAgents);
   await read('window.__cascadeTraceSource("after-sidebar-open")');
   await drill(fixture.edges[0], 1);
-  await wait(readableGeometrySettled, "first secondary split has settled readable geometry");
+  await wait(readableGeometrySettled(1), "first secondary split has settled readable geometry");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
   driver.milestone("root-child", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, sourceAnchor: beforeEntryAnchor });
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
-  await wait(`(() => {
+  await wait(`${readableGeometrySettled(2)} && (() => {
     const spines = [...document.querySelectorAll('[data-testid="cascade-spine"]')];
-    const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
-    return spines.length === 5 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75)
-      && columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < 0.75
-      && columns[1].getBoundingClientRect().width >= 439.5;
+    return spines.length === 5 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75);
   })()`, "settled six-edge geometry");
   const boxes = await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
@@ -1545,7 +1556,7 @@ try {
     return settled;
   })()`, "both cascade columns' scroll geometry settled before the independence check");
   await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`);
-  await wait(`${readableGeometrySettled} && (() => {
+  await wait(`${readableGeometrySettled(2)} && (() => {
     const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
     return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
       && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
@@ -1587,7 +1598,7 @@ try {
   assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`), [fixture.rootRef, fixture.branch.childRef], "the sibling replaces the old six-edge suffix");
   assert.equal(await read('document.querySelectorAll("[data-testid=activity-peek]").length'), 0);
   assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
-  await driver.click('nav[aria-label="Agent path"] button:first-child');
+  await driver.click(rootCrumb);
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "pop to root before restoring real branch");
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);

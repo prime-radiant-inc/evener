@@ -33,9 +33,9 @@ resume and compaction. A root session saved without a binding (one created
 before project memory, or whose launch could not resolve its project) binds on
 resume the same way, from its own absolute home: the root it left for a
 worktree, else its working directory, never the directory the resume ran from. The restore
-persists that binding, and a saved binding is never replaced. Delegates take
-their parent's binding; a restored delegate saved without one takes its
-parent's, one saved with a different binding gets none, and an unbound one
+persists that binding, and a root session's saved binding is never replaced.
+A delegate always takes its live parent's binding, on spawn and on every
+restore under that parent, replacing whatever it saved; an unbound delegate
 resumed on its own stays unbound.
 Project-resolution failure leaves personal memory and ordinary work available
 without guessing another project. Unbound library sessions have no memory
@@ -95,7 +95,10 @@ its caller decides what to save. Sessions that can call the save tools are also 
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint or decision (saved to
 project memory), and when the agent learns
-something the hard way that is not written down. Partner-stated
+something the hard way that is not written down. What the agent found by
+reading the repository, and what the session did, belong in its report rather
+than in memory: the next session can read the repository again, and each page
+costs a transcript entry and every later session's context. Partner-stated
 facts are saved before the work they shape, because complying with them does
 not carry them to the next session. A constraint is something about the
 project that stays true on its own; a hold that lasts until the partner lifts
@@ -103,9 +106,12 @@ it is a sign-off for this conversation, and an instruction scoped to this work
 (such as which model to use for some steps of a plan) is not a standing
 preference, so neither is saved. The Finishing guidance and the result
 tool's description repeat the save check at the point the agent decides it is
-done. Pages that contradict what the agent observes are corrected in the same
+done, naming what qualifies: a preference, rule or project fact the partner
+gave, or something learned the hard way that the code, docs and history would
+not show the next session. Pages that contradict what the agent observes are corrected in the same
 turn. Saving sessions are also told the shape of a useful page (one durable
-fact with its reason and how to apply it, with a frontmatter description that
+fact with its reason and when it bears on work, leaving out what the code does
+today, which the code already records, with a frontmatter description that
 says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
 paths, test counts, review verdicts) stay out of
 personal and project memory, as do approvals, sign-offs, authorizations and
