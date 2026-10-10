@@ -213,29 +213,33 @@ function holdNextEntryWrite(cache: SessionEntryCache, transcriptKey: string) {
   };
 }
 
-// Starts the real cache's older-window query immediately and holds its RESULT
-// delivery until released, so a Clear can land while the query is genuinely in
-// flight (unlike holding before the call, which would start the query after).
+// Runs the real cache's older-window query to completion, then holds its
+// RESULT delivery until released: a Clear can land after the query genuinely
+// returned rows but before the repository merges them.
 function holdOlderWindowLookup() {
   const original = SessionEntryCache.prototype.getOlderWindow;
   let releaseGate!: () => void;
   const gate = new Promise<void>((resolve) => {
     releaseGate = resolve;
   });
-  let markCalled!: () => void;
-  const called = new Promise<void>((resolve) => {
-    markCalled = resolve;
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
   });
   const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
     this: SessionEntryCache,
     ...args: Parameters<typeof original>
   ) {
-    const result = original.apply(this, args);
-    markCalled();
-    return gate.then(() => result);
+    const resultPromise = original.apply(this, args);
+    return (async () => {
+      const result = await resultPromise;
+      markReady();
+      await gate;
+      return result;
+    })();
   } as typeof original);
   return {
-    whenCalled: called,
+    whenReady: ready,
     release() {
       releaseGate();
       spy.mockRestore();
@@ -911,9 +915,9 @@ test("an older-page lookup held across a real Clear publishes no stale page", as
   const publications: number[] = [];
   const unsubscribe = repo.subscribe(() => publications.push(orderedPositions(repo.getSnapshot()).length));
   const lookup = repo.loadOlderPage(40, 1);
-  await gate.whenCalled;
-  // The real older-window query is genuinely in flight now; Clear lands while it
-  // is running, with unchanged client and source identity.
+  await gate.whenReady;
+  // The real older-window query has returned its rows; Clear lands before the
+  // repository merges them, with unchanged client and source identity.
   await expect(fixture.cache.clear()).resolves.toEqual({ committed: true, epoch: 1 });
   const publishedBeforeRelease = publications.length;
   const releasedAt = Date.now();
