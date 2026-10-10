@@ -372,6 +372,11 @@ type Server struct {
 	// first (SetProcessingTurn; the turn's own end restates the state), the
 	// input ends on a SESSION_END, or the root is replaced.
 	appHeldSettledEffect func(*Server)
+	// appTurnEndStated records that the published turn's interrupted
+	// SESSION_END already stated the resting state while processing stays set
+	// for the turn to unwind, so the end of processing publishes that state
+	// rather than its idle placeholder.
+	appTurnEndStated bool
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -941,6 +946,7 @@ func (s *Server) endProcessingLocked() {
 	s.processing = false
 	s.appActiveTurnID = ""
 	s.appPendingStableTurnID = ""
+	s.appTurnEndStated = false
 }
 
 // InputCh returns the channel that receives user input messages.

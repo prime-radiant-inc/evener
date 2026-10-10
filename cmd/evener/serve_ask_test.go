@@ -136,8 +136,9 @@ func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval 
 // (scriptedCommunicate("answered")) is a plain reply, so thread/read settles
 // back to "idle". This drives the real serve daemon
 // (installServeScriptedProvider + runServe, the TestServeGoal_TUIPathEndToEnd
-// harness) rather than the Session directly, because the serve-level turn-end
-// SetState wiring (cmd/evener/serve.go) is a seam agenttest cannot reach.
+// harness) rather than the Session directly, because the turn-end status
+// publication (the bridge's SESSION_END and the serve loop's finish) is a seam
+// agenttest cannot reach.
 func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	workDir := t.TempDir()
 	stateDir := t.TempDir()

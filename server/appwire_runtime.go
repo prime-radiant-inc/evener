@@ -579,6 +579,10 @@ func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
+		// A published turn whose end the bridge hasn't reached yet: its
+		// SESSION_END will state the resting state, and until then idle
+		// stands in for it rather than the rest from before the turn.
+		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
@@ -600,13 +604,13 @@ func (s *Server) finishProcessing() {
 			held(s)
 		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The session state still says what the input left running
-			// ("active") until serve samples it after this call: nothing runs
-			// now, so that reads as idle.
-			status := appStatus(s.status.State, false, false)
-			if status == appwire.ThreadStatusActive {
-				status = appwire.ThreadStatusIdle
+			// The stored state is what the session's own events stated: a
+			// pass that ran no turn left it as it was, and a held rest or an
+			// interrupted turn's end restated it.
+			if awaitingTurnEnd {
+				s.status.State = appwire.ThreadStatusIdle
 			}
+			status := appStatus(s.status.State, false, false)
 			pending = append(pending, pendingAppNotification{
 				threadID: threadID,
 				ref:      ref,

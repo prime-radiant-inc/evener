@@ -742,3 +742,69 @@ func TestServerAppWireHeldStatusSettledIsBroadcastOnce(t *testing.T) {
 		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
 	}
 }
+
+// lastStatus is the newest thread/status/changed broadcast for threadID.
+func lastStatus(t *testing.T, srv *Server, threadID string) string {
+	t.Helper()
+	statuses := statusNotifications(t, srv, threadID)
+	if len(statuses) == 0 {
+		t.Fatalf("no status broadcast for %s", threadID)
+	}
+	return statuses[len(statuses)-1].Status.Type
+}
+
+// A turn's end is still on the feed when serve finishes the pass that ran it:
+// idle stands in until it lands, never the rest from before the turn.
+func TestServerAppWireFinishBeforeATurnsEndPublishesIdleNotThePriorRest(t *testing.T) {
+	for _, prior := range []string{appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError} {
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_prior_"+prior)
+		srv.SetState(prior)
+		srv.SetProcessing(true)
+		srv.SetProcessingTurn("t1")
+		srv.SetProcessing(false)
+		if got := lastStatus(t, srv, "th_prior_"+prior); got != appwire.ThreadStatusIdle {
+			t.Fatalf("prior %s: finish broadcast %q, want the idle placeholder", prior, got)
+		}
+		if read := readThreadOverWire(t, srv, "local:th_prior_"+prior); read.Status.Type != appwire.ThreadStatusIdle {
+			t.Fatalf("prior %s: read %q, want idle until the turn's end", prior, read.Status.Type)
+		}
+	}
+}
+
+// A pass that ran no turn leaves the session's state as its events stated it:
+// a refused input over a needs_response rest still reads and broadcasts
+// awaiting.
+func TestServerAppWireFinishOfAPassWithNoTurnPublishesTheStoredRest(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_no_turn")
+	srv.SetState(appwire.ThreadStatusAwaiting)
+	srv.SetProcessing(true)
+	srv.SetProcessing(false)
+	if got := lastStatus(t, srv, "th_no_turn"); got != appwire.ThreadStatusAwaiting {
+		t.Fatalf("finish broadcast %q, want awaiting", got)
+	}
+	if read := readThreadOverWire(t, srv, "local:th_no_turn"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read %q, want awaiting", read.Status.Type)
+	}
+}
+
+// An interrupted turn's end states the resting state while the turn still
+// unwinds; the finish publishes that state, not the placeholder, and a read
+// agrees.
+func TestServerAppWireFinishAfterAnInterruptedEndPublishesItsState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_interrupted")
+	srv.SetProcessing(true)
+	srv.SetProcessingTurn("t1")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_interrupted", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_interrupted", Data: events.SessionEndData{Reason: "interrupted", State: appwire.ThreadStatusActive, Interrupted: true}}, nil)
+	srv.SetProcessing(false)
+	read := readThreadOverWire(t, srv, "local:th_interrupted")
+	if read.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("read %q, want the interrupted end's active (work pending)", read.Status.Type)
+	}
+	if got := lastStatus(t, srv, "th_interrupted"); got != read.Status.Type {
+		t.Fatalf("finish broadcast %q, want what a read says, %q", got, read.Status.Type)
+	}
+}

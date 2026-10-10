@@ -325,6 +325,8 @@ func TestBridge_StatusSettledIgnoresAStateThatIsNotARest(t *testing.T) {
 	}
 }
 
+// An interrupted end leaves processing set, since the cancelled turn is still
+// unwinding, but states the session's resting state.
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)
@@ -346,8 +348,8 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	<-done
 
 	status := srv.GetStatus()
-	if status.State != "active" {
-		t.Errorf("state: got %q, want active", status.State)
+	if status.State != "idle" {
+		t.Errorf("state: got %q, want the end's idle", status.State)
 	}
 	srv.mu.RLock()
 	processing := srv.processing

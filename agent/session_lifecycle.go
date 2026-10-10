@@ -1354,8 +1354,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.mu.Unlock()
 					if emitEnd {
 						s.emit(events.EventSessionEnd, events.SessionEndData{
-							Reason:      "interrupted",
-							State:       string(SessionIdle),
+							Reason: "interrupted",
+							// The boundary above settled the session; WireState says
+							// whether queued work will move it on.
+							State:       s.WireState(),
 							Turns:       turns,
 							Interrupted: true,
 						})
