@@ -651,8 +651,9 @@ type Session struct {
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
 	// restOwedGeneration is the restGeneration of the settle that last found a
-	// needs_response turn with output, whether it scheduled the quiet period
-	// or work in flight held the session idle; 0 before any. A fresh
+	// needs_response turn with output (or a wake that resumed its rest),
+	// whether it scheduled the quiet period or something held the session
+	// idle; 0 before any. A fresh
 	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
 	// by s.mu.
 	restOwedGeneration uint64

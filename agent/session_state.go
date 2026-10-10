@@ -652,9 +652,10 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse || !hadOutput {
 		return
 	}
-	// From here the turn owes its human partner a rest, even when work in
-	// flight holds it idle for now: a later wake that runs no turn settles
-	// again and arms it once nothing moves the session.
+	// From here the turn owes its human partner a rest, even when queued
+	// input, steering, a goal kick or work in flight holds it idle for now: a
+	// later wake that runs no turn settles again and arms it once nothing
+	// moves the session. hadOutput is true from here on.
 	s.mu.Lock()
 	s.restOwedGeneration = generation
 	s.mu.Unlock()
