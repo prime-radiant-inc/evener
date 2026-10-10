@@ -79,7 +79,17 @@ export function useMarkSessionSeenOnOpen(ref: string): void {
             decodeActivityRead(read).find((activity) => activity.ref === ref)?.lastMovedAt,
           ),
         )
-        .catch(() => seenThroughToMark(summary))
+        .catch(() => {
+          // A read that failed because its connection was replaced says
+          // nothing about the session: read again through the new one rather
+          // than fall back to the turn alone.
+          if (!disposed && connectionStore.getState().client !== client) {
+            awaitingRow = true;
+            markOnce();
+            return undefined;
+          }
+          return seenThroughToMark(summary);
+        })
         .then(send);
     };
     const onVisibilityChange = () => {

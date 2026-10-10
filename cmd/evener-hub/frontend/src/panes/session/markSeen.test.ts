@@ -315,3 +315,25 @@ test("a connection replaced while the read is out marks through the new one", as
   expect(marks(first)).toEqual([]);
   expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
 });
+
+test("a read that fails because its connection was replaced is read again through the new one", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const first = connectFake();
+  let fail: (error: Error) => void = () => {};
+  first.on(ACTIVITY_READ, () => new Promise<never>((_resolve, reject) => (fail = reject)));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  const second = new FakeClient("ready");
+  second.on(SEEN_SET, () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+  second.on(ACTIVITY_READ, () => activityFor(moved));
+  act(() => connectionStore.getState().connect(second));
+  fail(new Error("connection closed"));
+  await settle();
+  expect(second.calls.filter((call) => call.method === ACTIVITY_READ)).toHaveLength(1);
+  expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
