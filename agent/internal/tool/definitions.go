@@ -724,6 +724,23 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	return def
 }
 
+// WithCommunicateCallerRoute returns a copy of a communicate definition for a
+// delegate that can reach its caller with delegate_send. An end_turn=false
+// message only joins the delegate's transcript, so a request the caller must
+// act on while the delegate keeps working belongs on delegate_send instead.
+func WithCommunicateCallerRoute(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	endTurn, _ := props["end_turn"].(map[string]any)
+	if endTurn == nil {
+		return def
+	}
+	description, _ := endTurn["description"].(string)
+	endTurn["description"] = description + " Your caller does not see an end_turn=false message until it reads your transcript; send a request your caller must answer or act on while you keep working with `delegate_send` to `caller`."
+	def.Parameters = params
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{
