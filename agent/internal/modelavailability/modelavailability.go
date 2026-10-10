@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -335,7 +336,7 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 			return Page{}, e
 		}
 		if c.Count != maxCount || c.Bytes != maxBytes {
-			return Page{}, errors.New("stale cursor")
+			return Page{}, fmt.Errorf("cursor was issued for max_count=%d and max_bytes=%d; repeat those values with this cursor, or omit the cursor to start a new listing", c.Count, c.Bytes)
 		}
 		off = c.Offset
 	}

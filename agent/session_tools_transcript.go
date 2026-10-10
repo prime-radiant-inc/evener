@@ -1191,11 +1191,16 @@ func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg 
 	var exact []byte
 	var expansionFirst int
 	if expandTurn != nil {
-		first, _, ok := resolvePinnedSpan(data.Entries, *expandTurn)
+		first, last, ok := resolvePinnedSpan(data.Entries, *expandTurn)
 		if !ok {
 			return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", *expandTurn)
 		}
 		expansionFirst = first
+		// Without a range, an expansion shows just the expanded turn's span,
+		// not the default window around it.
+		if effectiveRange == "" {
+			effectiveRange = fmt.Sprintf("%d-%d", first, last)
+		}
 	}
 
 	renderOpt := renderOpts{meta: meta, fullResultFor: expandTurn}

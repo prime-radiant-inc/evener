@@ -288,11 +288,12 @@ func TestCursorRejectsChangedPageBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Page(page.Next, 2, 1024); err == nil {
-		t.Fatal("cursor accepted a changed count bound")
+	const want = "cursor was issued for max_count=1 and max_bytes=1024; repeat those values with this cursor, or omit the cursor to start a new listing"
+	if _, err := s.Page(page.Next, 2, 1024); err == nil || err.Error() != want {
+		t.Fatalf("changed count bound error = %v, want %q", err, want)
 	}
-	if _, err := s.Page(page.Next, 1, 512); err == nil {
-		t.Fatal("cursor accepted a changed byte bound")
+	if _, err := s.Page(page.Next, 1, 512); err == nil || err.Error() != want {
+		t.Fatalf("changed byte bound error = %v, want %q", err, want)
 	}
 }
 
