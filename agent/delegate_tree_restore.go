@@ -717,11 +717,11 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 	}
 	// A stop discards only attention the transcript still owes. A noted wake
 	// can outlive its item's resolution: a delegate generation consumes what
-	// its settled requests presented, and its wake stays until a clear
-	// reconciles it. Discarding that item again would be a conflicting
-	// resolution, so the stop re-resolves it as recorded instead: that appends
-	// nothing and renews the durability barrier for a marker whose fsync may
-	// have failed, before the wake is forgotten.
+	// its settled requests presented, and its wake stays (see
+	// clearResolvedDelegateAttention). Discarding that item again would be a
+	// conflicting resolution, so the stop re-resolves it as recorded instead:
+	// that appends nothing and renews the durability barrier for a marker whose
+	// fsync may have failed, before the wake is forgotten.
 	disposition, generation := plan.disposition, uint64(0)
 	if plan.disposition == delegateAttentionDiscarded {
 		recorded, recordedGeneration, resolved, err := c.recordedDelegateAttentionResolution(plan.transcriptRef, plan.attentionID)

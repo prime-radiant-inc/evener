@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,11 +296,9 @@ func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) 
 
 	// Fail the first clear's fold read, whichever path makes it.
 	compute := readExistingDelegateAttentionFoldCompute
-	var failOnce sync.Once
+	var failedOnce atomic.Bool
 	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
-		failed := false
-		failOnce.Do(func() { failed = true })
-		if failed {
+		if failedOnce.CompareAndSwap(false, true) {
 			return delegateAttentionFold{}, 0, errors.New("transient fold read failure")
 		}
 		return compute(path, sessionID)
