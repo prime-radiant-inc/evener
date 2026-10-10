@@ -194,3 +194,50 @@ func TestConfinedFileDeleteCapturedRoot(t *testing.T) {
 		t.Fatalf("replacement changed: %q %v", got, err)
 	}
 }
+
+// RemoveConfinedEmptyDirectory removes only an empty directory: a missing
+// path is a no-op, and a nonempty directory, a file, a symlink to a
+// directory and anything outside the root are left in place with an error.
+func TestConfinedEmptyDirectoryDelete(t *testing.T) {
+	t.Parallel()
+	env, err := NewConfinedFileEnvironment(t.TempDir(), "memory/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	root, outside := env.WorkingDirectory(), t.TempDir()
+	for _, name := range []string{"empty", "full", "nested/empty"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"full/data", "file"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("opaque-kept-4176"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"empty", "nested/empty", "missing", "missing-parent/dir"} {
+		if err := env.RemoveConfinedEmptyDirectory(path); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived: %v", path, err)
+		}
+	}
+	for _, path := range []string{"full", "file", "link", "nested/..", outside} {
+		if err := env.RemoveConfinedEmptyDirectory(path); err == nil {
+			t.Fatalf("%s removed without error", path)
+		}
+	}
+	for _, path := range []string{"full/data", "file", "link", "nested"} {
+		if _, err := os.Lstat(filepath.Join(root, path)); err != nil {
+			t.Fatalf("%s lost: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside lost: %v", err)
+	}
+}

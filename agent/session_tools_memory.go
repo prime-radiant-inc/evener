@@ -274,6 +274,24 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 		if err := env.RemoveConfinedFile(path); err != nil {
 			return nil, err
 		}
+		pruneEmptyMemoryDirectories(env, path)
 		return warn + "Removed or already absent: " + path, nil
 	})
+}
+
+// pruneEmptyMemoryDirectories removes the directories above file, an absolute
+// path in env's scope, that are left empty, deepest first, since no memory
+// tool can remove a directory. It stops at the first one that can't be
+// removed, such as one still holding a file, and never removes the scope root
+// (the prefix check only guards the loop's end). A failure leaves
+// only an empty directory, which holds no page, so it is not reported. A
+// write creating a page in a directory removed here in the same instant fails
+// and can be retried.
+func pruneEmptyMemoryDirectories(env *execenv.LocalExecutionEnvironment, file string) {
+	root := env.WorkingDirectory()
+	for dir := filepath.Dir(file); dir != root && strings.HasPrefix(dir, root); dir = filepath.Dir(dir) {
+		if env.RemoveConfinedEmptyDirectory(dir) != nil {
+			return
+		}
+	}
 }

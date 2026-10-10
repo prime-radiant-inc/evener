@@ -307,7 +307,9 @@ control character other than tab, such as a newline, are refused too: "memory
 path holds a control character, such as a newline; choose a name without one".
 No index line can link to such a path. `memory_delete` still takes one, so a
 file named that way outside the tools can be removed. Deleting a page needs no
-index repair; its line is gone from the next rendering.
+index repair; its line is gone from the next rendering. No memory tool removes a
+directory, so `memory_delete` also removes the directories a deletion leaves
+empty, up to the scope root.
 
 **Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
 counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so

@@ -513,6 +513,25 @@ func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 	return fmt.Errorf("remove %s: %w", abs, uerr)
 }
 
+// removeEmptyDirectory removes abs, an empty directory, through its
+// authorized parent fd. rmdir itself refuses a nonempty directory and a
+// non-directory leaf, a symlink included, so nothing else is ever removed.
+func (s *sandboxFS) removeEmptyDirectory(tool, abs string) error {
+	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
+	if err != nil {
+		var denied *sandbox.DeniedError
+		if !errors.As(err, &denied) && isAbsentRemove(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = unix.Close(parentFd) }()
+	if err := secureUnlinkat(parentFd, leaf, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove directory %s: %w", abs, err)
+	}
+	return nil
+}
+
 // rename moves oldAbs to newAbs. Both endpoints must resolve beneath a writable
 // root; the destination's parents are created beneath its root fd. The rename is
 // a single renameat between the two checked directory fds.
