@@ -292,9 +292,13 @@ session/subtree scope. Delegate field changes are instead applied from the
 pushed `evener/delegate/updated` row when the owning source advertises the
 bounded report preview and is live (`SessionActivityContext.reportPreview` and
 `availability`): the store merges the frame into loaded rows by the delegate's
-logical owner, and reads the collection only for a delegate it has not loaded,
-on observe/paging/resync/reconnect, and when an epoch change clears its push
-state. A source that does not advertise the capability, or a retained context
+logical owner, and reads the collection only for a delegate it has not loaded, a
+delegate id that names more than one loaded row (once per id, then once per
+strictly newer revision, because such a frame can never be attributed to one of
+them), on observe/paging/resync/reconnect, and when an epoch change clears its
+push state. A frame for a delegate the loaded rows do not hold waits for the next
+reconciled read to place it rather than being dropped. A source that does not
+advertise the capability, or a retained context
 whose released runtime receives invalidations but no frames, keeps the
 invalidation read. Delegate membership is append-only within a source epoch;
 jobs and watches are unchanged. Legacy job lifecycle and tree-update

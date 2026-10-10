@@ -163,10 +163,18 @@ under-invalidating a count. Revisit only against a measured win.
    every later frame for it would re-read. A genuinely new delegate sorts into
    the first page the read returns and is adopted. Clear the seen-unknown set on
    session replacement and dispose so it cannot grow for the store's lifetime.
-   Keep the latest frame per unknown delegate id (bounded the same way) and apply
-   it once a read admits the row, so a settle that arrives while a later-page
-   read is in flight is not dropped: the admitted row takes the buffered frame by
-   the same join, and an older page cannot leave a running row behind.
+   Keep the latest frame per such a delegate id (bounded the same way) and place
+   it when a **reconciled** read lands, not when a page reports itself complete:
+   a bounded root refresh stops at the displayed boundary with a page that is not
+   itself complete, so the joined row set is what proves an id admitted. An id
+   the read serves once takes the buffered frame by the same join and an older
+   page cannot leave a running row behind; an id the read serves twice can never
+   be attributed, so its frame is dropped rather than written into the wrong
+   child, and an id the read does not serve keeps waiting.
+   A frame whose id names **more than one loaded row** patches none on that same
+   ground: read for the id, then once more for each strictly newer revision,
+   because the read is the only way rows a frame cannot address can change and
+   the id cannot stay silent for the store's whole life.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
    as today, but do not refresh `delegates`. `evener/thread/resync` still
    refreshes every observed resource.
@@ -182,6 +190,11 @@ under-invalidating a count. Revisit only against a measured win.
    unset — otherwise the first read of every store mismatches
    `undefined !== epoch` and loops — and record the new epoch before restarting.
    The invalidation carries no epoch, so a response is the only place to see it.
+   A sibling response can announce the replacement while the forced delegates
+   read is still in flight, and a frame arriving in that window already carries
+   the replacement's state: merge and record frames under the announced epoch,
+   because recording them under the epoch being replaced would let the arriving
+   read judge the record retired and overwrite the frame with its older row.
 7. When an accepted response changes the gate from eligible to ineligible — a
    `live` context that becomes `retained`, or a lost capability — reconcile the
    observed delegates with one read. Eligibility is cached: an ancestor can
@@ -307,6 +320,12 @@ on `availability`. A negative-path test must pin the fallback.
   retained summary reply, reconciles the observed delegates (no stale rows).
 - **Epoch retires the buffer.** An old-epoch buffered unknown-id frame cannot win
   over a replacement-epoch row admitted at a lower revision.
+- **Announced epoch fences a frame.** A frame that arrives after a sibling
+  announces the replacement, while the forced delegates read is in flight, is not
+  overwritten by that read's older row.
+- **Ambiguous id.** A frame whose id names two loaded rows patches neither, is
+  dropped by the next reconciled read, and asks for a read again only on a
+  strictly newer revision.
 - **Native shrink.** The list-shrink case recovers through resync, reconnect, or
   a re-observe rather than a frame; the native fixture's exhaustiveness guard
   covers the new row field and typechecks.
@@ -319,7 +338,8 @@ on `availability`. A negative-path test must pin the fallback.
 - **Retained delivery.** A real subtree stop with an observed *retained* ancestor
   shows its descendants reaching stopping through the read path.
 - **Later-page race.** A settled frame for an unloaded delegate that arrives
-  during a later-page read is applied once the row is admitted; the older page
+  during a later-page read is applied once the reconciled row set admits the row,
+  including a bounded refresh whose page is not itself complete; the older page
   does not leave a running row.
 - **Counts.** A count-moving update still refreshes the summary; the Agents
   count never derives from loaded rows.
@@ -345,14 +365,15 @@ on `availability`. A negative-path test must pin the fallback.
 | Read clobbers a newer frame | each read row joins the order; keep the newer of read and applied. |
 | Stale row from an out-of-order frame | `mergeAppwireDelegateInfo`'s join: greater revision for fields, independent maximum for activity time. |
 | Epoch replacement outlives the old map | clear the applied map and seen-unknown set on an epoch change. |
-| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID; step 1's scope check gates it. |
+| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID, and a reconciled read places or drops the buffered frame; an ambiguous id reads once per ID and once per strictly newer revision. Step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
 | Old source with no preview | producer-authored context capability; the read stays unless the source advertises. |
 | Retained ancestor: invalidations but no frames | gate the no-read on a live context, or extend frame routing to retained targets. |
 | Live→retained release hides an update | catch-up read when an accepted context turns ineligible. |
 | Old-epoch buffered frame wins | clear the unknown-id buffer with the map on replacement. |
-| Later-page frame dropped after its one read | buffer the latest unknown-id frame until a read admits the row. |
+| Later-page frame dropped after its one read | buffer the latest frame per id and place it from the reconciled row set, never from a single page's `complete` flag. |
+| Frame overwritten by the read that replaces its epoch | merge and record frames under the announced epoch, not the loaded one. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 
 ## Open questions for Jesse

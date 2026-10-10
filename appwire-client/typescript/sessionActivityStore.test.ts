@@ -3134,7 +3134,7 @@ test("a parseable activity displaces an unparseable one at a higher revision", a
   expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-02-02T00:00:00Z");
 });
 
-test("a read that admits two rows under one id neither applies nor re-reads a buffered frame", async () => {
+test("a read that admits two rows under one id drops a buffered frame and re-reads on a newer revision", async () => {
   const client = pushClient();
   let admit = false;
   client.on("evener/thread/delegates/list", ({ scope }) => ({
@@ -3162,14 +3162,25 @@ test("a read that admits two rows under one id neither applies nor re-reads a bu
       .getSnapshot()
       .delegates.rows.filter((row) => row.delegateId === "delegate-2")
       .map((row) => row.status);
+  // The read served the id twice, so the frame cannot be attributed: it is
+  // dropped rather than written into one of the twins.
   expect(twins()).toEqual(["running", "running"]);
-  // The id is still ambiguous, so the at-most-once bound holds for later frames.
   const settled = callsTo(client, "evener/thread/delegates/list");
+  // The id already asked for a read at this revision and this frame carries
+  // nothing newer, so the repeat asks for no further read.
   client.emitNotification(
-    pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 10, status: "failed" })),
+    pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 9, status: "failed" })),
   );
   await activityState(store, () => !store.getSnapshot().delegates.loading);
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(settled);
+  // A strictly newer revision asks for one more read, the only way the rows
+  // under an id a frame cannot address can change.
+  client.emitNotification(
+    pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 10, status: "failed" })),
+  );
+  await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === settled + 1);
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(settled + 1);
   expect(twins()).toEqual(["running", "running"]);
 });
 
@@ -3388,6 +3399,160 @@ test("a buffered unknown-id frame is applied once a read admits the row", async 
   const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
   expect(row?.status).toBe("completed");
   expect(row?.reportPreview).toBe("settled");
+});
+
+test("a frame buffered before a bounded root refresh is applied once the walk reconciles", async () => {
+  const client = pushClient();
+  let served = false;
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    // The refresh stops at the displayed boundary, so its page is not itself
+    // complete: the joined row set is what proves the frame's id is admitted.
+    page: { complete: false, issues: [] },
+    delegates: served
+      ? [delegateRow({ delegateId: "delegate-2", status: "running" }), delegateRow({ status: "running" })]
+      : [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  served = true;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  await activityState(store, () => store.getSnapshot().delegates.rows.some((row) => row.delegateId === "delegate-2"));
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
+test("a buffered frame waits while the walk can still serve its id twice", async () => {
+  const client = pushClient();
+  let served = false;
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: false, issues: [], nextCursor: cursor ? undefined : "next" },
+    delegates: cursor
+      ? [
+          delegateRow({ delegateId: "delegate-2", childRef: "local:second", status: "running" }),
+          delegateRow({ status: "running" }),
+        ]
+      : served
+        ? [delegateRow({ delegateId: "delegate-2", childRef: "local:first", status: "running" })]
+        : [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  served = true;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  const twins = () =>
+    store
+      .getSnapshot()
+      .delegates.rows.filter((row) => row.delegateId === "delegate-2")
+      .map((row) => row.status);
+  await activityState(store, () => twins().length === 1);
+  // The first page of the walk does not reach the displayed boundary, so a later
+  // page can still serve the id again: the frame waits rather than being written
+  // into the one row this page happens to hold.
+  expect(twins()).toEqual(["running"]);
+  await vi.advanceTimersByTimeAsync(100);
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  // The walk ended and served the id twice, so the frame cannot be attributed to
+  // either row and is dropped.
+  expect(twins()).toEqual(["running", "running"]);
+});
+
+test("a frame that arrives while a replacement is announced is not overwritten by its read", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({ ...summaryFixture(scope), context: pushContext() }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  // The summary announces the replacement and its forced delegates read is left
+  // in flight; a frame for the loaded row then arrives in that window.
+  const reconciled = deferred<SessionDelegatesResponse>();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ epoch: "epoch-2" }),
+  }));
+  client.on("evener/thread/delegates/list", () => reconciled.promise);
+  activityChanged(client, ["summary"]);
+  await activityState(store, () => store.getSnapshot().context?.epoch === "epoch-2");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-1", projectionRevision: 9, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  reconciled.resolve({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
+test("a frame admitted by a page the collection continues past is not attributed yet", async () => {
+  const client = pushClient();
+  let first = true;
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: first
+      ? { complete: true, issues: [] }
+      : { complete: false, issues: [], nextCursor: cursor ? undefined : "next" },
+    delegates: first
+      ? []
+      : cursor
+        ? [delegateRow({ delegateId: "delegate-2", childRef: "local:second", status: "running" })]
+        : [delegateRow({ delegateId: "delegate-2", childRef: "local:first", status: "running" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.complete && store.getSnapshot().delegates.rows.length === 0,
+  );
+  first = false;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  const twins = () =>
+    store
+      .getSnapshot()
+      .delegates.rows.filter((row) => row.delegateId === "delegate-2")
+      .map((row) => row.status);
+  await activityState(store, () => twins().length === 1);
+  // The collection continues past this page, so a second row under the id is
+  // still possible: the frame waits rather than being written into this one.
+  expect(twins()).toEqual(["running"]);
+  await store.loadMore("delegates");
+  await activityState(store, () => twins().length === 2);
+  expect(twins()).toEqual(["running", "running"]);
 });
 
 test("a live context that becomes retained reconciles the observed delegates", async () => {

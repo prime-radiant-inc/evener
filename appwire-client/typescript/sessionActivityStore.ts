@@ -168,6 +168,12 @@ export class SessionActivityStore {
   /** Latest pushed frame per unknown delegate id, applied once a read admits
    * the row so a settle during a later-page read is not dropped. */
   private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  /** The revision each ambiguous delegate id has already triggered a read for.
+   * An id that names more than one loaded row cannot take a frame, so a read is
+   * the only way its rows can change; a strictly newer frame asks for one more
+   * rather than staying silent for the id's whole life. Cleared with the
+   * applied map. */
+  private readonly ambiguousDelegateRevisions = new Map<string, number>();
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
   /** The replacement epoch whose delegate state has already been retired: a
@@ -544,12 +550,11 @@ export class SessionActivityStore {
           }
           if (resource === "delegates") {
             // A read joins each row the same way a frame does, so it cannot
-            // clobber a newer frame nor skip one applied in the gap, and it
-            // admits any buffered frame for a row it serves.
+            // clobber a newer frame nor skip one applied in the gap; a buffered
+            // frame is placed by the settlement once the read is settled.
             rows = this.joinDelegateRows(
               rows as readonly SessionDelegate[],
               current.rows as readonly SessionDelegate[],
-              page.page.complete,
             );
           }
           // A clean continuation cannot acknowledge an unresolved root scan.
@@ -573,6 +578,13 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
+          // A reconciled read whose row set is final is the one place a buffered
+          // frame can be placed: a bounded refresh stops at the displayed
+          // boundary with a page that is not itself complete, while a fresh root
+          // read that will be paged further is not final yet. Then an id the read
+          // serves once takes its frame and an id it serves twice never can.
+          if (resource === "delegates")
+            this.settleBufferedFrames(reconciled && (reachedBoundary || page.page.complete));
           if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           if (dropped()) continue;
@@ -707,6 +719,7 @@ export class SessionActivityStore {
     this.appliedDelegates.clear();
     this.seenUnknownDelegates.clear();
     this.bufferedUnknownDelegates.clear();
+    this.ambiguousDelegateRevisions.clear();
   }
   private retireDelegates(): void {
     this.clearDelegates();
@@ -725,7 +738,7 @@ export class SessionActivityStore {
   /** Record the merge order a loaded delegate row has reached. */
   private recordAppliedDelegate(row: SessionDelegate): void {
     this.appliedDelegates.set(rowIdentity("delegates", row), {
-      epoch: this.reads.delegates.epoch,
+      epoch: this.delegateEpoch(),
       revision: revisionOf(row.projectionRevision),
     });
   }
@@ -734,7 +747,16 @@ export class SessionActivityStore {
    * old-epoch record must not judge a new-epoch row or frame. */
   private appliedRevision(identity: string): number | undefined {
     const applied = this.appliedDelegates.get(identity);
-    return applied && applied.epoch === this.reads.delegates.epoch ? applied.revision : undefined;
+    return applied && applied.epoch === this.delegateEpoch() ? applied.revision : undefined;
+  }
+  /** The epoch the delegate merge ordering belongs to. A sibling response can
+   * announce a replacement while the forced delegates read is still in flight;
+   * a frame that arrives in that window already carries the replacement's
+   * state, so recording it under the epoch being replaced would let the
+   * arriving read judge the record retired and overwrite the frame with its
+   * own, older row. */
+  private delegateEpoch(): string | undefined {
+    return this.retirementEpoch ?? this.reads.delegates.epoch;
   }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
@@ -783,14 +805,13 @@ export class SessionActivityStore {
     this.recordAppliedDelegate(merged);
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
-  private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
-    const read = this.reads.delegates;
-    if (read.observers === 0 && !read.oneShot) return;
-    // Frames can arrive out of order, so a later arrival must not replace a
-    // newer settlement: keep the projector's join, exactly as a loaded row does.
+  /** Hold the latest frame for an id no single loaded row can take, until a
+   * settled read can place it. Frames can arrive out of order, so a later
+   * arrival must not replace a newer settlement: keep the projector's join,
+   * exactly as a loaded row does. Re-inserting moves the id to the end, so
+   * eviction drops the coldest id rather than one a frame just refreshed. */
+  private bufferDelegateFrame(frame: EvenerDelegateInfo): void {
     const buffered = this.bufferedUnknownDelegates.get(frame.delegateId);
-    // Re-inserting moves the id to the end, so eviction drops the coldest id
-    // rather than one a frame just refreshed.
     if (buffered) this.bufferedUnknownDelegates.delete(frame.delegateId);
     this.bufferedUnknownDelegates.set(
       frame.delegateId,
@@ -806,18 +827,31 @@ export class SessionActivityStore {
         this.seenUnknownDelegates.delete(oldest.value);
       }
     }
+  }
+  /** The id names no loaded row, so the frame patches none and the row cannot
+   * be invented: read once for the id and let the read admit the row, which the
+   * settlement then patches. */
+  private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
+    const read = this.reads.delegates;
+    if (read.observers === 0 && !read.oneShot) return;
+    this.bufferDelegateFrame(frame);
     if (this.seenUnknownDelegates.has(frame.delegateId)) return;
     this.seenUnknownDelegates.add(frame.delegateId);
     void this.request("delegates", "root");
   }
   /** A frame whose delegate id names more than one loaded row cannot be
    * attributed to one of them, so it patches none: read once for the id and let
-   * the read settle every row it serves. */
+   * the read settle every row it serves. The read cannot place the frame while
+   * the id stays ambiguous, so a strictly newer frame asks for one more read
+   * rather than staying silent for the rest of the id's life. */
   private noteAmbiguousDelegate(frame: EvenerDelegateInfo): void {
     const read = this.reads.delegates;
     if (read.observers === 0 && !read.oneShot) return;
-    if (this.seenUnknownDelegates.has(frame.delegateId)) return;
-    this.seenUnknownDelegates.add(frame.delegateId);
+    this.bufferDelegateFrame(frame);
+    const revision = revisionOf(frame.projectionRevision);
+    const asked = this.ambiguousDelegateRevisions.get(frame.delegateId);
+    if (asked !== undefined && asked >= revision) return;
+    this.ambiguousDelegateRevisions.set(frame.delegateId, revision);
     void this.request("delegates", "root");
   }
   /** The projector's join: the strictly greater revision supplies the snapshot
@@ -840,22 +874,10 @@ export class SessionActivityStore {
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
     previous: readonly SessionDelegate[],
-    complete: boolean,
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
-    // A page can serve one delegate id twice, and nothing downstream can tell
-    // which of those rows an id-only frame belongs to, so a buffered frame is
-    // settled by the read unless the id came back as a single row.
-    const served = new Map<string, number>();
-    for (const row of incoming) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
-    // The loaded rows count too: a later page of the same read can already have
-    // served a second row under the id.
-    for (const row of previous) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
     return incoming.map((row) => {
       const identity = rowIdentity("delegates", row);
-      // Only a read that carries the whole collection sees every row under the
-      // id, so only then is a buffered frame's single row really single.
-      const soleRow = complete && served.get(row.delegateId) === 1;
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
       let merged: SessionDelegate;
@@ -871,21 +893,48 @@ export class SessionActivityStore {
         const candidate = joinDelegateState(row, existing ?? row, revisionOf(row.projectionRevision) >= applied);
         merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
       }
-      // Record the served row's order before folding a buffered frame in, so the
-      // frame is joined against the row it lands in rather than the ordering
-      // that row had before this read answered.
-      this.recordAppliedDelegate(merged);
-      const buffered = soleRow ? this.bufferedUnknownDelegates.get(row.delegateId) : undefined;
-      if (buffered) {
-        this.bufferedUnknownDelegates.delete(row.delegateId);
-        merged = this.mergeDelegateFrame(merged, buffered);
-      }
-      // An ambiguous id keeps its seen entry, or every later frame would start
-      // another root read instead of staying bounded to one per id.
-      if (soleRow) this.seenUnknownDelegates.delete(row.delegateId);
       this.recordAppliedDelegate(merged);
       return merged;
     });
+  }
+  /** Place the frames buffered for ids no single loaded row could take. A
+   * reconciled read has its row set complete through the displayed boundary,
+   * however many pages it walked, so an id it serves once takes its frame, and
+   * an id it serves twice can never be attributed: the frame is dropped rather
+   * than written into the wrong child. An id the read does not serve keeps
+   * waiting. */
+  private settleBufferedFrames(settled: boolean): void {
+    if (!settled || this.bufferedUnknownDelegates.size === 0) return;
+    const rows = this.state.delegates.rows as readonly SessionDelegate[];
+    const loaded = new Map<string, number>();
+    for (const row of rows) loaded.set(row.delegateId, (loaded.get(row.delegateId) ?? 0) + 1);
+    let settledRows: SessionDelegate[] | null = null;
+    for (const [delegateId, frame] of this.bufferedUnknownDelegates) {
+      const count = loaded.get(delegateId) ?? 0;
+      if (count === 0) continue;
+      this.bufferedUnknownDelegates.delete(delegateId);
+      if (count > 1) {
+        // The read served the id twice, so it can never be attributed: record
+        // the revision the id has now been read for, so a repeat of that frame
+        // asks for no read and only a strictly newer one asks again.
+        const revision = revisionOf(frame.projectionRevision);
+        const asked = this.ambiguousDelegateRevisions.get(delegateId);
+        if (asked === undefined || asked < revision) this.ambiguousDelegateRevisions.set(delegateId, revision);
+        continue;
+      }
+      const index = rows.findIndex((row) => row.delegateId === delegateId);
+      const current = rows[index];
+      if (!current) continue;
+      this.seenUnknownDelegates.delete(delegateId);
+      this.ambiguousDelegateRevisions.delete(delegateId);
+      const merged = this.mergeDelegateFrame(current, frame);
+      if (merged === current) continue;
+      if (!settledRows) settledRows = rows.slice();
+      settledRows[index] = merged;
+      this.recordAppliedDelegate(merged);
+    }
+    if (!settledRows) return;
+    this.publish({ delegates: { ...this.state.delegates, rows: settledRows } });
   }
   private async fetch(
     resource: SessionActivityResource,
