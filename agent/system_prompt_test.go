@@ -48,6 +48,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
 			checkPromptInput(t, "HasEndReason", d.HasEndReason, true)
+			checkPromptInput(t, "CanSendToCaller", d.CanSendToCaller, false)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, false)
@@ -112,6 +113,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
+			checkPromptInput(t, "CanSendToCaller", d.CanSendToCaller, true)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
@@ -125,6 +127,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the bundled subagent body", d.Role == bundledAgentBody(t, "subagent"), true)
+			checkPromptInput(t, "CanSendToCaller", d.CanSendToCaller, true)
 		}},
 		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")

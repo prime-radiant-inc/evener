@@ -97,6 +97,10 @@ type promptData struct {
 	// session's communicate takes end_reason, i.e. a root someone can answer.
 	HasEndReason bool
 
+	// CanSendToCaller gates the caller-route guidance: true exactly when this
+	// session is a delegate that can steer its caller with delegate_send.
+	CanSendToCaller bool
+
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session
 	// has a grantable allowance (> 0) and the delegation tools are actually
 	// callable. Drives the subagent template's conditional delegation/background-

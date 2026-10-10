@@ -185,6 +185,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// end_reason shares that gate: the registered communicate schema takes
 	// it by this same predicate (toolDeps.offersEndReason).
 	data.HasEndReason = s.hasHumanPartnerToAsk()
+	// The caller-route guidance shares the gate the communicate schema uses
+	// (rebuildToolDefsCache), so the prompt and the schema cannot disagree.
+	data.CanSendToCaller = s.canSendToCaller()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()

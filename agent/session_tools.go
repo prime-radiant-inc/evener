@@ -1520,7 +1520,7 @@ func (s *Session) rebuildToolDefsCache() {
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
 			}
-			if s.isSubagentSession() && registered["delegate_send"] {
+			if s.canSendToCaller() {
 				defs[i] = tool.WithCommunicateCallerRoute(defs[i])
 			}
 			if s.memorySaveInstructionsEnabled() {

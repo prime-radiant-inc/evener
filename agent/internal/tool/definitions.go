@@ -271,7 +271,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	props := def.Parameters["properties"].(map[string]any)
 	if sandboxSchema.ModelDescription != "" {
-		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
+		appendSchemaDescription(props["model"].(map[string]any), sandboxSchema.ModelDescription)
 	}
 	if !sandboxSchema.Available {
 		delete(props, "sandbox")
@@ -288,7 +288,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if sandboxSchema.SandboxDescription != "" {
 		if sandbox, ok := props["sandbox"].(map[string]any); ok {
-			sandbox["description"] = strings.TrimSpace(sandbox["description"].(string) + " " + sandboxSchema.SandboxDescription)
+			appendSchemaDescription(sandbox, sandboxSchema.SandboxDescription)
 		}
 	}
 	return def
@@ -735,10 +735,15 @@ func WithCommunicateCallerRoute(def llm.ToolDefinition) llm.ToolDefinition {
 	if endTurn == nil {
 		return def
 	}
-	description, _ := endTurn["description"].(string)
-	endTurn["description"] = description + " Your caller does not see an end_turn=false message until it reads your transcript; send a request your caller must answer or act on while you keep working with `delegate_send` to `caller`."
+	appendSchemaDescription(endTurn, "Your caller does not see an end_turn=false message until it reads your transcript; send a request your caller must answer or act on while you keep working with `delegate_send` to `caller`.")
 	def.Parameters = params
 	return def
+}
+
+// appendSchemaDescription appends text to one schema property's description.
+func appendSchemaDescription(property map[string]any, text string) {
+	description, _ := property["description"].(string)
+	property["description"] = strings.TrimSpace(description + " " + text)
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {

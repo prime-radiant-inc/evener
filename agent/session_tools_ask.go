@@ -53,6 +53,13 @@ func (s *Session) isSubagentSession() bool {
 	return s.cfg.spawn.parentSessionID != "" || s.restoredMetaIsSubagent
 }
 
+// canSendToCaller reports whether this session is a delegate that can steer
+// its caller with delegate_send. It gates the caller-route guidance in both the
+// system prompt and communicate's end_turn description.
+func (s *Session) canSendToCaller() bool {
+	return s.isSubagentSession() && s.reg.Get("delegate_send") != nil
+}
+
 // hasHumanPartnerToAsk reports whether someone can answer this session: an
 // interactive root. It gates ask_user and communicate's end_reason alike.
 func (s *Session) hasHumanPartnerToAsk() bool {
