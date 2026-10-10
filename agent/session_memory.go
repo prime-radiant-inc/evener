@@ -23,6 +23,13 @@ import (
 
 var nativeMemoryToolNames = []string{"memory_read", "memory_write", "memory_edit", "memory_search", "memory_delete"}
 
+// memorySaveToolNames are the native memory tools that change pages; a
+// delegate gets only memoryReadToolNames.
+var (
+	memorySaveToolNames = []string{"memory_write", "memory_edit", "memory_delete"}
+	memoryReadToolNames = []string{"memory_read", "memory_search"}
+)
+
 // memoryScopes lists every memory scope in projection order.
 var memoryScopes = []string{"personal", "project"}
 
@@ -56,7 +63,15 @@ func (s *Session) memoryContextEnabled() bool {
 // correct memory: a session that can read but not write memory still gets its
 // indexes and read guidance, never instructions it cannot follow.
 func (s *Session) memorySaveInstructionsEnabled() bool {
-	return s.memoryContextEnabled() && !slices.ContainsFunc(memorySaveToolNames, func(name string) bool { return !s.canInstructTool(name) })
+	if !s.memoryContextEnabled() {
+		return false
+	}
+	for _, name := range memorySaveToolNames {
+		if !s.canInstructTool(name) {
+			return false
+		}
+	}
+	return true
 }
 
 // memoryIndexFile is the scope's generated index, rendered from page
@@ -150,25 +165,22 @@ func (s *Session) unavailableMemoryToolNames() []string {
 	return denied
 }
 
-// memorySaveToolNames are the tools that change memory pages.
-var memorySaveToolNames = []string{"memory_write", "memory_edit", "memory_delete"}
-
 // Profiles and extensions cannot advertise placeholders for disabled or
 // unbound native memory. A delegate never saves memory, whatever its role
 // grants: it reports what it learned to the session that started it, which
 // decides what to keep, so a delegate keeps only read and search. Run after
 // registration, before caching definitions.
 func (s *Session) filterUnavailableMemoryTools() {
-	if !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" {
-		if s.isSubagentSession() {
-			for _, name := range memorySaveToolNames {
+	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
+		for name := range s.reg.RegisteredNames() {
+			if strings.HasPrefix(name, "memory_") {
 				s.reg.Remove(name)
 			}
 		}
 		return
 	}
-	for name := range s.reg.RegisteredNames() {
-		if strings.HasPrefix(name, "memory_") {
+	if s.isSubagentSession() {
+		for _, name := range memorySaveToolNames {
 			s.reg.Remove(name)
 		}
 	}

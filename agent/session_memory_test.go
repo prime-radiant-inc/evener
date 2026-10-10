@@ -1425,22 +1425,22 @@ func TestMemoryDelegateFreshCeilings(t *testing.T) {
 // every memory tool.
 func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 	t.Parallel()
-	saveTools := []string{"memory_write", "memory_edit", "memory_delete"}
 	assertReadOnly := func(t *testing.T, child *Session) {
 		t.Helper()
-		for _, name := range saveTools {
-			if child.reg.Get(name) != nil || hasToolDef(child.ToolDefinitions(), name) {
+		defs := child.ToolDefinitions()
+		for _, name := range memorySaveToolNames {
+			if child.reg.Get(name) != nil || hasToolDef(defs, name) {
 				t.Errorf("delegate has %s", name)
 			}
 		}
 		for _, name := range []string{"memory_read", "memory_search"} {
-			if child.reg.Get(name) == nil || !hasToolDef(child.ToolDefinitions(), name) {
+			if child.reg.Get(name) == nil || !hasToolDef(defs, name) {
 				t.Errorf("delegate lost %s", name)
 			}
 		}
 		data, _ := child.buildPromptData(child.currentEnv())
-		if !data.MemoryRead || data.MemorySaves {
-			t.Errorf("delegate MemoryRead=%t MemorySaves=%t, want read guidance without save instructions", data.MemoryRead, data.MemorySaves)
+		if !data.MemoryRead || data.MemorySaves || !data.IsSubagent {
+			t.Errorf("delegate MemoryRead=%t MemorySaves=%t IsSubagent=%t, want delegate read guidance without save instructions", data.MemoryRead, data.MemorySaves, data.IsSubagent)
 		}
 	}
 	for _, agentType := range []string{"explorer", "default"} {
@@ -1470,7 +1470,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 				t.Fatal("delegate made no model request")
 			}
 			for _, def := range childTools {
-				if slices.Contains(saveTools, def.Name) || strings.Contains(def.Description, memoryReportReminder) {
+				if slices.Contains(memorySaveToolNames, def.Name) || strings.Contains(def.Description, memoryReportReminder) {
 					t.Errorf("delegate's model request offers saving through %s", def.Name)
 				}
 			}
