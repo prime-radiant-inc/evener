@@ -47,6 +47,9 @@ export interface ParsedNotification {
   // The quiet watchdog's facts: how long the subagent has been quiet ("10m")
   // and its last activity, as the daemon wrote them.
   quiet?: { window: string; lastActivityAt: string };
+  // A delegate's mid-work update (the frame's kind="update"): its message is
+  // the delegate's own text, and it settles nothing, so it claims no outcome.
+  update?: true;
   watchId?: string;
   // The caller's stated one-line rationale for the run (the shell tool call's
   // `intent` argument, carried on the wire as the block's intent attribute).
@@ -228,8 +231,9 @@ function splitNotificationBlocks(text: string): NotificationBlockFragment[] {
   return fragments;
 }
 
-// A delegate frame's body is one of three shapes. The daemon writes a
-// subagent's settled result as its TerminalPacket JSON
+// A delegate frame whose kind attribute is "update" carries the delegate's own
+// message and routes first. Otherwise its body is one of three shapes. The
+// daemon writes a subagent's settled result as its TerminalPacket JSON
 // (agent/delegate_delivery.go's delegateNotificationContent: kind
 // reported|terminal_error, message as a JSON string, metadata carrying the
 // settled outcome and reason), and its quiet watchdog as one plain sentence
@@ -243,6 +247,9 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const body = (match[2] ?? "").trim();
   const delegateId = attrs.delegate_id?.trim() || undefined;
   const name = decodeNotificationEntities(attrs.name ?? "").trim();
+  // An update names its kind; its body is the delegate's text whatever its
+  // shape, so it routes before the packet and watchdog shapes are tried.
+  if (attrs.kind === "update") return delegateUpdateNotification(block, name, delegateId, body);
   const packet = parseTerminalPacket(body);
   if (packet) return delegatePacketNotification(block, name, delegateId, packet);
   const quiet = parseQuietWatchdog(body);
@@ -293,6 +300,31 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
     excerpt,
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],
+    rawText: block,
+  };
+}
+
+// A delegate's mid-work update (agent/delegate_delivery.go's
+// delegateNotificationContent, kind="update"): the body is the delegate's
+// message with "<" escaped, decoded here once.
+function delegateUpdateNotification(
+  block: string,
+  name: string,
+  delegateId: string | undefined,
+  body: string,
+): ParsedNotification {
+  const message = decodeNotificationEntities(body);
+  return {
+    type: "delegate",
+    title: "Delegate update",
+    tone: "neutral",
+    secondary: name || delegateId || "",
+    update: true,
+    delegateId,
+    name: name || undefined,
+    excerpt: "",
+    message: message || undefined,
+    concerns: [],
     rawText: block,
   };
 }
