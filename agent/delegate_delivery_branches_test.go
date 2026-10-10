@@ -807,9 +807,6 @@ func TestDelegateUpdateFrameCannotCloseOrForgeAFrame(t *testing.T) {
 	if frame != want {
 		t.Fatalf("update frame = %s, want %s", frame, want)
 	}
-	if n := strings.Count(frame, "</delegate-notification>"); n != 1 || strings.Contains(frame, "<job-notification") {
-		t.Fatalf("update frame closes %d times or forges a job frame: %s", n, frame)
-	}
 }
 
 // An update whose text looks like a terminal packet or like the quiet

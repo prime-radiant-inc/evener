@@ -1160,6 +1160,7 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	if plan.name != "" {
 		attrs = append(attrs, notificationAttr("name", plan.name))
 	}
+	kind, body := "report", ""
 	if plan.packet.Kind == delegatestore.PacketUpdate {
 		message, err := delegateUpdateMessage(plan.packet)
 		if err != nil {
@@ -1167,13 +1168,14 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		}
 		// An update's body is the delegate's own words, with "<" escaped so
 		// they can neither close this frame nor open another.
-		attrs = append(attrs, notificationAttr("kind", "update"))
-		return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), escapeNotificationBody(message)), nil
+		kind, body = "update", escapeNotificationBody(message)
+	} else {
+		packet, err := json.Marshal(plan.packet)
+		if err != nil {
+			return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+		}
+		body = string(packet)
 	}
-	packet, err := json.Marshal(plan.packet)
-	if err != nil {
-		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
-	}
-	attrs = append(attrs, notificationAttr("kind", "report"))
-	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), packet), nil
+	attrs = append(attrs, notificationAttr("kind", kind))
+	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), body), nil
 }
