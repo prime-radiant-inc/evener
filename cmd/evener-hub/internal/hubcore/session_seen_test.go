@@ -267,6 +267,26 @@ func fuzzScenarioSessionSeenSnapshot_Unseen(t *testing.T) {
 	}
 }
 
+// fuzzScenarioSessionSeenSnapshot_SeenThrough: a session's mark floored at the
+// store's epoch, zero with no store.
+func fuzzScenarioSessionSeenSnapshot_SeenThrough(t *testing.T) {
+	epoch := seenTestNow
+	mark := epoch.Add(10 * time.Minute)
+	snapshot := SessionSeenSnapshot{Epoch: epoch, Records: map[ArchiveKey]SessionSeenRecord{
+		SessionPinKey("", "marked"): {SeenThrough: mark},
+		SessionPinKey("", "old"):    {SeenThrough: epoch.Add(-time.Minute)},
+		SessionPinKey("", "unread"): {Unread: true},
+	}}
+	for id, want := range map[string]time.Time{"marked": mark, "old": epoch, "unread": epoch, "unmarked": epoch} {
+		if got := snapshot.SeenThrough(SessionPinKey("", id)); !got.Equal(want) {
+			t.Errorf("%s: seen through = %v, want %v", id, got, want)
+		}
+	}
+	if got := (SessionSeenSnapshot{}).SeenThrough(SessionPinKey("", "marked")); !got.IsZero() {
+		t.Errorf("with no store, seen through = %v, want zero", got)
+	}
+}
+
 // fuzzScenarioSessionSeenSnapshot_CloneOwnsItsRecords: a navigation build owns
 // the records it captured.
 func fuzzScenarioSessionSeenSnapshot_CloneOwnsItsRecords(t *testing.T) {

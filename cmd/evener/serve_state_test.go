@@ -61,20 +61,20 @@ func (a *closedStreamAdapter) calls() (stream, complete int) {
 type idlePublicationServer struct {
 	*server.Server
 
-	mu             sync.Mutex
-	sawProcessing  bool
-	sawNotProcess  bool
-	idlePublished  chan struct{}
-	publishedState string
-	publishOnce    sync.Once
+	mu            sync.Mutex
+	sawProcessing bool
+	passFinished  chan struct{}
+	publishOnce   sync.Once
+	// stateWrites counts SetState calls once an input pass has started: the
+	// serve loop must leave the stored state to the session's own events.
+	stateWrites int
 
-	// One turn writes the status thread/read returns from two goroutines. The
-	// serve loop writes it synchronously at the tail of every input pass; the
-	// event bridge writes it again as it projects that turn's carriers --
-	// active when the user-input carrier lands
-	// (server/appwire_runtime.go:439), idle again when the session-end carrier
-	// does (server/bridge.go:223-228). The bridge drains a buffered feed on its
-	// own goroutine, so the loop's idle write is not the end of the publication
+	// One turn's status is published from two goroutines. The serve loop
+	// ends processing at the tail of every input pass, which publishes an
+	// idle placeholder while the turn's end is still on the feed; the event
+	// bridge projects that turn's carriers on its own goroutine -- active
+	// when the user-input carrier lands, and the state the session-end
+	// carrier states. So the loop's finish is not the end of the publication
 	// a reader observes.
 	turnProjected     chan struct{}
 	turnProjectedOnce sync.Once
@@ -88,22 +88,21 @@ type idlePublicationServer struct {
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
 		Server:         server.NewServer(cfg),
-		idlePublished:  make(chan struct{}),
+		passFinished:   make(chan struct{}),
 		turnProjected:  make(chan struct{}),
 		releaseCarrier: make(chan struct{}),
 	}
 }
 
 // holdTurnCarrier parks the bridge on the turn's opening carrier until the serve
-// loop has published its post-turn state, which is the ordering CI reached on
-// its own: the carrier's projection republishes active after the loop wrote
-// idle.
+// loop has ended processing, which is the ordering CI reached on its own: the
+// carrier's projection republishes active after the loop's finish.
 func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
 	if ev.Kind != events.EventUserInput {
 		return
 	}
 	select {
-	case <-s.idlePublished:
+	case <-s.passFinished:
 	case <-s.releaseCarrier:
 	}
 }
@@ -126,33 +125,33 @@ func (s *idlePublicationServer) SetProcessingTurn(turnID string) {
 	s.observeProcessing(true)
 }
 
-func (s *idlePublicationServer) observeProcessing(processing bool) {
-	s.mu.Lock()
-	if processing {
-		s.sawProcessing = true
-	} else if s.sawProcessing {
-		s.sawNotProcess = true
-	}
-	s.mu.Unlock()
-}
-
+// observeProcessing opens passFinished the first time processing ends after
+// it started: the serve loop's finish of the turn's input pass.
 func (s *idlePublicationServer) SetState(state string) {
 	s.Server.SetState(state)
 	s.mu.Lock()
-	postTurn := s.sawProcessing && s.sawNotProcess
-	if postTurn {
-		s.publishedState = state
+	if s.sawProcessing {
+		s.stateWrites++
 	}
 	s.mu.Unlock()
-	if postTurn {
-		s.publishOnce.Do(func() { close(s.idlePublished) })
-	}
 }
 
-func (s *idlePublicationServer) postTurnState() string {
+func (s *idlePublicationServer) stateWritesAfterStart() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.publishedState
+	return s.stateWrites
+}
+
+func (s *idlePublicationServer) observeProcessing(processing bool) {
+	s.mu.Lock()
+	finished := !processing && s.sawProcessing
+	if processing {
+		s.sawProcessing = true
+	}
+	s.mu.Unlock()
+	if finished {
+		s.publishOnce.Do(func() { close(s.passFinished) })
+	}
 }
 
 type sessionControlIdentityServer struct {
@@ -211,10 +210,9 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 // SetProcessingTurn holds the daemon inside the claimed turn. It is the call
 // that publishes a running execution's stable identity -- the session makes it
 // once the claim committed, before the execution records anything -- so it is
-// the moment the processing gate waits on. Active state alone is not: the
-// serve loop publishes the live session's wire state at the tail of every
-// input pass, and that state reads active for a durable start the loop has
-// accepted but not yet claimed, whose stable identity nothing has published.
+// the moment the processing gate waits on. Active state alone is not: a
+// durable start the loop has accepted but not yet claimed reads active while
+// nothing has published its stable identity.
 func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
 	s.Server.SetProcessingTurn(turnID)
 	s.mu.Lock()
@@ -452,10 +450,9 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	})
 
 	// Stop runs with an unclaimed input pass held across turn/start. The serve
-	// loop publishes the live session's wire state at the tail of every input
-	// pass, including one that claimed nothing, and that state reads active
-	// from the moment turn/start durably accepts a start -- before the loop
-	// claims it and publishes its stable identity. This subtest reached that
+	// loop ends processing at the tail of every input pass, including one that
+	// claimed nothing, while turn/start may have durably accepted a start the
+	// loop has not yet claimed or published the stable identity of. This subtest reached that
 	// ordering on its own under CI load; holding the pass makes it every run,
 	// so the claimed identity below is pinned against the wake that produced
 	// the intermittent failure.
@@ -525,8 +522,8 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // input loop publishes owning Session state after an exhausted streaming
 // failure: the session rests on a failed turn, so it reports systemError until
 // its next turn (agent RestingWireState). The wrapper observes the production
-// true -> false -> SetState boundary while forwarding every state mutation to
-// the real AppWire server projection.
+// processing start and finish while forwarding every state mutation to the
+// real AppWire server projection.
 func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
@@ -600,19 +597,16 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	select {
-	case <-observedServer.idlePublished:
+	case <-observedServer.passFinished:
 	case <-ctx.Done():
-		t.Fatalf("post-turn state publication: %v", ctx.Err())
+		t.Fatalf("post-turn finish: %v", ctx.Err())
 	}
 
-	if got := observedServer.postTurnState(); got != appwire.ThreadStatusSystemError {
-		t.Fatalf("published post-turn state = %q, want %q", got, appwire.ThreadStatusSystemError)
-	}
 	// Everything below reads the server's published status, which the loop's
-	// write above does not settle: the bridge projects the same turn's carriers
-	// on its own goroutine, republishing active for the user-input carrier and
-	// systemError again only for the session-end one. Wait for that last write rather
-	// than for the loop's.
+	// finish does not settle: the bridge projects the same turn's carriers on
+	// its own goroutine, republishing active for the user-input carrier and
+	// the session-end carrier's systemError last. Wait for that last write
+	// rather than for the loop's.
 	select {
 	case <-observedServer.turnProjected:
 	case <-ctx.Done():
@@ -621,6 +615,9 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 
 	if got := observedServer.GetStatus().State; got != appwire.ThreadStatusSystemError {
 		t.Fatalf("stored server state = %q, want %q", got, appwire.ThreadStatusSystemError)
+	}
+	if got := observedServer.stateWritesAfterStart(); got != 0 {
+		t.Fatalf("the serve loop wrote the stored state %d times during the pass, want none: it comes from the session's events", got)
 	}
 	streamCalls, completeCalls := adapter.calls()
 	if streamCalls != 1 || completeCalls != 0 {
@@ -653,7 +650,7 @@ func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 // TestHoldServeStateForAwaitingWake proves holdServeStateForAwaitingWake mirrors
 // the session-level entry gate's refusal predicate (agent/session_lifecycle.go's
 // `len(s.askPending) > 0 && kind != EntryUserInput`, spec §5.3): the input loop
-// must hold its status shadow write for exactly the (kind, hasPendingAsk) pairs
+// must skip marking processing for exactly the (kind, hasPendingAsk) pairs
 // where ProcessInputKind will refuse before any state transition, and flip as
 // before everywhere else. Keyed on hasPendingAsk rather than raw SessionState
 // (SessionAwaiting alone does not imply a pending question): a needs_response

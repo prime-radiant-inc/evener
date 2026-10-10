@@ -505,6 +505,9 @@ func TestServerAppWireStatusSettledDuringATurnIsNotPublished(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_settled_late")
 	srv.SetProcessingTurn("next-turn")
+	// The rest settled before the turn started, but the bridge reaches it only
+	// after serve published the turn, and serve can finish the turn before the
+	// bridge reaches the turn's own events.
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_settled_late", Data: events.StatusSettledData{State: "awaiting"}}, nil)
 	if read := readThreadOverWire(t, srv, "local:th_settled_late"); read.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("read status = %q, want the running turn's active", read.Status.Type)
@@ -534,5 +537,321 @@ func TestServerAppWireStatusSettledAfterCloseIsNotPublished(t *testing.T) {
 		if status.Status.Type == appwire.ThreadStatusAwaiting {
 			t.Fatalf("broadcast awaiting after the session closed: %+v", status)
 		}
+	}
+}
+
+// A rest that settles while an input is being taken, one that never starts a
+// turn, is held and published when processing ends: the broadcast and a read
+// both say awaiting.
+func TestServerAppWireStatusSettledDuringARefusedPassIsPublishedAtItsEnd(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_refused_pass")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_refused_pass", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	for _, status := range statusNotifications(t, srv, "th_refused_pass") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting while the input was still being taken: %+v", status)
+		}
+	}
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_refused_pass"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+	statuses := statusNotifications(t, srv, "th_refused_pass")
+	if len(statuses) == 0 || statuses[len(statuses)-1].Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("statuses = %+v, want the pass's end to broadcast awaiting", statuses)
+	}
+}
+
+// A held rest belongs to the session that settled it: a thread/clear that
+// replaces the root before the pass ends leaves the new root's state alone.
+func TestServerAppWireHeldStatusSettledDoesNotReachAReplacementRoot(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_old_root")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_old_root", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetAppIdentity("local", "th_new_root")
+	srv.SetState("idle")
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_new_root"); read.Status.Type == appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q on the replacement root, want the old root's rest dropped", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_new_root") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the old root's awaiting on the replacement: %+v", status)
+		}
+	}
+}
+
+// Closed wins over a held rest.
+func TestServerAppWireHeldStatusSettledYieldsToAClose(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_closed")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_closed", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_held_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_held_closed"); read.Status.Type != appwire.ThreadStatusClosed {
+		t.Fatalf("read status = %q, want closed", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_held_closed") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast awaiting after the close: %+v", status)
+		}
+	}
+}
+
+// A rest held while an input was being taken is dropped once a turn is
+// published, even when serve finishes that turn before the bridge reaches it.
+func TestServerAppWireHeldStatusSettledDropsWhenATurnIsPublished(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_turn")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_turn", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetProcessingTurn("t1")
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_held_turn"); read.Status.Type == appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want the held rest dropped by the turn", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_held_turn") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest after a turn: %+v", status)
+		}
+	}
+}
+
+// An input that ends on its own SESSION_END states the session's state, so a
+// rest held during it is dropped.
+func TestServerAppWireHeldStatusSettledDropsAtTheInputsSessionEnd(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_end")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_end", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_held_end", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_held_end"); read.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("read status = %q, want the SESSION_END's idle", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_held_end") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest over the SESSION_END: %+v", status)
+		}
+	}
+}
+
+// A closed session holds nothing, even if an input is marked after the close.
+func TestServerAppWireStatusSettledAfterACloseIsNotHeld(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_closed_then_marked")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_closed_then_marked", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}}, nil)
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_closed_then_marked", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_closed_then_marked"); read.Status.Type != appwire.ThreadStatusClosed {
+		t.Fatalf("read status = %q, want closed", read.Status.Type)
+	}
+}
+
+// A settle the bridge meets while a published turn is running is dropped, also
+// once that turn's EXECUTION_STARTED has been bridged.
+func TestServerAppWireStatusSettledDuringAStartedTurnIsNotHeld(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_started_turn")
+	srv.SetProcessingTurn("t1")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_started_turn", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_started_turn", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_started_turn"); read.Status.Type == appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want the running turn's settle dropped", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_started_turn") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast a settle held over a started turn: %+v", status)
+		}
+	}
+}
+
+// An interrupted SESSION_END, which changes no status itself, still drops a
+// rest held during the input it ends.
+func TestServerAppWireHeldStatusSettledDropsAtAnInterruptedSessionEnd(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_interrupt")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_interrupt", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_held_interrupt", Data: events.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true}}, nil)
+	srv.SetProcessing(false)
+
+	for _, status := range statusNotifications(t, srv, "th_held_interrupt") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest after an interrupt: %+v", status)
+		}
+	}
+}
+
+// A finish that runs after an input's SESSION_END ended processing, but
+// before the bridge projects that SESSION_END, does not apply the rest held
+// during the input: the SESSION_END's own status effect drops it.
+func TestServerAppWireFinishBetweenASessionEndsEffectAndItsProjectionDropsTheHold(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_end_window")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_end_window", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	end := events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_end_window", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}
+	srv.applySessionEventStatus(end)
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(end)
+
+	if read := readThreadOverWire(t, srv, "local:th_end_window"); read.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("read status = %q, want the SESSION_END's idle", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_end_window") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest over the SESSION_END: %+v", status)
+		}
+	}
+}
+
+// A settle is applied, held or dropped in the same lock hold that decides its
+// broadcast, so a finish racing the bridge never publishes it twice.
+func TestServerAppWireHeldStatusSettledIsBroadcastOnce(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_once")
+	srv.SetProcessing(true)
+	settled := events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_once", Data: events.StatusSettledData{State: "awaiting"}}
+	srv.applySessionEventStatus(settled)
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(settled)
+
+	awaiting := 0
+	for _, status := range statusNotifications(t, srv, "th_once") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			awaiting++
+		}
+	}
+	if awaiting != 1 {
+		t.Fatalf("awaiting broadcast %d times, want once", awaiting)
+	}
+	if read := readThreadOverWire(t, srv, "local:th_once"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+}
+
+// lastStatus is the newest thread/status/changed broadcast for threadID.
+func lastStatus(t *testing.T, srv *Server, threadID string) string {
+	t.Helper()
+	statuses := statusNotifications(t, srv, threadID)
+	if len(statuses) == 0 {
+		t.Fatalf("no status broadcast for %s", threadID)
+	}
+	return statuses[len(statuses)-1].Status.Type
+}
+
+// A turn's end is still on the feed when serve finishes the pass that ran it:
+// idle stands in until it lands, never the rest from before the turn.
+func TestServerAppWireFinishBeforeATurnsEndPublishesIdleNotThePriorRest(t *testing.T) {
+	for _, prior := range []string{appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError} {
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_prior_"+prior)
+		srv.SetState(prior)
+		srv.SetProcessing(true)
+		srv.SetProcessingTurn("t1")
+		srv.SetProcessing(false)
+		if got := lastStatus(t, srv, "th_prior_"+prior); got != appwire.ThreadStatusIdle {
+			t.Fatalf("prior %s: finish broadcast %q, want the idle placeholder", prior, got)
+		}
+		if read := readThreadOverWire(t, srv, "local:th_prior_"+prior); read.Status.Type != appwire.ThreadStatusIdle {
+			t.Fatalf("prior %s: read %q, want idle until the turn's end", prior, read.Status.Type)
+		}
+	}
+}
+
+// A pass that ran no turn leaves the session's state as its events stated it:
+// a refused input over a needs_response rest still reads and broadcasts
+// awaiting.
+func TestServerAppWireFinishOfAPassWithNoTurnPublishesTheStoredRest(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_no_turn")
+	srv.SetState(appwire.ThreadStatusAwaiting)
+	srv.SetProcessing(true)
+	srv.SetProcessing(false)
+	if got := lastStatus(t, srv, "th_no_turn"); got != appwire.ThreadStatusAwaiting {
+		t.Fatalf("finish broadcast %q, want awaiting", got)
+	}
+	if read := readThreadOverWire(t, srv, "local:th_no_turn"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read %q, want awaiting", read.Status.Type)
+	}
+}
+
+// An interrupted turn's end states the resting state while the turn still
+// unwinds; the finish publishes that state, not the placeholder, and a read
+// agrees.
+func TestServerAppWireFinishAfterAnInterruptedEndPublishesItsState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_interrupted_rest")
+	srv.SetState(appwire.ThreadStatusIdle)
+	srv.SetProcessing(true)
+	srv.SetProcessingTurn("t1")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_interrupted_rest", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_interrupted_rest", Data: events.SessionEndData{Reason: "interrupted", State: appwire.ThreadStatusSystemError, Interrupted: true}}, nil)
+	srv.SetProcessing(false)
+	if read := readThreadOverWire(t, srv, "local:th_interrupted_rest"); read.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("read %q, want the interrupted end's systemError", read.Status.Type)
+	}
+	if got := lastStatus(t, srv, "th_interrupted_rest"); got != appwire.ThreadStatusSystemError {
+		t.Fatalf("finish broadcast %q, want the interrupted end's systemError", got)
+	}
+}
+
+// Nothing runs once processing ends, so a stored active, a forecast that
+// work would follow (an interrupted end's, or a turn end's with notifications
+// waiting), reads idle, stored and published alike, even when the pass ran no
+// turn to restate it.
+func TestServerAppWireFinishResolvesASpentActiveForecast(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_interrupted")
+	srv.SetProcessing(true)
+	srv.SetProcessingTurn("t1")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_interrupted", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_interrupted", Data: events.SessionEndData{Reason: "interrupted", State: appwire.ThreadStatusActive, Interrupted: true}}, nil)
+	srv.SetProcessing(false)
+	read := readThreadOverWire(t, srv, "local:th_interrupted")
+	if read.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("read %q, want the spent forecast read as idle", read.Status.Type)
+	}
+	if got := lastStatus(t, srv, "th_interrupted"); got != appwire.ThreadStatusIdle {
+		t.Fatalf("finish broadcast %q, want idle", got)
+	}
+
+	// A later pass that ran no turn (a notification wake the session filters
+	// out) resolves a forecast its turn's end left stored.
+	srv.SetState(appwire.ThreadStatusActive)
+	srv.SetProcessing(true)
+	srv.SetProcessing(false)
+	if read := readThreadOverWire(t, srv, "local:th_interrupted"); read.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("after a no-op pass, read %q, want idle", read.Status.Type)
+	}
+}
+
+// A turn published after an interrupted one starts with its end unstated, so
+// a finish before its end lands publishes the idle placeholder, not the
+// interrupted turn's state.
+func TestServerAppWireANewTurnsEndStartsUnstated(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_two_turns")
+	srv.SetProcessing(true)
+	srv.SetProcessingTurn("a")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_two_turns", Data: events.ExecutionStartedData{TurnID: "a"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_two_turns", Data: events.SessionEndData{Reason: "interrupted", State: appwire.ThreadStatusSystemError, Interrupted: true}}, nil)
+	srv.SetProcessingTurn("b")
+	srv.SetProcessing(false)
+	if got := lastStatus(t, srv, "th_two_turns"); got != appwire.ThreadStatusIdle {
+		t.Fatalf("finish broadcast %q, want the idle placeholder for turn b", got)
 	}
 }

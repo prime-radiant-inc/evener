@@ -14,14 +14,18 @@ func TestRenderMemoryIndex(t *testing.T) {
 		{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
 		{Path: "b.md", Title: "b", Description: "unstamped, older mtime", HasDescription: true, ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		{Path: "a.md", Title: "a", Description: "unstamped, same day as loader", HasDescription: true, ModTime: time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)},
-		{Path: "bad.md", Title: "Bad", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-01-01"},
+		{Path: "fresh-bad.md", Title: "fresh-bad", Description: "fresh-bad.md", Unreadable: true, ModTime: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
+		{Path: "bad.md", Title: "Bad", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-12-31"},
 	}
+	// Pages with unreadable frontmatter come last, by path, however fresh
+	// their files are.
 	want := "Tags: formatting (1), money (1), vitest (1)\n" +
 		"- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)\n" +
 		"- [a](a.md) — unstamped, same day as loader\n" +
 		"- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
 		"- [b](b.md) — unstamped, older mtime\n" +
-		"- [Bad](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-01-01)\n"
+		"- [Bad](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-12-31)\n" +
+		"- [fresh-bad](fresh-bad.md) — fresh-bad.md (frontmatter unreadable)\n"
 	if got := renderMemoryIndex(pages); got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -110,7 +114,7 @@ func TestMemoryNotShownLine(t *testing.T) {
 	}
 }
 
-// Review Focus 2: one page larger than the whole budget is never cut mid-line.
+// One page larger than the whole budget is never cut mid-line.
 func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	t.Parallel()
 	pages := []memoryPage{
@@ -126,16 +130,88 @@ func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	}
 }
 
-// Ruling 13: a header too large to fit is cut at the budget, still truncated.
-func TestProjectMemoryIndexOversizedHeader(t *testing.T) {
+// With more tags than the projection can list, its header and "Not shown"
+// line each name the most-used tags, ties by name, then count the rest; the
+// page lines keep the space. The whole index still lists every tag.
+func TestProjectMemoryIndexCapsTagLists(t *testing.T) {
 	t.Parallel()
 	var pages []memoryPage
 	for i := range 600 {
-		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{fmt.Sprintf("tag-number-%03d", i)}})
+		tags := []string{fmt.Sprintf("tag-number-%03d", i)}
+		if i%2 == 0 {
+			tags = append(tags, "common")
+		}
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: tags})
 	}
-	content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
-	if !truncated || len(content) > memoryProjectionCap || !strings.HasPrefix(content, "Tags: ") {
-		t.Fatalf("truncated=%t len=%d", truncated, len(content))
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	header, closing := lines[0], lines[len(lines)-1]
+	if !truncated || len(content) > memoryProjectionCap || len(lines) < 100 {
+		t.Fatalf("truncated=%t len=%d, %d lines", truncated, len(content), len(lines))
+	}
+	if !strings.HasPrefix(header, "Tags: common (300), tag-number-000 (1), tag-number-001 (1), ") || !strings.HasSuffix(header, " more tags") || len(header) > memoryTagListBudget+100 {
+		t.Fatalf("header %q", header)
+	}
+	if !strings.HasPrefix(closing, "Not shown: ") || !strings.Contains(closing, " (common ") || !strings.HasSuffix(closing, " more tags).") || len(closing) > memoryTagListBudget+100 {
+		t.Fatalf("closing line %q", closing)
+	}
+	if !strings.Contains(full, "tag-number-599 (1)\n") {
+		t.Fatalf("the whole index's header does not list every tag: %.300q", full)
+	}
+}
+
+// A scope whose full tag header overflows the cap but whose page lines fit
+// beside the capped header shows every page under that header, with no
+// closing line, so the projection is not truncated.
+func TestProjectMemoryIndexCapsTheHeaderAloneWhenEveryPageFits(t *testing.T) {
+	t.Parallel()
+	var pages []memoryPage
+	for i := range 60 {
+		tag := fmt.Sprintf("a-long-distinct-tag-name-that-takes-room-in-the-header-%03d", i)
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{tag}})
+	}
+	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
+	if len(full) <= memoryProjectionCap {
+		t.Fatalf("the whole index fits (%d bytes); the case needs it not to", len(full))
+	}
+	if truncated || len(content) > memoryProjectionCap {
+		t.Fatalf("truncated=%t len=%d, want every page under a capped header", truncated, len(content))
+	}
+	header, _, _ := strings.Cut(content, "\n")
+	if !strings.HasSuffix(header, " more tags") {
+		t.Fatalf("header %q, want it capped", header)
+	}
+	for _, p := range pages {
+		if !strings.Contains(content, memoryIndexLine(p)+"\n") {
+			t.Fatalf("%s missing from %q", p.Path, content)
+		}
+	}
+	if !strings.Contains(full, "a-long-distinct-tag-name-that-takes-room-in-the-header-059 (1)") {
+		t.Fatalf("the whole index's header does not list every tag: %.300q", full)
+	}
+}
+
+// A path that a bare Markdown link destination can't hold (a space, a
+// parenthesis, a leading "<") is written in angle brackets, with any angle
+// bracket inside it escaped; any other path is written as it is.
+func TestMemoryIndexLineLinkTarget(t *testing.T) {
+	t.Parallel()
+	for rel, want := range map[string]string{
+		"notes/a.md":     "notes/a.md",
+		"a<b>.md":        "a<b>.md",
+		"my notes.md":    "<my notes.md>",
+		"tab\there.md":   "<tab\there.md>",
+		"cents (old).md": "<cents (old).md>",
+		"half).md":       "<half).md>",
+		"<x> y.md":       `<\<x\> y.md>`,
+		"<lead.md":       `<\<lead.md>`,
+		`a \> b.md`:      `<a \\\> b.md>`,
+		`a\>b.md`:        `<a\\\>b.md>`,
+	} {
+		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
+		if wantLine := "- [T](" + want + ") — d"; line != wantLine {
+			t.Fatalf("%q: got %q, want %q", rel, line, wantLine)
+		}
 	}
 }
 
@@ -174,9 +250,56 @@ func TestMemoryIndexLineFor(t *testing.T) {
 		{memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}), "s/p.md", true},
 		{"- [X](x.md.bak) — d", "x.md", false},
 		{"Tags: a (1)", "a", false},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "my notes (old).md", true},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "old).md", false},
 	} {
 		if got := memoryIndexLineFor(tc.line, tc.rel); got != tc.want {
 			t.Fatalf("%q for %q: got %t, want %t", tc.line, tc.rel, got, tc.want)
 		}
+	}
+}
+
+// A page whose path holds a control character other than tab gets a line
+// with no link, since no Markdown destination can hold it: the path,
+// JSON-escaped, and a note. The line is one line, and it is that page's line
+// when patching.
+func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	for rel, name := range map[string]string{
+		"bad\nname.txt":    `"bad\nname.txt"`,
+		"dir\r/x.md":       `"dir\r/x.md"`,
+		"bell\a <x>.md":    `"bell\u0007 <x>.md"`,
+		"del\x7f \"q\".md": `"del\u007f \"q\".md"`,
+	} {
+		line := memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		if want := "- " + name + " — " + memoryUnlinkedPathNote; line != want {
+			t.Fatalf("%q: got %q, want %q", rel, line, want)
+		}
+		if !memoryIndexLineFor(line, rel) || memoryIndexLineFor(line, "other.md") {
+			t.Fatalf("%q: its line does not belong to it alone", rel)
+		}
+		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Title: "A", Description: "d"}})
+		if want := "- [A](a.md) — d\n" + line + "\n"; index != want {
+			t.Fatalf("%q: index %q, want %q", rel, index, want)
+		}
+		if got := patchMemoryIndex(index, rel, ""); got != "- [A](a.md) — d\n" {
+			t.Fatalf("%q: delete patched %q", rel, got)
+		}
+	}
+}
+
+// No JSON string holds invalid UTF-8, so a name holding it is quoted with
+// \x escapes instead, with a note saying no tool can name it: still one
+// line, and two such names that differ only in their invalid bytes keep
+// distinct lines, so patching one never drops the other.
+func TestMemoryIndexLineControlCharacterInvalidUTF8Path(t *testing.T) {
+	t.Parallel()
+	a, b := "bad\n\xff.md", "bad\n\xfe.md"
+	lineA := memoryIndexLine(filenameMemoryPage(a, time.Time{}))
+	if want := `- "bad\n\xff.md" — ` + memoryInvalidUTF8PathNote; lineA != want {
+		t.Fatalf("got %q, want %q", lineA, want)
+	}
+	if memoryIndexLineFor(lineA, b) || memoryIndexLineFor(lineA, "bad\n\ufffd.md") {
+		t.Fatalf("%q also belongs to another name", lineA)
 	}
 }

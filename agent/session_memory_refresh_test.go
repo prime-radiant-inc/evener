@@ -264,6 +264,40 @@ func TestMemoryRefreshIgnoresOwnPageDelete(t *testing.T) {
 	}
 }
 
+// A file whose name holds a newline, put there outside the tools, is one
+// index line, and the session's own memory_delete of it is not echoed back
+// at the next turn.
+func TestMemoryRefreshIgnoresOwnDeleteOfAControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "personal", "fact.md", "opaque-kept-1")
+	path := memorySeedPage(t, root, "personal", "bad\nname.md", "opaque-doomed-2")
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(req llm.Request) llm.Response {
+			if _, index, _ := memoryRequestIndex(t, req, "personal"); strings.Count(index, "\n") != 2 {
+				t.Fatalf("index %q is not one line per page", index)
+			}
+			return memoryCallResponse("memory_delete", map[string]any{"scope": "personal", "file_path": "bad\nname.md"})
+		},
+		func(llm.Request) llm.Response { return finalResponse("deleted") },
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("next turn carries %d memory contexts, want only the first full index", got)
+			}
+			return finalResponse("next")
+		},
+	))
+	if _, err := s.ProcessInput(context.Background(), "delete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("file still present after delete: %v", err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A scope whose pages are gone when compaction re-delivers it is projected
 // as missing and becomes no baseline, so a page another session adds
 // afterwards arrives as the full index at the next turn.

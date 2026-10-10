@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"path/filepath"
+
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -22,7 +24,13 @@ type MemoryScopePage struct {
 // memory lab's checks) needn't reimplement frontmatter parsing. A missing
 // dir, or one that isn't a directory, is an error; nothing is created.
 func ListMemoryScopePages(dir string) ([]MemoryScopePage, error) {
-	pages, err := listMemoryPages(execenv.NewLocalExecutionEnvironment(dir))
+	// Absolute first: the listing joins the environment's working directory
+	// onto its root, so a relative root would be resolved twice.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := listMemoryPages(execenv.NewLocalExecutionEnvironment(abs))
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +38,9 @@ func ListMemoryScopePages(dir string) ([]MemoryScopePage, error) {
 	for _, p := range pages {
 		out = append(out, MemoryScopePage{
 			Path: p.Path, Description: p.Description, HasDescription: p.HasDescription, Frontmatter: p.Frontmatter,
-			Unreadable: p.Unreadable, Tags: p.Tags, Updated: p.Updated, By: p.By,
+			Unreadable: p.Unreadable, Updated: p.Updated, By: p.By,
+			// Never nil, so a page with no tags encodes them as [], not null.
+			Tags: append([]string{}, p.Tags...),
 		})
 	}
 	return out, nil

@@ -70,11 +70,13 @@ func matchMemoryNameCase(name string, names iter.Seq[string]) (string, bool) {
 	return match, true
 }
 
-// listedMemoryPagePath is the slash path the scope lists the file at rel
-// under, which on a case-insensitive filesystem can differ from rel's case:
-// rel with each segment in its directory's case (matchMemoryNameCase). From
-// the first directory that can't be listed, such as one a write is about to
-// create, the rest of rel stays as it is.
+// listedMemoryPagePath is rel with each segment in the case its directory
+// lists it (matchMemoryNameCase, which ignores case on any filesystem). For a
+// file rel names, that is the path the scope lists it under, which on a
+// case-insensitive filesystem can differ from rel's case; on a case-sensitive
+// one the exact name is listed and wins. From the first directory that can't
+// be listed, such as one a write is about to create, the rest of rel stays as
+// it is.
 func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) string {
 	listed := ""
 	segments := strings.Split(rel, "/")
@@ -119,19 +121,19 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 		return p
 	}
 	text := string(raw)
+	// Parse reads the block Split finds, so its body is Split's even when
+	// the YAML fails. Frontmatter is the block's presence, not its parsed
+	// value: a block holding only a YAML null parses to no metadata.
+	_, body, hasBlock := splitMemoryFrontmatter(text)
 	doc, err := frontmatter.Parse(text)
-	body := doc.Body
-	if err != nil {
-		p.Unreadable = true
-		_, body, _ = splitMemoryFrontmatter(text)
-	}
-	p.Frontmatter = err != nil || doc.Meta != nil
+	p.Unreadable = err != nil
+	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
 	if heading != "" {
 		p.Title = heading
 	}
 	if description, ok := doc.Meta["description"].(string); ok {
-		p.Description = strings.Join(strings.Fields(description), " ")
+		p.Description = collapseWhitespace(description)
 		p.HasDescription = p.Description != ""
 	}
 	if !p.HasDescription {
@@ -144,10 +146,11 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 }
 
 // firstMarkdownHeading returns the text of body's first ATX heading outside a
-// fenced code block, without closing hashes, or "".
+// fenced code block, without closing hashes and with whitespace runs
+// collapsed, or "".
 func firstMarkdownHeading(body string) string {
 	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
-	for line := range strings.SplitSeq(body, "\n") {
+	for line := range markdownLines(body) {
 		text := strings.TrimLeft(line, " ")
 		if len(line)-len(text) > 3 {
 			continue // indented code
@@ -172,7 +175,7 @@ func firstMarkdownHeading(body string) string {
 				heading = strings.TrimSpace(stripped)
 			}
 			if heading != "" {
-				return heading
+				return collapseWhitespace(heading)
 			}
 		}
 	}
@@ -180,13 +183,15 @@ func firstMarkdownHeading(body string) string {
 }
 
 // fenceRun returns the leading run of three or more backticks or tildes in
-// line, which opens or closes a code fence, or "".
+// line, which opens or closes a code fence, or "". A backtick run followed by
+// another backtick on the line is no fence (CommonMark: a backtick fence's
+// info string holds no backtick), so "```a`b" is inline code.
 func fenceRun(line string) string {
 	if line == "" || (line[0] != '`' && line[0] != '~') {
 		return ""
 	}
 	run := line[:len(line)-len(strings.TrimLeft(line, line[:1]))]
-	if len(run) < 3 {
+	if len(run) < 3 || (run[0] == '`' && strings.Contains(line[len(run):], "`")) {
 		return ""
 	}
 	return run
@@ -198,8 +203,8 @@ func fenceRun(line string) string {
 func memoryFallbackDescription(heading, body string) string {
 	text := heading
 	if text == "" {
-		for line := range strings.SplitSeq(body, "\n") {
-			if text = strings.TrimSpace(line); text != "" {
+		for line := range markdownLines(body) {
+			if text = collapseWhitespace(line); text != "" {
 				break
 			}
 		}
@@ -209,6 +214,21 @@ func memoryFallbackDescription(heading, body string) string {
 		return memoryNoDescription
 	}
 	return text + " " + memoryNoDescription
+}
+
+// markdownLineEndings turns each Markdown line ending ("\r\n", a lone "\r")
+// into "\n".
+var markdownLineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// markdownLines yields text's lines, split at each Markdown line ending.
+func markdownLines(text string) iter.Seq[string] {
+	return strings.SplitSeq(markdownLineEndings.Replace(text), "\n")
+}
+
+// collapseWhitespace trims text and turns each inner run of whitespace into
+// one space, so an index line's text holds no tab, vertical tab, or form feed.
+func collapseWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // normalizeMemoryTags reads a tags value: a list, or a single string as one
@@ -258,10 +278,12 @@ func memoryStampDate(v any) string {
 
 // listMemoryPages reads every page of env's scope. Only regular files on
 // page paths are listed; a page removed since the listing is skipped,
-// and one that cannot be read is listed by its filename.
+// and one that cannot be read is listed by its filename. The walk never
+// enters a dot directory, which holds no pages, so a .git in the scope does
+// not slow the listing.
 func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
 	root := env.WorkingDirectory()
-	entries, err := env.ListDirectory(root, memoryPageWalkDepth)
+	entries, err := env.ListVisibleDirectory(root, memoryPageWalkDepth)
 	if err != nil {
 		return nil, err
 	}

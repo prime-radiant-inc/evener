@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,6 +49,12 @@ func TestParseMemoryPage(t *testing.T) {
 			memoryPage{Path: "a.md", Title: "a", Description: "first real line " + memoryNoDescription, ModTime: mod}},
 		{"empty page", "empty.md", "",
 			memoryPage{Path: "empty.md", Title: "empty", Description: memoryNoDescription, ModTime: mod}},
+		{"a null frontmatter block is still frontmatter", "a.md",
+			"---\n~\n---\n# T\n",
+			memoryPage{Path: "a.md", Title: "T", Description: "T " + memoryNoDescription, Frontmatter: true, ModTime: mod}},
+		{"an empty frontmatter block is still frontmatter", "a.md",
+			"---\n---\n# T\n",
+			memoryPage{Path: "a.md", Title: "T", Description: "T " + memoryNoDescription, Frontmatter: true, ModTime: mod}},
 		{"unparseable frontmatter", "bad.md",
 			"---\ndescription: Fix: use cents\n---\n# Cents rule\n",
 			memoryPage{Path: "bad.md", Title: "Cents rule", Description: "Cents rule " + memoryNoDescription, Unreadable: true, Frontmatter: true, ModTime: mod}},
@@ -63,8 +70,17 @@ func TestParseMemoryPage(t *testing.T) {
 		{"four-space indent is code", "a.md",
 			"    # code\n# Real\n",
 			memoryPage{Path: "a.md", Title: "Real", Description: "Real " + memoryNoDescription, ModTime: mod}},
+		{"tab indent is code", "a.md",
+			"\t# code\n \t# code too\n# Real\n",
+			memoryPage{Path: "a.md", Title: "Real", Description: "Real " + memoryNoDescription, ModTime: mod}},
 		{"long fence not closed by a short one", "a.md",
 			"````\n```\n# not a heading\n````\n# After\n",
+			memoryPage{Path: "a.md", Title: "After", Description: "After " + memoryNoDescription, ModTime: mod}},
+		{"backtick in a backtick fence's info string opens no fence", "a.md",
+			"```go`x\n# Heading\n",
+			memoryPage{Path: "a.md", Title: "Heading", Description: "Heading " + memoryNoDescription, ModTime: mod}},
+		{"backtick in a tilde fence's info string still opens it", "a.md",
+			"~~~go`x\n# fenced\n~~~\n# After\n",
 			memoryPage{Path: "a.md", Title: "After", Description: "After " + memoryNoDescription, ModTime: mod}},
 		{"closing hashes trimmed", "a.md",
 			"## Title ##\n",
@@ -72,6 +88,24 @@ func TestParseMemoryPage(t *testing.T) {
 		{"hash without space stays", "a.md",
 			"# C#\n",
 			memoryPage{Path: "a.md", Title: "C#", Description: "C# " + memoryNoDescription, ModTime: mod}},
+		{"a carriage return ends a heading", "a.md",
+			"# A\rB\n",
+			memoryPage{Path: "a.md", Title: "A", Description: "A " + memoryNoDescription, ModTime: mod}},
+		{"carriage-return-only line endings", "a.md",
+			"\r# Title\rbody\r",
+			memoryPage{Path: "a.md", Title: "Title", Description: "Title " + memoryNoDescription, ModTime: mod}},
+		{"CRLF line endings", "a.md",
+			"# Title\r\nbody\r\n",
+			memoryPage{Path: "a.md", Title: "Title", Description: "Title " + memoryNoDescription, ModTime: mod}},
+		{"a carriage return ends the fallback line", "a.md",
+			"first\rsecond\n",
+			memoryPage{Path: "a.md", Title: "a", Description: "first " + memoryNoDescription, ModTime: mod}},
+		{"whitespace runs in a heading collapse", "a.md",
+			"# A \t\v\f B\n",
+			memoryPage{Path: "a.md", Title: "A B", Description: "A B " + memoryNoDescription, ModTime: mod}},
+		{"whitespace runs in the fallback line collapse", "a.md",
+			"one\t\vtwo\n",
+			memoryPage{Path: "a.md", Title: "a", Description: "one two " + memoryNoDescription, ModTime: mod}},
 		{"non-markdown file", "notes.txt", "anything",
 			memoryPage{Path: "notes.txt", Title: "notes", Description: "notes.txt", ModTime: mod}},
 	} {
@@ -162,6 +196,54 @@ func TestIsMemoryPagePathExcludesTheRootIndexInAnyCase(t *testing.T) {
 	} {
 		if got := isMemoryPagePath(rel); got != want {
 			t.Errorf("isMemoryPagePath(%q)=%v, want %v", rel, got, want)
+		}
+	}
+}
+
+// A name whose case differs from the only listed name matching it resolves
+// to that name; an exact match wins, and an ambiguous or missing one does not
+// resolve.
+func TestMatchMemoryNameCase(t *testing.T) {
+	t.Parallel()
+	listed := map[string]bool{"notes.md": true, "a.md": true, "A.md": true, "Exact.md": true, "exact.md": true}
+	for _, tc := range []struct {
+		link, want string
+		ok         bool
+	}{
+		{"notes.md", "notes.md", true},
+		{"Notes.md", "notes.md", true},
+		{"Exact.md", "Exact.md", true},
+		{"a.MD", "", false},
+		{"missing.md", "", false},
+	} {
+		if got, ok := matchMemoryNameCase(tc.link, maps.Keys(listed)); got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got %q, %t; want %q, %t", tc.link, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// Each segment of a path takes the spelling its directory lists, matched
+// ignoring case on any filesystem; a segment its directory doesn't list, and
+// everything below it, is kept as given.
+func TestListedMemoryPagePath(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	if err := os.MkdirAll(filepath.Join(scope, "Notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"fact.md", filepath.Join("Notes", "x.md")} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte("body\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]string{
+		"fact.md": "fact.md", "Notes/x.md": "Notes/x.md",
+		"Fact.md": "fact.md", "notes/X.md": "Notes/x.md",
+		"new.md": "new.md", "New/y.md": "New/y.md",
+	}
+	for rel, listed := range want {
+		if got := listedMemoryPagePath(env, rel); got != listed {
+			t.Fatalf("%s: got %q, want %q", rel, got, listed)
 		}
 	}
 }

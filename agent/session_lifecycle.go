@@ -1354,8 +1354,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.mu.Unlock()
 					if emitEnd {
 						s.emit(events.EventSessionEnd, events.SessionEndData{
-							Reason:      "interrupted",
-							State:       string(SessionIdle),
+							Reason: "interrupted",
+							// The boundary above settled the session; WireState says
+							// whether queued work will move it on.
+							State:       s.WireState(),
 							Turns:       turns,
 							Interrupted: true,
 						})
@@ -2014,17 +2016,24 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
+	// restMu: a needs_response rest arming right now announces first.
+	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
+		hook()
+	}
+	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.delegateDeliveryMu.Unlock()
+		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	// A turn starting ends any needs_response quiet period still running:
 	// whichever boundary this turn rests on, the older rest no longer applies.
 	s.restGeneration++
+	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
@@ -2088,8 +2097,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
-			// it the session reports itself busy with nothing running, and the
-			// serve loop republishes that from WireState.
+			// it the session reports itself busy with nothing running.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
 			// that got us here is consumed, and the drain loop deliberately does

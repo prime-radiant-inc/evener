@@ -33,6 +33,10 @@ import argparse, glob, json, os, subprocess, sys
 MAX_INDEX_LINE = 200
 MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "memscope")
 MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
+MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"
+# The agent.MemoryScopePage fields the checks read; a memscope built before one
+# existed leaves it out, and one built before tags were always a list emits null.
+PAGE_FIELDS = {"path", "description", "has_description", "frontmatter", "unreadable", "tags", "by"}
 
 
 class MemscopeError(RuntimeError):
@@ -46,18 +50,34 @@ def scope_pages(dirs):
     try:
         out = subprocess.run([MEMSCOPE, *dirs], capture_output=True, text=True, timeout=MEMSCOPE_TIMEOUT)
     except FileNotFoundError:
-        raise MemscopeError(f"{MEMSCOPE} is missing; build it in the lab directory: go build -o bin/memscope ./memscope")
+        raise MemscopeError(f"{MEMSCOPE} is missing; {MEMSCOPE_BUILD}")
     except subprocess.TimeoutExpired:
         raise MemscopeError(f"memscope timed out after {MEMSCOPE_TIMEOUT}s")
     if out.returncode != 0:
         raise MemscopeError(f"memscope failed: {out.stderr.strip()}")
-    return json.loads(out.stdout)
+    scopes = json.loads(out.stdout)
+    for pages in scopes.values():
+        for p in pages:
+            missing = sorted(PAGE_FIELDS - p.keys())
+            if missing or p["tags"] is None:
+                shape = f"its pages lack {', '.join(missing)}" if missing else "it lists missing tags as null"
+                raise MemscopeError(f"{MEMSCOPE} is out of date ({shape}); {MEMSCOPE_BUILD}")
+    return scopes
 
 
 def scope_dirs(root, scopes):
-    """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"]."""
-    base = glob.escape(os.path.join(root, "evener", "memory"))
-    return sorted(d for scope in scopes for d in glob.glob(os.path.join(base, scope)) if os.path.isdir(d))
+    """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"].
+    A scope reached through a symlink anywhere below the state root is skipped, as evener's confined
+    resolution refuses a symlinked path component."""
+    base = os.path.join(root, "evener", "memory")
+    return sorted(d for scope in scopes for d in glob.glob(os.path.join(glob.escape(base), scope))
+                  if os.path.isdir(d) and not symlink_below(root, d))
+
+
+def symlink_below(root, path):
+    """Whether any component of path below root is a symlink."""
+    rel = os.path.relpath(path, root).split(os.sep)
+    return any(os.path.islink(os.path.join(root, *rel[:i])) for i in range(1, len(rel) + 1))
 
 
 def read(path):
@@ -66,10 +86,11 @@ def read(path):
 
 
 def root_index(scope_dir):
-    """The scope's root MEMORY.md, its name matched without regard to case as the product does, or None."""
+    """The scope's root MEMORY.md, its name matched without regard to case as the product does, or None.
+    Like the product, it counts only a regular file, never a symlink."""
     for name in sorted(os.listdir(scope_dir)):
         path = os.path.join(scope_dir, name)
-        if name.lower() == "memory.md" and os.path.isfile(path):
+        if name.lower() == "memory.md" and os.path.isfile(path) and not os.path.islink(path):
             return path
     return None
 
@@ -111,7 +132,7 @@ def new_pages_ok(root, require_description, tags_subset):
             if p["by"] == "seed-fixture":
                 continue
             new += 1
-            path, tags = os.path.join(scope, p["path"]), p["tags"] or []
+            path, tags = os.path.join(scope, p["path"]), p["tags"]
             if require_description and not p["has_description"]:
                 print(f"{path}: no description{' (frontmatter unreadable)' if p['unreadable'] else ''}", file=sys.stderr)
                 return False

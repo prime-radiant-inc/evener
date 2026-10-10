@@ -86,8 +86,8 @@ func TestMemoryYAMLFieldRoundTrips(t *testing.T) {
 	}
 }
 
-// A page is found by a link or a bare path; the first line naming it wins and
-// anything that is not a local Markdown page is skipped.
+// A page is found by a link or a bare path; the first line describing it wins
+// and anything that is not a local Markdown page is skipped.
 func TestParseLegacyMemoryIndex(t *testing.T) {
 	t.Parallel()
 	index := "# Project memory\n\n" +
@@ -106,7 +106,14 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"- **no-link** — [feedback] a line with no page\n" +
 		"- see old.md.txt for the old notes\n" +
 		"- a.md/foo is a directory path\n" +
-		"- [emph](emph.md) — **important** note\n"
+		"- [emph](emph.md) — **important** note\n" +
+		"- [spaced](<my notes (old).md>) — a path in angle brackets\n" +
+		"- [escaped](<x \\<y\\>.md>) — angle brackets escaped inside one\n" +
+		"- [[WIP\\] Fix](wip.md)\n" +
+		"- [paren](a(b).md) — balanced parentheses in a bare destination\n" +
+		"- [frag](notes.md#http://example) — a fragment holding a URL\n" +
+		"- [](quiet.md)\n" +
+		"- [quiet](quiet.md): a later line describes a page an empty one named\n"
 	want := map[string]string{
 		"testing.md":         "plain `go test` silently skips everything",
 		"money/cents.md":     "Money is integer cents",
@@ -116,10 +123,16 @@ func TestParseLegacyMemoryIndex(t *testing.T) {
 		"bold.md":            "bare path in bold",
 		"cpp.md":             "learned C++",
 		"emph.md":            "**important** note",
+		"quiet.md":           "a later line describes a page an empty one named",
+		"my notes (old).md":  "a path in angle brackets",
+		"x <y>.md":           "angle brackets escaped inside one",
+		"wip.md":             "[WIP] Fix",
+		"a(b).md":            "balanced parentheses in a bare destination",
+		"notes.md":           "a fragment holding a URL",
 	}
 	got := make(map[string]string)
 	for _, entry := range parseLegacyMemoryIndex(index) {
-		got[entry.Link] = entry.Description
+		got[entry.Links[0]] = entry.Description
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)
@@ -182,48 +195,55 @@ func TestMigrateMemoryScope(t *testing.T) {
 	}
 }
 
+// memoryBackups is a scope's backups of hand-written indexes, by name.
+func memoryBackups(t *testing.T, scope string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backups := make(map[string]string)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), memoryLegacyIndexBackup) {
+			raw, err := os.ReadFile(filepath.Join(scope, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backups[entry.Name()] = string(raw)
+		}
+	}
+	return backups
+}
+
 // A hand-written MEMORY.md that reappears after migration (an older Evener
 // build writing it again) is migrated again into the next free backup name;
-// the first backup is never overwritten.
+// no backup is ever overwritten or removed. An index identical to an
+// existing backup adds none.
 func TestMigrateMemoryScopeKeepsEarlierBackups(t *testing.T) {
 	t.Parallel()
 	env, scope := newMemoryMigrateScope(t)
 	indexes := []string{"- [a](a.md) — first index\n", "- [b](b.md) — recreated index\n", "- [c](c.md) — third index\n"}
 	backups := []string{memoryLegacyIndexBackup, memoryLegacyIndexBackup + ".2", memoryLegacyIndexBackup + ".3"}
-	for i, index := range indexes {
+	// The fourth and fifth runs repeat earlier indexes and add no backup.
+	for i, index := range append(slices.Clone(indexes), indexes[0], indexes[1]) {
 		if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := migrateMemoryScope(env); err != nil {
 			t.Fatalf("run %d: %v", i+1, err)
 		}
-		for j, backup := range backups[:i+1] {
+		kept := min(i+1, len(backups))
+		for j, backup := range backups[:kept] {
 			raw, err := os.ReadFile(filepath.Join(scope, backup))
 			if err != nil || string(raw) != indexes[j] {
 				t.Fatalf("run %d: %s=%q, %v", i+1, backup, raw, err)
 			}
 		}
-	}
-}
-
-// A name whose case differs from the only listed name matching it resolves
-// to that name; an exact match wins, and an ambiguous or missing one does not
-// resolve.
-func TestMatchMemoryNameCase(t *testing.T) {
-	t.Parallel()
-	listed := map[string]bool{"notes.md": true, "a.md": true, "A.md": true, "Exact.md": true, "exact.md": true}
-	for _, tc := range []struct {
-		link, want string
-		ok         bool
-	}{
-		{"notes.md", "notes.md", true},
-		{"Notes.md", "notes.md", true},
-		{"Exact.md", "Exact.md", true},
-		{"a.MD", "", false},
-		{"missing.md", "", false},
-	} {
-		if got, ok := matchMemoryNameCase(tc.link, maps.Keys(listed)); got != tc.want || ok != tc.ok {
-			t.Fatalf("%s: got %q, %t; want %q, %t", tc.link, got, ok, tc.want, tc.ok)
+		if _, err := os.Stat(filepath.Join(scope, "MEMORY.md")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("run %d: MEMORY.md left in place: %v", i+1, err)
+		}
+		if n := len(memoryBackups(t, scope)); n != kept {
+			t.Fatalf("run %d: %d backups, want %d", i+1, n, kept)
 		}
 	}
 }
@@ -244,6 +264,31 @@ func TestMigrateMemoryScopeResolvesLinkCase(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, "notes.md")); err != nil || string(raw) != "---\ndescription: the notes page\n---\nbody\n" {
 		t.Fatalf("notes.md=%q, %v", raw, err)
+	}
+}
+
+// A link target resolves to the listed page it names whole, else to the page
+// before its fragment: a#b.md is a page named so, and a.md#rule.md is a.md
+// with a fragment that happens to end in .md.
+func TestMigrateMemoryScopeResolvesFragmentsAgainstListedPages(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	index := "- [x](a.md#rule.md) — the a page\n- [y](b#c.md) — the hash page\n"
+	if err := os.WriteFile(filepath.Join(scope, "MEMORY.md"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b#c.md"} {
+		if err := os.WriteFile(filepath.Join(scope, name), []byte("body\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for name, description := range map[string]string{"a.md": "the a page", "b#c.md": "the hash page"} {
+		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != "---\ndescription: "+description+"\n---\nbody\n" {
+			t.Fatalf("%s=%q, %v", name, raw, err)
+		}
 	}
 }
 
@@ -442,5 +487,57 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(scope, memoryLegacyIndexBackup+".2")); err != nil || string(raw) != "- [a](a.md) — index\n" {
 		t.Fatalf("%s.2=%q, %v", memoryLegacyIndexBackup, raw, err)
+	}
+}
+
+// A linked line whose description ends like an unlinked line's note still
+// gives its page that description: only a line with no link is skipped.
+func TestParseLegacyMemoryIndexSkipsOnlyUnlinkedLines(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"bad\n name.md", "bad\n\xff name.md"} {
+		described := "quoting " + memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		got := parseLegacyMemoryIndex("- [plain](plain.md) — " + described + "\n")
+		if len(got) != 1 || got[0].Links[0] != "plain.md" || got[0].Description != described {
+			t.Fatalf("%q: got %+v", rel, got)
+		}
+	}
+}
+
+// Migration reads back the link a generated index line writes for any path,
+// so an index an older build copied from a generated one still migrates.
+func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, `a\>b.md`, "<x> y.md", "sub/half).md", "a#b.md"} {
+		for _, title := range []string{"T", `[WIP] Fix \ it`} {
+			line := memoryIndexLine(memoryPage{Path: rel, Title: title, Description: "d"})
+			got := parseLegacyMemoryIndex(line + "\n")
+			if len(got) != 1 || got[0].Links[0] != rel || got[0].Description != "d" {
+				t.Fatalf("%q from %q: got %+v", rel, line, got)
+			}
+		}
+	}
+}
+
+// Migration skips a file whose name holds a newline, and a legacy index
+// holding that file's generated line, copied in by hand, gives it nothing,
+// nor the page its escaped name ends with ("name.md" in "bad\n name.md"),
+// while the other pages still migrate.
+func TestMigrateMemoryScopeLeavesAControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	bad := "bad\n name.md"
+	index := memoryIndexLine(filenameMemoryPage(bad, time.Time{})) + "\n- [plain](plain.md) — plain page gets this\n"
+	for rel, body := range map[string]string{"MEMORY.md": index, bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "# Plain\n"} {
+		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "---\ndescription: plain page gets this\n---\n# Plain\n", memoryLegacyIndexBackup: index} {
+		if raw, err := os.ReadFile(filepath.Join(scope, rel)); err != nil || string(raw) != want {
+			t.Fatalf("%q: got %q, %v", rel, raw, err)
+		}
 	}
 }

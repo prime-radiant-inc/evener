@@ -38,7 +38,7 @@ Prices are stored and computed as integer cents...
 
 **What counts as a page:** every regular file under the scope root, in subdirectories too, except any path with a segment starting with `.` (the same rule `memory_search` uses) and except a file named `MEMORY.md` at the root. Only `.md` files are parsed for frontmatter; any other file renders with its filename as the description. Symlinks are skipped, as scope confinement already refuses them.
 
-**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`.
+**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`. A carriage return (alone or before a newline) ends a line, and whitespace runs in the heading or line collapse to one space, so neither a stray `\r` nor a tab reaches an index line.
 
 ## The generated index
 
@@ -48,20 +48,22 @@ Tags: formatting (3), money (2), vitest (6)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
-- Header: `Tags:` and every tag with its page count, alphabetical. Omitted when no page has tags.
-- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date.
-- Title: the first heading if there is one, else the filename without extension.
+- Header: `Tags:` and every tag with its page count, alphabetical. Omitted when no page has tags. A projection the whole index does not fit caps it (see Budget).
+- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date. Pages whose frontmatter is unreadable sort after every other page, by path among themselves, so a freshly touched broken page never crowds the newest pages out of the projection.
+- Title: the first heading if there is one (whitespace runs collapsed, as in the fallback description), else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
+- A page whose path holds an ASCII control character other than tab has no link: its line is the path as a JSON string, then a note (see the product guide).
 
-**Budget.** The projection into context keeps today's 8 KiB cap. When the rendered index is larger, the projection keeps the header, then the newest lines that fit, then one closing line: `Not shown: N pages (vitest 4, indexeddb 3, untagged 2).` The per-tag counts in that line count a page once under each of its tags. This replaces today's "the index is too long" sentence; the truncation flag in the projection envelope stays so clients keep decoding it.
+**Budget.** The projection into context keeps today's 8 KiB cap. When the rendered index is larger, the projection keeps the header, then the newest lines that fit, then one closing line: `Not shown: N pages (vitest 4, indexeddb 3, untagged 2).` The per-tag counts in that line count a page once under each of its tags. In that projection the header and the closing line each list only their most-used tags (ties by name) that fit in 512 bytes, then `and M more tags`; the header shows the tags it keeps alphabetically, the closing line by count. A scope can drift into hundreds of tags, and listed in full they would push every page line out of the projection; the byte cap keeps both lists to about an eighth of the 8 KiB however many or long the tags are, so page lines are never dropped to make room for tag lists. The full rendering that `memory_read` returns has no cap and lists every tag. This replaces today's "the index is too long" sentence; the truncation flag in the projection envelope stays so clients keep decoding it.
 
 **Reading.** `memory_read` of `MEMORY.md` returns the full rendered index with no cap, paged by the ordinary `offset`/`limit`. `memory_search` never matches the virtual index (it searches files, and there is no file).
 
 ## Writes
 
-- After a successful `memory_write` or `memory_edit` of a `.md` page, Evener rewrites the page's frontmatter to set `updated` and `by`, creating a frontmatter block if there is none. Every other byte of the page is preserved. A failed write is not stamped.
+- When `memory_write` or `memory_edit` writes a `.md` page, Evener sets `updated` and `by` in the frontmatter of the bytes the tool writes, creating a frontmatter block if there is none. Every other byte of the page is preserved, except that a top-level `description` or `evidence` line YAML can't read as written (an unquoted scalar holding `: `, ending in `:`, or starting with a YAML indicator) is rewritten as a quoted YAML string when that makes the frontmatter parse; other unparseable frontmatter is left as written. The stamps go into the tool's one write: a separate read-modify-write after it could write back content another session had already replaced or deleted. A failed write writes nothing.
 - If the written page has no `description`, the tool result appends one line: `This page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter.`
 - `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused: `MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead.`
+- `memory_write` and `memory_edit` of a path holding an ASCII control character other than tab are refused; `memory_delete` still takes such a path.
 - `memory_delete` of a page needs no index repair: its line disappears from the next rendering.
 
 ## Per-turn updates and own writes
@@ -71,18 +73,18 @@ The existing machinery (`memoryIndexBaseline`, `memoryIndexLineChanges`, the 2 K
 - a page another session deleted shows as `- line`;
 - a description, tag or stamp change shows as `- old` and `+ new`.
 
-A session's own `memory_write`, `memory_edit` or `memory_delete` of any page re-renders the index after the write and makes that rendering the session's new baseline (today only a write to `MEMORY.md` does this), so its own change is never reported back to it.
+A session's own `memory_write`, `memory_edit` or `memory_delete` of any page reads that page back and patches the session's baseline: the page's old line is replaced by its new one, or dropped for a delete, so its own change is never reported back to it. Only that line changes, so pages other sessions changed since the last boundary still reach the next one as changes.
 
-Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn, own writes) and runs under the same off-loop read and 250 ms wait.
+Rendering reads every page in the scope. That cost replaces today's single-file read on the same paths (session start, resume, compaction, first model call of a turn) and runs under the same off-loop read and 250 ms wait. An own write reads back only the page it wrote.
 
 ## Migration
 
-The first time Evener renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Migration takes no lock:
+The first time a session with `memory_write`, `memory_edit` and `memory_delete` renders a scope that still has a real `MEMORY.md` file at its root (its name matched ignoring case, since the page listing excludes that name in any case; on a case-sensitive filesystem every such file is migrated, the exact `MEMORY.md` first), it migrates. Any other session never migrates, because migration edits pages and removes the root index; it renders the pages as they are, with fallback descriptions, until a writing session migrates. Migration takes no lock:
 1. Parse each line of the old index for a Markdown link to a page in the scope (`[text](path)` or a bare `path.md`). The rest of the line, with the link and leading list markers and separators (`-`, `—`, `:`) stripped, is that page's description.
 2. For each linked page that exists and has no `description` in its frontmatter, write that description into its frontmatter. Pages that already have a description keep it. Migration does not stamp `updated`/`by`.
-3. Rename the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched). An earlier backup is never replaced: when the name is taken, the file goes to the first free name of `.MEMORY.md.pre-generated.2`, `.3` and so on, because an older build sharing the scope can write `MEMORY.md` again after migration.
+3. Move the old file to `.MEMORY.md.pre-generated` (a dot name, so it is never a page and never searched). An older build sharing the scope can write `MEMORY.md` again after migration. Migration never replaces or removes a backup, since each holds what a person or an older build wrote: when the name is taken, the file goes to the first free name of `.MEMORY.md.pre-generated.2`, `.3` and so on. A file whose bytes repeat an existing backup is removed instead of backed up again, so alternating builds that write the same index add nothing. If the move fails for any reason other than a taken name (for example a filesystem without hard links), `MEMORY.md` stays and the next rendering tries again.
 
-Migration is idempotent, so it needs no lock: once the root `MEMORY.md` is gone it never runs again, and a crash mid-way leaves pages with a description and the old file still present, so the next run finishes the job. A page that fails to write does not stop the others but keeps `MEMORY.md` in place for the next run. Two sessions racing read the same old index and write the same descriptions, skip pages that already have one, and the one whose rename finds `MEMORY.md` already gone counts as done.
+Migration is idempotent, so it needs no lock: once the root `MEMORY.md` is gone it never runs again, and a crash mid-way leaves pages with a description and the old file still present, so the next run finishes the job. A page that fails to write does not stop the others but keeps `MEMORY.md` in place for the next run. Two sessions racing read the same old index and write the same descriptions, skip pages that already have one, and the one whose move finds `MEMORY.md` already gone counts as done. The move never overwrites a backup: it writes the bytes it migrated as a copy of their own under a private name and hard-links that copy to the backup name (a taken name fails with EEXIST and the next free name is tried), so a later in-place rewrite of `MEMORY.md` never reaches a backup. It then removes `MEMORY.md`, but only when it still holds the bytes that migration read: it renames `MEMORY.md` to a private `.MEMORY.md.migrating-…` name first, which captures it atomically, and compares the captured bytes; a rewrite goes back to `MEMORY.md` (or to its own backup if `MEMORY.md` was written yet again), so no read-then-unlink window can delete one. A file a crash leaves under the private name is migrated like `MEMORY.md` on the next run.
 
 ## Prompts, tools, skill and docs
 
