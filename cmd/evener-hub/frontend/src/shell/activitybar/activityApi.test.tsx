@@ -11,6 +11,8 @@ import {
   activityContext,
   activityDelegate,
   activityJob,
+  activityRef,
+  activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { deriveScope } from "../statusbar/statusScope";
@@ -313,4 +315,77 @@ it("each positive page needs fresh visible boundary evidence instead of draining
     cleanup();
     vi.unstubAllGlobals();
   }
+});
+
+// The no-read pushed merge is gated on a live context that advertises the
+// bounded preview. The shared activityContext() omits reportPreview on purpose,
+// so these two tests opt in per test rather than flipping every other activity
+// test onto the new path.
+const pushContext = () => ({ ...activityContext(), reportPreview: true });
+const delegateReads = (client: ReturnType<typeof activityClient>) =>
+  client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
+
+it("a pushed delegate frame patches a loaded row with zero collection reads when the source advertises the preview", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: pushContext(),
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: ref, rootRef: ref })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab scope={scope()} />);
+  await screen.findByRole("button", { name: /inspect/ });
+  const before = delegateReads(client);
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "owner",
+        ref: activityRef,
+        delegate: {
+          runGeneration: 1,
+          delegateId: "delegate-1",
+          ownerSessionId: "owner",
+          logicalOwnerSessionId: "owner",
+          rootSessionId: "owner",
+          childSessionId: "child",
+          transcriptRef: "remote:child",
+          type: "delegate",
+          lifecycle: "running",
+          phase: "running",
+          status: "failed",
+          terminal: false,
+          resumable: true,
+          needsAttention: false,
+          projectionRevision: 2,
+          reportPreview: "pushed report",
+          description: "pushed row",
+        },
+      },
+    });
+  });
+  expect(delegateReads(client)).toBe(before);
+  expect(sessionActivitySnapshot(client, activityRef, "session")?.delegates.rows[0]).toMatchObject({
+    status: "failed",
+    reportPreview: "pushed report",
+    description: "pushed row",
+  });
+  expect(screen.getByRole("button", { name: /pushed row/ })).toBeTruthy();
+});
+
+it("a source without the preview capability keeps reading delegates on an invalidation", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  render(<AgentsTab scope={scope()} />);
+  await screen.findByRole("button", { name: /inspect/ });
+  const before = delegateReads(client);
+  await act(async () => {
+    client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+  });
+  await waitFor(() => expect(delegateReads(client)).toBe(before + 1));
 });

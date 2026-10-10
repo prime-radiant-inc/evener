@@ -55,6 +55,7 @@ export const delegateFixture = (delegateId = "delegate-1"): SessionDelegate => (
   status: "completed",
   terminal: true,
   resumable: true,
+  projectionRevision: 1,
 });
 export const jobsFixture = (
   jobs: JobActivityJob[] = [jobFixture()],
