@@ -699,6 +699,73 @@ describe("entry repository: older paging", () => {
     }
   });
 
+  test("an invalidating server page keeps its invalidation at repository and store", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-invalidate-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    // A newer epoch in the same incarnation: the shared reducer invalidates
+    // history rather than replacing it, and no certificate may be recorded.
+    fake.on(
+      "thread/turns/list",
+      () =>
+        ({
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        }) as ThreadTurnsListResponse,
+    );
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).toBeUndefined();
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+
+      // The certificate was refused, but the invalidation is preserved at the
+      // repository AND published to the store, with no return to the old valid
+      // authority.
+      expect(fixture.inspect().model?.history?.invalidatedAtGeneration).not.toBeUndefined();
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).not.toBeUndefined();
+
+      // A frame from the old generation must not restore the old valid authority.
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: SELECTED,
+          threadId: THREAD_ID,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+          items: [{ ...pageItem(6, "turn_top"), version: 9, text: "old-gen" }],
+        },
+      } as AnyNotification);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).not.toBeUndefined();
+      expect(fixture.inspect().model?.history?.invalidatedAtGeneration).not.toBeUndefined();
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
   test("a last-owner release during a held local lookup leaves the ref absent", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-release-${crypto.randomUUID()}` });
     const fixture = installEntryTranscriptFixtureForTests({
