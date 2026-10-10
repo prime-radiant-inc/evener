@@ -1,8 +1,23 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import type { ActivityDelegate, ActivityEntry, ActivityJob, ActivityTree } from "./activityData";
-import { buildEntityView, type DelegateEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
+import {
+  type ActivityDelegate,
+  type ActivityEntry,
+  type ActivityJob,
+  type ActivityTree,
+  activityNodeID,
+} from "./activityData";
+import { buildActivityRows } from "./activityRows";
+import {
+  buildEntityView,
+  type DelegateEntityView,
+  type EntityView,
+  entityOpenTarget,
+  findEntityView,
+  watchFoldKey,
+  watchItems,
+} from "./entityView";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
 
@@ -26,6 +41,7 @@ function job(jobId: string): ActivityJob {
 
 function delegate(delegateId: string, projectionRevision?: number): ActivityDelegate {
   return {
+    runGeneration: 1,
     delegateId,
     ownerSessionId: "s",
     rootSessionId: "s",
@@ -72,6 +88,7 @@ function liveDelegate(
   transcriptRef = `local:live-${delegateId}`,
 ): EvenerDelegateInfo {
   return {
+    runGeneration: 1,
     delegateId,
     ownerSessionId: "s",
     rootSessionId: "s",
@@ -85,6 +102,11 @@ function liveDelegate(
     needsAttention: false,
     projectionRevision,
   };
+}
+
+// liveView builds the view of session local:s from its live delegate list.
+function liveView(delegates: EvenerDelegateInfo[], tree?: ActivityTree): Map<string, EntityView> {
+  return buildEntityView({ sessionRef: "local:s", tree, delegates, turns: [], stale: false, ended: false });
 }
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -119,9 +141,9 @@ test("job uses the row transcriptRef and parentRef", () => {
     stale: false,
     ended: false,
   });
-  const entity = view.get("job_x");
+  const entity = findEntityView(view, "job", "job_x", "local:s");
 
-  expect(entity).toMatchObject({ kind: "job", id: "job_x" });
+  expect(entity).toMatchObject({ kind: "job", logicalId: "job_x" });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "job:job_x", parentRef: "local:s" });
 });
 
@@ -137,7 +159,7 @@ test("a job without a transcriptRef uses its verified row id and parentRef", () 
     turns: [],
     stale: false,
     ended: false,
-  }).get("job_fallback");
+  }).get('job:["local:s","job_fallback"]');
 
   expect(entityOpenTarget(entity!)).toEqual({ ref: "job:job_fallback", parentRef: "local:s" });
 });
@@ -151,10 +173,118 @@ test("live-only delegate cards and navigates from delegates[]", () => {
     stale: false,
     ended: false,
   });
-  const entity = view.get("dlg_x");
+  const entity = findEntityView(view, "delegate", "dlg_x", "local:s");
 
-  expect(entity).toMatchObject({ kind: "delegate", id: "dlg_x", stable });
+  expect(entity).toMatchObject({ kind: "delegate", logicalId: "dlg_x", stable });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child", parentRef: "local:s" });
+});
+
+test("a nested stable delegate belongs to its parent delegate's session, not the viewed one", () => {
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const view = liveView([parent, nested]);
+
+  expect(findEntityView(view, "delegate", "dlg_a", "local:s")).toMatchObject({ ownerRef: "local:s" });
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ ownerRef: "local:child-a", stable: nested });
+  expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child-b", parentRef: "local:child-a" });
+  // A root's transcript can name a grandchild (job_status, job_list, prose):
+  // the lookup from the viewed session still reaches it through its parent.
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toBe(entity);
+  expect(findEntityView(view, "delegate", "dlg_a", "local:child-a")).toBeUndefined();
+});
+
+test("a delegate lookup follows the parent chain down any depth and stops at a gap", () => {
+  const a = liveDelegate("dlg_a", 2, "local:child-a");
+  const b = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_a" };
+  const c = { ...liveDelegate("dlg_c", 2, "local:child-c"), parentDelegateId: "dlg_b" };
+  const orphan = { ...liveDelegate("dlg_orphan", 2, "local:child-orphan"), parentDelegateId: "dlg_b" };
+  const chained = liveView([a, b, c]);
+
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:s")).toMatchObject({ ownerRef: "local:child-b" });
+  expect(findEntityView(chained, "delegate", "dlg_c", "local:child-a")).toMatchObject({ ownerRef: "local:child-b" });
+  // Without dlg_b loaded, the orphan's owner session has no loaded parent.
+  const gapped = liveView([a, { ...orphan, parentDelegateId: "dlg_missing" }]);
+  expect(findEntityView(gapped, "delegate", "dlg_orphan", "local:child-a")).toBeUndefined();
+});
+
+test("a nested delegate whose parent is not listed belongs to the viewed session", () => {
+  // A subagent's thread lists its subtree; its top rows name its own delegate,
+  // which its list does not hold, as their parent.
+  const top = { ...liveDelegate("dlg_b", 2, "local:child-b"), parentDelegateId: "dlg_self" };
+  const view = liveView([top]);
+
+  expect(findEntityView(view, "delegate", "dlg_b", "local:s")).toMatchObject({ ownerRef: "local:s" });
+});
+
+test("a nested tree row keeps its name when the stable row for it is older", () => {
+  const retained = treeWithEntries([
+    { kind: "delegate", delegate: { ...delegate("dlg_b", 5), ownerRef: "local:child-a", name: "named nested" } },
+  ]);
+  const parent = liveDelegate("dlg_a", 2, "local:child-a");
+  const nested = { ...liveDelegate("dlg_b", 4, "local:tree-dlg_b"), parentDelegateId: "dlg_a" };
+  const view = liveView([parent, nested], retained);
+
+  const entity = findEntityView(view, "delegate", "dlg_b", "local:child-a");
+  expect(entity).toMatchObject({ kind: "delegate", name: "named nested", ownerRef: "local:child-a" });
+  expect(delegateSource(entity as DelegateEntityView)).toBe("tree");
+});
+
+test("live update and retained row reconcile by qualified identity with one action target", () => {
+  const retained = treeWithDelegate("same", 3);
+  const live = { ...liveDelegate("same", 4, "local:tree-same"), runGeneration: 2 };
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    tree: retained,
+    delegates: [live],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(view.size).toBe(1);
+  const entity = view.get('delegate:["local:tree-same","same"]');
+  expect(entity).toMatchObject({ kind: "delegate", logicalId: "same", stable: live });
+  expect(entity && entityOpenTarget(entity)).toEqual({ ref: "local:tree-same", parentRef: "local:s" });
+});
+
+test("transcript lookup selects raw IDs only within their authoritative owner", () => {
+  const first = { ...job("same"), ownerRef: "host-a:s" },
+    second = { ...job("same"), ownerRef: "host-b:s" };
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    tree: treeWithEntries([
+      { kind: "shell", job: first },
+      { kind: "shell", job: second },
+    ]),
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(view.size).toBe(2);
+  expect(findEntityView(view, "job", "same", "host-a:s")?.ownerRef).toBe("host-a:s");
+  expect(findEntityView(view, "job", "same", "host-b:s")?.ownerRef).toBe("host-b:s");
+  expect(findEntityView(view, "job", "same", "local:s")).toBeUndefined();
+});
+
+test("closed failed job folds retain equal logical IDs and authoritative output owners", () => {
+  const tree = treeWithEntries([
+    {
+      kind: "shell",
+      job: { ...job("same"), ownerRef: "host-a:s", status: "command_exited_nonzero", outcome: "failure" },
+    },
+    { kind: "shell", job: { ...job("same"), ownerRef: "host-b:s", status: "completed", outcome: "success" } },
+  ]);
+  expect(buildActivityRows(tree, new Set())).toEqual([expect.objectContaining({ kind: "fold", inactiveCount: 2 })]);
+  const view = buildEntityView({ sessionRef: "local:s", tree, turns: [], stale: false, ended: false });
+  expect(view.size).toBe(2);
+  expect(findEntityView(view, "job", "same", "host-a:s")).toMatchObject({
+    row: { defaultDetailOpen: false, job: { status: "command_exited_nonzero", outcome: "failure" } },
+    open: { ref: "job:same", parentRef: "host-a:s" },
+  });
+  expect(findEntityView(view, "job", "same", "host-b:s")).toMatchObject({
+    open: { ref: "job:same", parentRef: "host-b:s" },
+  });
+  expect(findEntityView(view, "job", "same", "local:s")).toBeUndefined();
 });
 
 test.each([
@@ -166,16 +296,18 @@ test.each([
   const entity = buildEntityView({
     sessionRef: "local:s",
     tree: treeWithDelegate("dlg_shared", treeRevision),
-    delegates: [liveDelegate("dlg_shared", liveRevision)],
+    delegates: [
+      { ...liveDelegate("dlg_shared", liveRevision, "local:tree-dlg_shared"), terminal: true, status: "completed" },
+    ],
     turns: [],
     stale: false,
     ended: false,
-  }).get("dlg_shared");
+  }).get('delegate:["local:tree-dlg_shared","dlg_shared"]');
 
   if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
   expect(delegateSource(entity)).toBe(expected);
   expect(entityOpenTarget(entity)).toEqual({
-    ref: expected === "tree" ? "local:tree-dlg_shared" : "local:live-dlg_shared",
+    ref: "local:tree-dlg_shared",
     parentRef: "local:s",
   });
 });
@@ -187,7 +319,7 @@ test("tree delegate remains selected when there is no live record", () => {
     turns: [],
     stale: false,
     ended: false,
-  }).get("dlg_tree");
+  }).get('delegate:["local:tree-dlg_tree","dlg_tree"]');
 
   if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
   expect(delegateSource(entity)).toBe("tree");
@@ -230,9 +362,9 @@ test("watch entities are last-known and have no open target", () => {
     turns: [turn([item()])],
     stale: false,
     ended: false,
-  }).get("watch_x");
+  }).get('watch:["local:s","watch_x"]');
 
-  expect(entity).toMatchObject({ kind: "watch", id: "watch_x", lastKnown: true, stale: true, ended: false });
+  expect(entity).toMatchObject({ kind: "watch", logicalId: "watch_x", lastKnown: true, stale: true, ended: false });
   expect(entityOpenTarget(entity!)).toBeUndefined();
 });
 
@@ -313,3 +445,91 @@ test("watchFoldKey is order-canonical across a mixed positioned and positionless
     watchFoldKey([turn([positioned]), turn([positionless])]),
   );
 });
+
+test.each([3, 4])("keeps immutable delegate names through status overlay revision %s", (revision) => {
+  const row = { ...delegate("same", 3), name: "Compact observer", reportPreview: "Previous run report" };
+  const stable = { ...liveDelegate("same", revision, row.childRef), runGeneration: 2 };
+  const entity = findEntityView(
+    buildEntityView({
+      sessionRef: "local:s",
+      tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+      delegates: [stable],
+      turns: [],
+      stale: false,
+      ended: false,
+    }),
+    "delegate",
+    "same",
+    "local:s",
+  );
+  if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
+  expect(entity.name).toBe("Compact observer");
+  expect(entity.stable).toBe(stable);
+  expect(entity.row).toBeUndefined();
+});
+
+test.each(["owner", "delegate", "child"])("does not graft a compact name across a different %s", (identity) => {
+  const row = { ...delegate("same", 100), runGeneration: 9, name: "Other identity" };
+  const stable = liveDelegate(
+    identity === "delegate" ? "different" : "same",
+    4,
+    identity === "child" ? "local:different" : row.childRef,
+  );
+  if (identity === "owner") row.ownerRef = "local:another";
+  const entity = buildEntityView({
+    sessionRef: "local:s",
+    tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+    delegates: [stable],
+    turns: [],
+    stale: false,
+    ended: false,
+  }).get(activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }));
+  if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
+  expect(entity.name).toBeUndefined();
+  expect(entity.stable).toBe(stable);
+});
+
+test.each([
+  [2, true, 1, false, "tree"],
+  [2, true, 2, false, "tree"],
+  [2, false, 2, true, "live"],
+  [2, true, 3, false, "live"],
+  [2, true, 0, false, "tree"],
+  [0, true, 2, false, "live"],
+  [0, true, 0, false, "live"],
+] as const)(
+  "delegate generation %s/%s versus diagnostics %s/%s selects %s",
+  (rowGeneration, rowTerminal, stableGeneration, stableTerminal, expected) => {
+    const row = {
+      ...delegate("ordered"),
+      runGeneration: rowGeneration,
+      terminal: rowTerminal,
+      reportPreview: "current report",
+    };
+    const stable = {
+      ...liveDelegate("ordered", 100, row.childRef),
+      runGeneration: stableGeneration,
+      terminal: stableTerminal,
+    };
+    const entity = findEntityView(
+      buildEntityView({
+        sessionRef: "local:s",
+        tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+        delegates: [stable],
+        turns: [],
+        stale: false,
+        ended: false,
+      }),
+      "delegate",
+      row.delegateId,
+      "local:s",
+    );
+    if (entity?.kind !== "delegate") throw new Error("expected owned delegate");
+    expect(delegateSource(entity)).toBe(expected);
+    if (expected === "tree") expect(entity.row?.delegate).toBe(row);
+    else {
+      expect(entity.stable).toBe(stable);
+      expect(entity).not.toHaveProperty("row");
+    }
+  },
+);

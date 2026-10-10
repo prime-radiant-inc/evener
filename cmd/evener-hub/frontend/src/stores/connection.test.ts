@@ -2,7 +2,12 @@
 
 import { answerRequests, callsTo, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { connectedClientPort, connectionStore } from "./connection";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  readyConnectionTransition,
+} from "./connection";
 
 describe("connection handshake metadata", () => {
   beforeEach(() => {
@@ -125,5 +130,41 @@ describe("connectedClientPort", () => {
     unwire();
     client.emitUnknownNotification({ method: "x/unknown", params: {} });
     expect(seen).toEqual(["x/unknown"]);
+  });
+});
+
+describe("readyConnectionTransition", () => {
+  beforeEach(() => {
+    connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  });
+
+  afterEach(() => {
+    connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  });
+
+  test("fires on first connect, recovery, and replacement; not on metadata republishes or clearing", () => {
+    const seen: Array<[ConnectionStoreState, ConnectionStoreState]> = [];
+    const unsubscribe = connectionStore.subscribe((state, previous) => {
+      seen.push([state, previous]);
+    });
+    try {
+      const first = new FakeClient("ready");
+      connectionStore.getState().connect(first);
+      connectionStore.setState({ serverInfo: { name: "fake", version: "1" } });
+      first.emitStateChange("reconnecting");
+      first.emitStateChange("ready");
+      connectionStore.getState().connect(new FakeClient("ready"));
+      connectionStore.setState({ client: null });
+      expect(seen.map(([state, previous]) => readyConnectionTransition(state, previous))).toEqual([
+        true, // first connect
+        false, // metadata republish over the same ready client
+        false, // leaving ready
+        true, // recovery back to ready
+        true, // a different client wired while ready
+        false, // client cleared
+      ]);
+    } finally {
+      unsubscribe();
+    }
   });
 });

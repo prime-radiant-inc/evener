@@ -15,128 +15,8 @@ import (
 	"primeradiant.com/evener/internal/credentials"
 )
 
-// remoteHostAdminMethods is the exact set of hub-scoped admin RPCs the
-// evener/host/request proxy forwards to a remote host (component 07a).
-//
-// It is an EXACT-NAME set on purpose. A prefix rule
-// (strings.HasPrefix(method, "evener/instance/")) would auto-allow whatever
-// sensitive ScopeHub method is added to the catalog next — a hypothetical
-// evener/instance/deleteAll — turning the proxy into a generic hub-to-hub
-// tunnel by default. Every method must be named deliberately here, and a
-// method the catalog gains after this list was written is refused until it is
-// added. The remote hub is a trusted peer, but the browser that drives this
-// proxy is not (design §6 "secret handling").
-//
-// The families are the settings panes' own hub-scoped handlers: provider
-// instances, launch config, marketplaces/plugins, auth/credentials, the
-// personal AGENTS.md, and the host-dependent discovery helpers the remote
-// settings panes and the spawn form call. Nothing else.
-//
-// The spawn form's own forwarded subset is checked in at
-// host_request_methods.txt, the one list the web UI's inventory test and
-// TestHostAdminAllowListCoversSharedForwardedMethods both read: a method
-// deleted here (with its policy row and retry classification, which keep this
-// package's other tests green) still fails that cross-language test rather than
-// leaving the browser to forward a call this proxy answers with
-// InvalidParams.
-var remoteHostAdminMethods = map[string]struct{}{
-	// Provider instances (hubInstancesController, app_instances.go). The
-	// settings panes drive these five handlers remotely; the catalog's newer
-	// evener/instance/setModelDisabled and evener/instance/refreshModels are
-	// deliberately absent here and in the policy table, so the proxy refuses
-	// them (fail closed).
-	appwire.MethodEvenerInstanceList:       {},
-	appwire.MethodEvenerInstanceCreate:     {},
-	appwire.MethodEvenerInstanceEdit:       {},
-	appwire.MethodEvenerInstanceRemove:     {},
-	appwire.MethodEvenerInstanceSetDefault: {},
-
-	// Launch config (hubLaunchController, app_launch.go). Its credential-env
-	// refusal must reach the browser verbatim; the proxy never launders it.
-	appwire.MethodEvenerLaunchResolve:   {},
-	appwire.MethodEvenerLaunchSchema:    {},
-	appwire.MethodEvenerLaunchGetLayer:  {},
-	appwire.MethodEvenerLaunchSetLayer:  {},
-	appwire.MethodEvenerLaunchTrustRepo: {},
-
-	// Marketplaces and plugins (hubPluginsController, app_plugins.go). The
-	// pane's UI reaches plugin/disable and plugin/setAutoUpgrade too.
-	appwire.MethodEvenerMarketplaceList:      {},
-	appwire.MethodEvenerMarketplaceAdd:       {},
-	appwire.MethodEvenerMarketplaceRemove:    {},
-	appwire.MethodEvenerMarketplaceRefresh:   {},
-	appwire.MethodEvenerMarketplaceEdit:      {},
-	appwire.MethodEvenerMarketplaceBrowse:    {},
-	appwire.MethodEvenerPluginList:           {},
-	appwire.MethodEvenerPluginInstall:        {},
-	appwire.MethodEvenerPluginUpgrade:        {},
-	appwire.MethodEvenerPluginRemove:         {},
-	appwire.MethodEvenerPluginEnable:         {},
-	appwire.MethodEvenerPluginDisable:        {},
-	appwire.MethodEvenerPluginSetAutoUpgrade: {},
-	appwire.MethodEvenerPluginPreview:        {},
-	appwire.MethodEvenerPluginCheckNow:       {},
-
-	// Auth and credentials (hubAuthController, app_auth.go). The host's own
-	// refusals (a stored key under a Codex or gcp-adc instance) pass through
-	// unchanged. apiKey/conditionalSet is on this list so a CLIENT may proxy it
-	// like any other forwarded auth method - the controller's own credential
-	// push does NOT go through the list (see the row for it below) - and
-	// apiKey/set remains the unconditional path.
-	appwire.MethodEvenerAuthStatus:        {},
-	appwire.MethodEvenerAuthTest:          {},
-	appwire.MethodEvenerAuthList:          {},
-	appwire.MethodEvenerAuthLoginStart:    {},
-	appwire.MethodEvenerAuthLoginComplete: {},
-	appwire.MethodEvenerAuthLogout:        {},
-	appwire.MethodEvenerAuthApiKeySet:     {},
-	appwire.MethodEvenerAuthApiKeyClear:   {},
-	// evener/auth/apiKey/conditionalSet is allow-listed deliberately, per the
-	// spec's [07a] entry: it is the atomic replacement for the racy
-	// status-then-set pair, and a CLIENT may proxy it here like any other
-	// forwarded auth method. The controller's own credential push does NOT go
-	// through this list: hubHostCredentialsPusher calls the method directly on
-	// the shared per-host client seam (RemoteHubSource.AdminMutationCall) and
-	// never consults remoteHostAdminMethods. The row is named rather than left
-	// implied because, unlike apiKey/set, this method carries no
-	// ExpectedEndpointFingerprint check - its safety comes from the fence
-	// (ExpectedSource/ExpectedRevision) and the host's locked classification.
-	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
-	appwire.MethodEvenerAuthCredentialJsonSet:    {},
-	appwire.MethodEvenerAuthDeviceStart:          {},
-	appwire.MethodEvenerAuthDevicePoll:           {},
-
-	// Personal AGENTS.md (registerAgentsDocHandlers, app_rpc_agents_doc.go).
-	appwire.MethodEvenerSettingsAgentsDocGet: {},
-	appwire.MethodEvenerSettingsAgentsDocSet: {},
-
-	// Host-dependent discovery — the remote settings panes' and the spawn form's
-	// own filesystem/discovery calls (component 06 §"Frontend changes"). Every
-	// one is answered by the host hub against ITS local environment, which is the
-	// point: path validation, auto-completion, directory creation, recent
-	// projects, harnesses, and the slash catalog must describe the selected host,
-	// not the controller. They are read-mostly; the only mutation is creating the
-	// directory the user just asked for (dirs/create), and none exposes a secret
-	// the admin families above do not already carry. Without these rows a remote
-	// settings pane or spawn form fails closed with appwire.InvalidParams.
-	appwire.MethodEvenerPathsComplete:     {},
-	appwire.MethodEvenerPathValidate:      {},
-	appwire.MethodEvenerDirsCreate:        {},
-	appwire.MethodEvenerProjectsRecent:    {},
-	appwire.MethodEvenerHarnessesList:     {},
-	appwire.MethodEvenerSpawnSlashCatalog: {},
-	// evener/git/head is read-only branch metadata for a remote working
-	// directory (protocol.go: ScopeHub, GitHeadParams/GitHeadResponse); the
-	// spawn form needs the branch of the path it is about to launch.
-	appwire.MethodEvenerGitHead: {},
-	// model/list is ScopeBoth rather than ScopeHub — the serve daemon answers it
-	// too — but the hub answers it, and the spawn form asks the selected host for
-	// that host's own model inventory.
-	appwire.MethodModelList: {},
-}
-
 // remoteHostAdminMutationMethods is the non-idempotent subset of
-// remoteHostAdminMethods: the forwarded methods that change the remote host's
+// the AppWire host-request catalog: the forwarded methods that change the remote host's
 // durable state — provider instances, launch layers and repo trust,
 // marketplaces and plugins (including the on-demand auto-upgrade pass behind
 // plugin/checkNow), credentials and login state, the personal AGENTS.md, and
@@ -153,15 +33,15 @@ var remoteHostAdminMethods = map[string]struct{}{
 // reported as unknown and no retry is implied.
 //
 // Like the allow-list, this is an EXACT-NAME set: every name must be a member
-// of remoteHostAdminMethods, every allow-listed name is classified here or as
+// of the AppWire host-request catalog, every allow-listed name is classified here or as
 // an explicit read (see TestHostAdminMutationClassificationMatchesAllowList),
 // and a method added to the allow-list without a classification fails that
 // test.
 //
 // The read-only remainder — the families whose effect is a lookup or a
 // refetch, so an identical retry is harmless: instance/list, launch/{resolve,
-// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview},
-// auth/{status,test,list}, settings/agentsDoc/get, the discovery
+// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview,
+// checkUpdates}, auth/{status,test,list}, settings/agentsDoc/get, the discovery
 // helpers (paths/complete, path/validate, projects/recent, harnesses/list,
 // spawn/slashCatalog, git/head), and model/list — stays on AdminCall.
 var remoteHostAdminMutationMethods = map[string]struct{}{
@@ -214,6 +94,13 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	// The personal AGENTS.md, and the spawn form's directory creation.
 	appwire.MethodEvenerSettingsAgentsDocSet: {},
 	appwire.MethodEvenerDirsCreate:           {},
+}
+
+// isRemoteHostAdminMutation reports whether a forwarded method changes the
+// remote host (remoteHostAdminMutationMethods).
+func isRemoteHostAdminMutation(method string) bool {
+	_, mutating := remoteHostAdminMutationMethods[method]
+	return mutating
 }
 
 // remoteHostConfigNotifications is the exact set of host-owned config
@@ -337,7 +224,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	// Validate the allow-list before resolving the source: a method the proxy may
 	// never forward is refused identically whether the host is online or not, and
 	// refused without consulting the source registry at all.
-	if _, ok := remoteHostAdminMethods[params.Method]; !ok {
+	if !appwire.IsHostRequestMethod(params.Method) {
 		return nil, appwire.InvalidParams(fmt.Sprintf("method %q is not a permitted remote admin method", params.Method))
 	}
 	remote, err := c.remoteSourceFor(host)
@@ -350,7 +237,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	// might blind-retry. A read keeps AdminCall's SessionUnavailable mapping.
 	var out json.RawMessage
 	var callErr error
-	if _, mutating := remoteHostAdminMutationMethods[params.Method]; mutating {
+	if isRemoteHostAdminMutation(params.Method) {
 		callErr = remote.AdminMutationCall(ctx, params.Method, params.Params, &out)
 	} else {
 		callErr = remote.AdminCall(ctx, params.Method, params.Params, &out)
@@ -359,6 +246,39 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 		return nil, callErr
 	}
 	return out, nil
+}
+
+// forwardedHostRead reports an evener/host/request that forwards a read, which
+// the RPC server runs off the connection's serial worker
+// (appserver.ServerConfig.ConcurrentRequest). A read's cost is the remote
+// host's: a plugin update check there can take minutes, and inline it would
+// hold every later request on the browser's socket, for every host, behind
+// it. Its answer can now arrive after a request sent later; the clients'
+// stores fence such answers (listRevision.ts and its kin). A forwarded
+// mutation stays inline, so a caller's writes reach the remote in the order
+// it sent them and a read sent after one starts only once it has answered.
+// marketplace/refresh also stays inline: it is retry-safe, so the proxy
+// maps its errors as a read's, but it writes the remote's clone, so its
+// order against marketplace writes matters to every caller, not only the web
+// (whose hub write gate orders it too). A method outside the allow-list, or
+// params that do not parse, stay inline so the refusal is answered in order; an
+// allow-listed read to an unknown or offline host goes concurrent and is
+// refused out of order, which changes nothing. The pool is the target host,
+// so one slow host's reads never refuse reads to another.
+func forwardedHostRead(method string, params json.RawMessage) (pool string, ok bool) {
+	if method != appwire.MethodEvenerHostRequest {
+		return "", false
+	}
+	var forwarded appwire.HostRequestParams
+	if json.Unmarshal(params, &forwarded) != nil || !appwire.IsHostRequestMethod(forwarded.Method) {
+		return "", false
+	}
+	if isRemoteHostAdminMutation(forwarded.Method) || forwarded.Method == appwire.MethodEvenerMarketplaceRefresh {
+		return "", false
+	}
+	// Trimmed as Request trims it, so padding cannot split one host's reads
+	// across pools.
+	return strings.TrimSpace(forwarded.Host), true
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the

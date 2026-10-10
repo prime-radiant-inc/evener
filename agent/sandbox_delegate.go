@@ -124,7 +124,23 @@ func delegateSandboxBackendAvailable(host sandbox.HostFacts) bool {
 }
 
 func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, bool, error) {
+	return s.prepareSubagentEnvironmentFor(workingDir, requested, "")
+}
+
+// prepareSubagentEnvironmentFor is prepareSubagentEnvironment for the child
+// session childSessionID: an environment built for the child names its scratch
+// after the child, in this session's root's tree, before any sandbox mints it,
+// so the child's scratch is kept until the root is archived and reopened when
+// the child is restored. An empty childSessionID leaves the scratch disposable.
+// The parent's own environment, handed over when the child needs neither a
+// working dir nor a box, is never renamed.
+func (s *Session) prepareSubagentEnvironmentFor(workingDir string, requested *sandbox.SandboxPolicy, childSessionID string) (execenv.ExecutionEnvironment, bool, error) {
 	subEnv := s.currentEnv()
+	name := func(local *execenv.LocalExecutionEnvironment) {
+		if childSessionID != "" {
+			local.SetScratchIdentity(s.scratchTreeRootID(), childSessionID)
+		}
+	}
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir != "" {
 		local, ok := subEnv.(*execenv.LocalExecutionEnvironment)
@@ -132,6 +148,7 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 			return nil, false, errors.New("execution environment does not support working_dir override")
 		}
 		rerooted := local.WithWorkingDirectory(workingDir)
+		name(rerooted)
 		rerootErr := rerooted.SandboxReRootError()
 		if fault := s.subagentPrepareFault("sandbox_reroot"); fault != nil {
 			rerootErr = fault
@@ -148,6 +165,7 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 		}
 		if workingDir == "" {
 			local = local.WithWorkingDirectory(local.WorkingDirectory())
+			name(local)
 		}
 		var resolved sandbox.ResolvedPolicy
 		var err error
@@ -187,6 +205,33 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 		}
 	}
 	return subEnv, workingDir != "" || requested != nil, nil
+}
+
+// scratchTreeRootID is the top-level session whose scratch tree this session's
+// and its descendants' scratch live in.
+func (s *Session) scratchTreeRootID() string {
+	// A delegate resumed on its own is a root for its delegate resources
+	// (delegateRootSessionID is its own ID), but its scratch tree is still the
+	// root it was spawned under.
+	if s.restoredScratchTreeRoot != "" {
+		return s.restoredScratchTreeRoot
+	}
+	if s.delegateRootSessionID != "" {
+		return s.delegateRootSessionID
+	}
+	return s.id
+}
+
+// CloseDiscardingScratch closes a throwaway top-level session and removes its
+// scratch tree. A session's scratch normally outlives its close until the hub
+// archives it; a session no hub will ever index (a tool catalog, a probe) uses
+// this so it leaves nothing behind. On a delegate it only closes: the tree is
+// its root's.
+func (s *Session) CloseDiscardingScratch() {
+	s.Close()
+	if s.cfg.spawn.parentSessionID == "" {
+		_ = sandbox.RemoveSessionScratchTree(s.scratchTreeRootID())
+	}
 }
 
 // parentSandboxModeNet reports the session's effective sandbox (mode, network) —

@@ -101,3 +101,21 @@ func TestInlineOutputImageScenarioCardsExist(t *testing.T) {
 		}
 	}
 }
+
+// TestNativeMermaidOnDeviceScenarioCardExists pins the manual runbook the
+// mermaid design spec names for the behavior vitest cannot observe on a
+// device (docs/superpowers/specs/2026-09-29-mermaid-inline-diagrams-design.md
+// "Testing", "Native real render: manual runbook on device"). Issue #3197: the
+// native inline-diagram work merged without its runbook, leaving the device
+// class unverified; this card is that runbook.
+func TestNativeMermaidOnDeviceScenarioCardExists(t *testing.T) {
+	const id = "native-mermaid-on-device"
+	path := id + ".md"
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("required scenario card %q missing at %s: %v", id, path, err)
+	}
+	if !strings.HasPrefix(string(body), "# "+id+":") {
+		t.Fatalf("%s must start with canonical scenario heading %q", path, "# "+id+":")
+	}
+}

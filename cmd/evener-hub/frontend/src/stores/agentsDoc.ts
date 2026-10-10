@@ -26,7 +26,12 @@ import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@eve
 import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { connectedClientPort, connectionStore, onConnectionNotification } from "./connection";
+import {
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+  readyConnectionTransition,
+} from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
@@ -169,12 +174,7 @@ function createAgentsDocInstance(port: AgentsDocPort): AgentsDocInstance {
     // transition and nothing else. The `changed` broadcasts that landed while
     // the socket was down are gone, and the next Save would push pre-drop
     // content over whatever the hub now has.
-    if (
-      requestedDoc &&
-      state.client &&
-      state.state === "ready" &&
-      (state.client !== previous.client || previous.state !== "ready")
-    ) {
+    if (requestedDoc && readyConnectionTransition(state, previous)) {
       void store
         .getState()
         .fetch()

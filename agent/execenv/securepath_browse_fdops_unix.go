@@ -3,10 +3,9 @@
 package execenv
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -47,11 +46,20 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
+	// Nonblocking + regular-file admission, the same contract readFile enforces:
+	// a read-only open of a FIFO entry (which WalkDir reaches as a non-directory
+	// and grep then fs.ReadFile's) would otherwise block the walk at open until a
+	// writer appears, and a never-ending special file would read without bound.
+	// A directory is still admitted — fs.FS Open must serve one.
+	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	file, err := admitReadFD(fd, name, true)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+	}
+	return file, nil
 }
 
 // ReadDir lists name through readDirChunked, the same helper boundedDirFS
@@ -68,7 +76,9 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
+	// O_NONBLOCK: glob stats every candidate, so a FIFO entry must not block this
+	// open. Stat reports one, so no type admission — only the nonblocking open.
+	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: toFsErr(err)}
 	}
@@ -166,26 +176,35 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 // walking a secureDirFS so symlinks are never followed and refusing to descend
 // into masked subtrees. cancelFS makes the walk and file opens observe ctx. The
 // per-file matching/formatting is shared with the off path via grepAccum, so
-// output semantics are identical.
-func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+// output semantics are identical. It never searches a file skip names (see
+// LocalExecutionEnvironment.GrepSkipping). A base that names a file is
+// searched alone (see grepNamedFile).
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
-	}
-	baseFd, canonical, err := s.openReadBaseFd("grep", base)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = unix.Close(baseFd) }()
-
-	ctxLines := 0
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
 	}
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
 		return "", err
 	}
+	// The base opens without O_DIRECTORY, so a named file is admitted by the
+	// same read policy as a directory; its type then picks the search.
+	canonical := filepath.Clean(base)
+	baseFd, err := s.openRead("grep", canonical, unix.O_RDONLY|unix.O_NONBLOCK)
+	if err != nil {
+		return "", err
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(baseFd, &st); err != nil {
+		_ = unix.Close(baseFd)
+		return "", err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return grepNamedFile(ctx, baseFd, canonical, a, globFilters, skip)
+	}
+	defer func() { _ = unix.Close(baseFd) }()
+
 	budget := newGlobBudget("grep")
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	// Never list or read into a masked subtree while collecting .gitignore
@@ -254,14 +273,8 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			excludedByIgnore++
 			return nil
 		}
-		if len(globFilters) > 0 {
-			matched, matchErr := matchesAnyGrepFilter(d.Name(), globFilters)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				return nil
-			}
+		if selected, selErr := grepFileSelected(d.Name(), rel, globFilters, skip); !selected {
+			return selErr
 		}
 		data, rerr := secureBrowseReadFile(fsys, rel)
 		if rerr != nil {
@@ -269,9 +282,6 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 				return cancelErr
 			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
-		}
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
 		}
 		if a.feed(rel, data) {
 			return fs.SkipAll
@@ -284,13 +294,34 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	result := a.finish()
-	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
-	// "no matches among the files searched, but N were skipped by the
-	// default dotfile/gitignore exclusion" — grep has no include_ignored
-	// knob, so this is informational rather than a suggestion to retry.
-	if result == "" && excludedByIgnore > 0 {
-		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore), nil
+}
+
+// grepNamedFile searches the one file a grep's path names, given its
+// nonblocking fd (which it takes ownership of), under the rules the walk
+// applies to each file it reaches: dotfiles, files grepFileSelected leaves
+// out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
+// output path is ".", the unsandboxed walk's name for a named file.
+func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
+	f, err := admitReadFD(fd, path, false)
+	if err != nil {
+		return "", nil //nolint:nilerr // best-effort grep: a non-regular file is skipped, as in the walk
 	}
-	return result, nil
+	defer func() { _ = f.Close() }()
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") {
+		return "", nil
+	}
+	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
+		return "", err
+	}
+	data, err := io.ReadAll(f)
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return "", cancelErr
+	}
+	if err != nil {
+		return "", nil //nolint:nilerr // best-effort grep: an unreadable file is skipped, as in the walk
+	}
+	a.feed(".", data)
+	return a.finish(), nil
 }

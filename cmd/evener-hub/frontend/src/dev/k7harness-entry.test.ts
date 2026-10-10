@@ -1,11 +1,7 @@
 import { act } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-// k7harness-entry renders SessionChrome - and therefore ActivityPanel - outside
-// the app shell that wires the activity stores, so it has to register the
-// activity summary link itself, exactly as AppShell.tsx and
-// dev/surface-sections/chrome.tsx do. Without that call the panel's first
-// continuation fetch throws "no summary link registered".
+// The standalone harness mounts the same shared activity owner as the app.
 describe("k7harness entry", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -14,13 +10,14 @@ describe("k7harness entry", () => {
 
   // The harness entry pulls in the whole SessionChrome graph, whose Vite
   // transform alone can outrun the default 5s ceiling on a loaded host.
-  test("registers the activity summary link, so a continuation fetch does not throw", async () => {
+  test("mounts the standalone chrome without a separate activity reader", async () => {
     // The entry renders its root as it loads.
     await act(async () => {
       await import("./k7harness-entry");
     });
     const { activityPanelStore } = await import("../stores/activityPanel");
 
-    expect(() => activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" })).not.toThrow();
+    activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
+    expect(activityPanelStore.getState().entries.get("ref_a")?.expandedFoldIDs).toEqual(["fold:qualified"]);
   }, 30_000);
 });

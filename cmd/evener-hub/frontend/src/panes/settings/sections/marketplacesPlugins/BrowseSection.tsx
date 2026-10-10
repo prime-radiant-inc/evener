@@ -6,6 +6,7 @@
 
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
 import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
@@ -48,12 +49,12 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
+  const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
 
   const [filterQuery, setFilterQuery] = useState("");
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
-  const [installBusy, setInstallBusy] = useState(false);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -147,15 +148,12 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   async function handleConfirmInstall() {
     const target = pendingInstall;
     if (target === null) return;
-    setInstallBusy(true);
     try {
       await store.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
       setPendingInstall(null);
     } catch (err) {
-      toasts.push("error", `Install failed: ${errorText(err)}`);
-    } finally {
-      setInstallBusy(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
     }
   }
 
@@ -199,6 +197,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
               cache={browseCatalogs.get(m.name)}
               query={trimmedQuery}
               isInstalled={isInstalled}
+              installDisabled={hubWriteBusy}
               onToggle={() => toggleExpanded(m.name)}
               onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
             />
@@ -210,7 +209,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
         title="Install plugin"
         confirmLabel="Install"
         destructive={false}
-        busy={installBusy}
+        busy={hubWriteBusy}
         onConfirm={() => void handleConfirmInstall()}
         onCancel={() => setPendingInstall(null)}
       >
@@ -234,6 +233,7 @@ function MarketplaceNode({
   cache,
   query,
   isInstalled,
+  installDisabled,
   onToggle,
   onInstall,
 }: {
@@ -242,6 +242,7 @@ function MarketplaceNode({
   cache: MarketplaceCatalogEntry | undefined;
   query: string;
   isInstalled: (plugin: string, marketplace: string) => boolean;
+  installDisabled: boolean;
   onToggle: () => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
@@ -297,7 +298,7 @@ function MarketplaceNode({
                   {isInstalled(p.name, marketplace.name) ? (
                     <span className={CLASS.installedBadge}>Installed</span>
                   ) : (
-                    <Button size="sm" onClick={() => onInstall(p.name, marketplace.name)}>
+                    <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
                       Install
                     </Button>
                   )}

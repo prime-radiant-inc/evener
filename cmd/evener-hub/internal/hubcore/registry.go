@@ -24,7 +24,7 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // ProviderRegistry is the hub's live view of the provider registry: the
 // current instance set, reloaded after every providers.toml write, and the
 // diagnostics the web UI shows (spec §11.3). When the user layer fails to
-// load (an old-schema file) it holds an implicit-only registry, keeps the
+// load it keeps the previous registry (implicit-only at startup), keeps the
 // error for the diagnostics, and refuses writes until a reload succeeds
 // (spec §10, §14.1).
 
@@ -75,11 +75,12 @@ type ProviderRegistry struct {
 	// bumps it, and a fetch mints its token at request start, so a slower
 	// fetch that returns after a newer one began holds a lower token.
 	// lastApplied holds the highest order actually applied per instance;
-	// ReapplyLive lands only above it, so stale responses are discarded
-	// while a failed newer fetch - which applies nothing - never blocks an
-	// older in-flight success. It is deliberately NOT generation:
+	// ReapplyLive lands only above it, so stale responses are discarded.
+	// A provider failure publishes an empty snapshot and supersedes an older
+	// success; a caller-cancelled fetch publishes nothing, so it does not.
+	// It is deliberately NOT generation:
 	// beginning a fetch changes nothing a reader can observe, and the
-	// prefetch begins one per instance on every pass, so counting starts
+	// startup prefetch begins one per instance, so counting starts
 	// as installs would defeat the model-list cache's TTL.
 	fetchClock uint64
 	// lastApplied holds the highest fetch order applied per instance.
@@ -113,8 +114,8 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 }
 
 // Reload re-reads the registry and returns the load error, if any. A failing
-// user layer leaves the holder on an implicit-only registry so sessions still
-// launch, and the error is what refuses instance writes until the file is
+// user layer retains the previous usable registry, or loads an implicit-only
+// registry at startup. The error refuses instance writes until the file is
 // fixed. Cached live listings carry over to the fresh object either way, so
 // an instance write never wipes what background prefetch and manual
 // refreshes already fetched.
@@ -130,6 +131,12 @@ func (h *ProviderRegistry) Reload() error {
 	oldIDs := instanceIdentities(old)
 	r, _, err := h.load()
 	if err != nil {
+		if old != nil {
+			h.mu.Lock()
+			h.loadErr = err
+			h.mu.Unlock()
+			return err
+		}
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())
 		var fallbackIDs map[string]string
 		if ferr == nil {
@@ -572,6 +579,22 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.snapshot()
 }
 
+// RetainedUserConfig pairs the failed-load state with the usable registry's
+// source bytes under one lock. A retained registry with nil bytes loaded no
+// user file, so a child must use the implicit instance set.
+func (h *ProviderRegistry) RetainedUserConfig() (string, []byte, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.loadErr == nil {
+		return "", nil, false
+	}
+	if h.current == nil {
+		return "", nil, true
+	}
+	path, raw := h.current.UserConfigSnapshot()
+	return path, raw, true
+}
+
 // BeginLiveFetchReg atomically pairs instance's fetch token with the
 // registry snapshot the fetch must run against AND the endpoint
 // identity that fetch queried: the client is built from the returned
@@ -603,17 +626,15 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 // ReapplyLive applies rows fetched under token tok to the current
 // registry. Rows are the fetch's raw live snapshot, so advertised
 // capability facts survive the round trip the way the direct ApplyLive
-// inside the fetch did. The apply lands only above lastApplied: a
-// slower fetch that returns after a newer success began holds a lower
-// token and is discarded, while a failed newer fetch — which never
-// reaches here — leaves lastApplied untouched so the older success it
-// overtook still lands. A Reload swaps the registry (whose carryLive
-// kept the before snapshot); a fetch that began before the swap holds
-// a token from an older generation and still applies its listing
-// forward, which is the carry-forward the refresh path needs. An
-// unsupported listing (Live == false) must not reach here either: its
-// rows are catalog data, not a live listing, and applying them would
-// plant an empty snapshot over a real one.
+// inside the fetch did. Nil rows publish static fallback for a provider
+// failure, unsupported endpoint, or otherwise unusable listing. The apply
+// lands only above lastApplied: a slower fetch that returns after a newer
+// published outcome holds a lower token and is discarded. A caller-cancelled
+// fetch never reaches here, so it leaves lastApplied untouched and an older
+// success it overtook may still land. A Reload swaps the registry (whose
+// carryLive kept the before snapshot); a fetch that began before the swap
+// holds a token from an older generation and still applies its listing
+// forward, which is the carry-forward the refresh path needs.
 func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string, rows []registry.Model) {
 	// The identity check below reads credential material, so it is taken
 	// outside the lock and re-judged if a Reload moves the snapshot in
@@ -695,7 +716,7 @@ func (h *ProviderRegistry) Diagnostics() []string {
 	defer h.mu.RUnlock()
 	var out []string
 	if h.loadErr != nil {
-		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed)")
+		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed; the active configuration is retained while this edit is invalid)")
 	}
 	if h.current != nil {
 		out = append(out, h.current.UserLayerNote())

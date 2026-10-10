@@ -1,22 +1,41 @@
 // The grouped list the Hub and New session sheets are built from (spec 12 and
 // 16): uppercase section labels, inset groups of rows on the surface color over
-// the canvas, and ink-low footers. A row carries a bare SF Symbol in ink-mid
+// the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, Fragment, isValidElement, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Switch, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
+import {
+	Children,
+	Fragment,
+	isValidElement,
+	type ReactNode,
+	type Ref,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-/** The scrolling page a grouped sheet page sits in. */
-export function GroupedPage({ children }: { children: ReactNode }) {
+/** Above a section label. */
+const SECTION_TOP = 20;
+/** A row's leading glyph slot. */
+const GLYPH = 22;
+
+/** The scrolling page a grouped sheet page sits in. `scrollRef` is for a page
+ * that brings something into view itself, such as a form's refusal. */
+export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
 	const { palette } = useColors();
 	return (
 		<ScrollView
+			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
 			contentContainerStyle={{ paddingBottom: 32 }}
 			keyboardShouldPersistTaps="handled"
+			keyboardDismissMode="on-drag"
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 		>
 			{children}
@@ -26,10 +45,12 @@ export function GroupedPage({ children }: { children: ReactNode }) {
 
 /** A section label: SF Pro semibold 12, uppercase, +0.06em (spec 16.2). A
  * machine label (a marketplace, a provider profile) is Menlo as typed and never
- * uppercased (spec 11). */
+ * uppercased (spec 11). A group takes its label as Group's `label`; this
+ * heads anything else, such as a segmented control or a footer. */
 export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { fontSize, lineHeight, ...sectionCase } = scaledType(uiType.sectionLabel, scale);
 	return (
 		<Text
 			accessibilityRole="header"
@@ -37,15 +58,13 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 			style={[
 				{
 					color: palette.inkMid,
-					fontSize: 12 * scale,
-					lineHeight: 16 * scale,
-					paddingHorizontal: 32,
-					paddingTop: 20,
+					fontSize,
+					lineHeight,
+					paddingHorizontal: space.labelInset,
+					paddingTop: SECTION_TOP,
 					paddingBottom: 6,
 				},
-				machine
-					? { fontFamily: fonts.mono }
-					: ({ fontWeight: "600", letterSpacing: 0.72, textTransform: "uppercase" } as const),
+				machine ? { fontFamily: fonts.mono } : sectionCase,
 			]}
 		>
 			{children}
@@ -53,29 +72,80 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 	);
 }
 
-/** An inset group of rows with hairlines between them, not around them. */
-export function Group({ children }: { children: ReactNode }) {
+/** Where a row's text starts when the row carries a symbol. */
+const ICON_ROW_TEXT = space.rowInset + GLYPH + space.rowGap;
+
+/** Reads a child's `icon` prop, so only a Row or SwitchRow placed directly in
+ * the group counts: a row wrapped in another component, or a custom child,
+ * gets the plain 16pt hairline inset even if it draws a symbol. */
+function carriesSymbol(row: ReactNode): boolean {
+	return isValidElement<{ icon?: unknown }>(row) && Boolean(row.props.icon);
+}
+
+/** An inset group of rows with hairlines between them, not around them. A
+ * group with a section label sits right under it; one without keeps the
+ * prototype's 16pt from whatever comes before it (`.group + .group`), so two
+ * groups in a row never touch. A hairline starts under the text when the rows
+ * on both sides of it carry a symbol, as iOS Settings draws it. */
+export function Group({
+	children,
+	label,
+	machineLabel = false,
+}: {
+	children: ReactNode;
+	label?: string;
+	/** The label is a marketplace or similar machine name (see GroupLabel). */
+	machineLabel?: boolean;
+}) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
-	return (
-		<View style={{ marginHorizontal: 16, borderRadius: 12, overflow: "hidden", backgroundColor: palette.surface }}>
+	const group = (
+		<View
+			style={{
+				marginHorizontal: space.margin,
+				marginTop: label ? 0 : space.groupGap,
+				borderRadius: 12,
+				overflow: "hidden",
+				backgroundColor: palette.surface,
+			}}
+		>
 			{rows.map((row, index) => (
 				<Fragment key={isValidElement(row) && row.key !== null ? row.key : `row-${index}`}>
 					{index > 0 ? (
-						<View testID="hairline" style={{ height: 0.5, marginLeft: 16, backgroundColor: palette.edge }} />
+						<View
+							testID="hairline"
+							style={{
+								height: 0.5,
+								marginLeft: carriesSymbol(rows[index - 1]) && carriesSymbol(row) ? ICON_ROW_TEXT : space.rowInset,
+								backgroundColor: palette.edge,
+							}}
+						/>
 					) : null}
 					{row}
 				</Fragment>
 			))}
 		</View>
 	);
+	if (!label) return group;
+	return (
+		<>
+			<GroupLabel machine={machineLabel}>{label}</GroupLabel>
+			{group}
+		</>
+	);
+}
+
+/** The space above a page's first block when that block isn't a group, such
+ * as the Plugins page's segmented control: a group keeps its own space. */
+export function GroupGap() {
+	return <View style={{ height: space.groupGap }} />;
 }
 
 /** A row's leading slot: a bare symbol, or the empty space an unchecked
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 	return (
-		<View style={{ width: 22, alignItems: "center" }}>
+		<View style={{ width: GLYPH, alignItems: "center" }}>
 			{name ? <SymbolView name={name} tintColor={color} size={17} /> : null}
 		</View>
 	);
@@ -83,10 +153,14 @@ function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 
 export interface RowProps {
 	label: string;
-	/** A second line in ink-low. */
+	/** The label is a model id or similar machine text: Menlo. */
+	machineLabel?: boolean;
+	/** A second line in ink-mid. */
 	sub?: string;
 	/** The second line is a path or an id: Menlo. */
 	machineSub?: boolean;
+	/** "danger" for a second line that reports a problem ("1 need attention"). */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	/** The trailing value: text in ink-mid, or a node such as a tag. */
 	value?: ReactNode;
@@ -101,12 +175,101 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** A control of its own at the row's end, such as a mini button
+	 * ("Install"): outside what a press on the row opens, so each is its own
+	 * target and its own VoiceOver element. */
+	accessory?: ReactNode;
 }
 
-export function Row({
+/** Between the label and a value that wrapped under it. */
+const WRAPPED_VALUE_GAP = 4;
+
+/** Whether a node draws anything: React renders nothing for null,
+ * undefined, booleans and the empty string. */
+function rendersSomething(node: ReactNode): boolean {
+	return node !== undefined && node !== null && typeof node !== "boolean" && node !== "";
+}
+
+/** A row's label and its second line: Row draws the label on a wrapping line
+ * with its value, SwitchRow stacks the two. One definition keeps the two rows'
+ * text in step. */
+function RowText({
 	label,
 	sub,
+	subTone = "normal",
+	machineLabel = false,
 	machineSub = false,
+	labelColor,
+	children,
+}: {
+	label: string;
+	sub?: string;
+	subTone?: "normal" | "danger";
+	machineLabel?: boolean;
+	machineSub?: boolean;
+	/** A row's action or destructive ink overrides the default inkHi. */
+	labelColor?: string;
+	/** A row's value, drawn on the label's wrapping line. */
+	children?: ReactNode;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<>
+			<View
+				testID="row-line"
+				style={{
+					flexDirection: "row",
+					flexWrap: "wrap",
+					alignItems: "center",
+					columnGap: space.rowGap,
+					rowGap: WRAPPED_VALUE_GAP,
+				}}
+			>
+				<Text
+					testID="row-label"
+					allowFontScaling={allowFontScaling}
+					style={{
+						flexGrow: 1,
+						flexShrink: 1,
+						color: labelColor ?? palette.inkHi,
+						...scaledType(uiType.listRow, scale),
+						...(machineLabel ? { fontFamily: fonts.mono } : null),
+					}}
+				>
+					{label}
+				</Text>
+				{children}
+			</View>
+			{sub ? (
+				<Text
+					testID="row-sub"
+					allowFontScaling={allowFontScaling}
+					style={[
+						{
+							color: subTone === "danger" ? palette.dangerInk : palette.inkMid,
+							...scaledType(uiType.footnote, scale),
+						},
+						machineSub ? { fontFamily: fonts.mono } : null,
+					]}
+				>
+					{sub}
+				</Text>
+			) : null}
+		</>
+	);
+}
+
+/** A grouped row. The label and the value share one wrapping line, with the
+ * second line below it. The label is sized by its own text and grows into the
+ * free space, so a value that doesn't fit beside it moves under it: the
+ * label's words never break apart to make room ("paradise-/park"). */
+export function Row({
+	label,
+	machineLabel = false,
+	sub,
+	machineSub = false,
+	subTone = "normal",
 	icon,
 	value,
 	chevron = false,
@@ -115,9 +278,9 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	accessory,
 }: RowProps) {
 	const { palette } = useColors();
-	const scale = useTextScale();
 	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
 	const plainValue = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 	const reading = accessibilityLabel ?? [label, sub, plainValue].filter(Boolean).join(", ");
@@ -129,117 +292,141 @@ export function Row({
 				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
 			<View style={{ flex: 1, gap: 2 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: labelColor, fontSize: 17 * scale, lineHeight: 22 * scale }}
+				<RowText
+					label={label}
+					sub={sub}
+					subTone={subTone}
+					machineLabel={machineLabel}
+					machineSub={machineSub}
+					labelColor={labelColor}
 				>
-					{label}
-				</Text>
-				{sub ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={[
-							{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale },
-							machineSub ? { fontFamily: fonts.mono } : null,
-						]}
-					>
-						{sub}
-					</Text>
-				) : null}
+					{rendersSomething(value) ? (
+						<View testID="row-value" style={{ flexShrink: 1 }}>
+							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+						</View>
+					) : null}
+				</RowText>
 			</View>
-			{plainValue !== undefined ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkMid, fontSize: 17 * scale, fontVariant: ["tabular-nums"] }}
-				>
-					{plainValue}
-				</Text>
-			) : (
-				(value ?? null)
-			)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
 	const style = {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 12,
+		gap: space.rowGap,
 		minHeight: 44,
-		paddingHorizontal: 16,
-		paddingVertical: 11,
+		paddingHorizontal: space.rowInset,
+		paddingVertical: space.rowPadding,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
-	if (!onPress)
-		return (
-			<View accessible accessibilityLabel={reading} style={style}>
-				{body}
-			</View>
-		);
-	return (
+	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
+	// With a control at its end, the row's own part takes the rest of the
+	// width and the control sits beside it, inset like the row's text.
+	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
+	const row = !onPress ? (
+		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+			{body}
+		</View>
+	) : (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
-			accessibilityState={checked === undefined ? { disabled } : { disabled, selected: checked }}
+			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
-			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
+			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
 		>
 			{body}
 		</Pressable>
+	);
+	if (!accessory) return row;
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center" }}>
+			{row}
+			{/* Stretched to the row's height: React Native clips a touch at its
+			    parent's bounds, so a control's reach needs the row's room. */}
+			<View
+				testID="row-accessory"
+				style={{ alignSelf: "stretch", justifyContent: "center", paddingHorizontal: space.rowInset }}
+			>
+				{accessory}
+			</View>
+		</View>
 	);
 }
 
 /** A row whose trailing control is a switch in the accent color (spec 16.1:
  * switches are accent, never the working green). The switch is the accessible
- * element, so VoiceOver can flip it. */
+ * element, so VoiceOver can flip it. With `onPress`, the row's text also opens
+ * something (an installed plugin's detail) as its own button, and the row
+ * stays undimmed while only the switch is disabled. */
 export function SwitchRow({
 	label,
 	sub,
+	subTone = "normal",
 	icon,
 	value,
 	onChange,
 	disabled = false,
+	onPress,
+	accessibilityLabel,
+	switchLabel,
 }: {
 	label: string;
 	sub?: string;
+	/** "danger" for a second line that reports a problem, such as "Broken". */
+	subTone?: "normal" | "danger";
 	icon?: SFSymbol;
 	value: boolean;
 	onChange(value: boolean): void;
 	disabled?: boolean;
+	/** The row's text opens a detail. */
+	onPress?: () => void;
+	/** VoiceOver's reading of the text `onPress` opens. */
+	accessibilityLabel?: string;
+	/** VoiceOver's name for the switch, when the label alone doesn't say what
+	 * it sets ("superpowers on by default"). */
+	switchLabel?: string;
 }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const text = (
+		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+			<RowText label={label} sub={sub} subTone={subTone} />
+		</View>
+	);
 	return (
 		<View
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
-				gap: 12,
+				gap: space.rowGap,
 				minHeight: 44,
-				paddingHorizontal: 16,
+				paddingHorizontal: space.rowInset,
 				paddingVertical: 8,
-				opacity: disabled ? 0.4 : 1,
+				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
-			<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+			{onPress ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={accessibilityLabel ?? [label, sub].filter(Boolean).join(", ")}
+					onPress={onPress}
+					// Pressed, it shades as a Row does.
+					style={({ pressed }) => ({
+						flex: 1,
+						alignSelf: "stretch",
+						justifyContent: "center",
+						backgroundColor: pressed ? palette.pressed : undefined,
+					})}
 				>
-					{label}
-				</Text>
-				{sub ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
-					>
-						{sub}
-					</Text>
-				) : null}
-			</View>
+					{text}
+				</Pressable>
+			) : (
+				text
+			)}
 			<Switch
-				accessibilityLabel={label}
+				accessibilityLabel={switchLabel ?? label}
 				accessibilityHint={sub}
 				value={value}
 				disabled={disabled}
@@ -252,29 +439,314 @@ export function SwitchRow({
 	);
 }
 
-/** A group's footer: ink-low, or the attention or danger ink when it reports
+/** A row that edits a value in place. By default it's a machine value (an
+ * address, a path, a list of paths) in Menlo, as typed: no capitals or
+ * corrections. `machine={false}` is for words someone chose, such as a hub's
+ * name, in SF Pro at the row size. The label is VoiceOver's name for it; the
+ * group's label shows it. */
+export function TextFieldRow({
+	label,
+	value,
+	onChangeText,
+	multiline = false,
+	disabled = false,
+	machine = true,
+	placeholder,
+	secure = false,
+	returnKeyType,
+	onSubmitEditing,
+	ref,
+}: {
+	label: string;
+	value: string;
+	onChangeText(text: string): void;
+	multiline?: boolean;
+	disabled?: boolean;
+	machine?: boolean;
+	placeholder?: string;
+	/** A token or key: the field hides what's typed, and iOS never offers to
+	 * fill or save it. */
+	secure?: boolean;
+	/** "next" to lead on to the form's next field, "done" on its last. */
+	returnKeyType?: "next" | "done";
+	onSubmitEditing?: () => void;
+	ref?: Ref<TextInput>;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<TextInput
+			accessibilityLabel={label}
+			value={value}
+			onChangeText={onChangeText}
+			multiline={multiline}
+			editable={!disabled}
+			placeholder={placeholder}
+			placeholderTextColor={palette.inkLow}
+			secureTextEntry={secure}
+			{...(secure ? { textContentType: "none", autoComplete: "off" } : null)}
+			autoCapitalize={machine ? "none" : "sentences"}
+			autoCorrect={!machine}
+			spellCheck={!machine}
+			returnKeyType={returnKeyType}
+			onSubmitEditing={onSubmitEditing}
+			submitBehavior={returnKeyType === "next" ? "submit" : undefined}
+			ref={ref}
+			allowFontScaling={allowFontScaling}
+			style={{
+				color: palette.inkHi,
+				// React Native draws a TextInput's placeholder in the input's
+				// own font, so a machine field shows hint words in the UI font
+				// while empty and its value in Menlo once there is one (spec
+				// 16.2).
+				...(machine && value !== "" ? { fontFamily: fonts.mono } : null),
+				fontSize: (machine ? uiType.subheadline : uiType.listRow).fontSize * scale,
+				minHeight: multiline ? 88 : 44,
+				paddingHorizontal: space.rowInset,
+				paddingVertical: space.rowPadding,
+				textAlignVertical: multiline ? "top" : "center",
+				opacity: disabled ? 0.4 : 1,
+			}}
+		/>
+	);
+}
+
+/** The platform's minimum touch target, read at render so it follows
+ * Platform.OS. */
+const minimumTarget = () => (Platform.OS === "android" ? 48 : 44);
+
+/** Each Button kind, from the prototype's .btn.primary.big, .btn and
+ * .mini-btn. `reach` is how far the touch extends: a primary or plain button
+ * reaches the platform's minimum target, and a mini button, which sits inside
+ * a 44pt row, reaches the row's edges and no further. */
+const BUTTON_KINDS = {
+	primary: {
+		drawn: 50,
+		reach: "platform",
+		shape: { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" },
+		fill: "accentFill",
+		ink: "onFill",
+		type: uiType.listRow,
+		pressed: "dim",
+	},
+	plain: {
+		drawn: 36,
+		reach: "platform",
+		shape: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5 },
+		fill: "surface",
+		ink: "inkHi",
+		type: uiType.subheadline,
+		pressed: "dim",
+	},
+	mini: {
+		drawn: 30,
+		reach: "row",
+		shape: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
+		fill: undefined,
+		ink: "accentInk",
+		type: uiType.footnote,
+		pressed: "shade",
+	},
+} as const satisfies Record<
+	string,
+	{
+		drawn: number;
+		reach: "platform" | "row";
+		shape: object;
+		fill: keyof Palette | undefined;
+		ink: keyof Palette;
+		type: { fontSize: number; lineHeight: number };
+		pressed: "dim" | "shade";
+	}
+>;
+
+/** A button, as the prototype draws one (styles.css):
+ * - `primary`, the page's call to action: filled in the accent and full width
+ *   at 50pt (.btn.primary.big). It dims when pressed, as the app's other
+ *   buttons do.
+ * - plain, beside what it acts on: a 36pt capsule on the surface (.btn),
+ *   dimming when pressed.
+ * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
+ *   with no fill, shaded when pressed.
+ * - `text`, an inline action: 16pt accent text with no fill, drawn at the
+ *   platform's minimum target; with `quiet`, the same in the secondary ink at
+ *   regular weight, for an action that steps back.
+ * - `primary` with `compact`: the call to action sized to its label, a 16pt
+ *   accent pill at the platform's minimum target, for one that sits beside
+ *   other controls rather than across the page.
+ * A plain, text or compact primary button's touch reaches the 44pt minimum (48 on Android); a
+ * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
+ * so the height is a minimum. `expanded` tells VoiceOver whether the section
+ * a disclosure button opens is open.
+ * Most actions are rows; a page's one call to action is `primary`. */
+export function Button({
+	label,
+	onPress,
+	primary = false,
+	mini = false,
+	text = false,
+	quiet = false,
+	compact = false,
+	disabled = false,
+	expanded,
+	accessibilityLabel,
+}: {
+	label: string;
+	onPress(): void;
+	primary?: boolean;
+	mini?: boolean;
+	text?: boolean;
+	/** With `text`: the secondary ink at regular weight. */
+	quiet?: boolean;
+	/** With `primary`: a pill sized to its label instead of full width. */
+	compact?: boolean;
+	disabled?: boolean;
+	expanded?: boolean;
+	/** VoiceOver's name when the label alone doesn't say what it acts on, as
+	 * for a row's "Install" ("Install tool from acme"). */
+	accessibilityLabel?: string;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	if (text || (primary && compact)) {
+		const target = minimumTarget();
+		const compactPrimary = !text;
+		return (
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={accessibilityLabel ?? label}
+				accessibilityState={{ disabled, expanded }}
+				disabled={disabled}
+				onPress={onPress}
+				style={({ pressed }) => ({
+					minWidth: target,
+					minHeight: target,
+					justifyContent: "center",
+					paddingHorizontal: compactPrimary ? 18 : 8,
+					paddingVertical: 8,
+					...(compactPrimary ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
+					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
+				})}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: compactPrimary ? palette.onFill : quiet ? palette.inkMid : palette.accentInk,
+						fontSize: 16 * scale,
+						fontWeight: quiet && !compactPrimary ? "400" : "600",
+						flexShrink: 1,
+					}}
+				>
+					{label}
+				</Text>
+			</Pressable>
+		);
+	}
+	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
+	const target = kind.reach === "row" ? 44 : minimumTarget();
+	const reach = (target - kind.drawn) / 2;
+	const fill = kind.fill && palette[kind.fill];
+	const outline = "borderWidth" in kind.shape ? { borderColor: palette.edgeStrong } : null;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={accessibilityLabel}
+			accessibilityState={{ disabled, expanded }}
+			disabled={disabled}
+			onPress={onPress}
+			hitSlop={reach > 0 ? { top: reach, bottom: reach } : undefined}
+			style={({ pressed }) => ({
+				minHeight: kind.drawn,
+				alignItems: "center",
+				justifyContent: "center",
+				...kind.shape,
+				...outline,
+				backgroundColor: pressed && kind.pressed === "shade" ? palette.pressed : fill,
+				opacity: disabled ? 0.4 : pressed && kind.pressed === "dim" ? 0.65 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette[kind.ink], fontWeight: "600", ...scaledType(kind.type, scale) }}
+			>
+				{label}
+			</Text>
+		</Pressable>
+	);
+}
+
+/** What went wrong with a form, at its top in danger ink. The Save that
+ * caused it sits up in the header, so each new message is spoken: iOS has no
+ * live region, so it's announced there; Android reads the polite live region
+ * on its own, and announcing too would say it twice. */
+export function FormError({ error }: { error: FormErrorReport | null }) {
+	useEffect(() => {
+		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
+	}, [error]);
+	return error ? (
+		<GroupFooter tone="danger" live>
+			{error.message}
+		</GroupFooter>
+	) : null;
+}
+
+/** One refusal of a form's save. Each report is a new object, so a refusal
+ * that repeats the last one's words still scrolls and speaks again. */
+export interface FormErrorReport {
+	message: string;
+}
+
+/** A form's error state: set a message (or null to clear it) as with
+ * useState, and each message becomes its own FormErrorReport. */
+export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+	const [error, setError] = useState<FormErrorReport | null>(null);
+	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	return [error, report];
+}
+
+/** A ref for a form's GroupedPage that scrolls back to the top, where its
+ * FormError shows, each time a new error appears: a person scrolled down to
+ * the last field who taps Save in the header would otherwise miss it. */
+export function useErrorInView(error: FormErrorReport | null): RefObject<ScrollView | null> {
+	const page = useRef<ScrollView>(null);
+	useEffect(() => {
+		if (error) page.current?.scrollTo({ y: 0, animated: true });
+	}, [error]);
+	return page;
+}
+
+/** A group's footer: ink-mid, or the attention or danger ink when it reports
  * something a person must act on. */
 export function GroupFooter({
 	children,
 	tone = "normal",
+	machine = false,
+	live = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** A polite live region: Android reads it again when it changes. */
+	live?: boolean;
+	/** Text the machine wrote, such as an error the hub reported: Menlo. */
+	machine?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkLow;
+	const color = tone === "attention" ? palette.attentionInk : tone === "danger" ? palette.dangerInk : palette.inkMid;
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{
-				color,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
-				paddingHorizontal: 32,
-				paddingTop: 6,
-				paddingBottom: 8,
-			}}
+			accessibilityLiveRegion={live ? "polite" : undefined}
+			style={[
+				{
+					color,
+					...scaledType(uiType.footnote, scale),
+					paddingHorizontal: space.labelInset,
+					paddingTop: 6,
+					paddingBottom: 8,
+				},
+				machine ? { fontFamily: fonts.mono } : null,
+			]}
 		>
 			{children}
 		</Text>
@@ -305,7 +777,7 @@ export function Segmented<T extends string>({
 			style={{
 				flexDirection: "row",
 				gap: 2,
-				marginHorizontal: 16,
+				marginHorizontal: space.margin,
 				padding: 2,
 				borderRadius: 22,
 				backgroundColor: palette.inset,
@@ -338,7 +810,7 @@ export function Segmented<T extends string>({
 							numberOfLines={1}
 							style={{
 								color: chosen ? palette.accentInk : palette.inkHi,
-								fontSize: 15 * scale,
+								fontSize: uiType.subheadline.fontSize * scale,
 								fontWeight: chosen ? "600" : "400",
 							}}
 						>
@@ -370,16 +842,52 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 			style={{
 				color: palette[ink],
 				backgroundColor: palette[fill],
+				// The prototype's .tag (styles.css): 11pt semibold on a 16pt line.
 				fontSize: 11 * scale,
-				lineHeight: 13 * scale,
+				lineHeight: 16 * scale,
 				fontWeight: "600",
-				paddingHorizontal: 5,
-				paddingVertical: 2,
-				borderRadius: 4,
+				paddingHorizontal: 6,
+				paddingVertical: 1,
+				borderRadius: 6,
 				overflow: "hidden",
 			}}
 		>
 			{text}
 		</Text>
+	);
+}
+
+/** A row's trailing value with a tag beside it: a host's version and its gray
+ * "Hub runs 0.9.412", or the Hosts count and its amber "1 offline". */
+export function RowValue({
+	text,
+	tag,
+	tone = "normal",
+}: {
+	text?: string;
+	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
+	/** "attention" for a value that may need a human, such as Offline. */
+	tone?: "normal" | "attention";
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+			{text ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						flexShrink: 1,
+						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
+						// The prototype's .gv: a value sits a step under the 17pt label.
+						...scaledType(uiType.subheadline, scale),
+						fontVariant: ["tabular-nums"],
+					}}
+				>
+					{text}
+				</Text>
+			) : null}
+			{tag ? <Tag text={tag.text} tone={tag.tone} /> : null}
+		</View>
 	);
 }

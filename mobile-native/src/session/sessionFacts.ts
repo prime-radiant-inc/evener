@@ -1,10 +1,16 @@
 // What the Session sheet shows (spec 8.6): only facts the thread carries
 // (ruling 21). That is where it runs, its access, its plugins and its usage.
 // The same file names the model for the composer's chip (spec 8.5).
-import { basename, type ModelDescriptor, sessionEffortLevels, type ThreadModel } from "@evener/appwire-client";
+import {
+	basename,
+	formatTokenCount,
+	type ModelDescriptor,
+	sessionEffortLevels,
+	type ThreadModel,
+} from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
 import { localSessionId } from "../sessionDeletionResult";
-import { compactCount, compactDuration } from "./format";
+import { compactDuration } from "./format";
 
 /** A ref names its host first ("<host>:<session>"); "local" is the hub's own. */
 export function hostIdOf(ref: string): string {
@@ -17,6 +23,32 @@ export interface WhereFacts {
 	project?: string;
 	directory: string;
 	branch?: string;
+}
+
+/** A host as the Session sheet shows it (spec 8.6): its name, and whether
+ * it's connected, for its dot; null when nothing says. */
+export interface SessionHost {
+	label: string;
+	online: boolean | null;
+}
+
+/** Names each host a session can run on. The hub's own machine goes by the
+ * hub's name, as Hub > Hosts names it, where the manifest calls it "this
+ * host", and is as connected as the hub; any other host goes by its manifest
+ * label and state, or by its id while the manifest doesn't list it. While the
+ * hub is away every host it lists reads offline, since the phone can't reach
+ * any of them. */
+export function sessionHosts(
+	sources: readonly { id: string; label: string; online: boolean }[] | undefined,
+	hubName: string | null,
+	hubConnected: boolean,
+): (hostId: string) => SessionHost {
+	const byId = new Map((sources ?? []).map((source) => [source.id, source]));
+	return (hostId) => {
+		const source = byId.get(hostId);
+		if (hostId === "local") return { label: hubName ?? source?.label ?? hostId, online: hubConnected };
+		return { label: source?.label ?? hostId, online: source ? hubConnected && source.online : null };
+	};
 }
 
 export function whereFacts(
@@ -73,18 +105,18 @@ export function usageFacts(
 ): UsageFacts {
 	const facts: UsageFacts = {};
 	const usage = session.usage;
-	if (usage?.totalTokens) facts.tokens = `${compactCount(usage.totalTokens)} tokens`;
+	if (usage?.totalTokens) facts.tokens = `${formatTokenCount(usage.totalTokens)} tokens`;
 	const split = [
-		usage?.inputTokens ? `${compactCount(usage.inputTokens)} in` : "",
-		usage?.outputTokens ? `${compactCount(usage.outputTokens)} out` : "",
-		usage?.cacheReadTokens ? `${compactCount(usage.cacheReadTokens)} cached` : "",
+		usage?.inputTokens ? `${formatTokenCount(usage.inputTokens)} in` : "",
+		usage?.outputTokens ? `${formatTokenCount(usage.outputTokens)} out` : "",
+		usage?.cacheReadTokens ? `${formatTokenCount(usage.cacheReadTokens)} cached` : "",
 	].filter(Boolean);
 	if (split.length > 0) facts.split = split.join(" · ");
 	if (session.cost) facts.cost = session.cost;
 	if (session.workMillis > 0) facts.workTime = compactDuration(session.workMillis);
 	if (session.contextWindow > 0)
 		facts.context = {
-			text: `${compactCount(session.contextUsed)} of ${compactCount(session.contextWindow)}`,
+			text: `${formatTokenCount(session.contextUsed)} of ${formatTokenCount(session.contextWindow)}`,
 			fraction: Math.min(1, Math.max(0, session.contextUsed / session.contextWindow)),
 		};
 	const failed = session.failedToolCalls ?? 0;
@@ -109,10 +141,14 @@ export function effortName(level: string): string {
 }
 
 /** A model as the catalog names it (a model is called one way everywhere
- * people read it). Before the catalog loads, the model id stands in. */
-function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined): string {
+ * people read it). While the catalog is away (before the first load, and
+ * after a failed load clears it; a reload keeps it) the hub's session row names it (S17's model_name, the
+ * same name model/list gives), and only then the id. Right after a switch the
+ * row may lag until the fleet re-reads it; that only shows while the catalog
+ * is away too. */
+function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined, rowName?: string): string {
 	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider);
-	return match?.displayName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
+	return match?.displayName || rowName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
 }
 
 /** The composer's chip: the model's name, then its effort when the model has
@@ -120,8 +156,10 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
 export function modelChipLabel(
 	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
 	catalog: readonly ModelDescriptor[] | undefined,
+	/** The session's Board row's model_name, when the fleet has the row. */
+	rowName?: string,
 ): string {
-	const name = modelName(session.modelProvider, catalog);
+	const name = modelName(session.modelProvider, catalog, rowName);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }

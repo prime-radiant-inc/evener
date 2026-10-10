@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -558,6 +559,7 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // too, so frames that never settle stay bounded — and the latch keeps the two
 // to one teardown.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
+	defer jm.publishWatchActivity()
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
 		Kind:      jobstore.EventWatchSendDelivered,
@@ -723,6 +725,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 }
 
 func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureHooks) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
 		return watchResult{}, err
@@ -1586,6 +1589,7 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 }
 
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	var targets []watchConfigTerminalSnapshot
 	jm.mu.Lock()
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch cleared", jm.now())
@@ -1644,6 +1648,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 // as a parameter: a one-shot timer retires through the same sequence but is
 // recorded as "fired" rather than "cleared".
 func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow func(*watchConfig) bool, allowDurable bool, endReason string) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if ok && !allow(cfg) {
@@ -1660,9 +1665,10 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 			}
 		}
 		var clearEvent *jobstore.Event
+		var clearReceiver string
 		if allowDurable {
 			var err error
-			clearEvent, err = jm.durableWatchClearEvent(watchID, endReason)
+			clearEvent, clearReceiver, err = jm.durableWatchClearEvent(watchID, endReason)
 			if err != nil {
 				jm.rollbackWatchConfigsRejecting(detachedCfgs)
 				return watchResult{}, err
@@ -1679,6 +1685,9 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 		if err := jm.appendWatchRegistryEvents(events); err != nil {
 			jm.rollbackWatchConfigsRejecting(detachedCfgs)
 			return watchResult{}, err
+		}
+		if clearEvent != nil {
+			jm.noteWatchActivity(clearReceiver)
 		}
 		jm.removeWatchSendTerminalSnapshots(dropped)
 		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
@@ -1822,14 +1831,14 @@ func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
 	return true
 }
 
-func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, error) {
+func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, string, error) {
 	watches, err := jm.store.LoadWatches()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	w := watches[watchID]
 	if w == nil || !w.Active || w.Generation == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 	return &jobstore.Event{
 		Kind:    jobstore.EventWatchCleared,
@@ -1839,7 +1848,7 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 			Generation: w.Generation,
 			EndReason:  endReason,
 		},
-	}, nil
+	}, w.ReceiverSessionID, nil
 }
 
 // tripConditionFireBudgetLocked latches the condition-fire circuit breaker for
@@ -1905,6 +1914,7 @@ func (jm *jobManager) countWatchDeliveryLocked(cfg *watchConfig) {
 		return
 	}
 	cfg.deliveries++
+	jm.noteWatchActivity(cfg.receiverSessionID)
 	now := jm.now()
 	if len(cfg.deliveryTimes) == watchDeliveryTimeCap {
 		copy(cfg.deliveryTimes, cfg.deliveryTimes[1:])
@@ -1958,6 +1968,7 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
 func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
@@ -2279,12 +2290,17 @@ func (jm *jobManager) appendWatchRegistryEvents(events []jobstore.Event) error {
 		return nil
 	}
 	if jm.appendEvents != nil {
-		return jm.appendEvents(events)
+		if err := jm.appendEvents(events); err != nil {
+			return err
+		}
+		jm.noteAcceptedWatchEvents(events)
+		return nil
 	}
 	for _, event := range events {
 		if err := jm.appendEvent(event); err != nil {
 			return err
 		}
+		jm.noteAcceptedWatchEvents([]jobstore.Event{event})
 	}
 	return nil
 }
@@ -2321,6 +2337,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	if cfg == nil {
 		return
 	}
+	jm.noteWatchActivity(cfg.receiverSessionID)
 	sendTo := key.SendTo
 	if cfg.receiverDelegateID != "" {
 		sendTo = ""
@@ -3212,6 +3229,7 @@ func watchEventFilterSummary(filter *watchEventFilter) string {
 }
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
+	defer jm.publishWatchActivity()
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
@@ -3508,6 +3526,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 }
 
 func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, endOffset int64, p *provenance.Causal) {
+	defer jm.publishWatchActivity()
 	if len(chunk) == 0 {
 		return
 	}
@@ -3635,6 +3654,7 @@ func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []
 // runs after jm.mu is released.
 // Returns whether the scan fired.
 func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte) bool {
+	defer jm.publishWatchActivity()
 	last, matched := cfg.outputMatcher.ScanRetained(data)
 	if !matched {
 		return false
@@ -4097,6 +4117,7 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
 		// Refusal must not consume the firing or end its registration. If a
@@ -5491,12 +5512,17 @@ func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
 	// and fault-injection harnesses stubbing only appendEvent keep intercepting
 	// settle/drop/pending writes (same shape as appendJobEvents).
 	if len(events) > 1 && jm.appendEvents != nil {
-		return jm.appendEvents(events)
+		if err := jm.appendEvents(events); err != nil {
+			return err
+		}
+		jm.noteAcceptedWatchEvents(events)
+		return nil
 	}
 	for _, e := range events {
 		if err := jm.appendEvent(e); err != nil {
 			return err
 		}
+		jm.noteAcceptedWatchEvents([]jobstore.Event{e})
 	}
 	return nil
 }
@@ -5600,27 +5626,35 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	s.renderUnreachableChildPendings(live)
 }
 
-// redriveChildAfterSendStartRollback re-drives the ONE child a committed-send-
-// start claim was taken for, after a non-handoff rollback released it (#940).
-// While the claim was held the wake edge (driveChildIfNotStopGated) and the
-// attention primitive (driveStableDelegateAttention) refused every drive for
-// that child, so a child notification, pending watch send or armed stable
-// attention that landed in the window was DROPPED. The run about to launch
-// would have drained the child's queue, but this exit handed no run over, so
-// the rollback must re-drive it. The claim only gated that child, so this is
-// scoped to childSessionID: a whole-tree sweep would re-drive unrelated
-// children and read every child's transcript fold on every failed send.
+// redriveLiveChild re-drives the ONE live direct child whose wake a held
+// claim or guard dropped, once that claim or guard is let go and no run took
+// the dropped wake. Two exits use it:
+//   - a committed-send-start rollback (#940): while the claim was held the
+//     wake edge (driveChildIfNotStopGated) and the attention primitive
+//     (driveStableDelegateAttention) refused every drive for that child, so a
+//     child notification, pending watch send or armed stable attention that
+//     landed in the window was DROPPED;
+//   - an attention drive that launched no run, or a notification turn, after
+//     an attention drive was refused on its drive guard (#3723), such as the
+//     finalize tail's re-arm drive landing while a drive refused busy still
+//     held the guard.
+//
+// Nothing that ran drains the dropped wake, so the exit must re-drive it.
+// Only that child can hold the dropped wake, so this is scoped to
+// childSessionID: a whole-tree sweep would re-drive unrelated children and
+// read every child's transcript fold.
 //
 // It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
-// rollback order cannot drift from the wake edge: stable delegate attention
+// re-drive order cannot drift from the wake edge: stable delegate attention
 // FIRST (its run drains the child's notification queue itself), and only the
 // notification turn when no attention is owed. The previous inline order drove
 // the notification turn first; when both were pending the notification drive
 // set sub.driving synchronously, the attention drive then refused on that flag,
-// and nothing retried it -- the armed attention stayed stranded. The claim is
-// released before this call, so driveChildIfNotStopGated's own childDriveGated
-// check is the same stop/fatal/drain gate every other drive reads.
-func (s *Session) redriveChildAfterSendStartRollback(childSessionID string) {
+// and nothing retried it -- the armed attention stayed stranded. The claim or
+// guard is released before this call, so driveChildIfNotStopGated's own
+// childDriveGated check is the same stop/fatal/drain gate every other drive
+// reads.
+func (s *Session) redriveLiveChild(childSessionID string) {
 	if s == nil || childSessionID == "" {
 		return
 	}
@@ -5828,7 +5862,7 @@ func delegateRowStopGated(row delegateSnapshot) bool {
 	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
 		return false
 	}
-	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"
+	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == delegatestore.ReasonStoppedByParent
 }
 
 // settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES
@@ -6115,7 +6149,7 @@ func appendWatchFrameJobRead(frame, jobID string) string {
 }
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
-	text = normalizeWatchFrameLineEndings(text)
+	text = lineend.Normalize(text)
 	for line := range strings.SplitSeq(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
@@ -6123,14 +6157,8 @@ func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
 	}
 }
 
-func normalizeWatchFrameLineEndings(text string) string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	return text
-}
-
 func writeWatchFrameTopField(b *strings.Builder, name, value string) {
-	value = normalizeWatchFrameLineEndings(value)
+	value = lineend.Normalize(value)
 	b.WriteString(name)
 	b.WriteString(": ")
 	b.WriteString(strings.ReplaceAll(value, "\n", "\n  "))
@@ -6274,7 +6302,7 @@ func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
 }
 
 func writeWatchFrameTextField(b *strings.Builder, name, value string) {
-	value = normalizeWatchFrameLineEndings(value)
+	value = lineend.Normalize(value)
 	b.WriteString("  ")
 	b.WriteString(name)
 	b.WriteString(": ")

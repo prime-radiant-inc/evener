@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -98,7 +100,7 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+	row, err := hostAddCommittedRow(ctx, client, appwire.HostAddParams{
 		Entry: appwire.HostEntry{
 			Name:       hostE2EName,
 			Address:    dest,
@@ -269,5 +271,54 @@ func awaitHostAttachedWithin(ctx context.Context, t *testing.T, client *appwire.
 			t.Fatalf("step evener/host/attach: context ended before host %q reported attached: %v (last attach error: %v)", name, attachCtx.Err(), lastAttachErr)
 		case <-time.After(hostAttachPollWait):
 		}
+	}
+}
+
+// hostAddCommittedRow drives evener/host/add and returns its committed row.
+// The response is the mutation-result union (registry spec 08 §11), whose
+// committed arm nests the registered row under "host": a caller that decodes
+// the response as a bare HostRow reads the nested row as zero values and then
+// asserts against nothing. The RPC error passes through unchanged, and a
+// non-committed arm (a committed mutation whose teardown failed, or a dropped
+// commit) comes back as the refusal that arm means, never as a success.
+func hostAddCommittedRow(ctx context.Context, client *appwire.Client, params appwire.HostAddParams) (appwire.HostRow, error) {
+	result, err := clientRequest[appwire.HostMutationResult](ctx, client, appwire.MethodEvenerHostAdd, params)
+	if err != nil {
+		return appwire.HostRow{}, err
+	}
+	return committedRow(result)
+}
+
+// TestHostAddCommittedRowDecodesTheUnion proves without a host the decode the
+// gated live checks use for evener/host/add: it drives hostAddCommittedRow
+// against an in-process hub server — the real wire path, no ssh — and reads
+// the committed row back. The bare HostRow decode these checks used to carry
+// read zero values from the same response, so this is their regression guard.
+func TestHostAddCommittedRowDecodesTheUnion(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, _, _ := hostManageWiringConfig(t, configPath,
+		[]hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+		&dialRecordingRunner{})
+	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	ctx := context.Background()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	row, err := hostAddCommittedRow(ctx, client, appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "decode-check", Address: "decode.example"},
+	})
+	if err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	if row.Name != "decode-check" || row.Origin != "hub.toml" {
+		t.Fatalf("committed add row name=%q origin=%q, want decode-check/hub.toml (the union's committed arm nests the row; a bare HostRow decode reads zero values)", row.Name, row.Origin)
 	}
 }

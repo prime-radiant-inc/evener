@@ -88,26 +88,28 @@ func TestSession_PromoteQueuedAsSteer_MarksUserSource(t *testing.T) {
 	}
 }
 
-func TestSession_PromoteQueuedAsSteer_RejectsIdleWithoutMutatingQueue(t *testing.T) {
+// TestSession_PromoteQueuedAsSteer_AcceptsIdle covers the contract the wire
+// documents for turn/promoteQueuedAsSteer: unlike steer, promote does NOT
+// require a turn in flight. A queue a Stop parked still offers the queue
+// strip's "run this now" (appwire-client sessionControls gates it on
+// canDrainQueue, which admits a parked queue), so an idle promote is accepted
+// and the message becomes pending steering for the next turn.
+func TestSession_PromoteQueuedAsSteer_AcceptsIdle(t *testing.T) {
 	t.Parallel()
 	sess := newPromoteTestSession(t)
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	// No turn in flight: the promote must fail honestly and leave the queued
-	// message in place so it is still processed as a normal follow-up.
-	err := sess.PromoteQueuedAsSteer(context.Background(), 0, "")
-	if err == nil || !strings.Contains(err.Error(), "no active turn") {
-		t.Fatalf("PromoteQueuedAsSteer idle err=%v, want no active turn", err)
+	// No turn in flight: the promote is accepted and the queued message leaves
+	// the queue for the steering rail rather than being refused.
+	if err := sess.PromoteQueuedAsSteer(context.Background(), 0, ""); err != nil {
+		t.Fatalf("PromoteQueuedAsSteer idle err=%v, want accepted", err)
 	}
-	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "alpha" {
-		t.Fatalf("QueuePreview after rejected promote: got %#v, want [alpha]", preview)
+	if preview := sess.QueuePreview(); len(preview) != 0 {
+		t.Fatalf("QueuePreview after idle promote: got %#v, want []", preview)
 	}
-	sess.mu.Lock()
-	steeringDepth := len(sess.steeringQueue)
-	sess.mu.Unlock()
-	if steeringDepth != 0 {
-		t.Fatalf("steeringQueue after rejected promote: got %d, want 0", steeringDepth)
+	if pending := len(sess.clientMutations.snapshot().PendingExecutions); pending != 1 {
+		t.Fatalf("pending steering after idle promote = %d, want 1", pending)
 	}
 }
 

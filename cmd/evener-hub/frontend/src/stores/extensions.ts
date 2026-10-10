@@ -20,9 +20,11 @@
 
 import type { AnyNotification, PathValidateResponse } from "@evener/appwire-client";
 import {
+  createHubWriteGate,
   createLaunchLayerStore,
   createMarketplacesStore,
   createPluginsStore,
+  type HubWriteGate,
   type LaunchLayerClient,
   type LaunchLayerState,
   type LaunchLayerStore,
@@ -55,6 +57,9 @@ import { launchConfigStore, launchConfigStoreForHost } from "./launchConfig";
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
 export interface ExtensionsStoreState extends MarketplacesState, PluginsState, LaunchLayerState {
+  /** True while any plugin or marketplace write on this host holds the shared
+   * hub write gate: what the section's action buttons disable on. */
+  hubWriteBusy: boolean;
   // The filesystem three the sections' PathFields and directory pickers use;
   // the launch-config gateway answers all of them (see below).
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
@@ -99,6 +104,7 @@ interface ExtensionsInstance {
   marketplaces: MarketplacesStore;
   plugins: PluginsStore;
   launchLayer: LaunchLayerStore;
+  gate: HubWriteGate;
   store: StoreApi<ExtensionsStoreState>;
 }
 
@@ -127,9 +133,14 @@ function buildExtensionsInstance(
   client: MarketplacesClient & PluginsClient & LaunchLayerClient,
   paths: ExtensionsPathActions,
 ): ExtensionsInstance {
-  const marketplaces = createMarketplacesStore(client);
+  // One hub write gate for this host's plugin AND marketplace stores: the hub
+  // serializes every one of their mutations under one lock, so a client must
+  // too. The gate lives here, above both stores, because a mutation outlives
+  // the screen that started it.
+  const gate = createHubWriteGate();
+  const marketplaces = createMarketplacesStore(client, gate);
   marketplaces.start();
-  const plugins = createPluginsStore(client);
+  const plugins = createPluginsStore(client, gate);
   plugins.start();
   const launchLayer = createLaunchLayerStore(client);
   launchLayer.start();
@@ -138,6 +149,7 @@ function buildExtensionsInstance(
     ...marketplaces.getState(),
     ...plugins.getState(),
     ...launchLayer.getState(),
+    hubWriteBusy: false,
 
     // The three filesystem RPCs are the launch-config gateway's
     // (stores/launchConfig.ts over the package's createLaunchConfigStore), named
@@ -150,7 +162,8 @@ function buildExtensionsInstance(
   publishChangedFields(store, marketplaces);
   publishChangedFields(store, plugins);
   publishChangedFields(store, launchLayer);
-  return { marketplaces, plugins, launchLayer, store };
+  gate.subscribe(() => store.setState({ hubWriteBusy: gate.isBusy() }));
+  return { marketplaces, plugins, launchLayer, gate, store };
 }
 
 const hubClient = {
@@ -400,6 +413,9 @@ export function resetExtensionsStoreForTests(): void {
   localInstance.marketplaces.reset();
   localInstance.plugins.reset();
   localInstance.launchLayer.reset();
+  // A write a test abandoned in flight leaves the gate busy; the cores' own
+  // reset does not touch it, so clear it here or the next test starts busy.
+  localInstance.gate.reset();
   // The cores' fields are written here as well as by their resets: the mirror
   // above forwards only what a core changed, so a value a test seeded
   // straight into this store, over a core already at its initial state,
@@ -409,6 +425,7 @@ export function resetExtensionsStoreForTests(): void {
     marketplacesPublicationVersion: localInstance.marketplaces.getState().marketplacesPublicationVersion,
     ...localInstance.plugins.getInitialState(),
     ...localInstance.launchLayer.getInitialState(),
+    hubWriteBusy: localInstance.gate.isBusy(),
   });
   // A fresh module load reads the connection that already exists; a reset puts
   // this singleton back the way that load leaves it, so it reads it too.

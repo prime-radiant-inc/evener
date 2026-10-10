@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,24 +31,10 @@ const (
 	maxNavigationManifestBytes = 256 * 1024
 	maxNavigationCatalogBytes  = 512 * 1024
 
-	maxNavigationTitleRunes = 200
-	maxNavigationLabelRunes = 512
-	// maxNavigationFullCommandRunes bounds FullCommand, the tooltip-sized
-	// untruncated command. Generous rather than label-tight: a tooltip can
-	// wrap, but it must not lie — a cut-off "full" command is worse than a
-	// long one. Still bounded so one pathological command cannot dominate
-	// the response's byte budget (navigationEncodedSize).
-	maxNavigationFullCommandRunes = 4_096
-	maxNavigationIdentityBytes    = 1_024
-	maxNavigationWorkingDirBytes  = 4_096
-	// maxNavigationWatches caps the live-watch rows a single session summary
-	// carries. It mirrors the daemon's watchDeliveryTimeCap of 32: the per-watch
-	// delivery ring is already bounded to 32 instants, so capping the row list to
-	// the same number keeps a watch-heavy session's payload bounded without
-	// needing a second, larger bound. Rows dropped here are counted in
-	// OmittedWatches, and the projector keeps armed rows ahead of inert ones so
-	// the rail's armed count survives the cut.
-	maxNavigationWatches = 32
+	maxNavigationTitleRunes      = 200
+	maxNavigationLabelRunes      = 512
+	maxNavigationIdentityBytes   = 1_024
+	maxNavigationWorkingDirBytes = 4_096
 	// maxNavigationProjectSources bounds a project summary's owning-source
 	// list: the navigation inputs already cap configured sources at 64, and the
 	// controller's own source is the one extra entry a merged project adds.
@@ -70,6 +57,14 @@ const (
 	navigationResourceLocation         navigationResourceKind = "location"
 )
 
+// navigationCatalogOrder is the order a key held by several catalogs resolves
+// in: a read of the key names the first catalog holding it. Only an
+// unresolved directory's "no-project" key can be in more than one. Each call
+// returns a fresh slice, so no caller can change the order for another.
+func navigationCatalogOrder() []navigationResourceKind {
+	return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+}
+
 // navigationResourceKey describes one immutable navigation representation. It
 // contains decoded, validated values only; HTTP parsing belongs to its handler.
 type navigationResourceKey struct {
@@ -77,6 +72,9 @@ type navigationResourceKey struct {
 	ID         string
 	SectionID  string
 	ProjectKey string
+	// Catalog narrows a project or project page read to one catalog's
+	// project; empty reads the first catalog holding the key.
+	Catalog    navigationResourceKind
 	Tier       string
 	Offset     uint32
 	Limit      uint32
@@ -128,10 +126,20 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// alias, when set on a per-request copy, is the location served for a ref
+	// that is not an indexed row. See NavigationService.aliasProjectionLocked.
+	alias *hubapi.NavigationSessionLocation
 	// offlineSources is the set of manifest source IDs whose connection state
 	// is down, indexed once per projection so every row can answer "is my
 	// source unreachable?" from the same capture the manifest serves.
 	offlineSources map[string]bool
+	// archivedRevisions caches archivedListRevision by catalog and project
+	// key: the projection never changes once built, and paging a long list
+	// would otherwise fingerprint the whole list on every page. It is lazy on
+	// purpose: archived rows stay out of the build-time fingerprint pass, so a
+	// build never hashes every archive. Nil (a projection not made by
+	// buildNavigationProjectionContext) caches nothing.
+	archivedRevisions *sync.Map
 }
 
 type navigationPinSection struct {
@@ -158,7 +166,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources), archivedRevisions: &sync.Map{}}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -179,11 +187,17 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
-	for _, project := range buckets.all() {
-		if err := ctx.Err(); err != nil {
-			return navigationProjection{}, err
+	// A same-key project of a later catalog is shadowed: its sessions are
+	// still located under the key, but a read of the key does not return them.
+	for _, kind := range navigationCatalogOrder() {
+		for _, project := range p.catalogs[kind] {
+			if err := ctx.Err(); err != nil {
+				return navigationProjection{}, err
+			}
+			if _, claimed := p.projects[project.Key]; !claimed {
+				p.projects[project.Key] = project
+			}
 		}
-		p.projects[project.Key] = project
 	}
 	p.pinSections, err = p.buildPinSectionsContext(ctx)
 	if err != nil {
@@ -318,10 +332,10 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 //
 // The buckets are not merely a display list, and that is why the duplicate
 // groups must be MERGED rather than discarded: they are the sole source of the
-// catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
-// map built from buckets.all() (:174-179), and of the location index that
+// catalog slices and manifest counts, of the p.projects map (all built in
+// buildNavigationProjectionContext), and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
-// session (:1370-1399). Dropping a duplicate group therefore does not just trim
+// session. Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
 // a location lookup for one of them answers "not found" - a silent session loss
 // that is worse than the visible error it replaces.
@@ -356,7 +370,29 @@ func navigationMergeProjectBucketsContext(ctx context.Context, buckets navigatio
 	if err != nil {
 		return navigationProjectBucket{}, err
 	}
+	// Merging a Key's groups can raise the merged row's LastActivity above a
+	// later row's instant, while the merge keeps each Key's first-appearance
+	// position. The test-runs bucket is the live shape: it concatenates the
+	// active and archived test-run projects, each LastActivity-ordered on its
+	// own, so an archived test run newer than an active one lifts the merged row
+	// past rows it should precede. Re-sort each bucket by LastActivity desc -
+	// hubcore's own project order - so a merged row's position agrees with its
+	// recency. SliceStable keeps the tree's order as the tiebreak, the way
+	// hubcore's stable project sort does.
+	navigationSortProjectsByLastActivity(active)
+	navigationSortProjectsByLastActivity(archived)
+	navigationSortProjectsByLastActivity(testRuns)
 	return navigationProjectBucket{active: active, archived: archived, testRuns: testRuns}, nil
+}
+
+// navigationSortProjectsByLastActivity orders projects newest-first by
+// LastActivity, matching hubcore's project order (BuildTree's byLastActivityDesc).
+// SliceStable keeps the input order for equal instants, the way hubcore's
+// stable sort does.
+func navigationSortProjectsByLastActivity(projects []hubcore.TreeProject) {
+	sort.SliceStable(projects, func(i, j int) bool {
+		return projects[i].LastActivity.After(projects[j].LastActivity)
+	})
 }
 
 // navigationMergeProjectGroupsContext merges the projects that share a Key
@@ -409,10 +445,14 @@ func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore
 // presents first.Key - into first, and returns the single row they collapse to.
 //
 // The first group owns the row's rendered identity - Name, WorkingDir, Key, and
-// the IsArchived / IsTestRun flags, which are uniform inside a bucket because
-// navigationProjectBuckets routes on them - so a merged row keeps one stable
-// label and address. Everything else is combined the way the projection's
-// consumers read the struct:
+// the IsArchived / IsTestRun flags - so a merged row keeps one stable label and
+// address. IsTestRun is uniform inside a bucket because navigationProjectBuckets
+// routes every test-run project to its own bucket. IsArchived is uniform in the
+// active and archived buckets but NOT in the test-runs bucket, which takes both
+// archived and unarchived test runs: a merged test-run row keeps the first
+// group's IsArchived, the same first-group-owns-identity rule that fixes Name
+// and Key. Everything else is combined the way the projection's consumers read
+// the struct:
 //
 //   - Current / Recent / Archived are the union of every group's rows, ordered
 //     the way hubcore orders its own tiers (most recent first: UpdatedAt desc,
@@ -435,11 +475,6 @@ func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore
 //     TierRows, so a capped public tier would drop every row past the cap from
 //     paging and from change detection - the silent session loss this merge
 //     exists to prevent.
-//   - Each tier's synthetic cluster rows are then reconciled across the merged
-//     project by navigationMergeClusterRowsContext, because groups that share
-//     one Key can mint one cluster id each (see that function): the union
-//     keeps one row per identity, carrying every folded member, instead of
-//     concatenating two rows the client would address as one.
 //   - LastActivity takes the later moment, and Age comes with it.
 //   - RollupState takes the higher hubapi.RollupRank, and RollupLive / RollupAttn
 //     add, so the merged header still counts every working and awaiting session.
@@ -491,11 +526,6 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 	if err != nil {
 		return hubcore.TreeProject{}, err
 	}
-	mergedTiers, err := navigationMergeClusterRowsContext(ctx, current, recent, archived)
-	if err != nil {
-		return hubcore.TreeProject{}, err
-	}
-	current, recent, archived = mergedTiers[0], mergedTiers[1], mergedTiers[2]
 	return hubcore.TreeProject{
 		Name:         first.Name,
 		Key:          first.Key,
@@ -511,8 +541,7 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 		RollupAttn:   rollupAttn,
 		Sources:      sources,
 		Expanded:     expanded,
-		// The overflow is derived after navigationMergeClusterRowsContext, not
-		// per group: folding colliding cluster rows shortens a tier, and More*
+		// The overflow is derived from the merged tiers, not per group: More*
 		// must describe the rows the tier actually holds.
 		MoreCurrent:  navigationTierOverflow(len(current), hubcore.SidebarSessionPageSize),
 		MoreRecent:   navigationTierOverflow(len(recent), hubcore.SidebarSessionPageSize),
@@ -530,15 +559,13 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 // carry that overflow too. The union must then be re-ordered: each group is
 // internally most-recent-first, but appending one group after the other is not
 // globally ordered, so the merge sorts by the field and tie-break the tree and
-// capTier rely on (navigationTreeNodeLess). Sorting the concatenated union
+// capTier rely on (hubcore.TreeNodeLess). Sorting the concatenated union
 // once - rather than re-sorting the accumulated rows after each group folds
 // in - keeps the tier linear in its rows, and matches what folding pair by
 // pair produces, because the sort is stable and the groups concatenate in the
 // tree's own order. The rows are returned whole - the caller keeps every one
 // in the public tier, which is what TierRows falls back to - so the caller
-// derives the tier's overflow with navigationTierOverflow once
-// navigationMergeClusterRowsContext has folded any colliding cluster rows
-// away.
+// derives the tier's overflow with navigationTierOverflow.
 func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreeProject, next []hubcore.TreeProject, tier string) ([]hubcore.TreeNode, error) {
 	firstRows, _ := first.TierRows(tier)
 	size := len(firstRows)
@@ -564,145 +591,8 @@ func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreePr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
 	return rows, nil
-}
-
-// navigationMergeClusterRowsContext folds the synthetic cluster rows a merged
-// project can carry more than once onto one row per identity, across the
-// three tiers.
-//
-// hubcore mints a cluster id from the owning project's display name and the
-// folded title (hubcore tree.go clusterID), and an unresolved group's display
-// name is the basename of its working directory (hubcore tree.go, the
-// "filepath.Base(displayPath)" its accumulator is created with). Two unresolved
-// groups whose directories share a basename therefore mint ONE cluster id for
-// their repeated title, and navigationMergeProjectGroupsContext folds those
-// two groups into one project row: concatenating their tiers would leave that
-// id twice.
-//
-// The id is an address, not a local label: navigationNodeRef advertises it as
-// the summary Ref, and the normalizer keys the session entity by that ref. Two
-// rows with one id therefore make the project's normalized graph carry two
-// entities with one key, which hubapi.NavigationSnapshot.Validate rejects with
-// "duplicate navigation entity key" - the same "graph" failure
-// navigationMergeProjectBucketsContext exists to prevent, merely moved
-// from the catalog page to the project detail. The check spans tiers, not
-// just one tier: the project resource normalizes current, recent, and
-// archived into a single document under one resource key, so a pair whose
-// groups classified into different tiers (one group's members older than
-// hubcore's archive window, the other's inside it) collides exactly the same.
-//
-// Colliding rows are merged, never dropped, on the identity they share: their
-// children combine, their counts add, and the union takes the identity's most
-// recent moment. That moment decides the tier the union is kept in, which is
-// the tier a tree-built project holding the same members would put its one
-// cluster in. Reusing the id keeps the client's addressing stable across the
-// merge; a per-merge id would rename an addressable row on every merge.
-//
-// When no identity collides - the common case - the three slices are returned
-// exactly as passed in, so the ordinary merge path allocates nothing new.
-func navigationMergeClusterRowsContext(ctx context.Context, tiers ...[]hubcore.TreeNode) ([][]hubcore.TreeNode, error) {
-	merged := make(map[string]hubcore.TreeNode)
-	winner := make(map[string]hubcore.TreeNode)
-	winnerTier := make(map[string]int)
-	winnerIndex := make(map[string]int)
-	children := make(map[string][]hubcore.TreeNode)
-	counts := make(map[string]int)
-	collided := false
-	for tierIndex, rows := range tiers {
-		for rowIndex, row := range rows {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if row.Kind != "cluster" || row.ID == "" {
-				continue
-			}
-			previous, seen := merged[row.ID]
-			if !seen {
-				merged[row.ID] = row
-				winner[row.ID] = row
-				winnerTier[row.ID] = tierIndex
-				winnerIndex[row.ID] = rowIndex
-				continue
-			}
-			collided = true
-			// The members accumulate in encounter order and are ordered once,
-			// when the surviving row is finalized below: folding the rows
-			// pair by pair instead would copy and re-sort the accumulated
-			// members on every collision - quadratic in the groups that can
-			// mint one cluster id (unresolved directories sharing a basename).
-			if children[row.ID] == nil {
-				children[row.ID] = append(make([]hubcore.TreeNode, 0, len(previous.Children)+len(row.Children)), previous.Children...)
-				counts[row.ID] = previous.ClusterCount
-			}
-			children[row.ID] = append(children[row.ID], row.Children...)
-			counts[row.ID] += row.ClusterCount
-			if row.UpdatedAt.After(winner[row.ID].UpdatedAt) {
-				winner[row.ID] = row
-				winnerTier[row.ID] = tierIndex
-				winnerIndex[row.ID] = rowIndex
-			}
-		}
-	}
-	if !collided {
-		return tiers, nil
-	}
-	out := make([][]hubcore.TreeNode, len(tiers))
-	for tierIndex, rows := range tiers {
-		kept := make([]hubcore.TreeNode, 0, len(rows))
-		for rowIndex, row := range rows {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if row.Kind == "cluster" && row.ID != "" {
-				if winnerTier[row.ID] != tierIndex || winnerIndex[row.ID] != rowIndex {
-					continue // folded into the identity's one surviving row
-				}
-				if children[row.ID] != nil {
-					finalized, err := navigationFinalizeClusterRowContext(ctx, merged[row.ID], winner[row.ID], children[row.ID], counts[row.ID])
-					if err != nil {
-						return nil, err
-					}
-					row = finalized
-				}
-			}
-			kept = append(kept, row)
-		}
-		out[tierIndex] = kept
-	}
-	return out, nil
-}
-
-// navigationFinalizeClusterRow assembles the one row that an identity's
-// colliding cluster occurrences collapse to: every member of every occurrence
-// folds under the first occurrence's row, the member count is the occurrences'
-// sum, and the row keeps the identity's most recent moment - the winner
-// occurrence's UpdatedAt and Age, with ties keeping the first occurrence to
-// reach it. The surviving id is the caller's to keep - it is the row's
-// address - and this function never mints one.
-//
-// The members arrive in the encounter order the reconciliation scan collected
-// them in, and are ordered by navigationTreeNodeLess once, here, so the union
-// is most-recent-first the way a single tree-built cluster's members are -
-// instead of one cluster's members followed by another's, or a re-sort of the
-// accumulated members on every collision. The ordering cannot observe ctx, so
-// it checks before it starts, surfacing a cancellation that arrived during the
-// scan rather than after the union has been ordered.
-//
-// Children are unioned rather than deduplicated, matching the rest of the
-// merge: a session belongs to exactly one tree group, so two groups' cluster
-// members cannot share a session id.
-func navigationFinalizeClusterRowContext(ctx context.Context, first, winner hubcore.TreeNode, members []hubcore.TreeNode, count int) (hubcore.TreeNode, error) {
-	if err := ctx.Err(); err != nil {
-		return hubcore.TreeNode{}, err
-	}
-	union := first
-	union.Children = members
-	sort.SliceStable(union.Children, func(i, j int) bool { return navigationTreeNodeLess(union.Children[i], union.Children[j]) })
-	union.ClusterCount = count
-	union.UpdatedAt, union.Age = winner.UpdatedAt, winner.Age
-	return union, nil
 }
 
 // navigationTierOverflow is the per-tier overflow a tree-built project reports
@@ -714,53 +604,6 @@ func navigationTierOverflow(n, capacity int) int {
 		return 0
 	}
 	return n - capacity
-}
-
-// navigationTreeNodeLess orders two tree rows the way hubcore orders its own
-// session rows (sessionOrderLess over sessionMetaOrderKey): most recently
-// updated first, then most recently created, then the trimmed, case-insensitive
-// title, then the id. A TreeNode's UpdatedAt / CreatedAt / Title are already the
-// normalized values the tree's order key is built from, so a merged tier sorted
-// with this comparator interleaves correctly with the rows capTier keeps and
-// the rows ProjectPage serves.
-func navigationTreeNodeLess(a, b hubcore.TreeNode) bool {
-	au := hubcore.OrderUpdatedAt(a.UpdatedAt, a.CreatedAt)
-	bu := hubcore.OrderUpdatedAt(b.UpdatedAt, b.CreatedAt)
-	if !au.Equal(bu) {
-		return au.After(bu)
-	}
-	ac := hubcore.OrderCreatedAt(a.CreatedAt, a.UpdatedAt)
-	bc := hubcore.OrderCreatedAt(b.CreatedAt, b.UpdatedAt)
-	if !ac.Equal(bc) {
-		return ac.After(bc)
-	}
-	if cmp := navigationCompareOrderText(a.Title, b.Title); cmp != 0 {
-		return cmp < 0
-	}
-	return navigationCompareOrderText(a.ID, b.ID) < 0
-}
-
-// navigationCompareOrderText matches hubcore's compareOrderText: trimmed,
-// case-insensitive text compares first, and the raw text breaks a
-// case-insensitive tie.
-func navigationCompareOrderText(a, b string) int {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-	af := strings.ToLower(a)
-	bf := strings.ToLower(b)
-	if af < bf {
-		return -1
-	}
-	if af > bf {
-		return 1
-	}
-	if a < b {
-		return -1
-	}
-	if a > b {
-		return 1
-	}
-	return 0
 }
 
 // navigationMergeProjectSources is the distinct, sorted union of two projects'
@@ -805,7 +648,7 @@ func cloneNavigationNodesContext(ctx context.Context, nodes []hubcore.TreeNode) 
 func navigationPinCandidatesContext(ctx context.Context, tree hubcore.Tree) ([]hubcore.TreeNode, error) {
 	// Tree.PinCandidates reads hubcore's retained uncapped slices. Snapshot
 	// fixtures and deserialized trees may only have exported tier fields, so use
-	// TierRows and retain the same session/cluster eligibility here.
+	// TierRows and retain the same session eligibility here.
 	seen := make(map[string]bool)
 	out := make([]hubcore.TreeNode, 0)
 	appendNode := func(node hubcore.TreeNode) {
@@ -820,17 +663,7 @@ func navigationPinCandidatesContext(ctx context.Context, tree hubcore.Tree) ([]h
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			switch node.Kind {
-			case "session":
-				appendNode(node)
-			case "cluster":
-				for _, child := range node.Children {
-					if err := ctx.Err(); err != nil {
-						return err
-					}
-					appendNode(child)
-				}
-			}
+			appendNode(node)
 		}
 		return nil
 	}
@@ -920,13 +753,6 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		}
 		if _, err := navigationNodeRef(node); err != nil {
 			return err
-		}
-		for _, jobs := range [2][]appwire.EvenerJobInfo{node.RunningJobs, node.CompletedJobs} {
-			for _, job := range jobs {
-				if err := validateNavigationIdentity("job ID", job.JobID, false); err != nil {
-					return err
-				}
-			}
 		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
@@ -1070,26 +896,58 @@ func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
-	project, ok := p.projects[key]
+	return p.ProjectIn("", key)
+}
+
+// projectIn finds key's project in catalog, or, with no catalog, in the first
+// catalog holding it (p.projects). A key can be in several catalogs, and a
+// session's location names the one whose project holds it.
+func (p navigationProjection) projectIn(catalog navigationResourceKind, key string) (hubcore.TreeProject, bool) {
+	if catalog == "" {
+		project, ok := p.projects[key]
+		return project, ok
+	}
+	for _, project := range p.catalogs[catalog] {
+		if project.Key == key {
+			return project, true
+		}
+	}
+	return hubcore.TreeProject{}, false
+}
+
+// ProjectIn is the project resource for key in catalog, or in the first
+// catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectResource{}, false
 	}
 	projector := navigationProjector{projection: p}
 	current, currentRemaining := projector.projectTier(project, "current", 0, maxNavigationSectionRows)
 	recent, recentRemaining := projector.projectTier(project, "recent", 0, maxNavigationSectionRows)
-	archived, archivedRemaining := projector.projectTier(project, "archived", 0, maxNavigationSectionRows)
-	resource := hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: archived, Remaining: archivedRemaining}, Truncated: projector.truncated}
+	resource := hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}, Truncated: projector.truncated}
 	fitNavigationProject(&resource)
 	return resource, true
 }
 
 func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
-	project, ok := p.projects[key]
+	return p.ProjectPageIn("", key, tier, offset, limit)
+}
+
+// ProjectPageIn is one tier page of key's project in catalog, or in the
+// first catalog holding it when catalog is empty.
+func (p navigationProjection) ProjectPageIn(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
+	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("navigation project %q not found", key)
 	}
 	if tier != "current" && tier != "recent" && tier != "archived" {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("invalid navigation tier %q", tier)
+	}
+	// Archived rows are read through evener/archived/list; navigation carries
+	// only their count (the summary's more_archived).
+	if tier == "archived" {
+		return hubapi.NavigationProjectPage{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Tier: tier, Offset: offset, Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}, nil
 	}
 	projector := navigationProjector{projection: p}
 	sessions, remaining := projector.projectTier(project, tier, offset, limit)
@@ -1114,9 +972,8 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
-		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -1124,7 +981,6 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
-	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -1136,9 +992,8 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
-		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -1146,7 +1001,6 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
-	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -1158,120 +1012,20 @@ func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
 	}
 	original := cloneNavigationProjectResource(*resource)
 	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
-	trim, budget := navigationFittingChoice(nodes, fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(nodes, fullBytes, func(budget int) int {
 		candidate := limitNavigationProject(original, budget)
-		trimNavigationProjectWatchPayloads(&candidate, trim)
 		return navigationEncodedSize(candidate)
 	})
 	limited := limitNavigationProject(original, budget)
-	trimNavigationProjectWatchPayloads(&limited, trim)
 	*resource = limited
 }
 
-// navigationFittingChoice finds the largest session-row budget whose candidate
-// size fits the response; fullBytes is the untrimmed resource's size. It tries
-// the full payload first. Only when even one untrimmed row cannot fit does it
-// degrade optional watch payloads - delivery instants first, then whole watch
-// rows - so a session whose watches are what overflowed the response is still
-// listed with as much of its payload as fits, instead of being dropped and
-// leaving the page with no rows while data remains (which
-// validateNavigationPageProgress rejects outright). It returns the trim level and budget actually used.
-func navigationFittingChoice(nodes, fullBytes int, size func(navigationWatchPayloadTrim, int) int) (navigationWatchPayloadTrim, int) {
-	budgetAt := func(trim navigationWatchPayloadTrim) int {
-		// The size callback cannot fail, so neither can the search.
-		budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) {
-			return size(trim, budget), nil
-		})
-		return budget
-	}
-	full := budgetAt(navigationWatchPayloadFull)
-	if full > 0 || nodes == 0 {
-		return navigationWatchPayloadFull, full
-	}
-	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
-		budget := budgetAt(trim)
-		if budget > 0 {
-			return trim, budget
-		}
-	}
-	// No trim level retains a row: the overflow is not in the watch payload
-	// (a job-heavy single row, for example). Report the untrimmed zero-budget
-	// result so the caller keeps its existing irreducible-overflow behavior.
-	return navigationWatchPayloadFull, 0
+// navigationFittingChoice retains the largest deterministic session prefix that fits.
+func navigationFittingChoice(nodes, fullBytes int, size func(int) int) int {
+	budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) { return size(budget), nil })
+	return budget
 }
 
-// navigationWatchPayloadTrim is a degradation level for the optional watch
-// payload on session rows. The zero value leaves rows untouched.
-type navigationWatchPayloadTrim int
-
-const (
-	navigationWatchPayloadFull navigationWatchPayloadTrim = iota
-	navigationWatchPayloadNoDeliveryTimes
-	navigationWatchPayloadNoWatches
-)
-
-// trimNavigationWatchPayloads strips optional watch payload from rows in place.
-// The rows are always fitters' clones (limitNavigationSummaries clones every
-// included row), so trimming never reaches the projector's original.
-func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim navigationWatchPayloadTrim) {
-	if trim == navigationWatchPayloadFull {
-		return
-	}
-	for i := range rows {
-		switch trim {
-		case navigationWatchPayloadNoDeliveryTimes:
-			for j := range rows[i].Watches {
-				rows[i].Watches[j].DeliveryTimes = nil
-			}
-		case navigationWatchPayloadNoWatches:
-			// Shedding a whole row is still an omission the UI must be able to
-			// report, so the counts move before the rows go. The armed subset
-			// moves with the total, preserving 0 <= armed <= omitted. A later
-			// trim level that drops no row (NoDeliveryTimes) must leave both
-			// alone.
-			rows[i].OmittedArmedWatches += countArmedNavigationWatches(rows[i].Watches)
-			rows[i].OmittedWatches += len(rows[i].Watches)
-			rows[i].Watches = nil
-		}
-		trimNavigationWatchPayloads(rows[i].Children, trim)
-	}
-}
-
-// countArmedNavigationWatches counts the armed rows in a watch list. Used only
-// when the fitter sheds a list, so the omitted armed count grows by exactly the
-// armed rows that leave.
-func countArmedNavigationWatches(watches hubapi.NavigationArray[hubapi.NavigationWatchSummary]) int {
-	count := 0
-	for _, watch := range watches {
-		if watch.Active {
-			count++
-		}
-	}
-	return count
-}
-
-func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResource, trim navigationWatchPayloadTrim) {
-	trimNavigationWatchPayloads(resource.Current.Sessions, trim)
-	trimNavigationWatchPayloads(resource.Recent.Sessions, trim)
-	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
-}
-
-// navigationFittingBudget returns the largest budget in [0, nodes] whose
-// candidate size is at most maxBytes. Budget 0 is known to fit and is never
-// probed. fullBytes, the size of the whole resource, seeds the search.
-//
-// No fitter's candidate gets smaller as its budget grows. One more unit of
-// budget adds a whole row (a session summary, plus its entity record and
-// children container in the normalized snapshot, or a catalog row) or, for a
-// location's single session, changes nothing. The same step can remove only
-// one digit of a remaining count and one parent's omitted_descendants field,
-// less than any row (TestNavigationFittingRowOutweighsTheCountsItShrinks). So
-// every budget up to the answer fits and none past it does: any search that
-// finds that boundary returns exactly what a bisection from zero returns, and
-// it may start anywhere. It starts where a linear size estimate puts the boundary
-// and gallops outward to bracket it. Rows are close to uniform in size, so
-// that takes two or three probes where a bisection from scratch takes
-// log2(nodes).
 func navigationFittingBudget(nodes, maxBytes, fullBytes int, size func(budget int) (int, error)) (int, error) {
 	if nodes <= 0 {
 		return 0, nil
@@ -1341,6 +1095,21 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 	return weight
 }
 
+// navigationSummarySubagentWeight is the subagent-kind share of a shed
+// subtree's weight - the MoreSubagents counterpart of
+// navigationSummaryWeight, already-accounted MoreSubagents included so
+// sheds-of-sheds never double count.
+func navigationSummarySubagentWeight(summary hubapi.NavigationSessionSummary) int {
+	weight := summary.MoreSubagents
+	if summary.Kind == "subagent" {
+		weight++
+	}
+	for _, child := range summary.Children {
+		weight += navigationSummarySubagentWeight(child)
+	}
+	return weight
+}
+
 // navigationEncodedSize is the length of value's JSON encoding. A value that
 // cannot be encoded fits no budget.
 func navigationEncodedSize(value any) int {
@@ -1396,6 +1165,7 @@ func limitNavigationSummary(row hubapi.NavigationSessionSummary, budget *int) (h
 		if !included {
 			for _, omitted := range row.Children[index:] {
 				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+				limited.MoreSubagents += navigationSummarySubagentWeight(omitted)
 			}
 			return limited, true, false
 		}
@@ -1403,6 +1173,7 @@ func limitNavigationSummary(row hubapi.NavigationSessionSummary, budget *int) (h
 		if !complete {
 			for _, omitted := range row.Children[index+1:] {
 				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+				limited.MoreSubagents += navigationSummarySubagentWeight(omitted)
 			}
 			return limited, true, false
 		}
@@ -1433,7 +1204,47 @@ func limitNavigationTier(tier hubapi.NavigationTier, budget int) (hubapi.Navigat
 	return rows, tier.Remaining + dropped
 }
 
+// navigationAliasLocation is the location of a ref that is not an indexed row,
+// routed through its top-level row's indexed location. Nothing in it is read
+// from anywhere but that location and the ref, so it is coherent with the core
+// the root came from. Live state and the title are not carried: the pane gets
+// them from thread/read.
+func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocation) (hubapi.NavigationSessionLocation, bool) {
+	ref, err := navigationRef(id)
+	if err != nil {
+		return hubapi.NavigationSessionLocation{}, false
+	}
+	summary := hubapi.NavigationSessionSummary{
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+		State:     "ended",
+		Kind:      kind,
+		Children:  hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+	}
+	if root.Session != nil {
+		summary.Project = root.Session.Project
+		summary.Offline = root.Session.Offline
+	}
+	return hubapi.NavigationSessionLocation{
+		GenerationID: root.GenerationID,
+		Revision:     root.Revision,
+		Ref:          ref.String(),
+		TopLevelRef:  root.TopLevelRef,
+		Catalog:      root.Catalog,
+		ProjectKey:   root.ProjectKey,
+		Tier:         root.Tier,
+		Session:      &summary,
+	}, true
+}
+
 func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLocation, bool) {
+	if p.alias != nil && p.alias.Ref == ref {
+		location := *p.alias
+		summary := cloneNavigationSummary(*location.Session)
+		location.Session = &summary
+		return location, true
+	}
 	location, ok := p.locations[ref]
 	if !ok {
 		return hubapi.NavigationSessionLocation{}, false
@@ -1522,12 +1333,12 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		resource, err = p.CatalogPage(key.Kind, key.Offset, int(key.Limit))
 	case navigationResourceProject:
 		var ok bool
-		resource, ok = p.Project(key.ProjectKey)
+		resource, ok = p.ProjectIn(key.Catalog, key.ProjectKey)
 		if !ok {
 			err = fmt.Errorf("navigation project %q not found", key.ProjectKey)
 		}
 	case navigationResourceProjectPage:
-		resource, err = p.ProjectPage(key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
+		resource, err = p.ProjectPageIn(key.Catalog, key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
 	case navigationResourceLocation:
 		var ok bool
 		resource, ok = p.Location(key.ID)
@@ -1587,7 +1398,7 @@ func navigationResourceWithRevision(resource any, revision uint64) any {
 }
 
 func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi.NavigationProjectSummary {
-	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: project.MoreArchived, Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), Sources: navigationProjectSources(project.Sources), SessionCount: project.TotalSessionCount()}
+	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: archivedCount(project), Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), Sources: navigationProjectSources(project.Sources), SessionCount: project.TotalSessionCount()}
 }
 
 // navigationProjectSources spells a tree project's owning sources for the wire.
@@ -1683,15 +1494,15 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 }
 
 func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
-	indexRows := func(rows []hubcore.TreeNode, projectKey, tier string) {
+	indexRows := func(rows []hubcore.TreeNode, catalog navigationResourceKind, projectKey, tier string) {
 		for _, root := range rows {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
+			_ = p.indexLocationNodeContext(ctx, root, root, navigationLocationAt{catalog: catalog, projectKey: projectKey, tier: tier}, true)
 		}
 	}
-	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+	for _, kind := range navigationCatalogOrder() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1701,19 +1512,27 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 			}
 			for _, tier := range []string{"current", "recent", "archived"} {
 				rows, _ := project.TierRows(tier)
-				indexRows(rows, project.Key, tier)
+				indexRows(rows, kind, project.Key, tier)
 			}
 		}
 	}
-	indexRows(p.live, "", "live")
+	indexRows(p.live, "", "", "live")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	indexRows(p.needsYou, "", "needs_you")
+	indexRows(p.needsYou, "", "", "needs_you")
 	return ctx.Err()
 }
 
-func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) error {
+// navigationLocationAt is where indexLocationsContext found a top-level row: its catalog
+// and project key (both empty outside a project) and its tier.
+type navigationLocationAt struct {
+	catalog    navigationResourceKind
+	projectKey string
+	tier       string
+}
+
+func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, at navigationLocationAt, topLevel bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1726,11 +1545,12 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 		return err
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
+		// Deep links carry only the selected session's compact summary.
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), Catalog: string(at.catalog), ProjectKey: at.projectKey, TopLevel: topLevel, Tier: at.tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
-		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
+		if err := p.indexLocationNodeContext(ctx, child, root, at, false); err != nil {
 			return err
 		}
 	}
@@ -1777,6 +1597,7 @@ func (p *navigationProjector) projectTier(project hubcore.TreeProject, tier stri
 	return sessions, sourceRemaining + len(page) - len(sessions)
 }
 
+// projectNode projects one flat list row with its own activity counts and root tally.
 func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hubapi.NavigationSessionSummary, bool) {
 	p.depth = max(p.depth, depth)
 	if p.nodes >= maxNavigationNodes || depth > maxNavigationDepth {
@@ -1785,26 +1606,6 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 	}
 	summary := p.projectShallow(node)
 	p.nodes++
-	if depth == maxNavigationDepth {
-		if omitted := countTreeNodes(node.Children); omitted != 0 {
-			summary.OmittedDescendants = omitted
-			p.truncated = true
-		}
-		return summary, true
-	}
-	for index, child := range node.Children {
-		if index >= maxNavigationChildren {
-			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
-			p.truncated = true
-			break
-		}
-		projected, ok := p.projectNode(child, depth+1)
-		if !ok {
-			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
-			break
-		}
-		summary.Children = append(summary.Children, projected)
-	}
 	return summary, true
 }
 
@@ -1823,7 +1624,20 @@ func navigationModelName(model string) string {
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
 	pinned := p.projection.pinSectionIDFor(ref) != ""
-	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
+	armedWatchCount := 0
+	for _, watch := range node.Watches {
+		if watch.Active {
+			armedWatchCount++
+		}
+	}
+	runningCommand := ""
+	for _, job := range node.RunningJobs {
+		if job.Command != "" {
+			runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
+			break
+		}
+	}
+	live := p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended"
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -1835,41 +1649,37 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		// label helper capped it at 512 runes, which is up to ~2 KiB of multibyte
 		// text -- a summary the codec rejects, failing the whole navigation response.
 		// Bound it in bytes for the same limit.
-		Project:             truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
-		State:               node.State,
-		Kind:                node.Kind,
-		Branch:              truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
-		ClusterCount:        node.ClusterCount,
-		Favorite:            !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
-		Rename:              p.projection.renameable(node.ID, ref.String()),
-		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
-		AskPending:          node.AskPending,
-		ApprovalPending:     node.ApprovalPending,
-		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
-		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
-		Question:            navigationQuestion(node.Question),
-		Failure:             navigationFailure(node.Failure),
-		LastMessage:         appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
-		ModelName:           navigationModelName(node.Model),
-		Dormant:             node.Dormant,
-		Offline:             p.projection.sourceOffline(ref.HostID),
-		UpdatedAt:           optionalTime(node.UpdatedAt),
-		MoreSubagents:       node.MoreSubagents,
-		Subagents:           navigationSubagentTally(node.Subagents),
-		TurnEndedAt:         optionalTime(node.TurnEndedAt),
-		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
-		RunningJobs:         navigationJobs(node.RunningJobs),
-		CompletedJobs:       navigationJobs(node.CompletedJobs),
-		Watches:             watches,
-		OmittedWatches:      omittedWatches,
-		OmittedArmedWatches: omittedArmedWatches,
-		Tasks:               navigationTaskProgress(node.Tasks),
-		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		Project:           truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
+		State:             node.State,
+		Kind:              node.Kind,
+		Branch:            truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		Favorite:          !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:            p.projection.renameable(node.ID, ref.String()),
+		Live:              live,
+		AskPending:        node.AskPending,
+		ApprovalPending:   node.ApprovalPending,
+		ApprovalTool:      truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
+		ApprovalTarget:    truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
+		Question:          navigationQuestion(node.Question),
+		Failure:           navigationFailure(node.Failure),
+		LastMessage:       appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
+		ModelName:         navigationModelName(node.Model),
+		Dormant:           node.Dormant,
+		Offline:           p.projection.sourceOffline(ref.HostID),
+		UpdatedAt:         optionalTime(node.UpdatedAt),
+		Subagents:         navigationSubagentTally(node.Subagents),
+		TurnEndedAt:       optionalTime(node.TurnEndedAt),
+		Unseen:            p.projection.unseen(ref, node.TurnEndedAt),
+		SeenThrough:       p.projection.seenThrough(ref, live),
+		RunningJobCount:   len(node.RunningJobs),
+		RunningJobCommand: runningCommand,
+		WatchCount:        len(node.Watches),
+		ArmedWatchCount:   armedWatchCount,
+		Tasks:             navigationTaskProgress(node.Tasks),
+		Children:          hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
 
-// optionalTime is t as an optional wire timestamp: nil when t is zero, so the
-// summary omits the key.
 func optionalTime(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
@@ -1880,9 +1690,8 @@ func optionalTime(t time.Time) *time.Time {
 // navigationTaskProgress is the row's task line: a session's task-list progress
 // when its list has at least one task, else nil. The current task's
 // description is cut to the label bound. Progress the schema would refuse (a
-// negative count, or more tasks done and cancelled than exist) is dropped, the
-// way navigationWatches drops a watch row: one invalid summary makes the whole
-// resource, every other row included, unreadable.
+// negative count, or more tasks done and cancelled than exist) is dropped:
+// one invalid summary would make every row in the resource unreadable.
 func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTaskProgress {
 	if tasks == nil || tasks.Total == 0 {
 		return nil
@@ -1981,185 +1790,6 @@ func (p navigationProjection) sourceOffline(hostID string) bool {
 	return p.offlineSources[hostID]
 }
 
-func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
-	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
-	for _, job := range jobs {
-		summary := hubapi.NavigationJobSummary{
-			// job_type and status are identities to the codec and the hub schema
-			// (identity() at maxNavigationIdentityBytes BYTES), and unlike job_id
-			// they are not guarded by the build's own identity validation. Bound
-			// them in bytes: a value within the limit passes through unchanged, and a
-			// pathological one is cut instead of failing the whole navigation
-			// response. job_id stays raw: it is a key clients address jobs by, and an
-			// over-long one is rejected by validateNavigationNodesContext rather than
-			// silently rewritten to a different id.
-			JobID:   job.JobID,
-			JobType: truncateNavigationBytes(job.JobType, maxNavigationIdentityBytes),
-			Status:  truncateNavigationBytes(job.Status, maxNavigationIdentityBytes),
-			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
-			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
-			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
-			Intent:  truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
-		}
-		// Emit FullCommand only when the label bound actually cut the
-		// command, so a short command isn't duplicated and a tooltip never
-		// shows less than the label.
-		if summary.Command != job.Command {
-			summary.FullCommand = truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes)
-		}
-		out = append(out, summary)
-	}
-	return out
-}
-
-// navigationWatches projects a session's own live-watch rows onto the wire
-// summary. Rows are never merged across sessions, so a receiver watch that two
-// daemons report stays on each session's own summary and a rollup over the
-// subtree counts it once per owning row.
-//
-// The list is capped at maxNavigationWatches. Armed (active) rows are ordered
-// ahead of inert ones before the cut, so a session with a lot of stale rows
-// still reports as many armed watches as the cap allows. The second return is
-// the exact number of rows the caller did NOT receive: rows past the cap plus
-// any row dropped because its created_at is not a representable instant. No row
-// leaves this function uncounted.
-//
-// The third return is how many of those omitted rows were still armed. Once a
-// session holds more armed watches than the cap, the retained list alone
-// understates its armed total, so the count is taken from every skipped row
-// rather than inferred from the armed-first order: an unrepresentable armed row
-// can be dropped before the cap fills, and the cap boundary can itself fall
-// inside the armed run.
-func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArray[hubapi.NavigationWatchSummary], int, int) {
-	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
-	// Stable: armed rows keep their wire order ahead of inert ones, and rows
-	// within each class keep theirs.
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Active && !ordered[j].Active })
-	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, min(len(ordered), maxNavigationWatches))
-	omittedArmed := 0
-	for index, watch := range ordered {
-		if len(out) == maxNavigationWatches {
-			// Every remaining row is omitted wholesale. Count the armed ones
-			// directly: the armed-first order does not make the whole tail inert.
-			for _, skipped := range ordered[index:] {
-				if skipped.Active {
-					omittedArmed++
-				}
-			}
-			break
-		}
-		// created_at is a REQUIRED watch field and the web codec validates it as
-		// strict RFC3339. Truncating a malformed or oversized value (the generic
-		// label cap) produced an ellipsized string the codec rejects, which
-		// silently failed the whole watch-carrying navigation snapshot. A watch
-		// whose created_at cannot be represented is dropped rather than poisoning
-		// every other row in the resource; the omitted count below accounts for it.
-		if !validNavigationTimestamp(watch.CreatedAt) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
-		for _, step := range watch.Cadence {
-			// A derived instant the codec cannot decode is dropped (absent), the
-			// same way an unrepresentable delivery instant is: one missing dot is
-			// honest, a rejected snapshot is not.
-			nextFireAt := ""
-			if validNavigationTimestamp(step.DerivedNextFireAt) {
-				nextFireAt = step.DerivedNextFireAt
-			}
-			cadence = append(cadence, hubapi.NavigationWatchCadence{
-				// kind is an IDENTITY on the wire, not a rendered label: the codec
-				// validates it with identity(value.kind) and the hub schema mirrors
-				// that, both capping it at maxNavigationIdentityBytes BYTES. The
-				// rune-bounded label helper capped it at 512 runes, which is up to
-				// ~2 KiB of multibyte text -- a summary the codec rejects, failing the
-				// whole navigation response. Bound it in bytes for the same limit.
-				Kind:              truncateNavigationBytes(step.Kind, maxNavigationIdentityBytes),
-				Seconds:           step.Seconds,
-				DerivedNextFireAt: nextFireAt,
-				Every:             navigationBoundEvery(step.Every),
-				Filter:            truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
-			})
-		}
-		events := make([]string, 0, len(watch.Events))
-		for _, event := range watch.Events {
-			events = append(events, truncateNavigationRunes(event, maxNavigationLabelRunes))
-		}
-		deliveryTimes := make([]string, 0, len(watch.DeliveryTimes))
-		for _, at := range watch.DeliveryTimes {
-			// An instant the codec cannot decode is dropped: one missing dot is
-			// honest, a rejected snapshot is not.
-			if validNavigationTimestamp(at) {
-				deliveryTimes = append(deliveryTimes, at)
-			}
-		}
-		// id and source are IDENTITIES to the codec, the hub schema and the rail's
-		// row keys: the rail and the panel key their rows by watch.id. A value over
-		// the identity bound is DROPPED rather than cut, because cutting trades a
-		// missing row for a wrong one -- two distinct long ids that share a prefix
-		// collapse to the same key, and every consumer that keys by it then sees one
-		// row where there were two. Every identity within the bound still passes
-		// through untouched; the omitted count below accounts for the dropped row
-		// exactly like a row whose created_at cannot be represented.
-		if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		row := hubapi.NavigationWatchSummary{
-			ID:             watch.ID,
-			Source:         watch.Source,
-			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
-			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
-			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
-			Cadence:        cadence,
-			OutputMatch:    truncateNavigationRunes(watch.OutputMatch, maxNavigationLabelRunes),
-			Events:         events,
-			WildcardEvents: watch.WildcardEvents,
-			Deliveries:     watch.Deliveries,
-			DeliveryTimes:  deliveryTimes,
-			CreatedAt:      watch.CreatedAt,
-			Active:         watch.Active,
-			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
-		}
-		// The bounding above keeps a representable value representable, but it
-		// cannot rescue a value that was never valid (an empty ID or Source, a
-		// negative or over-range deliveries count, a cadence with an empty kind
-		// or negative/non-finite seconds). Carrying one such row makes
-		// navigationSessionValueValid reject the WHOLE session -- and through it
-		// every session in the resource. The schema's own predicate is the
-		// backstop: drop any row it would reject, so the omitted count below
-		// accounts for it exactly like an unrepresentable created_at.
-		if !navigationWatchValueValid(row) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		out = append(out, row)
-	}
-	return out, len(watches) - len(out), omittedArmed
-}
-
-// navigationBoundEvery clamps the events cadence's every-Nth throttle to the
-// codec's safe integer range. `every` is caller-supplied and the daemon bounds
-// it only to the platform int range, so on 64-bit it can sit above 2^53-1;
-// projecting it verbatim fails navigationSessionValueValid and makes the whole
-// resource -- every session in it -- unreadable. Clamping rather than dropping
-// is the honest choice: the wire spells an absent/zero every as "no throttle"
-// (the codec reads every > 0 as a throttle), so dropping would misstate a
-// throttled watch as firing on every matching event. A clamped value is still a
-// throttle and still passes the schema.
-func navigationBoundEvery(value int) int {
-	if value > int(maxNavigationSafeInteger) {
-		return int(maxNavigationSafeInteger)
-	}
-	return value
-}
-
 // navigationTimestampPattern matches exactly the grammar the web codec's
 // rfc3339Timestamp accepts: a four-digit year, capital T, seconds, an optional
 // 1-9 digit fraction, and Z or a numeric offset. The offset's hour and minute
@@ -2220,18 +1850,21 @@ func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool
 	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.HostID, ref.SessionID), turnEndedAt)
 }
 
+// seenThrough is a live row's seen-through mark (hubcore
+// SessionSeenSnapshot.SeenThrough), nil for a row that isn't live or with no
+// seen store.
+func (p navigationProjection) seenThrough(ref hubapi.Ref, live bool) *time.Time {
+	if !live {
+		return nil
+	}
+	return optionalTime(p.inputs.SessionSeen.SeenThrough(hubcore.SessionPinKey(ref.HostID, ref.SessionID)))
+}
+
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
 	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
 	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
-	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
-	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
-	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
-	for index, watch := range summary.Watches {
-		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
-		clone.Watches[index].Events = append([]string(nil), watch.Events...)
-		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
-	}
+	clone.SeenThrough = clonePointer(summary.SeenThrough)
 	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Subagents = clonePointer(summary.Subagents)
 	clone.Failure = clonePointer(summary.Failure)

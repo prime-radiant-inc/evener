@@ -12,7 +12,7 @@ const noSubscription = () => () => {};
 const sectionKey = (section: NavigationPinSectionDescriptor) => section.id;
 
 export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?: string) {
-	const { client, activeProfile, state, retry } = useConnection();
+	const { client, activeProfile, state } = useConnection();
 	const focused = useIsFocused();
 	const belongs = activeProfile?.id === hubId;
 	const ready = belongs && !!client && state === "ready";
@@ -101,7 +101,6 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 		belongs,
 		ready,
 		focused,
-		retry,
 		pages,
 		page,
 		actions,

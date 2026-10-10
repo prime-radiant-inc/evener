@@ -8,7 +8,16 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -115,8 +124,9 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 	const host: SessionInfoHost = {
 		session,
 		controls: controls as unknown as SessionControls,
-		hostLabel: (id) => (id === "local" ? "Work hub" : id),
+		host: (id) => ({ label: id === "local" ? "Work hub" : id, online: true }),
 		modelLabel: "Claude Sonnet 5 · High",
+		runMs: () => null,
 		ready: true,
 		editGoal: vi.fn(() => void calls.push("editGoal")),
 		clearGoal: vi.fn(() => void calls.push("clearGoal")),
@@ -150,12 +160,6 @@ function sheet(): ReactTestRenderer {
 	return tree;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 function press(tree: ReactTestRenderer, label: string) {
 	const target = pressable(tree, label);
 	if (!target) throw new Error(`no ${label}`);
@@ -187,7 +191,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
+	mounted.length = 0;
 	if (owner) sessionInfoHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });
@@ -200,7 +205,14 @@ describe("what the sheet shows (spec 8.6)", () => {
 			tree.root.findAll((node) => node.props.accessibilityRole === "header" && textOf(node) === "Session"),
 		).toEqual([]);
 		expect(styleOf(textNode(tree, "Fix the settle race"))).toMatchObject({ fontSize: 20, fontWeight: "600" });
-		expect(renderedText(tree)).toContain("Finished");
+		expect(renderedText(tree)).toContain("Idle");
+	});
+
+	it("dims the host's dot while the host is offline", () => {
+		provide(conversation(), { host: (id) => ({ label: id === "local" ? "Work hub" : id, online: false }) });
+		const tree = sheet();
+		const hostRow = tree.root.find((node) => node.props.accessibilityLabel === "Work hub, offline");
+		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.inkLow);
 	});
 
 	it("says where the session runs", () => {
@@ -212,6 +224,9 @@ describe("what the sheet shows (spec 8.6)", () => {
 		const directory = textNode(tree, "/​Users/​jesse/​git/​evener");
 		expect(styleOf(directory)).toMatchObject({ fontFamily: "Menlo" });
 		expect(symbols(tree)).toEqual(expect.arrayContaining(["server.rack", "folder", "arrow.triangle.branch"]));
+		// The host with its connection dot (spec 8.6).
+		const hostRow = tree.root.find((node) => node.props.accessibilityLabel === "Work hub, connected");
+		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.alive);
 	});
 
 	it("labels its sections 12pt semibold uppercase in ink-mid", () => {
@@ -223,6 +238,20 @@ describe("what the sheet shows (spec 8.6)", () => {
 			textTransform: "uppercase",
 			color: palette.inkMid,
 		});
+	});
+
+	it("draws its groups as the shared grouped list, inset with hairlines between rows", () => {
+		provide(conversation());
+		const tree = sheet();
+		// Grouped.tsx's Group is an inset surface card with a hairline between
+		// rows; the private Section this sheet used to carry drew a borderTop
+		// on each following row instead, so this pins the sheet to the shared one.
+		expect(tree.root.findAllByProps({ testID: "hairline" }).length).toBeGreaterThan(0);
+		const surface = tree.root.findAll(
+			(node) => String(node.type) === "View" && styleOf(node).backgroundColor === palette.surface,
+		);
+		expect(surface.length).toBeGreaterThan(0);
+		expect(styleOf(surface[0])).toMatchObject({ marginHorizontal: 16, borderRadius: 12 });
 	});
 
 	it("names the model, and opens the model sheet over this one", () => {
@@ -327,10 +356,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 	});
 
 	it("shows the current task and the task count, which opens the Tasks sheet over this one", () => {
-		provide(conversation({ tasks: { total: 7, done: 3, current: { id: 4, description: "Wire the chip" } } }));
+		provide(
+			conversation({ tasks: { total: 7, done: 3, cancelled: 1, current: { id: 4, description: "Wire the chip" } } }),
+		);
 		const tree = sheet();
 		expect(texts(tree)).toContain("Wire the chip");
-		press(tree, "Tasks · 3 of 7");
+		press(tree, "Tasks · 4 of 7");
 		expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 			hubId: HUB,
 			ref: REF,
@@ -375,6 +406,19 @@ describe("what the sheet shows (spec 8.6)", () => {
 			}) as unknown as SessionControls,
 		});
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+
+	it("announces a failed action to VoiceOver, not just shows it", () => {
+		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		replaceHost({
+			...host,
+			controls: fakeControls({
+				lastAction: "compact",
+				error: "Could not confirm the action: refused",
+			}) as unknown as SessionControls,
+		});
+		const tree = sheet();
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
 	});
 
 	it("stays open while the hub is away, showing what it knows with its actions held", () => {
@@ -525,6 +569,20 @@ describe("actions", () => {
 		},
 	);
 
+	it("times a subagent by its run, as the nav bar and its row do", () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run four.
+		provide(
+			conversation({
+				status: { type: "active", activeFlags: [] } as MobileConversation["status"],
+				activeTurnStartedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+			}),
+			{ runMs: () => 4 * 60_000 },
+		);
+		const text = renderedText(sheet());
+		expect(text).toContain("Working · 4m");
+		expect(text).not.toContain("Working · 2m");
+	});
+
 	it("draws Shut down and Delete as destructive", () => {
 		provide(conversation({ capabilities: { ...NONE, shutdown: true } }));
 		const tree = sheet();
@@ -543,8 +601,11 @@ describe("actions", () => {
 			message: "It stops now and keeps its history. Sending a message resumes it.",
 		});
 		expect(calls).toEqual([]);
+		playedHaptics.length = 0;
 		act(() => confirm?.buttons?.[1]?.onPress?.());
-		await flush();
+		// Spec 16.6: rigid on a destructive confirmation.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
+		await settle();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});
 
@@ -552,7 +613,7 @@ describe("actions", () => {
 		const { calls } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
 		const tree = sheet();
 		press(tree, "Compact context");
-		await flush();
+		await settle();
 		expect(calls).toEqual(["act:compact"]);
 		expect(renderedText(tree)).toContain("Compacting context");
 	});
@@ -567,7 +628,7 @@ describe("actions", () => {
 			const { calls } = provide(conversation({ capabilities: { ...NONE, ...capabilities } }));
 			const tree = sheet();
 			press(tree, label);
-			await flush();
+			await settle();
 			expect(calls).toEqual(["goBack", `act:${action}`, `toast:${action} done`]);
 		},
 	);
@@ -580,7 +641,7 @@ describe("actions", () => {
 			}),
 		);
 		press(sheet(), "Fork from latest");
-		await flush();
+		await settle();
 		expect(calls.slice(0, 2)).toEqual(["goBack", "act:fork"]);
 	});
 

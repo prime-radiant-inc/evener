@@ -32,6 +32,11 @@ describe("the full log", () => {
 		expect(renderedText(whole)).not.toContain("Showing the first");
 	});
 
+	it("expands tabs to the next stop of 8, as the preview does", () => {
+		const tree = render(<LogViewer title="t" text={"line 1\tgo\nline 2"} onClose={() => {}} />);
+		expect(lineLabels(tree.root)).toEqual(["line 1  go", "line 2"]);
+	});
+
 	it("closes with Done", () => {
 		const onClose = vi.fn();
 		const tree = render(<LogViewer title="t" text={text} onClose={onClose} />);
@@ -39,5 +44,11 @@ describe("the full log", () => {
 			.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0]
 			.props.onPress();
 		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("frames the log in the shared modal sheet, not its own header", () => {
+		const tree = render(<LogViewer title="Run the tests" text={text} onClose={() => {}} />);
+		expect(tree.root.findByType("Modal" as never).props.presentationStyle).toBe("pageSheet");
+		expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe("Run the tests");
 	});
 });

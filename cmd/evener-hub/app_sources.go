@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -298,12 +299,17 @@ func sessionResumeRequiredError() error {
 	return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
 }
 
-func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
-	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
-		return err
-	}
+// sessionStateRecoveryError is the recovery fence a session's own state puts on
+// an action: a Stop drain, a resume-only obligation the request was not
+// admitted through (sessionAdmitsResumeRequired carries that admission), and a
+// stale admission epoch. It is the shared body of the two re-checks that differ
+// only in whether the connection-sequence fence also applies -
+// sessionActionRecoveryError for a fresh action, retirementAdmissionRecoveryError
+// for an already-admitted one still in flight - so the carve-out and its
+// refusal exist in exactly one place.
+func sessionStateRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
 	state := sessionRecoveryState(cfg, ref, threadID)
-	if state.Stopping > 0 || state.ResumeRequired {
+	if state.Stopping > 0 || (state.ResumeRequired && (!state.ExitConfirmed || !sessionAdmitsResumeRequired(ctx, cfg, ref, threadID))) {
 		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
@@ -312,11 +318,114 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 	return nil
 }
 
+func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
+	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
+		return err
+	}
+	return sessionStateRecoveryError(ctx, cfg, ref, threadID, epoch)
+}
+
+// sessionAdmitsResumeRequired reports whether the request that carries ctx is a
+// turn/start for the same local session. Sending a prompt folds the resume into
+// the send: the admitted turn/start runs that resume explicitly — app_rpc.go's
+// resumeTurnStartThreadResume, the resume the turn/start handler runs before
+// its retry, which turnStartResumeExplicit selects and which clears the
+// ResumeRequired fence — so a session that only needs a resume is admitted
+// rather than refused with the explicit-resume fence. prepareRelay's automatic
+// resume is NOT this path; it refuses while the obligation stands. This is the
+// ONLY carve-out: a Stop in flight (Stopping > 0), an unconfirmed force-stop
+// exit (ExitConfirmed false — the same shape resumeOnlyFoldable, the wire bit,
+// refuses), a stale admission epoch, the connection fence, and an incompatible
+// daemon (daemonRestartRequiredError) are all still refused, and every action
+// other than turn/start keeps the fence unchanged.
+func sessionAdmitsResumeRequired(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	admission, ok := sessionRecoveryAdmissionFor(ctx, cfg, ref, threadID)
+	return ok && admission.admitResumeRequired
+}
+
+// sessionRecoveryAdmissionFor returns the recovery admission that
+// admitSessionRecovery stamped on ctx for (ref, threadID), when it stamped one
+// for that session or for any alias of its recovery group. The admission carries
+// the request's captured epoch, exactly what sessionActionRecoveryError compares
+// against the live state's.
+//
+// The alias case exists for the retirement re-check: resumeAfterConfirmedRetirement
+// re-reads the SAME request admission for every id in the resolved ownership
+// group, and a force stop persists one obligation across the whole group, so an
+// alias of the admitted session's group is the same request's session. The
+// send-side fences read the request's own identity, where the exact match
+// already holds, so membership only adds the alias case the grouped re-check
+// needs. A request with no admission still matches nothing.
+func sessionRecoveryAdmissionFor(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) (sessionRecoveryAdmission, bool) {
+	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
+	if !ok {
+		return sessionRecoveryAdmission{}, false
+	}
+	id := deletionThreadID(ref, threadID)
+	if admission.sessionID == id {
+		return admission, true
+	}
+	if cfg.ResumeLocks != nil && slices.Contains(cfg.ResumeLocks.RecoveryAliases(admission.sessionID), id) {
+		return admission, true
+	}
+	return sessionRecoveryAdmission{}, false
+}
+
+// turnStartResumeExplicit reports whether a turn/start request's folded resume
+// must run as an explicit (non-automatic) resume. That is exactly the request
+// the resume-only carve-out admitted (sessionAdmitsResumeRequired) for a
+// session the hub still fences with ResumeRequired: the automatic resume
+// refuses while the obligation stands (app_threadlifecycle.go's
+// `automatic && state.ResumeRequired`), so sending a prompt only resumes the
+// session when the send's own resume owns the fence and clears it. Every other
+// turn/start keeps the automatic resume, and a request that is not a turn/start
+// (or names a different session) never qualifies. A session whose force-stop
+// exit is still unconfirmed is among the still-refused causes: the carve-out
+// requires the confirmed exit (sessionActionRecoveryError's ExitConfirmed
+// guard), so such a request never reaches this path and Resume stays its way
+// out.
+//
+// It revalidates the WHOLE resume-only admission here, at the retry, not only
+// at the request's first admission: a Stop or another recovery can begin
+// between turn/start's admission and this retry, so the marker and
+// ResumeRequired captured then are stale evidence by now. Every clause the
+// carve-out reads is re-read against the live state - ResumeRequired, no Stop
+// draining (Stopping == 0), the confirmed exit (ExitConfirmed), the admission's
+// captured epoch (the same comparison sessionActionRecoveryError makes against
+// the request's epoch: an epoch advanced since admission cancels this action),
+// the connection-recovery fence, and an incompatible-protocol daemon whose
+// error case fails closed - so the folded resume never launches during a Stop
+// drain or under any other fence the fresh admission would refuse.
+func turnStartResumeExplicit(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	admission, ok := sessionRecoveryAdmissionFor(ctx, cfg, ref, threadID)
+	if !ok || !admission.admitResumeRequired {
+		return false
+	}
+	state := sessionRecoveryState(cfg, ref, threadID)
+	if !state.ResumeRequired || state.Stopping > 0 || !state.ExitConfirmed {
+		return false
+	}
+	if state.Epoch != admission.epoch {
+		return false
+	}
+	if sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
+		return false
+	}
+	if _, required, err := restartRequiredDaemon(ctx, cfg, ref, threadID); err != nil || required {
+		return false
+	}
+	return true
+}
+
 type sessionRecoveryAdmissionKey struct{}
 
 type sessionRecoveryAdmission struct {
 	sessionID string
 	epoch     uint64
+	// admitResumeRequired marks a turn/start request: it is the one method whose
+	// action (a send) folds a pending resume into itself, so the resume-only
+	// fence does not refuse it. sessionAdmitsResumeRequired reads it.
+	admitResumeRequired bool
 }
 
 // admitSessionRecovery captures only the requested local identity; it performs
@@ -375,7 +484,11 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 	if id == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, sessionRecoveryAdmissionKey{}, sessionRecoveryAdmission{sessionID: id, epoch: cfg.ResumeLocks.RecoveryState(id).Epoch})
+	admission := sessionRecoveryAdmission{sessionID: id, epoch: cfg.ResumeLocks.RecoveryState(id).Epoch}
+	if message.Request.Method == appwire.MethodTurnStart {
+		admission.admitResumeRequired = true
+	}
+	return context.WithValue(ctx, sessionRecoveryAdmissionKey{}, admission)
 }
 
 func sessionRequestRecoveryEpoch(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) uint64 {

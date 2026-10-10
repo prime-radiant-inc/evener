@@ -8,9 +8,9 @@ import type { ComponentType, LazyExoticComponent } from "react";
 export type PaneTypeId =
   | "session"
   | "transcript"
+  | "sessionZoom"
   | "doc"
   | "sessionTasks"
-  | "sessionActivity"
   | "sessionDetails"
   | "spawn"
   | "settings"
@@ -41,6 +41,7 @@ export interface PaneDescriptor<P = unknown> {
   title(params: P, ctx: PaneTitleCtx): string;
   component: LazyExoticComponent<ComponentType<PaneProps<P>>>;
   singleton?: boolean; // settings/spawn: focus existing instead of second copy
+  parseParams?(value: unknown): P | null;
 }
 
 // Keyed by PaneTypeId; values are erased to PaneDescriptor<unknown> because

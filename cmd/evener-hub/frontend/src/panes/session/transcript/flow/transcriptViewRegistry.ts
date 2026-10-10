@@ -4,10 +4,18 @@ export interface CapturedTranscriptView {
   readonly normalizedOffset: number;
   readonly followingBottom: boolean;
   readonly focusedEntryId?: string;
+  readonly readingPoint?: {
+    readonly entryHeight: number;
+    readonly viewportHeight: number;
+    readonly viewportWidth: number;
+  };
+  readonly positioningRevision?: number;
 }
 
 export interface RegisteredTranscriptView {
   id: string;
+  /** Session identity, separate from a reusable pane id. */
+  logicalRef?: string;
   /** Optional layout identity used only for deterministic host-remount reuse. */
   layout?: string;
   capture(): CapturedTranscriptView;
@@ -22,6 +30,7 @@ interface Registration {
 interface RemountCapture {
   readonly targetLayout: string;
   readonly captured: CapturedTranscriptView;
+  readonly logicalRef?: string;
 }
 
 export interface TranscriptViewTransitionOptions {
@@ -40,8 +49,43 @@ export interface TranscriptViewTransitionOptions {
 const registeredViews = new Map<string, Registration>();
 const preparedRemounts = new Map<string, RemountCapture>();
 const remountCaptures = new Map<string, RemountCapture>();
+const mountedOwners = new Map<string, { logicalRef: string }>();
+const contentReloadCaptures = new Map<string, { logicalRef: string; captured: CapturedTranscriptView }>();
 let hasLastTransitionFingerprint = false;
 let lastTransitionFingerprint: string | undefined;
+
+/** A placement lifetime, not a thread/subscription claim or scroll history. */
+export function retainTranscriptView(id: string, logicalRef: string, keepRemount?: () => boolean): () => void {
+  const owner = { logicalRef };
+  mountedOwners.set(id, owner);
+  const reload = contentReloadCaptures.get(id);
+  if (reload && reload.logicalRef !== logicalRef) contentReloadCaptures.delete(id);
+  return () => {
+    if (mountedOwners.get(id) !== owner) return;
+    mountedOwners.delete(id);
+    contentReloadCaptures.delete(id);
+    const pendingRemount = preparedRemounts.get(id) ?? remountCaptures.get(id);
+    if (!pendingRemount || pendingRemount.logicalRef !== logicalRef || keepRemount?.() === false) {
+      preparedRemounts.delete(id);
+      remountCaptures.delete(id);
+    }
+  };
+}
+
+export function retainedTranscriptCapture(id: string, logicalRef?: string): CapturedTranscriptView | undefined {
+  const reload = contentReloadCaptures.get(id);
+  if (reload && reload.logicalRef === logicalRef) return reload.captured;
+  const remount = remountCaptures.get(id);
+  return remount?.logicalRef === logicalRef ? remount?.captured : undefined;
+}
+
+export function completeTranscriptViewRestore(id: string, logicalRef?: string): void {
+  const registration = registeredViews.get(id);
+  const prepared = preparedRemounts.get(id);
+  if (prepared && prepared.logicalRef === logicalRef && prepared.targetLayout === registration?.view.layout) {
+    preparedRemounts.delete(id);
+  }
+}
 
 export function registerTranscriptView(view: RegisteredTranscriptView): () => void {
   const id = view.id;
@@ -51,7 +95,7 @@ export function registerTranscriptView(view: RegisteredTranscriptView): () => vo
   const remount = remountCaptures.get(id);
   if (remount) {
     remountCaptures.delete(id);
-    if (view.layout === undefined || view.layout === remount.targetLayout) {
+    if (view.logicalRef === remount.logicalRef && (view.layout === undefined || view.layout === remount.targetLayout)) {
       try {
         view.restore(remount.captured);
       } catch {
@@ -60,8 +104,16 @@ export function registerTranscriptView(view: RegisteredTranscriptView): () => vo
       }
     }
   }
+  const reload = contentReloadCaptures.get(id);
+  if (reload) {
+    contentReloadCaptures.delete(id);
+    if (reload.logicalRef === view.logicalRef) view.restore(reload.captured);
+  }
   const prepared = preparedRemounts.get(id);
-  if (prepared && view.layout !== undefined && view.layout !== prepared.targetLayout) {
+  if (
+    prepared &&
+    (prepared.logicalRef !== view.logicalRef || (view.layout !== undefined && view.layout !== prepared.targetLayout))
+  ) {
     preparedRemounts.delete(id);
   }
 
@@ -71,39 +123,42 @@ export function registerTranscriptView(view: RegisteredTranscriptView): () => vo
       if (prepared) {
         preparedRemounts.delete(id);
         remountCaptures.set(id, prepared);
+      } else if (view.logicalRef !== undefined && mountedOwners.get(id)?.logicalRef === view.logicalRef) {
+        contentReloadCaptures.set(id, { logicalRef: view.logicalRef, captured: view.capture() });
       }
       registeredViews.delete(id);
     }
   };
 }
 
+export function captureTranscriptView(id: string): CapturedTranscriptView | undefined {
+  try {
+    return registeredViews.get(id)?.view.capture();
+  } catch {
+    // A pane may disappear while its view is being captured.
+    return undefined;
+  }
+}
+
 export function captureTranscriptViews(): ReadonlyMap<string, CapturedTranscriptView> {
   const captured = new Map<string, CapturedTranscriptView>();
-  const currentViews = [...registeredViews.entries()];
-
-  for (const [id, registration] of currentViews) {
-    try {
-      captured.set(id, registration.view.capture());
-    } catch {
-      // A pane may disappear while a transition is capturing its view. Keep
-      // the other panes' snapshots available to the transition.
-    }
+  for (const id of [...registeredViews.keys()]) {
+    const view = captureTranscriptView(id);
+    if (view) captured.set(id, view);
   }
-
   return captured;
 }
 
-export function restoreTranscriptViews(captured: ReadonlyMap<string, CapturedTranscriptView>): void {
-  for (const [id, capturedView] of captured) {
-    const registration = registeredViews.get(id);
-    if (!registration) continue;
-
-    try {
-      registration.view.restore(capturedView);
-    } catch {
-      // A stale or unmounted pane must not prevent other panes from restoring.
-    }
+export function restoreTranscriptView(id: string, captured: CapturedTranscriptView): void {
+  try {
+    registeredViews.get(id)?.view.restore(captured);
+  } catch {
+    // A stale or unmounted pane must not prevent other panes from restoring.
   }
+}
+
+export function restoreTranscriptViews(captured: ReadonlyMap<string, CapturedTranscriptView>): void {
+  for (const [id, view] of captured) restoreTranscriptView(id, view);
 }
 
 /** Arm captured panes for an upcoming viewport host remount. */
@@ -112,7 +167,11 @@ export function prepareTranscriptViewRemount(
   targetLayout: string,
 ): void {
   for (const [id, capturedView] of captured) {
-    preparedRemounts.set(id, { targetLayout, captured: capturedView });
+    preparedRemounts.set(id, {
+      targetLayout,
+      captured: capturedView,
+      logicalRef: registeredViews.get(id)?.view.logicalRef,
+    });
   }
 }
 
@@ -177,6 +236,8 @@ export function resetTranscriptViewRegistryForTests(): void {
   registeredViews.clear();
   preparedRemounts.clear();
   remountCaptures.clear();
+  mountedOwners.clear();
+  contentReloadCaptures.clear();
   hasLastTransitionFingerprint = false;
   lastTransitionFingerprint = undefined;
 }

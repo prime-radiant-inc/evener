@@ -41,6 +41,8 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// providerFileSignature is the last external file observation, guarded by mu.
+	providerFileSignature string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then
@@ -61,11 +63,18 @@ func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	err := registry.WriteConfigFile(c.providersConfigPath, l)
+	raw, err := registry.MarshalConfig(l)
+	if err != nil {
+		return err
+	}
+	err = registry.WriteConfigFile(c.providersConfigPath, l)
 	if err == nil {
 		// The primitive itself records the write the instant it lands; the
 		// mutation's rollback clears it again when it puts the prior file back.
 		c.applied.markApplied()
+		// The RPC announces local writes. Acknowledge exactly
+		// the writer's canonical bytes so the watcher only adopts later edits.
+		c.providerFileSignature = providerConfigSignature(raw)
 	}
 	return err
 }
@@ -1405,6 +1414,12 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	// the old name resolving a credential the config no longer names.
 	if err := c.auth.creds.Move(oldName, newName); err != nil {
 		problems = append(problems, fmt.Sprintf("stored key not copied: %v", err))
+	} else {
+		// The key left oldName and arrived under newName, so neither name
+		// holds a credential a provider rejected. A failed move left the key,
+		// and its rejection, where they were.
+		c.auth.forgetCredentialRejection(oldName)
+		c.auth.forgetCredentialRejection(newName)
 	}
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
@@ -1556,6 +1571,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !registry.ValidInstanceName(name) {
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
+	// The instance's credential is gone only once the removal stands: a
+	// removal that fails after its cleanup puts the credential back, and a
+	// provider's rejection of it still stands (removeCredentials only voids
+	// the probes in flight). A removal can stand and still return an error
+	// (removeAppliedError), when the credential could not be put back.
+	defer func() {
+		if _, standing := errors.AsType[removeAppliedError](err); err == nil || standing {
+			c.auth.forgetCredentialRejection(name)
+		}
+	}()
 
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -2128,6 +2153,10 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	// No probe that dialed the deleted credential may settle. The rejection
+	// itself stays until Remove knows the removal stands: a later failure
+	// puts the credential back.
+	c.auth.voidCredentialProbes(name)
 	return deleted, nil
 }
 
@@ -2233,7 +2262,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	if _, ok := reg.Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	return fetchInstanceLive(ctx, c.reg, name)
+	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
 
 // writeAndReload persists a mutated layer and reloads the registry: the

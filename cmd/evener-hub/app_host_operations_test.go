@@ -398,7 +398,7 @@ func finishSeedOperation(t *testing.T, store *hostops.Store, record hostops.Reco
 // read acts on this controller's own operation store, so it is never forwarded
 // to a remote hub.
 func TestHostOperationsNotForwarded(t *testing.T) {
-	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostOperations]; ok {
+	if appwire.IsHostRequestMethod(appwire.MethodEvenerHostOperations) {
 		t.Fatalf("controller-local %q is on the remote forward allow-list", appwire.MethodEvenerHostOperations)
 	}
 }

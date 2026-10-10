@@ -1,13 +1,22 @@
+import { installActivityFixture } from "./sessionActivityTestUtils";
 // Ask coordinator to stop it (spec 9, ruling 10): a prefilled message to the
 // coordinator, sent with the one Send that steers. The durable runtime is the
 // real one, on the in-memory SQLite double; the tests assert on the wire.
 import type { ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { StopSubagentSheet } from "./StopSubagentSheet";
@@ -84,7 +93,6 @@ let client: FakeClient;
 let runtime: NativeMutationRuntime;
 let status = "active";
 let failed = false;
-const trees: ReactTestRenderer[] = [];
 
 const read = (): ThreadReadResponse => ({
 	thread: wireThread(COORDINATOR.ref, {
@@ -187,7 +195,7 @@ beforeEach(async () => {
 	forgetSubagentTrees("hub-1");
 	client = new FakeClient("ready");
 	client.on("thread/read", read);
-	client.on("evener/jobs/list", () => ({ data: tree() }) as never);
+	installActivityFixture(client, () => tree());
 	client.on("turn/steer", applied);
 	client.on("turn/start", applied);
 	client.on("turn/queue", applied);
@@ -198,17 +206,10 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const mounted of trees.splice(0)) act(() => mounted.unmount());
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const mounted = render(
@@ -217,7 +218,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(mounted);
 	await settle();
 	return mounted;
 }
@@ -231,6 +231,11 @@ async function send(mounted: ReactTestRenderer) {
 	await act(async () => pressable(mounted, "Send stop request")?.props.onPress());
 	await settle();
 }
+
+it("lets a drag of the sheet put the keyboard away", async () => {
+	const mounted = await mount();
+	expect(mounted.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
 
 it("prefills the message for a running subagent, and says when it arrives", async () => {
 	const mounted = await mount();
@@ -249,7 +254,9 @@ it("reads the coordinator without taking the connection's subscription", async (
 	await mount();
 	const reads = client.calls.filter((call) => call.method === "thread/read").map((call) => call.params);
 	expect(reads.length).toBeGreaterThan(0);
-	for (const params of reads) expect(params).not.toHaveProperty("subscribe");
+	expect(reads.filter((params) => (params as { subscribe?: boolean }).subscribe === true)).toHaveLength(1);
+	for (const params of reads.filter((params) => (params as { subscribe?: boolean }).subscribe === true))
+		expect(params).toMatchObject({ replaceSubscription: false });
 });
 
 it("steers a working coordinator, records the request, and closes", async () => {
@@ -260,7 +267,14 @@ it("steers a working coordinator, records the request, and closes", async () => 
 		ref: COORDINATOR.ref,
 		input: [{ type: "text", text: "Stop subagent “Fix race in tree settle”: it's no longer needed." }],
 	});
-	expect(stopRequests("hub-1").view({ id: "d-fix", active: true, state: "running" } as never)).toBe("requested");
+	expect(
+		stopRequests("hub-1").view({
+			id: "d-fix",
+			active: true,
+			state: "running",
+			delegate: { delegateId: "d-fix", childRef: "local:fix" },
+		} as never),
+	).toBe("requested");
 	expect(sheetNavigation.goBack).toHaveBeenCalled();
 });
 
@@ -303,7 +317,10 @@ it("waits for a fresh read of the coordinator after the connection comes back", 
 	const mounted = await mount();
 	expect(sendDisabled(mounted)).toBe(false);
 	let answer: (value: ThreadReadResponse) => void = () => {};
-	client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (answer = resolve)));
+	const reply = new Promise<ThreadReadResponse>((resolve) => {
+		answer = resolve;
+	});
+	client.on("thread/read", () => reply);
 	const again = () =>
 		act(() =>
 			mounted.update(
@@ -324,6 +341,35 @@ it("waits for a fresh read of the coordinator after the connection comes back", 
 	expect(sendDisabled(mounted)).toBe(false);
 });
 
+it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+	// The sheet opened with the route's thread, but the coordinator has since
+	// restarted under a new one: the tree it reads comes back under that new
+	// thread, and the sheet still takes it as the coordinator's.
+	client.on(
+		"thread/read",
+		() =>
+			({
+				thread: wireThread(COORDINATOR.ref, {
+					id: "coord-restarted",
+					status: { type: status },
+					turns: [],
+					evener: {
+						ref: COORDINATOR.ref,
+						instanceId: "instance-coord",
+						capabilities: capabilities(),
+						queue: { revision: 1 },
+						mutationStateAuthoritative: true,
+					},
+				}),
+			}) as ThreadReadResponse,
+	);
+	installActivityFixture(client, () => ({ ...tree(), root: { ...tree().root, sessionId: "coord-restarted" } }));
+	const mounted = await mount();
+	expect(field(mounted).props.value).toContain("Fix race in tree settle");
+	expect(sendDisabled(mounted)).toBe(false);
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+});
+
 it("reads and sends only through its own hub's connection", async () => {
 	harness.connection = { ...screenConnection(client, "ready"), activeProfile: { id: "hub-2", name: "Other hub" } };
 	const mounted = await mount();
@@ -332,15 +378,10 @@ it("reads and sends only through its own hub's connection", async () => {
 });
 
 it("stays open while the tree is only partly listed", async () => {
-	client.on("evener/jobs/list", async (params) =>
-		(params as { continuation?: string }).continuation
+	installActivityFixture(client, (cursor) =>
+		cursor
 			? Promise.reject(new Error("offline"))
-			: ({
-					data: {
-						revision: 1,
-						root: { ...tree().root, entries: [], branch: { truncated: true, continuation: "page-2" } },
-					},
-				} as never),
+			: { revision: 1, root: { ...tree().root, entries: [], branch: { truncated: true, continuation: "page-2" } } },
 	);
 	await mount();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
@@ -356,14 +397,8 @@ it("sends as the coordinator is when you press Send, not as it was when the shee
 it("keeps an edited message open when the subagent leaves the tree, rather than dropping it", async () => {
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
-	client.on(
-		"evener/jobs/list",
-		() => ({ data: { ...tree(), revision: 2, root: { ...tree().root, entries: [] } } }) as never,
-	);
-	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: COORDINATOR.threadId, ref: COORDINATOR.ref, revision: 2 },
-	} as never);
+	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
+	act(() => client.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });

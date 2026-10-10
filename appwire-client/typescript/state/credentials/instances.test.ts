@@ -92,6 +92,106 @@ describe("two stores share nothing", () => {
   });
 });
 
+describe("refreshingInstances", () => {
+  test("the store publishes a refresh while it is out and clears it when it settles", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const pending = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => pending.promise);
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+
+    const refresh = store.getState().refreshModels("work");
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    pending.resolve(LISTING);
+    await refresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a second refresh keeps the instance published until the last settles", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const replies = [deferred<InstanceListResponse>(), deferred<InstanceListResponse>()];
+    let nth = 0;
+    fake.on("evener/instance/refreshModels", () => replies[nth++]!.promise);
+
+    const firstRefresh = store.getState().refreshModels("work");
+    const secondRefresh = store.getState().refreshModels("work");
+    replies[0]!.resolve(LISTING);
+    await firstRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    replies[1]!.resolve(LISTING);
+    await secondRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a replaced connection clears a refresh whose call is still out", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const pending = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => pending.promise);
+
+    const refresh = store.getState().refreshModels("work");
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    store.connectionChanged(readyClient(), "ready");
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+
+    pending.resolve(LISTING);
+    await refresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a refresh that rejects clears the instance from the published set", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    fake.on("evener/instance/refreshModels", () => {
+      throw new Error("upstream 502");
+    });
+
+    await expect(store.getState().refreshModels("work")).rejects.toThrow("upstream 502");
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+
+  test("a refresh on a replaced connection cannot unpublish a newer refresh's instance", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const oldClient = readyClient();
+    store.connectionChanged(oldClient, "ready");
+    await store.getState().fetch();
+    const oldAnswer = deferred<InstanceListResponse>();
+    oldClient.on("evener/instance/refreshModels", () => oldAnswer.promise);
+    const oldRefresh = store.getState().refreshModels("work");
+
+    // The connection is replaced while the old refresh is out, and a new
+    // refresh for the same instance starts on the replacement client.
+    const newClient = readyClient();
+    store.connectionChanged(newClient, "ready");
+    const newAnswer = deferred<InstanceListResponse>();
+    newClient.on("evener/instance/refreshModels", () => newAnswer.promise);
+    const newRefresh = store.getState().refreshModels("work");
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    // The old refresh settles: its bookkeeping generation is gone, so it must
+    // not decrement the count the newer refresh put there.
+    oldAnswer.resolve(LISTING);
+    await oldRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(true);
+
+    newAnswer.resolve(LISTING);
+    await newRefresh;
+    expect(store.getState().refreshingInstances.has("work")).toBe(false);
+  });
+});
+
 describe("listing reads and writes", () => {
   test("only the most recently started request replaces the listing", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });

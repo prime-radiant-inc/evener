@@ -832,6 +832,7 @@ func TestDrainGraceDoesNotFenceSuccessorGeneration(t *testing.T) {
 	if err := f.root.executeDelegateMutationPlans(result); err != nil {
 		t.Fatalf("execute finish plans: %v", err)
 	}
+	reportFinalizeTailDone(t, f.root.delegateController, f.lease, f.child)
 	if _, err := f.root.delegateController.Reconcile(emptyDelegateReconcileEvidence(f.root.delegateController)); err != nil {
 		t.Fatalf("Reconcile stop completion: %v", err)
 	}
@@ -890,6 +891,7 @@ func TestDrainAbandonmentDoesNotFenceSuccessorGeneration(t *testing.T) {
 	if err := f.root.executeDelegateMutationPlans(result); err != nil {
 		t.Fatalf("execute finish plans: %v", err)
 	}
+	reportFinalizeTailDone(t, f.root.delegateController, f.lease, f.child)
 	if _, err := f.root.delegateController.Reconcile(emptyDelegateReconcileEvidence(f.root.delegateController)); err != nil {
 		t.Fatalf("Reconcile stop completion: %v", err)
 	}

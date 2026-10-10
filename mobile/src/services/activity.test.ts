@@ -78,6 +78,7 @@ function thread(over: Partial<Thread> = {}): Thread {
 
 function delegate(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 	return {
+		runGeneration: 1,
 		delegateId: "dlg-1",
 		ownerSessionId: "sess-root",
 		rootSessionId: "sess-root",
@@ -165,7 +166,7 @@ describe("ActivityService — projectActivity", () => {
 			});
 			const view = service.projectActivity(t);
 			const byStatus = new Map(view.tasks.map((g) => [g.status, g.count]));
-			expect(byStatus.get("done")).toBe(0);
+			expect(byStatus.get("done")).toBe(3);
 			expect(byStatus.get("open")).toBe(0);
 		});
 

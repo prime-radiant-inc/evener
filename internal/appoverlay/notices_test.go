@@ -209,6 +209,32 @@ func TestAWarningNoticeKeepsItsTitleMessageHintAndSource(t *testing.T) {
 	}
 }
 
+// A coded warning carries its code on Raw, so a client can tell a "no
+// action needed" notice (context_budget) from a failure without reading its
+// prose; an uncoded warning carries no code key at all.
+func TestAWarningNoticeCarriesItsCodeWhenItHasOne(t *testing.T) {
+	o := newOverlay()
+	coded := upserted(t, one(t, o.Event(events.New(events.WarningData{
+		Message: "Output allocation reduced", Title: "Context budget", Code: events.WarningCodeContextBudget,
+	}))))
+	var raw map[string]map[string]string
+	if err := json.Unmarshal(coded.Item.Raw, &raw); err != nil {
+		t.Fatalf("warning Raw is not JSON: %v", err)
+	}
+	if raw["warning"]["code"] != events.WarningCodeContextBudget {
+		t.Fatalf("coded warning Raw = %v, want code %q", raw, events.WarningCodeContextBudget)
+	}
+
+	plain := upserted(t, one(t, o.Event(events.New(events.WarningData{Message: "careful"}))))
+	raw = nil
+	if err := json.Unmarshal(plain.Item.Raw, &raw); err != nil {
+		t.Fatalf("warning Raw is not JSON: %v", err)
+	}
+	if _, ok := raw["warning"]["code"]; ok {
+		t.Fatalf("uncoded warning Raw = %v, want no code", raw)
+	}
+}
+
 func TestAnUnrecordedCancellationIsAWarningNotAnError(t *testing.T) {
 	o := newOverlay()
 	item := upserted(t, one(t, o.Event(events.New(events.ErrorData{Error: context.Canceled.Error()}))))

@@ -9,6 +9,7 @@ function entry(overrides: Partial<AttentionEntry> = {}): AttentionEntry {
     level: "needs_you",
     askPending: false,
     approvalPending: false,
+    needsResponse: false,
     ...overrides,
   };
 }

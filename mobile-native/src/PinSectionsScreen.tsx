@@ -7,8 +7,11 @@ import { NavigationPages } from "./navigationPages";
 import { PinCatalogList } from "./PinCatalogList";
 import { PageList } from "./ProjectsScreen";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 import { usePinNavigation } from "./usePinNavigation";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Button } from "./sheet/Grouped";
 
 export function PinSectionsScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSections">) {
 	const pin = usePinNavigation(route.params.hubId);
@@ -16,7 +19,7 @@ export function PinSectionsScreen({ route, navigation }: NativeStackScreenProps<
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<PinCatalogList
 					sections={pin.page?.rows ?? []}
@@ -32,7 +35,6 @@ export function PinSectionsScreen({ route, navigation }: NativeStackScreenProps<
 					error={pin.action?.error ?? pin.page?.error ?? null}
 					refresh={() => {
 						if (pin.ready) void pin.actions?.reconcile();
-						else pin.retry();
 					}}
 					more={() => {
 						if (pin.isCurrent() && pin.confirmed && !pin.action?.pending && !pin.action?.uncertain)
@@ -76,20 +78,21 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 			<Copy>{section?.name ?? title}</Copy>
 			<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 			<ErrorMessage message={pin.action?.error ?? pin.page?.error ?? null} />
-			{!pin.ready || !pin.confirmed || pin.action?.uncertain ? (
-				<Action
+			{pin.ready && (!pin.confirmed || pin.action?.uncertain) ? (
+				<Button
+					text
+					label="Check again"
 					disabled={!!pin.action?.pending}
 					onPress={() => {
-						if (pin.ready) void pin.actions?.reconcile();
-						else pin.retry();
+						void pin.actions?.reconcile();
 					}}
-				>
-					{pin.ready ? "Refresh section" : "Reconnect"}
-				</Action>
+				/>
 			) : null}
 			{pin.confirmed && !section ? <Copy>This section no longer exists. Its sessions are kept.</Copy> : null}
-			<Action
-				tone="quiet"
+			<Button
+				text
+				quiet
+				label="Manage section"
 				onPress={() =>
 					navigation.navigate("PinSectionEditor", {
 						hubId,
@@ -97,23 +100,21 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 						title: section?.name ?? title,
 					})
 				}
-			>
-				Manage section
-			</Action>
+			/>
 		</View>
 	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : pages && !(pin.confirmed && !section) ? (
 				<PageList
 					header={header}
 					pages={pages}
 					ready={ready}
 					rowKey={sessionKey}
-					childRows={(row) => row.children ?? []}
-					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
+					chip={sessionSubagentChip}
+					chipLabel={sessionSubagentChipLabel}
 					organization={() => null}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}

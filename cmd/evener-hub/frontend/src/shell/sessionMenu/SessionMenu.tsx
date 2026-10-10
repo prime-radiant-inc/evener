@@ -10,12 +10,23 @@
 // confirm leaves the dialog open with the confirm button re-enabled; only
 // success closes it. Slash-command actions (goal/aside/compact/clear) are
 // deliberately NOT here - the command palette owns those.
+//
+// Turn verbs (Stop/Steer) are the one composer-owned exception: Jesse's
+// 2026-09-28 design ruling on the #1339 phone-width verb wrap moves them
+// into THIS menu below the composer's phone-width boundary, where they used
+// to wrap below the status row. Only the composer's chrome mount passes
+// them (SessionChrome gates them to its composer placement), so rail rows
+// and menu-only mounts never see them. They lead the menu in their own
+// group - a turn running away on a phone is the most time-critical thing
+// this menu can act on.
+
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
-import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { isTopLevelSession } from "../rail/sessionKind";
 import { ForceStopDialog } from "./ForceStopDialog";
 import styles from "./sessionmenu.module.css";
 
@@ -26,6 +37,7 @@ export interface NavigationSessionModel {
   host_id: string;
   session_id: string;
   kind: string;
+  failure?: NavigationSessionSummary["failure"];
   top_level?: boolean;
   tier?: string;
   pin_section_id?: string;
@@ -33,7 +45,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind | "notes"): void;
+  onOpenOverview(): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;
@@ -43,21 +55,39 @@ export interface SessionMenuActions {
   onDelete(): Promise<void>;
 }
 
+/** One relocated turn verb. The menu owns the item's id and label ("Stop" /
+ * "Steer", the same words the row buttons carry when wide); the caller owns
+ * what a press does and whether it is pressable right now. */
+export interface SessionMenuTurnVerb {
+  onSelect(): void;
+  disabled?: boolean;
+}
+
+/** The turn verbs offered in their own leading group. Absent on every mount
+ * but the composer's chrome (see the header comment). */
+export interface SessionMenuTurnVerbs {
+  stop?: SessionMenuTurnVerb;
+  steer?: SessionMenuTurnVerb;
+}
+
 export interface SessionMenuProps {
   sessionRef: string;
+  paneId?: string;
   title: string;
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
-  canReadNotes: boolean;
+  stopped: boolean;
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
-  taskLabel?: string; // e.g. "Tasks"; defaults to "Tasks"
-  activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
+  overviewOpen: boolean;
+  overviewLabel?: string; // e.g. "Overview · 2 active"; defaults to "Overview"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
+  /** Composer-only turn verbs (see the header comment). Rail/sidebar and
+   * menu-only callers omit them. */
+  turnVerbs?: SessionMenuTurnVerbs;
   actions: SessionMenuActions;
   triggerTabIndex?: number; // -1 inside rail rows (roving tabindex contract)
 }
@@ -74,17 +104,18 @@ const checked = (label: string, open: boolean) => (open ? `${label} ✓` : label
 
 export function SessionMenu({
   sessionRef,
+  paneId,
   title,
   triggerLabel,
   canRename,
   canShutdown,
-  canReadNotes,
+  stopped,
   session,
   treeNode,
-  panesOpen,
-  taskLabel,
-  activityLabel,
+  overviewOpen,
+  overviewLabel,
   onOpenVerbosity,
+  turnVerbs,
   actions,
   triggerTabIndex,
 }: SessionMenuProps) {
@@ -114,32 +145,22 @@ export function SessionMenu({
   // Organization actions are decisions about a top-level navigation row;
   // nested and remote rows retain the exact legacy restrictions.
   const sessionModel = session ?? treeNode;
-  const nestedKinds = new Set(["subagent", "fork", "cluster"]);
   const organizationEligible =
-    sessionModel !== undefined && sessionModel.top_level !== false && !nestedKinds.has(sessionModel.kind);
+    sessionModel !== undefined && sessionModel.top_level !== false && isTopLevelSession(sessionModel);
   const deleteEligible = organizationEligible && sessionModel.host_id === "local";
 
-  // Groups joined by separators: panes / organize / destructive. Both
+  // Groups joined by separators: inspection / organize / destructive. Both
   // separators always render because Rename and Shut down are always present;
   // the eligible-only items slot into their groups without orphaning a rule.
-  const paneItems: MenuEntry[] = [
-    { id: "details", label: checked("Details", panesOpen.details), onSelect: () => actions.onOpenPane("details") },
-    { id: "tasks", label: checked(taskLabel ?? "Tasks", panesOpen.tasks), onSelect: () => actions.onOpenPane("tasks") },
+  const inspectionItems: MenuEntry[] = [
     {
-      id: "activity",
-      label: checked(activityLabel ?? "Activity", panesOpen.activity),
-      onSelect: () => actions.onOpenPane("activity"),
+      id: "overview",
+      label: checked(overviewLabel ?? "Overview", overviewOpen),
+      onSelect: actions.onOpenOverview,
     },
   ];
-  if (canReadNotes) {
-    paneItems.push({
-      id: "notes",
-      label: checked("Notes", panesOpen.notes),
-      onSelect: () => actions.onOpenPane("notes"),
-    });
-  }
   if (onOpenVerbosity) {
-    paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
+    inspectionItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }
   const organizeItems: MenuEntry[] = [
     {
@@ -173,13 +194,37 @@ export function SessionMenu({
     },
   ];
   if (actions.onForceStop) {
-    destructiveItems.push({ id: "force-stop", label: "Force stop…", onSelect: () => setForceStopOpen(true) });
+    destructiveItems.push({ id: "force-stop", label: "Force shutdown…", onSelect: () => setForceStopOpen(true) });
   }
-  if (deleteEligible) {
+  if (deleteEligible && stopped) {
     destructiveItems.push({ id: "delete", label: "Delete…", onSelect: () => setDeleteOpen(true) });
   }
+  // The turn verbs' own group, leading the menu (the header comment says
+  // why). Rendered only when the caller offered one; its separator goes with
+  // it so the menu's item count stays what non-composer callers see.
+  const turnItems: MenuEntry[] = [];
+  if (turnVerbs?.stop) {
+    turnItems.push({
+      id: "turn-stop",
+      label: "Stop",
+      disabled: turnVerbs.stop.disabled,
+      onSelect: turnVerbs.stop.onSelect,
+    });
+  }
+  if (turnVerbs?.steer) {
+    turnItems.push({
+      id: "turn-steer",
+      label: "Steer",
+      disabled: turnVerbs.steer.disabled,
+      onSelect: turnVerbs.steer.onSelect,
+    });
+  }
+  if (turnItems.length > 0) {
+    turnItems.push({ kind: "separator", id: "sep-turn" });
+  }
   const items: MenuEntry[] = [
-    ...paneItems,
+    ...turnItems,
+    ...inspectionItems,
     { kind: "separator", id: "sep-organize" },
     ...organizeItems,
     { kind: "separator", id: "sep-destructive" },
@@ -193,7 +238,9 @@ export function SessionMenu({
         triggerTabIndex={triggerTabIndex}
         trigger={
           <>
-            <span aria-hidden="true">⋯</span>
+            <span aria-hidden="true" data-session-actions-ref={sessionRef} data-pane-id={paneId}>
+              ⋯
+            </span>
             <span className={CLASS.srOnly}>{triggerLabel}</span>
           </>
         }

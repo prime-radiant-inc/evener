@@ -51,7 +51,21 @@ A skill is a directory containing a `SKILL.md` with YAML frontmatter.
 Evener marks the skill unavailable and reports a machine-readable diagnostic
 with its source and invalid field. Other descriptive metadata remains inert
 data. Unsupported behavioral metadata such as `context: fork` is diagnosed but
-not acted on.
+not acted on. Compatibility diagnostics for well-formed metadata that Evener
+preserves but does not enforce are advisory and appear only at Full transcript
+detail. Invalid metadata and unreadable or unavailable skills remain visible at
+less verbose levels because they require action.
+
+A `SKILL.md` whose frontmatter block is missing only its opening `---` — it
+begins directly with a mapping entry such as `name:` and still closes on a whole
+`---` line — is read tolerantly: Evener treats the leading block as frontmatter
+and reports a `missing_frontmatter_delimiter` compatibility diagnostic, advisory
+in the same way as the other preserved-metadata notes. A block that starts with
+a heading or prose, or that does not carry both a non-blank `name` and a
+non-blank `description`, is not recovered. A file saved with CRLF (or lone CR)
+line endings reads like an LF one either way, and its delivered body ends its
+lines in `\n`. Every other malformed shape stays an
+`invalid_frontmatter` diagnostic and the skill stays unavailable.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener
 preserves it and diagnoses that it is not enforced: it neither grants nor
@@ -70,6 +84,23 @@ lowest to highest precedence:
 Deeper project directories win over shallower ones; `skills/` wins over
 `.agents/skills/` at the same level. Without a repository, only cwd is scanned.
 Configured roots remain discoverable when a cold session has no recorded cwd.
+Each public root scans its immediate children, including readable directory
+symlinks. Absolute and relative links may point outside the root; discovery does
+not recurse into nested collections. Symlinked roots and linked `SKILL.md` files
+are also supported. Catalog sources and activation `base_directory` retain the
+configured, lexical paths, not the target's canonical paths. Links grant no new
+permissions or trust, and the private bundled-skill cache keeps its separate
+validation and publication policy.
+
+A broken, looping or unreadable child link produces an `unreadable_source`
+diagnostic at that link without hiding healthy siblings. A directory without
+`SKILL.md`, or a link to a regular file instead of a directory, is not a
+candidate. Discovery is a snapshot: restoring a target makes it discoverable on
+the next catalog read or session startup, not through a new live refresh. A
+retained descriptor can load again after its target returns, provided the
+declared identity still matches; loading uses the current bytes. Discovery and
+loading do not alter the installed links or targets.
+
 Plugins use first-valid-manifest reservation: later manifests with the same
 plugin name are skipped even if the selected plugin has malformed unrelated
 components. Skill discovery does not load those commands, agents, hooks, or MCP
@@ -319,10 +350,10 @@ deployment honest:
   before forwarding — so the same request succeeds once the target that
   answers advertises `skillInput`.
 
-#### The web composer's canonical selections
+#### The web composers' canonical selections
 
-The hub's web composer keeps a selection as canonical data end to end, never
-as prose:
+The session composer and new-session launcher share the same atomic editor.
+They keep explicit skill and command selections as distinct canonical data:
 
 - **Selecting.** The composer's inline slash menu lists skills (only those
   both `available` and `userInvocable`) alongside commands. Choosing a skill
@@ -332,15 +363,23 @@ as prose:
   `/name` mention that is never explicitly selected stays ordinary text.
   Completion adds a separating space whenever the text that follows would
   otherwise join the name, including at the end of the input; punctuation or
-  whitespace that already bounds the reference is left as typed. Commands keep
-  their existing insert-then-execute behavior.
+  whitespace that already bounds the reference is left as typed. Choosing a
+  user or plugin command creates a command chip, not a skill chip. Built-in
+  controls keep their existing completion and invocation behavior. The launcher
+  reads the catalog for its selected host, directory, harness and plugins;
+  the session composer filters plugin commands to that session's inventory.
   A chip is one unit: it is deleted with Backspace or Delete (never edited
   letter by letter), typing a name character directly against it separates the
   two rather than dissolving the selection, and undo and redo treat the chip
   and the edit that placed it as one step. Its details show the skill's
   description, or a note that the live catalog no longer backs the selection.
 - **Drafts.** Each session's sticky draft persists as one structured
-  `{text, skillNames}` record, so selections survive a reload, a thread
+  `{text, skillNames, commandNames?, mentions?}` record. Mention locations
+  distinguish command atoms, skill atoms and unselected same-spelling prose.
+  Names alone suffice when every matching reference is a skill atom.
+  Text-only edits map retained atoms to their new UTF-16 locations and remove
+  atoms whose labels were deleted, without selecting same-spelling prose.
+  Selections survive a reload, a thread
   switch, and a remount next to the text. Changing chips is a draft edit even
   when the text is byte-identical — a delayed commit clears a draft only when
   both halves still match what was submitted. On restore a selection is only
@@ -352,16 +391,58 @@ as prose:
   with an empty selection list: no old value is JSON-decoded to guess
   selections, and no slash mention in it is ever inferred as one.
 - **Submission.** Selections ride the existing input-bearing mutation as
-  `{type: "skill", name}` items appended after the text and image items —
+  `{type: "skill", name}` and `{type: "command", name}` items appended after the text and image items —
   there is no second wire shape, outbox, or recovery store for them. The
   client gates on the same capability the hub does: when a target's
-  `skillInput` is false or absent, submission and resend are refused before
+  `skillInput` or `commandInput` is false or absent for that selection kind,
+  submission and resend are refused before
   anything durable is written, the draft is retained, and the failure says
   the target does not accept selections.
 - **Queue and recovery.** The names live in the durable mutation record's
   own input, so queue drains, recovery edits and resends, and remounts all
-  restore them. Merging a recovered draft into a composer unions its
+  restore them. Text items also retain `{kind, name, offset}` mention metadata,
+  with UTF-16 offsets shifted across attachment translation. The authoritative
+  queue projects these locations for a new client without the original outbox;
+  restoring an entry does not guess kinds or select duplicate quoted prose.
+  Editing locations do not authorize activation. Merging a recovered draft into a composer unions its
   selections with the currently staged ones, deduplicated by canonical name.
+  The launcher's project-scoped draft retains text, both selection kinds and
+  attachments through navigation, remounts and failed creation.
+
+#### Explicit command selections
+
+An explicit command item has exactly `type` and `name`. The name must be its
+exact catalog identity, such as `pkg:review`; a suffix or unknown identity is
+not retargeted to another command. Selections expand once per canonical name
+at consumption with **empty arguments**, wherever their chips appear in the
+original prompt. Surrounding prose is not `$ARGUMENTS`. The original prompt
+remains recorded separately from expanded bodies, and generated command text
+cannot select or recursively invoke another command.
+
+Expansion keeps the command's source rules: project and user-global templates
+substitute arguments as inert text, while plugin templates use their existing
+shell and file expansion. A leading **typed** `/name args` keeps its argument
+behavior. Plain typed or pasted inline mentions remain prose. Command and skill
+selections with the same spelling still request their own distinct behavior.
+The daemon's `commandInput` capability gates the command kind independently of
+`skillInput`; refusal keeps the composed request available for correction.
+
+Accepted inputs own prepared command results in the durable mutation journal.
+All unprepared names resolve before any command runs. Each plugin expansion
+records an in-progress marker before running its shell and saves its completed
+body before environment or user-input transcript admission. A returned claim,
+transcript-write retry or disk restore reuses those completed bytes rather than
+running the shell again. Queue promotion and draining carry that evidence into
+the new input owner, and uncertainty for any repeated name takes precedence
+over a completed result.
+
+An interrupted expansion or missing completion save has an **uncertain
+outcome**. It is never automatically repeated: the original prompt and
+selections remain visible with a failure, and another healthy input can run.
+Correcting and resending creates a new intent and may run the shell again.
+External shell effects cannot commit atomically with the journal: a crash after
+an effect but before the completion save is uncertain, not an exactly-once
+guarantee. Only durably completed results are known and reusable.
 
 ### Reload selection at compaction
 
@@ -528,7 +609,8 @@ The filename is the command name. Names cannot contain whitespace
 never run) or colons (`:` is the plugin-namespace separator; evener skips
 such files with a warning). Invoke it by typing `/name args` in a session. Optional
 frontmatter: `description`, `argument-hint`, `model`, `allowed-tools` (the
-last two are parsed but not enforced; evener warns when they appear).
+last two are parsed but not enforced; their compatibility advisory appears
+only at Full transcript detail).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
 spans and `@file` references in a evener-wide command body never execute or
@@ -550,12 +632,17 @@ cwd wins.
   set (`/status`, `/model`, `/help`, `/steer`, `/queue`, ...). A command
   whose name collides with a client's built-ins is unreachable in that
   client's typed input — pick another name. Headless input always works.
-- The web UI opens its command palette when you type `/` into an empty
-  composer. The palette lists plugin and user-global commands (badged by
-  source) alongside the built-ins. If the name you typed isn't exactly one
-  of the palette's commands, Enter sends it to the session as-is — a fuzzy
-  near-miss (say `/stat` for `status`) still reaches your command. Project
-  commands invoke through that fallthrough.
+- The web UI opens inline completion when you type `/` in either composer.
+  Mod+K opens the separate command palette. Selecting a command in inline
+  completion stages an atomic empty-argument invocation. Leaving a leading
+  `/name args` as typed text retains normal command parsing; unmatched inline
+  mentions are prose. The launcher reserves its built-in invocation names.
+- Live inline completion uses the owning session's loaded command inventory,
+  including project commands for its cwd, host and harness. `thread/read` exposes
+  that path-free inventory as `thread.evener.diagnostics.commands`; absent or
+  empty inventory never borrows controller commands. Switching sessions replaces
+  the offered rows. The separate Mod+K palette retains controller-wide discovery,
+  while the launcher discovers the target before creation.
 - Standalone skills are not command-file entries in the command catalog, but an
   exact `/skill-name` token is recognized by the session when that skill is
   loaded and activates the skill body. Skill names and descriptions are shown
@@ -577,6 +664,11 @@ client built-in intercepts it (the client caveats above apply to plugin
 commands too). If two plugins define the same command name, the bare form
 resolves to one of them — which one is not guaranteed; use the qualified
 form to be sure.
+
+Evener parses a plugin command's `model` and `allowed-tools` frontmatter but
+does not yet enforce either override per turn. The command runs with the
+session's default model and tools. Its load-time compatibility advisory appears
+only at Full transcript detail.
 
 ## Security checklist for command authors
 

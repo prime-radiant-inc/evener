@@ -31,8 +31,8 @@ func seedBootStore(t *testing.T) (*Store, string, [4]string, map[string]Record) 
 	running := createTestRecord(t, store, "h2")
 	if _, err := store.Transition(running.ID, StateRunning, func(r *Record) {
 		// The worker's fencing epoch is persisted before the first running
-		// probe (spec §4); its shape belongs to the crash-fencing spec, so the
-		// store carries it verbatim.
+		// probe (spec §4); the store carries it verbatim and never interprets
+		// the pair.
 		r.FencingEpoch = json.RawMessage(`{"bootId":"boot-1","opSeq":3}`)
 	}); err != nil {
 		t.Fatalf("Transition(running): %v", err)
@@ -145,15 +145,13 @@ func TestBootPassDoesNotDoubleRun(t *testing.T) {
 	}
 }
 
-// TestBootPassLeavesOrphanUnverifiedAlone pins spec §7's one exception:
-// orphan-unverified is resolved only through the fencing paths, so the boot
-// pass neither transitions it nor advances the sequence for it.
+// TestBootPassLeavesOrphanUnverifiedAlone pins spec §7's one exception: an
+// orphan-unverified record is not boot's to move, so the boot pass neither
+// transitions it nor advances the sequence for it.
 func TestBootPassLeavesOrphanUnverifiedAlone(t *testing.T) {
 	store, path := openTestStore(t)
 	record := createTestRecord(t, store, "h1")
-	orphan, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
-	})
+	orphan, err := store.Transition(record.ID, StateOrphanUnverified, nil)
 	if err != nil {
 		t.Fatalf("Transition(orphan-unverified): %v", err)
 	}
@@ -174,9 +172,6 @@ func TestBootPassLeavesOrphanUnverifiedAlone(t *testing.T) {
 	}
 	if stored.State != StateOrphanUnverified {
 		t.Fatalf("the boot pass moved the orphan-unverified record to %q", stored.State)
-	}
-	if string(stored.OrphanBoundary) != `[{"host":"h1","kind":"local-linux"}]` {
-		t.Fatalf("the persisted boundary = %s, want it carried verbatim", stored.OrphanBoundary)
 	}
 	if got := store.Sequence(); got != 0 {
 		t.Fatalf("sequence = %d, want 0", got)

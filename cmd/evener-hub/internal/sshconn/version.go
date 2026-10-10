@@ -1564,11 +1564,11 @@ func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Hos
 }
 
 // installableEvenerBasename reports whether a basename names the binary a host
-// hub can be run as. Only `evener` does: release archives carry `evener-dev`
-// too, but that is the development/test tooling binary
-// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a run
-// target naming it would be probed, relaunched, and attached as a hub that can
-// never answer. A deploy cannot preserve a run target the host cannot serve.
+// hub can be run as. Only `evener` does: `evener-dev` is the development/test
+// tooling binary (cmd/evener-dev/bin) — no `hub` subcommand and no
+// `launch-check` — so a run target naming it would be probed, relaunched, and
+// attached as a hub that can never answer. A deploy cannot preserve a run
+// target the host cannot serve.
 func installableEvenerBasename(p string) bool {
 	return path.Base(strings.TrimSpace(p)) == "evener"
 }

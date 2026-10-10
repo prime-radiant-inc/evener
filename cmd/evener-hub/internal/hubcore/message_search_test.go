@@ -358,6 +358,57 @@ func TestReadTranscriptItemsFallsBackWholeWhenARebuildRacesTheIncarnationCheck(t
 	}
 }
 
+// A held snapshot whose length predates the transcript index's kept update log
+// makes ChangedSince report ErrUpdateLogTruncated: the log is bounded and cut
+// back to its newest records, so the changes since that length are no longer
+// all known. readTranscriptItems must then read the whole current incarnation
+// rather than trust a partial "changes since" view. SetUpdateLogRecordsForTest
+// shrinks the log so a few appends overflow it, standing in for a transcript
+// that grew past the records the index kept. Only entries that update an item
+// in place (a tool result completing a tool call) log records, which is why the
+// fixture appends settle turns.
+func TestReadTranscriptItemsReadsWholeWhenTheUpdateLogIsTruncated(t *testing.T) {
+	defer transcriptindex.SetUpdateLogRecordsForTest(2)()
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	first, err := readTranscriptItems(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := appwire.SnapshotIdentity{Incarnation: first.snapshot.Incarnation, Length: first.snapshot.Length}
+	for range 4 {
+		appendTestTranscript(t, path, settleTurns()...)
+	}
+
+	// The fixture must actually overflow the kept log: otherwise the read below
+	// would pass without ever reaching the truncated-log fallthrough.
+	index, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	if _, err := index.ChangedSince(held.Length); !errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
+		t.Fatalf("ChangedSince(%d) = %v, want ErrUpdateLogTruncated: the appends did not overflow the kept log", held.Length, err)
+	}
+
+	read, err := readTranscriptItems(path, &held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.replace {
+		t.Fatalf("read = %+v, want a whole re-read after the update log truncated, not a partial 'changes since' view", read)
+	}
+	got := map[string]appwire.ThreadItemPosition{}
+	for _, item := range read.items {
+		if searchableMessage(item) {
+			got[item.TranscriptKey] = *item.Position
+		}
+	}
+	if want := messageItems(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("read covers %v, want every current message %v: a whole read of the current incarnation", got, want)
+	}
+}
+
 // The index outlives the hub: reopened, it keeps what it read and reads
 // nothing again until a transcript changes.
 func TestMessageSearchKeepsWhatItReadAcrossAReopen(t *testing.T) {
@@ -700,9 +751,11 @@ func TestMessageSearchRebuildsAnotherSchemaVersion(t *testing.T) {
 }
 
 // SearchTokens is the one word rule the title search, the message search and
-// its highlighting share: lowercased runs of letters, digits and underscores.
+// its highlighting share: lowercased runs of letters and digits. "_" is a
+// separator, like everything else, because the FTS5 unicode61 tokenizer both
+// indexes use splits on it.
 func TestSearchTokensSplitsOnEverythingButWordCharacters(t *testing.T) {
-	if got, want := SearchTokens(`Fix "the" settle_race (NEAR drain*)`), []string{"fix", "the", "settle_race", "near", "drain"}; !reflect.DeepEqual(got, want) {
+	if got, want := SearchTokens(`Fix "the" settle_race (NEAR drain*)`), []string{"fix", "the", "settle", "race", "near", "drain"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("SearchTokens = %q, want %q", got, want)
 	}
 	if got := strings.Join(SearchTokens("!!!"), ","); got != "" {

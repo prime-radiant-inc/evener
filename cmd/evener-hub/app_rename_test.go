@@ -94,7 +94,7 @@ func newEndedRenameFixture(t *testing.T, projectDir string) endedRenameFixture {
 	source.inputs.Tree.Projects[0].Name = projectKey
 	source.inputs.Tree.Projects[0].Current[0].Project = projectKey
 	navigation := newTestNavigationService(t, source)
-	if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	oldSave := saveSessionMetaForRename
@@ -128,7 +128,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		registry := appsource.NewRegistry()
 		registry.Add(live)
 		navigation := newTestNavigationService(t, source)
-		if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+		if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, registry, navigation, nil)
@@ -502,5 +502,26 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 	}
 	if !cfg.ResumeLocks.RecoveryState("02wMz5Txv1C3Hut0M8GCeB").ResumeRequired {
 		t.Fatal("rename cleared explicit resume requirement")
+	}
+}
+
+// A saved-session rename names the project bucket that owns the session, which
+// is the key navigation change hints use for that project's resources.
+func TestRenameEndedSessionHintsItsOwnProject(t *testing.T) {
+	fixture := newEndedRenameFixture(t, "project-x-0123456789")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(filepath.Dir(fixture.stateDir), "*"), filepath.Join(t.TempDir(), "index.db"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}
+	ref := appwire.Ref{SourceID: "local", ThreadID: fixture.original.ID}
+	params := appwire.ThreadNameSetParams{Ref: ref.String(), Name: "new"}
+
+	mutation, err := mutateThreadName(t.Context(), cfg, appsource.NewRegistry(), ref, params, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutation.projectKey != "project-x-0123456789" {
+		t.Fatalf("hint project key = %q, want %q", mutation.projectKey, "project-x-0123456789")
 	}
 }

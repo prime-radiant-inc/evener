@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -466,5 +467,64 @@ func TestReleaseBuildsTheWebFirst(t *testing.T) {
 	}
 	if !slices.Contains(cfg.Before.Hooks, "make build-web") {
 		t.Fatalf(".goreleaser.yml before.hooks = %q, want it to run make build-web so the hub binary embeds a fresh SPA", cfg.Before.Hooks)
+	}
+}
+
+// TestReleaseArchiveDoesNotCarryEvenerDev pins the completion of the evener-dev
+// transition: no install path installs it, and once versions that required it
+// in the archive are gone the release stops building it at all. A published
+// archive with only evener must still upgrade — internal/selfupdate's
+// TestUpgradeInstallsAnArchiveWithoutEvenerDev pins that half.
+func TestReleaseArchiveDoesNotCarryEvenerDev(t *testing.T) {
+	data, err := os.ReadFile(".goreleaser.yml")
+	if err != nil {
+		t.Fatalf("read .goreleaser.yml: %v", err)
+	}
+	var cfg struct {
+		Builds []struct {
+			ID     string `yaml:"id"`
+			Binary string `yaml:"binary"`
+		} `yaml:"builds"`
+		Archives []struct {
+			IDs []string `yaml:"ids"`
+		} `yaml:"archives"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yml: %v", err)
+	}
+	for _, b := range cfg.Builds {
+		if b.ID == "evener-dev" || b.Binary == "evener-dev" {
+			t.Fatalf(".goreleaser.yml still builds evener-dev: %+v", b)
+		}
+	}
+	for _, a := range cfg.Archives {
+		if slices.Contains(a.IDs, "evener-dev") {
+			t.Fatalf(".goreleaser.yml archive ids still list evener-dev: %v", a.IDs)
+		}
+	}
+}
+
+// TestReleaseWorkflowDoesNotExpectEvenerDev guards the consumer side of the
+// same transition: the macOS signing job extracts the Darwin archive and signs
+// the binaries it expects, so it breaks the moment the archive stops carrying
+// evener-dev. It must name evener alone. Comment lines are dropped first so a
+// note about the retired binary stays allowed; the word boundary keeps the
+// check from matching unrelated names like the evener-developer-id signing
+// certificate.
+func TestReleaseWorkflowDoesNotExpectEvenerDev(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/binaries.yml")
+	if err != nil {
+		t.Fatalf("read binaries.yml: %v", err)
+	}
+	var code strings.Builder
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteByte('\n')
+	}
+	if m := regexp.MustCompile(`evener-dev\b`).FindString(code.String()); m != "" {
+		t.Fatalf("binaries.yml still names evener-dev (%q); the Darwin archive carries evener alone", m)
 	}
 }

@@ -1,4 +1,6 @@
+import { isValidTranscriptRef } from "@evener/appwire-client";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
+import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -19,44 +21,46 @@ import {
 import {
 	AccessibilityInfo,
 	ActionSheetIOS,
-	ActivityIndicator,
 	Alert,
 	AppState,
 	FlatList,
 	Keyboard,
-	KeyboardAvoidingView,
 	Platform,
 	Pressable,
 	ScrollView,
 	Text,
 	TextInput,
-	useWindowDimensions,
 	View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
 	type AskQuestionRef,
 	buildComposerInput,
+	errorText,
 	formatQuoteBlock,
 	mergeDraftText,
+	type ModelListResponse,
 	type NavigationSessionSummary,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
+import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
-import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
+import { openProviders } from "./board/BoardNotices";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
+	CommandNotSentError,
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
@@ -64,9 +68,7 @@ import {
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls, queueActionRefusal } from "./conversationControls";
-import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
-import { HubEditor } from "./HubEditor";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
@@ -74,15 +76,21 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import { createNativeMutationHost, createDurableSubmitter, type NativeMutationHost } from "./nativeMutationHost";
+import {
+	createNativeMutationHost,
+	createDurableSubmitter,
+	NATIVE_MUTATION_HOST_UNAVAILABLE,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
-import { documentReferences, fileWrites } from "./reader/documentReferences";
+import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
+import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
-import { editPairingInput, importPairing as importReviewedPairing, reviewPairingInput } from "./pairingImport";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
@@ -90,7 +98,11 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { BarFrame } from "./design/BarFrame";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
+import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
+import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
@@ -106,10 +118,12 @@ import {
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
 	readerAnchorAt,
+	readerAnchorRow,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
-	shouldApplyExactRestore,
+	type AppliedRestore,
+	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
@@ -119,34 +133,49 @@ import {
 	ghostActionTarget,
 	ghosts,
 	type QueueEntryRef,
+	queuedMessageText,
+	steeringWithQueue,
 	whatCanActNow,
 } from "./session/ghosts";
-import { FloatingStack } from "./session/FloatingStack";
+import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
+import { nativeDisclosureStore } from "./nativeDisclosure";
+import { sessionDisclosureScope } from "./session/disclosureKeys";
+import { atEnd, pagesOlder, useLiveEndFollow } from "./session/liveEndFollow";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
-import { QueuedMessages } from "./session/QueuedMessages";
+import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
 import {
 	answerTo,
 	hideAnswerMessages,
+	isGhostRow,
 	latestSettledTurn,
 	liveRunId,
 	newRowCount,
+	type SessionListRow,
+	sessionListGap,
+	sessionListKey,
 	sessionRows,
+	withGhostRows,
 } from "./session/transcriptRows";
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
+import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
-import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
-import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
+import { historyForSession } from "./session/historyMemory";
+import { useOlderHistory } from "./session/useOlderHistory";
+import { type FindState, newFind, findMatches, matchLabel, stepMatch } from "./session/findInSession";
+import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { outboxFlush } from "./outbox/nativeOutboxFlush";
+import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
@@ -160,41 +189,48 @@ import {
 } from "./session/SessionInfoSheet";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
-import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
+import {
+	canDeleteSavedSession,
+	canOpenModelSheet,
+	latestForkPoint,
+	modelChipLabel,
+	sessionHosts,
+} from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { SessionTitle } from "./session/SessionTitle";
+import { useActivityPoll } from "./board/useActivityPoll";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { liveClientFor } from "./liveClient";
+import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
+import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
-import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
-import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { groupTimeline, type TimelineRow } from "./timeline";
+import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
+import { refreshLoadedArchivedLists } from "./archivedLists";
+import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { haptic } from "./haptics";
+import { Button } from "./sheet/Grouped";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
+/** The most of its room the Session's bottom bar may take (spec 8.1). */
+const BAR_MAX_SHARE = 0.8;
+// How long an opening session's transcript stays hidden while it travels to
+// where it opens, at most.
+const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
-
-/** Find in session while it's open: what you typed, the current match's
- * reader key, whether older history is being searched, and whether that
- * search reached the start of history with nothing older. */
-interface FindState {
-	query: string;
-	key: string | null;
-	seeking: boolean;
-	exhausted: boolean;
-}
-
-/** A new query starts a new search: no current match yet, and older history
- * is searched only when there is something to look for. */
-function newFind(query: string): FindState {
-	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
-}
+const STOP_NOT_TRIED = "Couldn't stop the turn just now. Try again.";
+const STEERING_WITH_QUEUE =
+	"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -212,15 +248,6 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	Providers: { hubId: string };
-	Plugins: { hubId: string };
-	HubSettings: { hubId: string };
-	TranscriptPreferences: { hubId: string };
-	KeybindingPreferences: {
-		hubId: string;
-		editor?: { actionId: string; chord: string };
-	};
-	LaunchSettings: { hubId: string; projectCwd?: string };
 	Project: {
 		hubId: string;
 		projectKey: string;
@@ -232,7 +259,9 @@ export type Routes = {
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
-	NewSession: { hubId: string; hubName: string };
+	/** New session (spec 11), a modal holding its own stack of pages. `like`
+	 * opens it on a session's setup ("New session like this"). */
+	NewSession: { hubId: string; hubName: string; like?: SessionSeed };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
@@ -253,12 +282,13 @@ export type Routes = {
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
-		/** The session whose folder holds the file. */
+		reference: FileReference;
+		/** The document's session, whose folder holds the file; Open session,
+		 * Quote in reply and the review go to it too (ruling 16). */
 		sessionRef: string;
 		path: string;
-		/** The session the Reader sits over, where Open session and reviews go. */
-		reviewRef: string;
-		reviewTitle: string;
+		/** That session's title, for Open session, Quote in reply and the review. */
+		sessionTitle: string;
 		/** When the file was last written, as its opener reported it. */
 		updatedAt?: string;
 	};
@@ -280,228 +310,15 @@ export type Routes = {
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
+	/** A shell job's detail, over its coordinator's Activity list. */
+	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
-	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
+	FilesSheet: { hubId: string; ref: string; title: string; cwd: string; documents: SessionDocument[] };
 };
 
-/** A document's comments and its review: the document, and the session the
- * review goes to. */
-type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
-
-export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
-	const { profiles, activeProfile, saveHub, updateHub, selectHub, removeHub, loading } = useConnection();
-	const colors = useColors();
-	const headerHeight = useHeaderHeight();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
-	const [editing, setEditing] = useState<HubProfile | null>(null);
-	const [name, setName] = useState("");
-	const [origin, setOrigin] = useState("");
-	const [token, setToken] = useState("");
-	const [pairingReview, setPairingReview] = useState(editPairingInput(""));
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const inputStyle = [
-		styles.input,
-		{
-			color: colors.text,
-			borderColor: colors.border,
-			backgroundColor: colors.surface,
-		},
-	];
-	async function save() {
-		if (saving) return;
-		setSaving(true);
-		setError(null);
-		try {
-			const selected = await saveHub({ name, origin, token });
-			setName("");
-			setOrigin("");
-			setToken("");
-			setPairingReview(editPairingInput(""));
-			if (selected) navigation.navigate("Sessions");
-		} catch {
-			setError("Could not save this hub. Check the name and http(s) origin, and try again.");
-		} finally {
-			setSaving(false);
-		}
-	}
-	function reviewPairingURL() {
-		const review = reviewPairingInput(pairingReview.input);
-		setPairingReview(review);
-		setError(review.error);
-	}
-	function importPairing() {
-		const imported = importReviewedPairing(pairingReview);
-		if (!imported) return;
-		setOrigin(imported.origin);
-		setToken(imported.token);
-		setPairingReview(imported.state);
-		setError(null);
-	}
-	function remove(id: string, label: string) {
-		Alert.alert(
-			`Remove ${label}?`,
-			"The saved hub, its credentials, and its local drafts will be removed from this device.",
-			[
-				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Remove",
-					style: "destructive",
-					onPress: () => {
-						void removeHub(id).catch((error: unknown) =>
-							setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
-						);
-					},
-				},
-			],
-		);
-	}
-	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			{editing ? <HubEditor profile={editing} save={updateHub} close={() => setEditing(null)} /> : null}
-			<KeyboardAvoidingView
-				style={styles.fill}
-				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
-			>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-							},
-						]}
-					>
-						Saved hubs
-					</Text>
-					{loading ? (
-						<ActivityIndicator accessibilityLabel="Loading saved hubs" />
-					) : profiles.length === 0 ? (
-						<Copy muted>Add a hub to browse your sessions.</Copy>
-					) : null}
-					{profiles.map((profile) => (
-						<View
-							key={profile.id}
-							style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}
-						>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={`Open ${profile.name}`}
-								onPress={() => {
-									selectHub(profile.id);
-									navigation.navigate("Sessions");
-								}}
-								style={{ gap: 8, minHeight: 44 }}
-							>
-								<Copy>
-									{profile.name}
-									{activeProfile?.id === profile.id ? " · Selected" : ""}
-								</Copy>
-								<Copy muted>{profile.origin}</Copy>
-							</Pressable>
-							<View style={[styles.row, { justifyContent: "flex-end", flexWrap: "wrap" }]}>
-								<Action onPress={() => setEditing(profile)} label={`Edit ${profile.name}`}>
-									Edit
-								</Action>
-								<Action onPress={() => remove(profile.id, profile.name)} label={`Remove ${profile.name}`}>
-									Remove
-								</Action>
-							</View>
-						</View>
-					))}
-					<Text
-						accessibilityRole="header"
-						allowFontScaling={allowFontScaling}
-						style={[
-							styles.title,
-							{
-								color: colors.text,
-								fontSize: 22 * textScale,
-								lineHeight: 28 * textScale,
-								marginTop: 16,
-							},
-						]}
-					>
-						Add hub
-					</Text>
-					<Copy muted>Enter the hub’s origin, such as https://hub.example.com:9180.</Copy>
-					<TextInput
-						accessibilityLabel="Hub name"
-						placeholder="Hub name"
-						placeholderTextColor={colors.secondary}
-						value={name}
-						onChangeText={setName}
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Pairing URL"
-						placeholder="Paste pairing URL"
-						placeholderTextColor={colors.secondary}
-						value={pairingReview.input}
-						onChangeText={(value) => {
-							setPairingReview(editPairingInput(value));
-							setError(null);
-						}}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						secureTextEntry
-						style={inputStyle}
-					/>
-					{pairingReview.preview ? (
-						<View style={{ gap: 8 }}>
-							<Copy muted>Pairing target: {pairingReview.preview.origin}</Copy>
-							<Action disabled={saving} onPress={importPairing}>
-								Import pairing link
-							</Action>
-						</View>
-					) : (
-						<Action disabled={saving || !pairingReview.input.trim()} onPress={reviewPairingURL}>
-							Review pairing link
-						</Action>
-					)}
-					<TextInput
-						accessibilityLabel="Hub origin"
-						placeholder="https://hub.example.com:9180"
-						placeholderTextColor={colors.secondary}
-						value={origin}
-						onChangeText={setOrigin}
-						autoCapitalize="none"
-						autoCorrect={false}
-						keyboardType="url"
-						style={inputStyle}
-					/>
-					<TextInput
-						accessibilityLabel="Bearer token, optional"
-						placeholder="Bearer token (optional)"
-						placeholderTextColor={colors.secondary}
-						value={token}
-						onChangeText={setToken}
-						autoCapitalize="none"
-						autoCorrect={false}
-						secureTextEntry
-						style={inputStyle}
-					/>
-					<ErrorMessage message={error} />
-					<Action
-						onPress={() => {
-							void save();
-						}}
-						disabled={saving || loading || !name.trim() || !origin.trim()}
-					>
-						{saving ? "Saving…" : "Save and connect"}
-					</Action>
-				</ScrollView>
-			</KeyboardAvoidingView>
-		</SafeAreaView>
-	);
-}
+/** A document's comments and its review: the document, and its session's title,
+ * which the review goes to (ruling 16). */
+type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; sessionTitle: string };
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
@@ -533,6 +350,7 @@ export function useFocusAfterModal(
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
 	subagents: "subagents",
+	activity: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -550,14 +368,27 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState, fatal } = useConnection();
+	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
-	const [find, setFind] = useState<FindState | null>(null);
+	const [find, setFind] = useState<FindState | null>(
+		() => historyForSession(route.params.hubId, route.params.ref)?.find ?? null,
+	);
 	const headerHeight = useHeaderHeight();
+	// Where the device has Liquid Glass, the nav bar is the system's glass
+	// over the transcript (spec 16.3): the screen starts under it, and the
+	// header's own glass spans the bar and the rows under it.
+	const navGlass = useSystemGlass();
+	const underNavBar = navGlass ? headerHeight : 0;
+	// Before paint, so a session never opens with an opaque bar that turns to
+	// glass; Reduce Transparency's last known value (accessibilitySettings)
+	// is there on the first render of every screen after the first.
+	useLayoutEffect(() => {
+		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
+	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's
@@ -586,7 +417,8 @@ export function ConversationScreen({
 	const levels = detailLevels(route.params.hubId);
 	useSyncExternalStore(levels.subscribe, levels.getRevision);
 	const chosenLevel = levels.get(route.params.ref);
-	const displayConfig = useMemo(() => configForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
+	const display = useMemo(() => displayForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
+	const displayConfig = display.config;
 	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
 	displayConfigRef.current = displayConfig;
 	const resolveDisplayConfig = useCallback(() => displayConfigRef.current, []);
@@ -624,36 +456,70 @@ export function ConversationScreen({
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
 	const snapshot = store();
+	// The next older page, or null: past the cursor, or above rows the cap
+	// trimmed (the store names the oldest row kept).
+	const olderPage = olderPageKey(snapshot);
 	const timeline = useRef<FlatList>(null);
 	const readerMeasurements = useRef(new Map<string, ReaderMeasurement>());
 	const readerContentHeight = useRef(0);
 	const readerViewportHeight = useRef(0);
 	const [layoutRevision, setLayoutRevision] = useState(0);
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
-	const appliedReaderRestore = useRef<{
-		key: string;
-		y: number;
-		height: number;
-		scrollOffset: number;
-	} | null>(null);
+	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
-	const readerPageAttempts = useRef(new Set<string>());
-	const readerHeader = useRef(false);
-	const readerLatest = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
 	// finished since.
 	const turnsSeen = useRef<string | undefined>(undefined);
 	// Where the session opened is decided once per route (spec 7.3).
 	const openedFor = useRef<string | null>(null);
-	// The reader keys the list held when you left its end; null at the end.
-	// Rows that arrive below it make "↓ 3 new".
-	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
+	// Opening lands once: the list stays hidden while it travels to where the
+	// session opens (the live end, or a reading position), and shows once it
+	// is there. Scrolls the list takes while hidden are never seen, so no one
+	// watches it land, move and land again as rows measure.
+	const [openingLanded, setOpeningLanded] = useState(false);
+	const openingLandedNow = useRef(false);
+	// This render's rows, for the cap's timer, and the key of the list's last
+	// row, a ghost when one waits, for the list's cells.
+	const rowsNow = useRef<readonly TimelineRow[]>([]);
+	const listEndKey = useRef<string | null>(null);
+	// A fresh cap, once the opening turns to the live end at the first.
+	const [openingCapRound, setOpeningCapRound] = useState(0);
+	function landOpening() {
+		if (openingLandedNow.current) return;
+		openingLandedNow.current = true;
+		setOpeningLanded(true);
+	}
+	// Following the live end, what moves the list, and the rows it held when
+	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
+	// The store trims the 500-row cap only while the reader follows the end.
+	// It hears a reader leave the end at once, and a return (the "↓ new" pill,
+	// a drag or a coast to the end) only once the list is there: trimming the
+	// top while the list still travels would move what it passes.
+	const returningToEnd = useRef(false);
+	const follow = useLiveEndFollow((following) => {
+		returningToEnd.current = following;
+		if (!following) store.getState().setFollowingLiveEnd(false);
+	});
+	function settleAtEnd(end: boolean) {
+		if (!end || !returningToEnd.current) return;
+		returningToEnd.current = false;
+		store.getState().setFollowingLiveEnd(true);
+	}
+	// Rows keep their open state in one app-wide store, scoped by session, so a
+	// row the list remounts keeps it. Leaving the session drops its scope, which
+	// keeps the store bounded.
+	useEffect(() => {
+		const scope = sessionDisclosureScope(route.params.hubId, route.params.ref);
+		return () => nativeDisclosureStore.clearScope(scope);
+	}, [route.params.hubId, route.params.ref]);
 	const captureSuppressed = useRef(false);
-	const readerDragging = useRef(false);
-	const readerMomentum = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
+	// The composer field's focus, for what steps aside while you type in it
+	// (useComposerTyping); the find bar's or a sheet's field raising the
+	// keyboard isn't typing in it.
+	const [composerFocus] = useState(() => new ComposerFocus());
 	// Puts the caret at `caret` in the composer and focuses it, on the next
 	// frame so the field has the text the caret is placed in.
 	const focusComposerAt = useCallback((caret: number) => {
@@ -696,7 +562,7 @@ export function ConversationScreen({
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
-	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
 	// "a blip shorter than this reconnects without a word"), so the chips
 	// never flicker through a hide-and-show the bar stays silent for, and a
@@ -708,6 +574,11 @@ export function ConversationScreen({
 	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	// This session's own row, which the fleet re-reads when a turn ends.
 	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
+	// This session's activity while it is in front: the status tray's pulse
+	// and quiet time, and the last-moved time the in-front mark follows. The
+	// hub reports activity only for top-level sessions.
+	const { activityOf } = useActivityPoll(subagentOf ? null : client, connected, focused, route.params.ref);
+	const sessionActivity = activityOf(route.params.ref);
 	useMarkSeenInFront(
 		route.params,
 		focused,
@@ -715,9 +586,17 @@ export function ConversationScreen({
 		snapshot.status === "open" ? snapshot.conversation : null,
 		fleetRow,
 		fleet.seen,
+		sessionActivity?.lastMovedAt,
 	);
 	const othersWaiting = useMemo(() => othersNeedingYou(fleet.bands, route.params.ref), [fleet.bands, route.params.ref]);
 	const othersWaitingCount = othersWaiting.length;
+	// Next serves whichever session alerted you most recently first (spec 8.3).
+	const alertedRecently = useAlertedRecently();
+	const queue = useMemo(
+		() => nextQueue(fleet.bands, route.params.ref, alertedRecently),
+		[fleet.bands, route.params.ref, alertedRecently],
+	);
+	const nextUsed = useNextUsed();
 	useEffect(() => {
 		// iPhone only: Android keeps its own back arrow.
 		if (Platform.OS !== "ios") return;
@@ -727,12 +606,16 @@ export function ConversationScreen({
 	}, [navigation, othersWaitingCount]);
 	// Leaving for another session marks it seen, the way the Board marks a
 	// row it opens (spec 8.3).
+	// Next and a title-bar swipe both move to another session (spec 16.6's
+	// lateral move).
 	function leaveFor(target: NavigationSessionSummary) {
+		haptic("selection");
 		Keyboard.dismiss();
 		fleet.seen.markRead(connected ? client : null, [target]);
 	}
 	function openNext(target: NavigationSessionSummary) {
 		leaveFor(target);
+		nextUsed();
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -763,7 +646,7 @@ export function ConversationScreen({
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
 		if (Platform.OS !== "ios") return;
-		const choices = othersWaiting.slice(0, 8);
+		const choices = queue.slice(0, 8);
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
 				options: [...choices.map((row) => row.title), "Cancel"],
@@ -776,7 +659,7 @@ export function ConversationScreen({
 		);
 	}
 	// The recovery surface: this exact hub/conversation target's durable
-	// recovery rows, shown as ghosts above the composer. useRecoveryPanel
+	// recovery rows, shown as ghosts at the transcript's end. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
 	// singleton opens the mutations database), so a screen that never reaches a
 	// live conversation never constructs one - what the landed render fence
@@ -810,6 +693,10 @@ export function ConversationScreen({
 		return () => {
 			if (mutationHostRef.current === host) mutationHostRef.current = null;
 			host.dispose();
+			// Letting go writes nothing to storage, so ask the flush to look: a
+			// message still waiting here would otherwise wait for the next
+			// connection.
+			void outboxFlush.flush();
 		};
 	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
@@ -903,13 +790,17 @@ export function ConversationScreen({
 		},
 		[store, navigation, route.key, route.params, bindingInstance, bindingGeneration],
 	);
+	// The model catalog the screen last knew, handed to each new controls so
+	// the model keeps its name across a screen pushed over this one and a
+	// rebinding, while the catalog reads again (audit N6).
+	const knownCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
 			if (store.getState().status === "open") await store.getState().rehydrate(service, activitySink);
 			else await store.getState().resumeProjected(service, activitySink, route.params.ref);
 			const current = store.getState();
-			if (current.status !== "open" || current.error) throw new Error("Session refresh failed");
+			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
 		return new SessionControls(
 			service,
@@ -940,6 +831,7 @@ export function ConversationScreen({
 				!commandBusy.current &&
 				!document.getSnapshot().submitting &&
 				store.getState().pendingMutation?.status !== "pending",
+			knownCatalog.current,
 		);
 	}, [
 		service,
@@ -970,7 +862,7 @@ export function ConversationScreen({
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
 							await store.getState().rehydrate(service, activitySink);
-							if (store.getState().error) throw new Error("Refresh failed");
+							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 					)
 				: null,
@@ -997,6 +889,11 @@ export function ConversationScreen({
 			Keyboard.dismiss();
 			const current = store.getState().conversation;
 			if (!current) return;
+			if (destination === "find") {
+				// The one place a find opens, whatever menu asked for it.
+				chooseSessionActionRef.current({ kind: "find" });
+				return;
+			}
 			if (destination === "delete") {
 				if (!canDeleteSavedSession(current)) return;
 				navigation.navigate("SessionDeletion", {
@@ -1058,8 +955,8 @@ export function ConversationScreen({
 		},
 		[store, client, chipsConnected, route.params.hubId, route.params.ref, navigation, route.params.title],
 	);
-	// The title's state line reads live ages ("Working · 38m", "Finished ·
-	// 1h ago"): re-render twice a minute while the session is in front.
+	// The title's state line reads live ages ("Working · 38m", "Idle · 1h
+	// ago"): re-render twice a minute while the session is in front.
 	const [, setClock] = useState(0);
 	useEffect(() => {
 		if (!focused) return;
@@ -1067,8 +964,41 @@ export function ConversationScreen({
 		return () => clearInterval(clock);
 	}, [focused]);
 	const conversation = snapshot.conversation;
-	const stateLine = conversation ? sessionStateLine(conversation, Date.now()) : null;
-	// Files & artifacts (spec 10.1): what the session wrote or linked, and
+	// A subagent's screen times its run as its Subagents row does, from the
+	// row its panel reads (one number per subagent everywhere). An ended row
+	// times how long ago it ended, which is no Working time, so a session still
+	// winding down times its turn instead.
+	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const [coordinatorThread, setCoordinatorThread] = useState<string | null>(null);
+	const runMs = useCallback(
+		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
+		[subagentRow],
+	);
+	// The room the transcript keeps at its end for what floats over it.
+	const transcriptEnd = transcriptEndRoomAt(useTextScale());
+	// How tall the bottom bar stands over the transcript's end, null until it
+	// lays out: the transcript runs under its glass (design/underBar).
+	const bottomBar = useBarHeight();
+	// The room the bottom bar sits over (useBarHeight measures any view's
+	// height). The bar is capped at BAR_MAX_SHARE of it in points, so the cap
+	// follows every re-layout of the room: a percentage cap could keep a height
+	// from before a push's header inset landed (#3248).
+	const bottomBarRoom = useBarHeight();
+	const barHeight = bottomBar.height ?? 0;
+	const listUnderBar = underBar(barHeight);
+	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
+	// The bar growing or shrinking (a dock, the tray, the keyboard) keeps a
+	// follower at the end in the same frame; a reader anywhere else stays put,
+	// since on iOS the bar is an inset the content size of a transcript taller
+	// than its viewport doesn't depend on (a short one rests above the bar).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new bar height re-pins.
+	useLayoutEffect(() => {
+		if (follow.state.current.following)
+			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+	}, [barHeight]);
+	const now = Date.now();
+	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
+	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
 		const cwd = conversation?.cwd ?? "";
@@ -1080,21 +1010,41 @@ export function ConversationScreen({
 		({ path, updatedAt }) =>
 			documentFreshness(memory.lastRead({ sessionRef: route.params.ref, path }), updatedAt) !== "read",
 	);
+	const badgeActivity = useHeldSubagentTree(
+		route.params.hubId,
+		conversation ? { ref: route.params.ref, threadId: conversation.threadId } : null,
+		chipsConnected ? client : null,
+		{ collections: false },
+	);
 	const chips = conversation
-		? contextChips(conversation, chipsConnected, { count: documents.length, fresh: freshDocuments })
+		? contextChips(
+				conversation,
+				chipsConnected,
+				{ count: documents.length, fresh: freshDocuments },
+				badgeActivity?.snapshot.summary?.delegates ?? null,
+			)
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
-	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	// The block's measured height, and whether it was measured on the glass,
+	// where it includes the nav bar's room.
+	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
+	// What the list's top keeps clear: the bar where the screen runs under it,
+	// and the rows.
+	const reservedTop = reservedUnderGlass(headerHeight, sessionHeader, navGlass);
+	// The block's rows (the connection line, the chips, the note).
+	const headerRows = reservedTop - underNavBar;
 	const listOffset = useRef(0);
-	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes), the
+	const reservedRows = useRef(0);
+	// When the rows grow or shrink (the connection line comes or goes), the
 	// list's top padding moves by the same amount; scrolling the list by it
 	// too keeps every row where it was on screen. At the top the list stays
-	// at the top, and the rows make room for the block.
+	// at the top, and the rows make room. The bar turning glass or opaque
+	// asks for no scroll: it moves the list's frame by the bar's height as
+	// the padding moves by the same, so the rows stay where they are.
 	useLayoutEffect(() => {
-		const change = sessionHeaderHeight - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = sessionHeaderHeight;
+		const change = headerRows - reservedRows.current;
+		reservedRows.current = headerRows;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -1103,19 +1053,21 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [sessionHeaderHeight]);
+	}, [headerRows]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
 		else openSessionDestination(SESSION_DESTINATIONS[kind]);
 	}
 	function openFiles() {
+		if (!conversation?.cwd) return;
 		Keyboard.dismiss();
 		navigation.navigate("FilesSheet", {
 			hubId: route.params.hubId,
 			ref: route.params.ref,
 			title: route.params.title,
 			documents,
+			cwd: conversation.cwd,
 		});
 	}
 	function openQueue() {
@@ -1126,8 +1078,6 @@ export function ConversationScreen({
 		});
 	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
-	// The menu offers Subagents exactly when its chip shows.
-	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
 	const canAside = connected && service !== null && !!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null && !!conversation?.capabilities.shutdown && !SHUT_DOWN.has(conversation.status.type);
@@ -1139,13 +1089,17 @@ export function ConversationScreen({
 			title,
 		});
 	}
-	function archive(archived: boolean) {
-		if (!client) return Promise.reject(new Error("Not connected"));
-		return client.request("evener/archive/set", {
+	async function archive(archived: boolean) {
+		if (!client) throw new Error("Not connected");
+		const response = await client.request("evener/archive/set", {
 			kind: "session",
 			id: route.params.ref,
 			archived,
 		});
+		// The session moves in or out of its project's archived tier, and an
+		// archived list no view is following hears no invalidation.
+		if (response.ok) refreshLoadedArchivedLists(client);
+		return response;
 	}
 	// What each session action does, for the ⋯ menu and the Session sheet. It
 	// returns its toast rather than showing it: the menu shows it on the
@@ -1207,6 +1161,7 @@ export function ConversationScreen({
 	function chooseSessionAction(action: SessionMenuAction) {
 		switch (action.kind) {
 			case "level":
+				haptic("selection");
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
@@ -1216,7 +1171,7 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "subagents":
+			case "activity":
 			case "tasks":
 			case "notes":
 			case "info":
@@ -1226,6 +1181,16 @@ export function ConversationScreen({
 			case "aside":
 			case "archive":
 				void runSessionAction(action.kind).then(showSessionToast);
+				return;
+			case "like":
+				// Ruling 24: the sheet opens on this session's host, folder, model
+				// and effort; the menu shows only once the session has loaded.
+				if (!conversation) return;
+				navigation.navigate("NewSession", {
+					hubId: route.params.hubId,
+					hubName: activeProfile?.name ?? "Hub",
+					like: seedFromSession(route.params.ref, conversation),
+				});
 				return;
 			case "shutDown":
 				if (!controls) return;
@@ -1255,6 +1220,7 @@ export function ConversationScreen({
 							<SessionTitle
 								title={children}
 								line={stateLine}
+								backCount={othersWaitingCount}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 								neighbors={{ previous: hasPrevious, next: hasNext }}
@@ -1267,7 +1233,6 @@ export function ConversationScreen({
 				hasConversation
 					? sessionMenu({
 							current: menuLevel,
-							hasSubagents,
 							hasDocuments: documents.length > 0,
 							connected,
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
@@ -1311,8 +1276,8 @@ export function ConversationScreen({
 		stateLine?.text,
 		hasPrevious,
 		hasNext,
+		othersWaitingCount,
 		menuLevel,
-		hasSubagents,
 		documents.length,
 		conversation?.capabilities.sharedNotes,
 		canAside,
@@ -1325,29 +1290,58 @@ export function ConversationScreen({
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
-	// footer's accounting — no second, screen-level projection.
+	// usage lines' accounting — no second, screen-level projection.
 	const presentation = useMemo(
-		() => projectNativeTranscript(conversation, displayConfig),
-		[conversation, displayConfig],
+		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation: display.justTheConversation }),
+		[conversation, displayConfig, display.justTheConversation],
 	);
 	const timelineRows = useMemo(
 		() =>
 			// Your answers to a question show beneath the question itself.
-			hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [])),
-		[presentation.items, conversation?.turns],
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
+					olderToLoad: olderPage !== null,
+				}),
+			),
+		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	// A subagent row opens the subagent's own session, under this session as
-	// its coordinator, or on a subagent's screen, under the same coordinator.
+	// A subagent row's coordinator: this session, or on a subagent's screen,
+	// the same coordinator. A row shows only in a loaded transcript, which
+	// names its thread.
+	const threadId = conversation?.threadId;
+	const coordinator = useMemo(
+		() => subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null),
+		[subagentOf, threadId, route.params.ref, route.params.title],
+	);
+	// A finished subagent's row reads its outcome from the coordinator's tree,
+	// which the screen holds while the transcript shows one.
+	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
+	const subagentTreeTarget = useMemo(
+		() =>
+			transcriptTreeTarget({
+				showsFinished: showsFinishedSubagent,
+				coordinator,
+				onSubagentScreen: !!subagentOf,
+				panelThread: coordinatorThread,
+			}),
+		[showsFinishedSubagent, coordinator, subagentOf, coordinatorThread],
+	);
+	const subagentTree = useTranscriptSubagentTree(
+		route.params.hubId,
+		subagentTreeTarget,
+		liveClientFor({ client, state: connectionState, activeProfile }, route.params.hubId),
+		{ inFront: focused, receivesUpdates: !subagentOf },
+	);
+	// A subagent row opens the subagent's own session, under its coordinator,
+	// on the coordinator's thread as this screen's panel last read it.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			// A row shows only in a loaded transcript, which names its thread.
-			const threadId = store.getState().conversation?.threadId;
-			const coordinator =
-				subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null);
-			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+			if (!coordinator) return;
+			const current = subagentOf && coordinatorThread ? { ...coordinator, threadId: coordinatorThread } : coordinator;
+			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator: current });
 		},
-		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
+		[navigation, route.params.hubId, coordinator, subagentOf, coordinatorThread],
 	);
 	const answerFor = useCallback((itemId: string) => answerTo(conversation, itemId), [conversation]);
 	// Stable across renders, so a settled agent message keeps its memoized
@@ -1371,17 +1365,36 @@ export function ConversationScreen({
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
-	const openDocument = useCallback(
-		(path: string, updatedAt: string | undefined) =>
+	// The paths the session wrote, with or without a time, so a bare file name
+	// it wrote becomes a chip even when the write carried no time.
+	const writtenKey = useMemo(() => JSON.stringify([...writtenPaths(turns ?? [], documentCwd)]), [turns, documentCwd]);
+	const written = useMemo(() => new Set<string>(JSON.parse(writtenKey) as string[]), [writtenKey]);
+	const openFile = useCallback(
+		(reference: FileReference, updatedAt?: string) => {
 			navigation.navigate("Reader", {
 				hubId: route.params.hubId,
 				sessionRef: route.params.ref,
-				path,
-				reviewRef: route.params.ref,
-				reviewTitle: route.params.title,
+				path: reference.path,
+				reference,
+				sessionTitle: route.params.title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
-			}),
+			});
+		},
 		[navigation, route.params.hubId, route.params.ref, route.params.title],
+	);
+	const fileContext = useMemo<NativeFileOpenContext | undefined>(
+		() =>
+			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
+				? { cwd: documentCwd, openFile }
+				: undefined,
+		[documentCwd, route.params.hubId, route.params.ref, openFile],
+	);
+	const openDocument = useCallback(
+		(path: string, updatedAt: string | undefined) => {
+			const reference = bindFilePath(path, documentCwd);
+			if (reference) openFile(reference, updatedAt);
+		},
+		[documentCwd, openFile],
 	);
 	// A message still streaming shows its chips once it settles.
 	const documentChips = useCallback(
@@ -1393,10 +1406,11 @@ export function ConversationScreen({
 					markdown={message.markdown}
 					cwd={documentCwd}
 					writes={writes}
+					written={written}
 					open={openDocument}
 				/>
 			),
-		[route.params.hubId, route.params.ref, documentCwd, writes, openDocument],
+		[route.params.hubId, route.params.ref, documentCwd, writes, written, openDocument],
 	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.
@@ -1410,16 +1424,34 @@ export function ConversationScreen({
 		readerRestoreAttempts.current.reset();
 		if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 		restoreFrame.current = null;
-		readerHeader.current = false;
 		captureSuppressed.current = false;
-		readerPageAttempts.current = new Set<string>();
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
-		readerLatest.current = readerAnchor.current === null;
+		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
-		setAwayKeys(null);
-	}, [route.params.hubId, route.params.ref]);
+		openingLandedNow.current = false;
+		setOpeningLanded(false);
+	}, [route.params.hubId, route.params.ref, follow.dispatch]);
+	// A layout effect, so a cell's layout or the cap can never read the rows of
+	// the render before (a passive effect leaves a window after the commit),
+	// and it runs before the opening effect below.
+	useLayoutEffect(() => {
+		rowsNow.current = timelineRows;
+		const last = listRows.at(-1);
+		listEndKey.current = last === undefined ? null : sessionListKey(last);
+	});
+	function lastRowMeasured() {
+		const key = listEndKey.current;
+		return key !== null && readerMeasurements.current.has(key);
+	}
+	// Follows the live end while opening: pins the list there, and lands the
+	// opening once the last row has measured (until then the cell's own layout
+	// lands it).
+	function pinOpeningToEnd() {
+		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+		if (lastRowMeasured()) landOpening();
+	}
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
 	// waits, the start of a reply that finished since you last reached the
@@ -1444,8 +1476,8 @@ export function ConversationScreen({
 		);
 		if (target.kind === "live") {
 			readerAnchor.current = null;
-			readerLatest.current = true;
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 		} else if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
@@ -1456,33 +1488,59 @@ export function ConversationScreen({
 				bindingInstance,
 				turnsSeen.current,
 			);
-			readerLatest.current = false;
+			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
-	// Loads the page above the loaded history once per cursor: a page that
-	// failed, or brought nothing new, stays guarded until the binding or route
-	// resets, so a failing page never loops. Both a reading position restored
-	// above the loaded rows and a scroll near the top ask for it.
-	function loadOlderPage() {
-		const cursor = snapshot.olderCursor;
-		const pageAttempts = readerPageAttempts.current;
-		if (!service || !connected || !cursor || snapshot.loadingOlder || pageAttempts.has(cursor)) return;
-		pageAttempts.add(cursor);
-		void store
-			.getState()
-			.loadOlder(service)
-			.then((result) => {
-				if (result.status === "ignored" || (result.status === "loaded" && result.itemKeys.length > 0))
-					pageAttempts.delete(cursor);
-			})
-			.catch(() => {
-				// Keep failed page attempts guarded until a binding or route reset.
-			});
+	// A session with no rows has nowhere to travel. One with rows shows after
+	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
+	// (its reading position never measures) never leaves the transcript hidden.
+	const openingHidden = !openingLanded && timelineRows.length > 0;
+	// A reading position that hasn't loaded by the cap (its older page is slow,
+	// or offline) gives way to the live end, and the position is dropped
+	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
+	// is worse. The end's last row lands it, with a fresh cap behind that.
+	function capOpening() {
+		const anchor = readerAnchor.current;
+		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
+			readerAnchor.current = null;
+			appliedReaderRestore.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
+			setOpeningCapRound((round) => round + 1);
+			return;
+		}
+		landOpening();
 	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the cap starts once per hidden, laid-out opening, and again when it turns to the live end.
+	useEffect(() => {
+		if (!listLaidOut || !openingHidden) return;
+		const cap = setTimeout(capOpening, OPENING_REVEAL_CAP_MS);
+		return () => clearTimeout(cap);
+	}, [listLaidOut, openingHidden, openingCapRound]);
+	const {
+		state: olderHistory,
+		isCurrentReader,
+		loadOlder: loadOlderPage,
+		findOlder,
+		cancelFind,
+		cancelReader,
+	} = useOlderHistory({
+		store,
+		service,
+		active: Boolean(service) && connected && focused && snapshot.status === "open",
+		hubId: route.params.hubId,
+		ref: route.params.ref,
+		find,
+		setFind,
+		binding: bindingInstance,
+	});
 	const findQuery = find?.query ?? "";
-	const findHits = useMemo(() => findMatches(timelineRows, findQuery), [timelineRows, findQuery]);
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery, conversation?.delegates),
+		[timelineRows, findQuery, conversation?.delegates],
+	);
 	const findKey = find?.key ?? null;
 	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
 	const findCurrent = findIndex < 0 ? null : findIndex;
@@ -1503,26 +1561,47 @@ export function ConversationScreen({
 	// the newest of all), loading one older page at a time until a match
 	// appears or history ends.
 	useEffect(() => {
-		if (!find?.seeking) return;
-		const next = stepMatch(findHits, findCurrent, -1);
+		if (!isCurrentReader() || !find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
+		// A resumed search first reloads its saved boundary; newer matches
+		// in the fresh window have already been searched.
+		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
 			return;
 		}
 		if (snapshot.loadingOlder) return;
-		const cursor = snapshot.olderCursor;
-		if (!cursor) {
+		const pageKey = olderPage;
+		if (!pageKey) {
 			// Stepped past the oldest match: say so. With none at all, the
 			// label already reads "No matches".
 			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
 			return;
 		}
-		// Offline, or this page already failed: stop, and the next step asks again.
-		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
-			setFind({ ...find, seeking: false });
-			return;
+		// Failure or disconnection leaves the search incomplete. Demand resumes
+		// when this reader is active, without another Find step.
+		if (!service || !connected || olderHistory.permanent) return;
+		// Paging older history reads away from the live end, so new rows stop
+		// pulling the list down while find looks.
+		if (follow.state.current.following) {
+			findLeftTheEnd.current = true;
+			follow.dispatch({ type: "unfollow" });
 		}
-		loadOlderPage();
+		findOlder();
+	});
+	// A search that ends with no match, or find closing, gives the end back to
+	// a list find unfollowed, when the list is still there. A jump to a match
+	// is reading, and keeps it.
+	const findLeftTheEnd = useRef(false);
+	useEffect(() => {
+		if (!findLeftTheEnd.current || (find !== null && (find.seeking || find.key !== null))) return;
+		findLeftTheEnd.current = false;
+		const stillAtEnd = atEnd({
+			contentOffset: { y: listOffset.current },
+			contentSize: { height: readerContentHeight.current },
+			layoutMeasurement: { height: readerViewportHeight.current },
+			contentInset: listUnderBar.contentInset,
+		});
+		if (stillAtEnd) follow.dispatch({ type: "follow" });
 	});
 	// The current match comes into view, 30% down the list. A row the list
 	// hasn't measured fails the jump (onScrollToIndexFailed, while
@@ -1547,8 +1626,8 @@ export function ConversationScreen({
 		if (findCurrentNow.current !== null) scrollToFindMatch(findCurrentNow.current);
 	}
 	function scrollToFindMatch(index: number) {
-		readerLatest.current = false;
-		readerHeader.current = false;
+		findLeftTheEnd.current = false;
+		follow.dispatch({ type: "unfollow" });
 		// The reading position follows the jump, so nothing pulls the list back.
 		captureSuppressed.current = false;
 		findJumping.current = true;
@@ -1562,29 +1641,29 @@ export function ConversationScreen({
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 		return cancelFindRetry;
 	}, [findKey]);
-	// Leaving the screen closes find.
-	useEffect(() => {
-		if (!focused) setFind(null);
-	}, [focused]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
-	useEffect(() => {
+	// Moves the list to the reading position once what it needs has laid out.
+	// It runs when what it reads changes: the effect below for the screen's
+	// state, and after the cells' layouts and the list's content size, which it
+	// reads from refs, so a layout never re-renders the screen.
+	function restoreReadingPosition() {
 		const anchor = readerAnchor.current;
 		if (
 			!anchor ||
 			timelineRows.length === 0 ||
 			!focused ||
-			readerHeader.current ||
-			readerLatest.current ||
-			readerDragging.current ||
-			readerMomentum.current
+			follow.state.current.following ||
+			follow.state.current.touch !== "none" ||
+			// Where the list can reach depends on the bar: restore once it has
+			// laid out, so a first restore is never clamped short of it.
+			bottomBar.height === null
 		)
 			return;
 		if (anchor.conversationInstance && snapshot.status !== "open") return;
 		if (anchor.conversationInstance && bindingInstance && anchor.conversationInstance !== bindingInstance) {
 			readerAnchor.current = null;
 			appliedReaderRestore.current = null;
-			readerLatest.current = true;
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
@@ -1597,7 +1676,7 @@ export function ConversationScreen({
 			timelineRows,
 			[...readerMeasurements.current.values()],
 			96,
-			!readerDragging.current && !readerMomentum.current,
+			follow.state.current.touch === "none",
 		);
 		const targetIndex = resolveReaderAnchor(anchor, timelineRows);
 		const measurementProgress =
@@ -1617,38 +1696,68 @@ export function ConversationScreen({
 			restoreFrame.current = null;
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
-			if (!measurement) return;
+			// Until the list reports its content size, how far it can scroll
+			// isn't known, and a restore would clamp short of the row.
+			if (!measurement || readerContentHeight.current === 0) return;
+			const desired = measurement.y - command.viewOffset;
+			// On iOS the bar's inset extends how far the list can scroll.
 			const scrollOffset = reachableReaderOffset(
-				measurement.y - command.viewOffset,
+				desired,
 				readerContentHeight.current,
-				readerViewportHeight.current,
+				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			if (
-				!shouldApplyExactRestore(
-					appliedReaderRestore.current,
-					measurement,
-					appliedReaderRestore.current?.scrollOffset ?? null,
-					scrollOffset,
-				)
-			)
+			// Already there: the opening has landed, if the list reaches the row.
+			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
+				landRestore(appliedReaderRestore.current?.clamped ?? false);
 				return;
+			}
+			const clamped = scrollOffset !== desired;
 			appliedReaderRestore.current = {
 				key: currentKey,
-				y: measurement.y,
 				height: measurement.height,
-				scrollOffset,
+				offset: scrollOffset,
+				clamped,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
 				offset: scrollOffset,
 				animated: false,
 			});
+			landRestore(clamped);
 		}
+	}
+	// A restore the list can't reach yet (clamped) lands the opening only once
+	// the last row has measured: before that the rows below the reading position
+	// are estimates, the content grows as they render, and the list would show
+	// short of the row and then move. After it, as far as the list reaches is
+	// where it rests. The opening's cap still shows it if that never happens.
+	function landRestore(clamped: boolean) {
+		if (!clamped || lastRowMeasured()) landOpening();
+	}
+	// The latest restore, with this render's rows, for the layout timer below.
+	const restoreReadingPositionNow = useRef(restoreReadingPosition);
+	useLayoutEffect(() => {
+		restoreReadingPositionNow.current = restoreReadingPosition;
+	});
+	// A frame's layout events arrive together (the cells, then the content size
+	// they add up to), so the restore runs once after them: a row measured
+	// before the content size is known would otherwise restore short of it.
+	const restoreAfterLayoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	function restoreAfterLayout() {
+		if (restoreAfterLayoutTimer.current !== null) return;
+		restoreAfterLayoutTimer.current = setTimeout(() => {
+			restoreAfterLayoutTimer.current = null;
+			restoreReadingPositionNow.current();
+		}, 0);
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: restoreReadingPosition reads these through its closure; the list names what reruns it, a layout revision (the viewport, a drag settling, focus) included.
+	useEffect(() => {
+		restoreReadingPosition();
 	}, [
 		bindingInstance,
 		layoutRevision,
 		snapshot.status,
-		snapshot.olderCursor,
+		olderPage,
 		snapshot.loadingOlder,
 		conversation?.items,
 		timelineRows,
@@ -1656,12 +1765,14 @@ export function ConversationScreen({
 		store,
 		connected,
 		focused,
+		bottomBar.height,
 	]);
 	useEffect(
 		() => () => {
 			if (readerAnchor.current) readerPositions.save(readerAnchor.current);
 			if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 			restoreFrame.current = null;
+			if (restoreAfterLayoutTimer.current !== null) clearTimeout(restoreAfterLayoutTimer.current);
 		},
 		[],
 	);
@@ -1758,6 +1869,41 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
+						submit: async (kind, input) => {
+							const target = mutationTarget(store.getState());
+							if (!target) throw new CommandNotSentError("Open the session again and try once more.");
+							try {
+								await mutationSubmitter.submit({
+									kind,
+									hubId: target.hubId,
+									targetRef: target.ref,
+									threadId: target.threadId,
+									instanceId: target.instanceId,
+									input,
+								});
+							} catch (error) {
+								// Admission only writes on the phone: nothing left it, so this
+								// is safe to try again, not a send to confirm.
+								throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE, { cause: error });
+							}
+						},
+						stop: async () => {
+							const outcome = await stop();
+							if (outcome === "notKept") throw new CommandNotSentError(NATIVE_MUTATION_HOST_UNAVAILABLE);
+							if (outcome === "notStopped") throw new CommandNotSentError(STOP_NOT_TRIED);
+						},
+						// As Steer all now waits (canSteerAll): it would take that message too.
+						drainRefusal: () => {
+							const state = store.getState();
+							return steeringWithQueue(state.conversation, state.pendingMutations) ? STEERING_WITH_QUEUE : null;
+						},
+						drainQueue: async () => {
+							// Asked again as it runs, so the drain and its check read one state.
+							const state = store.getState();
+							if (steeringWithQueue(state.conversation, state.pendingMutations))
+								throw new CommandNotSentError(STEERING_WITH_QUEUE);
+							if (!(await drainLiveQueue())) throw new CommandNotSentError(STEER_ALL_FAILED.text);
+						},
 						cleared: (response) => {
 							const replacement = service.adoptClear(response);
 							void store.getState().openProjected(service, activitySink, route.params.ref, replacement);
@@ -1865,14 +2011,21 @@ export function ConversationScreen({
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
+		// Offline, the answers wait in the phone's outbox as a message would
+		// (spec 8.5), fenced to the instance this phone last read.
+		const offline = !connectionReady.current;
+		const online = service;
+		const target = offline ? mutationTarget(current) : null;
+		const offlineAction = offline ? offlineSendAction(current) : "none";
 		if (
-			!service ||
-			!ready ||
-			!connectionReady.current ||
+			(offline
+				? target === null || offlineAction === "none"
+				: !service ||
+					!ready ||
+					current.status !== "open" ||
+					current.conversationGeneration !== bindingGeneration ||
+					current.conversation?.instanceId !== bindingInstance) ||
 			!screenInFront(navigation, route.key) ||
-			current.status !== "open" ||
-			current.conversationGeneration !== bindingGeneration ||
-			current.conversation?.instanceId !== bindingInstance ||
 			controls?.getSnapshot().pending != null ||
 			current.pendingMutation?.status === "pending" ||
 			!(current.conversation && conversationControls(current.conversation).send) ||
@@ -1885,26 +2038,39 @@ export function ConversationScreen({
 		try {
 			await document.submitText(text, async (input) => {
 				if (!questionBatches.begin(batch)) return false;
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState().send(service, [{ type: "text", text: input }]);
-				const accepted = store.getState().lastAcceptedMutation;
-				if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				if (target !== null && offlineAction !== "none") {
+					await getNativeMutationRuntime().submit(
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+					);
+				} else if (online) {
+					const previous = store.getState().lastAcceptedMutation;
+					await store.getState().send(online, [{ type: "text", text: input }]);
+					const accepted = store.getState().lastAcceptedMutation;
+					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				} else return false;
 				questionBatches.finish(batch.id, true);
 				acceptedAnswers = true;
 				return true;
 			});
-			if (acceptedAnswers)
+			// Kept offline isn't sent yet: its ghost says it waits, and the
+			// haptic is Send's.
+			if (acceptedAnswers && offline) haptic("light");
+			else if (acceptedAnswers) {
+				haptic("success");
 				toaster.show({
 					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
 				});
+			}
 			if (
 				acceptedAnswers &&
+				online &&
+				!offline &&
 				connectionReady.current &&
 				screenInFront(navigation, route.key) &&
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
-				await store.getState().rehydrate(service, activitySink);
+				await store.getState().rehydrate(online, activitySink);
 		} catch {
 			setAnswerError("Could not confirm delivery. Your answers are retained; check delivery before trying again.");
 		} finally {
@@ -2031,15 +2197,16 @@ export function ConversationScreen({
 	useEffect(() => {
 		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
 	});
-	// A host is named by the manifest's label. Until the manifest has
-	// loaded, the hub's own sessions are named for the connected hub, and any
-	// other host by its id.
-	const hubName = activeProfile?.id === route.params.hubId ? activeProfile.name : null;
-	const hostLabel = useMemo(
-		() => hostLabeler(fleet.sources, (hostId) => (hostId === "local" && hubName ? hubName : hostId)),
-		[fleet.sources, hubName],
-	);
-	const modelLabel = conversation ? modelChipLabel(conversation, controlsState?.catalog?.data) : "";
+	// The hub's own machine goes by the hub's name, as Hub > Hosts names it;
+	// any other host by the manifest's label, or its id until the manifest
+	// has loaded (sessionHosts). The hub list names this hub even while
+	// another hub is the active one.
+	const hubName = profiles.find((profile) => profile.id === route.params.hubId)?.name ?? null;
+	const host = useMemo(() => sessionHosts(fleet.sources, hubName, connected), [fleet.sources, hubName, connected]);
+	// The Board row names the model too (S17), for while the catalog is away.
+	const modelLabel = conversation
+		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
+		: "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
 			// Provided while the screen lives, with or without controls, so a
@@ -2048,8 +2215,9 @@ export function ConversationScreen({
 				? {
 						session: conversation,
 						controls,
-						hostLabel,
+						host,
 						modelLabel,
+						runMs,
 						ready,
 						editGoal: () => goalActionsRef.current.editGoal(),
 						clearGoal: () => goalActionsRef.current.clearGoal(),
@@ -2057,7 +2225,7 @@ export function ConversationScreen({
 						toast: toaster.show,
 					}
 				: undefined,
-		[conversation, controls, hostLabel, modelLabel, ready, toaster.show],
+		[conversation, controls, host, modelLabel, runMs, ready, toaster.show],
 	);
 	useProvideSheetHost(sessionInfoHosts, sheetKey(route.params.hubId, route.params.ref), sessionInfoHost);
 	// The model sheet's host (ruling 37).
@@ -2084,10 +2252,32 @@ export function ConversationScreen({
 	);
 	useProvideSheetHost(commandHosts, sheetKey(route.params.hubId, route.params.ref), commandsHost);
 	// The chip names the model the way the catalog does, so the screen loads
-	// the catalog once for each binding it opens connected.
+	// the catalog once for each binding it opens connected. Controls made
+	// while the session was still reopening can't read yet, so the read waits
+	// for the session to be open.
+	const sessionOpen = snapshot.status === "open";
 	useEffect(() => {
-		if (controls && hasConversation) void controls.loadModels();
-	}, [controls, hasConversation]);
+		if (controls && hasConversation && sessionOpen) void controls.loadModels();
+	}, [controls, hasConversation, sessionOpen]);
+	// The hub announces a refreshed model list on evener/auth/updated (it
+	// serves a stale list at once and refreshes it behind the request), so a
+	// loaded catalog is read again in place (#3539).
+	useEffect(
+		() =>
+			controls
+				? client?.onNotification((notification) => {
+						if (notification.method === "evener/auth/updated") void controls.refreshModels();
+					})
+				: undefined,
+		[client, controls],
+	);
+	// The screen keeps what the current controls know of the catalog, so the
+	// controls made after a pushed screen closes start from it: a catalog they
+	// read, or none after a failed read cleared it.
+	const catalog = controlsState?.catalog ?? null;
+	useEffect(() => {
+		if (controls) knownCatalog.current = catalog;
+	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20).
 	const notice =
@@ -2096,42 +2286,64 @@ export function ConversationScreen({
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
-	async function stop() {
-		if (
-			!service ||
-			!connectionReady.current ||
-			stopBusy.current ||
-			store.getState().pendingMutation?.status === "pending"
-		)
-			return;
+	// What became of the stop, for a typed /interrupt: "stopping" when one is
+	// already on its way, "notKept" when the phone couldn't keep it to send (the
+	// store reports why), "notStopped" when nothing was tried.
+	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		if (stopBusy.current) return "stopping";
+		if (!service || !connectionReady.current || store.getState().pendingMutation?.status === "pending")
+			return "notStopped";
 		stopBusy.current = true;
 		setStopping(true);
 		try {
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState().interrupt(service);
 			const accepted = store.getState().lastAcceptedMutation;
-			if (accepted && accepted !== previous && accepted.kind === "interrupt") toaster.show({ text: "Stopped" });
+			if (!accepted || accepted === previous || accepted.kind !== "interrupt") return "notKept";
+			toaster.show({ text: "Stopped" });
+			return "stopped";
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
 			// nothing left to stop, so a refusal says nothing.
+			return "notStopped";
 		} finally {
 			stopBusy.current = false;
 			setStopping(false);
 		}
 	}
+	/** Loads the page above when the list at `y` is near its top and you have
+	 * moved it yourself (session/liveEndFollow pagesOlder). */
+	function pageOlderNear(y: number | undefined) {
+		if (y !== undefined && pagesOlder(follow.state.current, y)) loadOlderPage();
+	}
 	function jumpToLive() {
-		readerHeader.current = false;
+		cancelReader();
 		readerAnchor.current = null;
-		readerLatest.current = true;
+		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
-		setAwayKeys(null);
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: true });
 	}
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
 	const action = conversation ? sendAction(conversation, snapshot.pendingMutations, connected) : "none";
+	// What Send does once the connection is there, which the placeholder
+	// describes offline too: it describes the session, not the outbox.
+	const onlineAction = connected
+		? action
+		: conversation
+			? sendAction(conversation, snapshot.pendingMutations, true)
+			: "none";
+	// Offline, Send keeps the message in the phone's outbox, for a session
+	// this phone has read since launch (ruling 12).
+	const offlineAdmits =
+		!connected && focused && mutationTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
-		ready && draft.loaded && !draft.error && !draft.submitting && unconfirmedSend === null && !imageState.busy;
+		(ready || offlineAdmits) &&
+		draft.loaded &&
+		!draft.error &&
+		!draft.submitting &&
+		unconfirmedSend === null &&
+		!imageState.busy;
 	// While a question waits, Send answers it with your text (ruling 14).
 	const answering = questionBatch !== null;
 	const sendEnabled = answering
@@ -2142,14 +2354,16 @@ export function ConversationScreen({
 			// Your text answers against the saved answers, so it waits for them.
 			questionDraft.loaded
 		: command !== null
-			? composerReady &&
+			? // A command asks the hub, so it waits for the connection.
+				ready &&
+				composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
 				composerCommandAvailable(command.command, conversation)
 			: composerReady && (!!draft.record.draft.trim() || !!draft.record.images?.length) && action !== "none";
 	const composerSendLabel =
 		answering || command === null
-			? sendLabel(action, answering)
+			? sendLabel(action, answering, connected)
 			: command.command.id === "compact"
 				? "Compact transcript"
 				: command.command.id === "goal"
@@ -2167,6 +2381,10 @@ export function ConversationScreen({
 			return;
 		}
 		if (imageSelection.getSnapshot().busy) return;
+		if (!connectionReady.current) {
+			await sendOffline();
+			return;
+		}
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -2179,6 +2397,41 @@ export function ConversationScreen({
 			// A refused Send adds no text of its own: the draft stays, and the
 			// unconfirmed ghost document.submit leaves says what happened and
 			// what to do.
+		}
+	}
+	// The session a durable request is fenced to: the instance this phone last
+	// read (ruling 12), for a message sent offline as for a typed /steer or
+	// /queue. A session not read since launch has none, so Send waits.
+	function mutationTarget(state: ConversationState): OfflineTarget | null {
+		const read = state.conversation;
+		if (!read || state.ref !== route.params.ref) return null;
+		return {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			threadId: read.threadId,
+			instanceId: read.instanceId ?? read.threadId,
+		};
+	}
+	function offlineSendAction(state: ConversationState) {
+		return state.conversation ? sendAction(state.conversation, state.pendingMutations, false) : "none";
+	}
+	// Send while offline (spec 8.5): the message goes straight into the
+	// phone's outbox, which sends it once the connection returns and this
+	// session reads again.
+	async function sendOffline() {
+		const live = store.getState();
+		const target = mutationTarget(live);
+		const kind = offlineSendAction(live);
+		if (target === null || kind === "none") return;
+		setActionError(null);
+		try {
+			await document.submit(async (text, images) => {
+				await getNativeMutationRuntime().submit(offlineRequest(target, kind, buildComposerInput(text, images)));
+				haptic("light");
+				return true;
+			});
+		} catch {
+			// As Send's: the draft stays, and its ghost says what happened.
 		}
 	}
 	// Your text as the free answer to the question the dock is on. When that
@@ -2235,7 +2488,10 @@ export function ConversationScreen({
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
-			return accepted != null && accepted !== previous && accepted.kind === kind;
+			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
+			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
+			if (admitted) haptic("light");
+			return admitted;
 		},
 		[store],
 	);
@@ -2254,7 +2510,9 @@ export function ConversationScreen({
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn") navigation.navigate("Providers", { hubId: route.params.hubId });
+			else if (errorAction === "signIn")
+				// The error doesn't name the provider, so the Hub opens at Providers.
+				openProviders(navigation, route.params.hubId);
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
@@ -2283,7 +2541,7 @@ export function ConversationScreen({
 				onPress={controls && canOpenModelSheet(conversation) ? () => openModelSheet("model") : undefined}
 			/>
 		) : null;
-	// Everything waiting to reach the agent, as ghosts above the composer
+	// Everything waiting to reach the agent, as ghosts at the transcript's end
 	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
 	// back; whether the composer can take it right now is the bubble's
 	// canEdit, so an occupied composer shows Edit disabled with the reason.
@@ -2299,11 +2557,18 @@ export function ConversationScreen({
 						sentText: translateAttachmentMarkers(unconfirmedSend, draft.record.unconfirmedImages),
 					},
 			recoveryRows,
+			connected,
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	// The transcript list's rows: the conversation's, its usage lines when they
+	// have anything to show, then the ghosts.
+	const ghostsKey = JSON.stringify(allGhosts);
+	const usage = presentation.usage && hasUsageLines(presentation.usage) ? presentation.usage : null;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: ghostsKey stands in for allGhosts, a new array each render
+	const listRows = useMemo(() => withGhostRows(timelineRows, allGhosts, usage), [timelineRows, ghostsKey, usage]);
 	const [ghostBusy, setGhostBusy] = useState(false);
 	const ghostBusyRef = useRef(false);
 	// One ghost action at a time, each reading the live session at the press.
@@ -2330,9 +2595,29 @@ export function ConversationScreen({
 			await checkDelivery();
 			return null;
 		}
+		if (origin.kind === "pending") {
+			// The phone's own message: Discard or Cancel drops it from the
+			// outbox, Send now releases one a Stop held. A press that finds the
+			// row already changed does nothing; the ghosts re-render from storage.
+			const runtime = getNativeMutationRuntime();
+			const targetKey = nativeMutationTargetKey(route.params.hubId, route.params.ref);
+			if (action === "discard" || action === "cancel")
+				await runtime.discardUndelivered(origin.clientMutationId, targetKey);
+			else if (action === "sendNow") await runtime.releaseCanceled(origin.clientMutationId, targetKey);
+			return null;
+		}
 		if (origin.kind === "draft") {
-			if (action === "discard") document.dismiss();
-			else if (action === "edit") document.restore();
+			if (action === "discard") {
+				document.dismiss();
+				// The ghost stands in for a lost send the outbox still holds (the
+				// draft's `sameSend` match): Discard clears that row too, or it
+				// returns as its own "Couldn't confirm this was sent" ghost.
+				if (origin.clientMutationId !== undefined)
+					await getNativeMutationRuntime().discardUndelivered(
+						origin.clientMutationId,
+						nativeMutationTargetKey(route.params.hubId, route.params.ref),
+					);
+			} else if (action === "edit") document.restore();
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -2367,6 +2652,31 @@ export function ConversationScreen({
 			await rehydrateQuietly(live);
 		}
 	}
+	// A promote or drain goes through the outbox like any steer: it shows on
+	// its way from the press, as steering once the hub takes it (spec 8.5),
+	// and an answer the connection lost is asked for again. It returns whether
+	// the phone kept the steer to send.
+	async function steerWithQueued(
+		threadId: string,
+		instanceId: string,
+		texts: readonly string[],
+		request: { kind: "promote"; queueEntry: QueueEntryRef } | { kind: "steer"; expectedQueueRevision: number },
+	): Promise<boolean> {
+		try {
+			await mutationSubmitter.submit({
+				...request,
+				hubId: route.params.hubId,
+				targetRef: route.params.ref,
+				threadId,
+				instanceId,
+				input: [],
+				display: texts.filter((text) => text !== "").map((text) => ({ type: "text", text })),
+			});
+			return true;
+		} catch {
+			return false;
+		}
+	}
 	// Check: read the session again, then show its live end, where the
 	// message is if it arrived.
 	async function checkDelivery() {
@@ -2384,9 +2694,10 @@ export function ConversationScreen({
 		const cancel = () => queueChange(service, () => service.cancelQueued(target.index, target.id, instanceId));
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			const promoted = await queueChange(service, () =>
-				service.promoteQueuedAsSteer(target.index, target.id, instanceId),
-			);
+			const promoted = await steerWithQueued(live.threadId, instanceId, [queuedMessageText(live.queue, target.index)], {
+				kind: "promote",
+				queueEntry: target,
+			});
 			return promoted ? null : STEER_FAILED;
 		}
 		if (action === "cancel") return (await cancel()) ? null : { text: "Couldn't take this message out of the queue." };
@@ -2403,15 +2714,23 @@ export function ConversationScreen({
 		}
 		return null;
 	}
-	// Steer all now: the whole live queue, whatever it holds at the press.
+	// Steer all now, and /drain-as-steer: the whole live queue, whatever it
+	// holds at the press. It returns whether the phone kept the steer to send.
+	async function drainLiveQueue(): Promise<boolean> {
+		const live = store.getState().conversation;
+		const queue = live?.queue;
+		if (!live?.instanceId || !queue) return false;
+		const queued = Array.from({ length: queue.depth ?? 0 }, (_, index) => queuedMessageText(queue, index));
+		return steerWithQueued(live.threadId, live.instanceId, queued, {
+			kind: "steer",
+			expectedQueueRevision: queue.revision,
+		});
+	}
 	async function steerWithQueue(): Promise<ToastMessage | null> {
 		const live = store.getState().conversation;
-		const instanceId = live?.instanceId;
-		if (!service || !connectionReady.current || !live?.queue || !instanceId) return null;
+		if (!service || !connectionReady.current || !live?.queue || !live.instanceId) return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		const revision = live.queue.revision;
-		const drained = await queueChange(service, () => service.drainAsSteer(revision, instanceId));
-		return drained ? null : STEER_ALL_FAILED;
+		return (await drainLiveQueue()) ? null : STEER_ALL_FAILED;
 	}
 	// The Queue sheet's host is memoized on what it shows, so its actions
 	// reach this render's functions through a ref.
@@ -2424,11 +2743,14 @@ export function ConversationScreen({
 	const queuedGhosts = allGhosts.filter((ghost) => ghost.origin.kind === "queue");
 	const queuedKey = JSON.stringify(queuedGhosts);
 	// Like the per-message actions, it goes to the hub, so it isn't offered
-	// while the hub is away.
+	// while the hub is away, nor while this phone is already steering with
+	// some of the queue: it would take those too.
+	const queueDepth = conversation?.queue?.depth ?? 0;
 	const canSteerAll =
 		connected &&
 		!!conversation &&
-		(conversation.queue?.depth ?? 0) > 1 &&
+		queueDepth > 1 &&
+		!steeringWithQueue(conversation, snapshot.pendingMutations) &&
 		conversationControls(conversation).drainQueue;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: queuedKey stands in for queuedGhosts, a new array each render
 	const queueHost = useMemo<QueueHost>(
@@ -2460,48 +2782,41 @@ export function ConversationScreen({
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
 	// "↓ 3 new": rows that arrived below while you read above the end.
-	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
+	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
-	// something or you are finding in it (spec 8.3).
-	const nextTarget =
-		approval === null && questionBatch === null && find === null ? nextSession(fleet.bands, route.params.ref) : null;
-	// What sits above the composer: failures only you can act on, then
-	// everything waiting to reach the agent. While the composer is hidden
-	// (the dock is open) it sits in the composer's place, so a queued
-	// message never drops out of sight.
-	const waitingForAgent = (
+	// something, or you are finding in it (spec 8.3); FloatingStack steps it
+	// aside while you type.
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
+	// What sits above the composer: failures only you can act on. While the
+	// composer is hidden (the dock is open) it sits in the composer's place.
+	const composerErrors = (
 		<>
 			<ErrorMessage message={actionError} />
 			{draft.error ? (
 				<View style={{ alignItems: "flex-start" }}>
 					<ErrorMessage message={draft.error} />
-					<Action tone="accent" onPress={document.retry}>
-						{draft.loaded ? "Retry saving" : "Retry loading draft"}
-					</Action>
+					<Button text label={draft.loaded ? "Retry saving" : "Retry loading draft"} onPress={document.retry} />
 				</View>
 			) : null}
 			{recovery.failed ? <RecoveryFailure error={recovery.error} onRetry={recovery.retry} /> : null}
-			<QueuedMessages
-				ghosts={allGhosts}
-				disabled={ghostBusy}
-				canEdit={canEditGhost}
-				editHint={ghostEditHint}
-				// Only one of the two places waitingForAgent shows is mounted.
-				backdrop={composerShown ? "surface" : "page"}
-				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				onAction={(ghost, action) => {
-					void runGhostAction(ghost, action).then((message) => {
-						if (message) toaster.show(message);
-					});
-				}}
-				onMore={openQueue}
-			/>
 		</>
 	);
+	const ghostRowHost: GhostRowHost = {
+		disabled: ghostBusy,
+		canEdit: canEditGhost,
+		editHint: ghostEditHint,
+		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		onAction: (ghost, action) => {
+			void runGhostAction(ghost, action).then((message) => {
+				if (message) toaster.show(message);
+			});
+		},
+		onMore: openQueue,
+	};
 	const readerCellRenderer = useMemo(() => {
-		return class ReaderCell extends Component<CellRendererProps<TimelineRow>> {
+		return class ReaderCell extends Component<CellRendererProps<SessionListRow>> {
 			componentWillUnmount() {
-				readerMeasurements.current.delete(readerKey(this.props.item));
+				readerMeasurements.current.delete(sessionListKey(this.props.item));
 			}
 			render() {
 				const { children, item, onLayout, onFocusCapture, style } = this.props;
@@ -2512,13 +2827,18 @@ export function ConversationScreen({
 						onLayout={(event) => {
 							onLayout?.(event);
 							if (!item) return;
-							const key = readerKey(item);
+							const key = sessionListKey(item);
 							readerMeasurements.current.set(key, {
 								key,
 								y: event.nativeEvent.layout.y,
 								height: event.nativeEvent.layout.height,
 							});
-							setLayoutRevision((revision) => revision + 1);
+							// Opening at the live end lands once its last row has
+							// measured: pin the end, then show the list.
+							if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
+								pinOpeningToEnd();
+							}
+							restoreAfterLayout();
 						}}
 					>
 						{children}
@@ -2533,55 +2853,70 @@ export function ConversationScreen({
 	// reader keying, a sheet opening), so it does not rebuild every visible
 	// transcript cell for them.
 	const renderItem = useCallback(
-		({ item, index }: { item: TimelineRow; index: number }) => (
-			<View
-				style={{
-					paddingBottom: timelineGap(item, timelineRows[index + 1]),
-				}}
-			>
-				<View
-					style={
-						findKey !== null && readerKey(item) === findKey
-							? {
-									// The current match (ruling 29): blue means selected.
-									backgroundColor: colors.palette.accentBg,
-									borderRadius: 12,
-									marginHorizontal: -8,
-									paddingHorizontal: 8,
-								}
-							: undefined
-					}
-				>
-					<TimelineItem
-						item={item}
-						hubId={route.params.hubId}
-						sessionRef={route.params.ref}
-						activityPresentation={presentation.activityPresentation.get(item.id)}
-						expandByDefault={presentation.expandByDefault}
-						showDuration={presentation.showDuration}
-						fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
-						forkDisabled={!connected || !focused || snapshot.status !== "open"}
-						quote={quote}
-						live={item.id === liveRun}
-						delegates={conversation?.delegates}
-						openSubagent={openSubagent}
-						answerFor={answerFor}
-						errorActionFor={(row) =>
-							conversation
-								? // Retry shows only when a press would send.
-									errorAction(row, conversation, liveSendKind() !== null)
-								: null
+		({ item, index }: { item: SessionListRow; index: number }) => {
+			const gap = sessionListGap(item, listRows[index + 1]);
+			if (item.kind === "usage")
+				return (
+					<View style={{ paddingBottom: gap }}>
+						<TranscriptUsage {...item.usage} />
+					</View>
+				);
+			if (isGhostRow(item))
+				return (
+					<View style={{ paddingBottom: gap }}>
+						<GhostRowView row={item} />
+					</View>
+				);
+			return (
+				<View style={{ paddingBottom: gap }}>
+					<View
+						style={
+							findKey !== null && readerKey(item) === findKey
+								? {
+										// The current match (ruling 29): blue means selected.
+										backgroundColor: colors.palette.accentBg,
+										borderRadius: 12,
+										marginHorizontal: -8,
+										paddingHorizontal: 8,
+									}
+								: undefined
 						}
-						onErrorAction={runErrorAction}
-						documentChips={documentChips}
-					/>
+					>
+						<TimelineItem
+							item={item}
+							hubId={route.params.hubId}
+							sessionRef={route.params.ref}
+							sourceTurns={conversation?.turns}
+							activityPresentation={presentation.activityPresentation.get(item.id)}
+							expandByDefault={presentation.expandByDefault}
+							showDuration={presentation.showDuration}
+							fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
+							forkDisabled={!connected || !focused || snapshot.status !== "open"}
+							quote={quote}
+							live={item.id === liveRun}
+							liveRunsOpen={presentation.liveRunsOpen}
+							delegates={conversation?.delegates}
+							subagentTree={subagentTree}
+							openSubagent={openSubagent}
+							answerFor={answerFor}
+							errorActionFor={(row) =>
+								conversation
+									? // Retry shows only when a press would send.
+										errorAction(row, conversation, liveSendKind() !== null)
+									: null
+							}
+							onErrorAction={runErrorAction}
+							documentChips={documentChips}
+							fileContext={fileContext}
+						/>
+					</View>
 				</View>
-			</View>
-		),
+			);
+		},
 		[
 			findKey,
 			colors.palette.accentBg,
-			timelineRows,
+			listRows,
 			route.params.hubId,
 			route.params.ref,
 			presentation,
@@ -2592,16 +2927,18 @@ export function ConversationScreen({
 			quote,
 			liveRun,
 			conversation,
+			subagentTree,
 			openSubagent,
 			answerFor,
 			liveSendKind,
 			runErrorAction,
 			documentChips,
+			fileContext,
 		],
 	);
 
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
@@ -2615,210 +2952,273 @@ export function ConversationScreen({
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
+				keyboardVerticalOffset={headerHeight - underNavBar}
 			>
-				<View style={styles.fill}>
+				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
-						<FlatList
-							ref={timeline}
-							onLayout={(event) => {
-								readerViewportHeight.current = event.nativeEvent.layout.height;
-								setLayoutRevision((revision) => revision + 1);
-							}}
-							data={timelineRows}
-							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to fold or unfold.
-							extraData={liveRun}
-							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
-							CellRendererComponent={readerCellRenderer}
-							keyExtractor={(item) => item.id}
-							renderItem={renderItem}
-							// Room at the end for the Next capsule (spec 8.3).
-							contentContainerStyle={{
-								padding: 16,
-								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: 60,
-							}}
-							// Older history loading above never moves what you read.
-							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-							onContentSizeChange={(_width, height) => {
-								readerContentHeight.current = height;
-								setLayoutRevision((revision) => revision + 1);
-								if (readerLatest.current)
-									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-							}}
-							scrollEventThrottle={100}
-							onScroll={(event) => {
-								const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-								const y = contentOffset.y;
-								listOffset.current = y;
-								headerHiding.onScroll(y, readerDragging.current || readerMomentum.current);
-								if (!focused) return;
-								if (y + layoutMeasurement.height >= contentSize.height - 48) {
-									if (awayKeys !== null) setAwayKeys(null);
-									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
-								} else if (awayKeys === null) {
-									setAwayKeys(new Set(timelineRows.map(readerKey)));
-								}
-								if (captureSuppressed.current) return;
-								// Older history loads as you near the top (spec 8.2).
-								if (y < 800) loadOlderPage();
-								const visible = timelineRows.find((item) => {
-									const measurement = readerMeasurements.current.get(readerKey(item));
-									return measurement && measurement.y + measurement.height > y;
-								});
-								if (visible) {
-									readerAnchor.current = captureReaderAnchor(
-										route.params.hubId,
-										route.params.ref,
-										visible,
-										y,
-										[...readerMeasurements.current.values()],
-										Date.now(),
-										bindingInstance,
-										turnsSeen.current,
-									);
-									const anchor = readerAnchor.current;
-									const measurement = readerMeasurements.current.get(readerKey(visible));
-									if (anchor && measurement)
-										appliedReaderRestore.current = {
-											...measurement,
-											scrollOffset: y,
-										};
-								}
-							}}
-							onScrollBeginDrag={() => {
-								readerDragging.current = true;
-								readerLatest.current = false;
-								readerHeader.current = false;
-								captureSuppressed.current = false;
-								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
-								restoreFrame.current = null;
-							}}
-							onScrollEndDrag={() => {
-								readerDragging.current = false;
-								readerPositions.save(readerAnchor.current);
-								setLayoutRevision((revision) => revision + 1);
-							}}
-							onMomentumScrollBegin={() => {
-								readerMomentum.current = true;
-							}}
-							onMomentumScrollEnd={() => {
-								readerMomentum.current = false;
-								readerPositions.save(readerAnchor.current);
-								setLayoutRevision((revision) => revision + 1);
-							}}
-							onScrollToIndexFailed={({ index, averageItemLength }) => {
-								// A match beyond the measured rows: move near it, so the
-								// rows on the way render, then try again.
-								if (findJumping.current) {
-									const progress = furthestMeasuredRowBeforeTarget(timelineRows, index, [
-										...readerMeasurements.current.values(),
-									]);
-									if (!findAttempts.current.retryUnmeasured(progress)) return;
-									timeline.current?.scrollToOffset({
-										offset: index * Math.max(1, averageItemLength),
-										animated: false,
-									});
-									findRetryFrame.current = requestAnimationFrame(retryFindMatch);
-									return;
-								}
-								const anchor = readerAnchor.current;
-								const targetIndex = anchor ? resolveReaderAnchor(anchor, timelineRows) : null;
-								if (targetIndex !== null && readerMeasurements.current.has(readerKey(timelineRows[targetIndex])))
-									return;
-								const measurementProgress =
-									targetIndex === null
-										? -1
-										: furthestMeasuredRowBeforeTarget(timelineRows, targetIndex, [
-												...readerMeasurements.current.values(),
-											]);
-								if (!readerRestoreAttempts.current.retryUnmeasured(measurementProgress)) return;
-								appliedReaderRestore.current = null;
-								restoreFrame.current = requestAnimationFrame(() => {
+						{/* The ghost rows read the screen's state and actions here
+						    (GhostRowContext), so the transcript's other cells keep theirs. */}
+						<GhostRowContext.Provider value={ghostRowHost}>
+							<FlatList
+								ref={timeline}
+								// Where the transcript rests depends on its viewport and the
+								// bar, so it shows once both have laid out and the opening has
+								// landed, and never draws a frame at a place it then leaves.
+								style={{ opacity: listLaidOut && !openingHidden ? 1 : 0 }}
+								onLayout={(event) => {
+									readerViewportHeight.current = event.nativeEvent.layout.height;
+									setLayoutRevision((revision) => revision + 1);
+									// The viewport changed (the keyboard, a dock): while following,
+									// the end stays in view.
+									if (follow.state.current.following)
+										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+								}}
+								data={listRows}
+								// Cells re-render only for a new renderItem or new rows, and
+								// renderItem changes with everything a row reads (the live run
+								// included): a screen render that changes nothing a row reads
+								// (typing in the composer, which a ghost row reads by context)
+								// leaves them alone, where FlatList otherwise rebuilds its
+								// renderer, and so every visible cell, on every render (#3247).
+								strictMode
+								CellRendererComponent={readerCellRenderer}
+								// A row keeps its reader key when history records it, so the
+								// list keeps its cell (a streamed reply's wire id changes).
+								keyExtractor={sessionListKey}
+								renderItem={renderItem}
+								// The end keeps a fixed room for what floats over it (spec 8.3),
+								// so Next never sits on the last line and nothing coming or
+								// going there moves the list.
+								contentContainerStyle={{
+									// A short transcript rests just above the composer (spec 8.5):
+									// it fills the viewport above the bar's inset, so at rest it is
+									// at its end with nothing under the bar. The viewport is a ref;
+									// its onLayout bumps layoutRevision, which renders this again.
+									minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
+									justifyContent: "flex-end",
+									padding: 16,
+									paddingTop: 16 + reservedTop,
+									paddingBottom: listUnderBar.endPadding + transcriptEnd,
+								}}
+								contentInset={listUnderBar.contentInset}
+								// Dragging the transcript lowers the keyboard: following the finger
+								// as in Messages on iOS, and at the drag's start on Android, which
+								// has no interactive dismissal.
+								keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+								scrollIndicatorInsets={listUnderBar.scrollIndicatorInsets}
+								// Older history loading above never moves what you read.
+								maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+								onContentSizeChange={(_width, height) => {
+									readerContentHeight.current = height;
+									restoreAfterLayout();
+									if (follow.state.current.following)
+										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+								}}
+								scrollEventThrottle={100}
+								onScroll={(event) => {
+									const y = event.nativeEvent.contentOffset.y;
+									listOffset.current = y;
+									headerHiding.onScroll(y, follow.state.current.touch !== "none");
+									if (!focused) return;
+									const end = atEnd(event.nativeEvent);
+									if (end) turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+									follow.dispatch({ type: "scroll", atEnd: end, keys: () => new Set(timelineRows.map(readerKey)) });
+									settleAtEnd(end && follow.state.current.touch === "none");
+									if (captureSuppressed.current) return;
+									// Older history loads as you near the top (spec 8.2) once you
+									// move the list. With no finger on it, and the app neither
+									// following the end nor restoring (which returns above), the
+									// list moved for an assistive scroll. The drag and coast events
+									// check too, since a short flick or an overscroll may report no
+									// scroll between them.
+									if (follow.state.current.touch === "none" && !follow.state.current.following)
+										follow.dispatch({ type: "assistiveScroll" });
+									if (!follow.state.current.following) pageOlderNear(y);
+									const visible = readerAnchorRow(timelineRows, readerMeasurements.current, y);
+									if (visible) {
+										readerAnchor.current = captureReaderAnchor(
+											route.params.hubId,
+											route.params.ref,
+											visible,
+											y,
+											[...readerMeasurements.current.values()],
+											Date.now(),
+											bindingInstance,
+											turnsSeen.current,
+										);
+										const anchor = readerAnchor.current;
+										const measurement = readerMeasurements.current.get(readerKey(visible));
+										// Where you scrolled is where the anchor is, so there is nothing
+										// to restore until the anchor changes or its row reflows. The
+										// trade-off: every scroll re-captures the anchor and so arms a
+										// restore only for that exact row; one that reflows (a text-size
+										// change) restores, one whose y merely moves never does.
+										if (anchor && measurement)
+											appliedReaderRestore.current = {
+												key: measurement.key,
+												height: measurement.height,
+												offset: y,
+												clamped: false,
+											};
+									}
+								}}
+								onScrollBeginDrag={(event) => {
+									// A finger on the list while it opens: show it where it is.
+									landOpening();
+									follow.dispatch({ type: "dragBegin" });
+									pageOlderNear(event?.nativeEvent.contentOffset.y);
+									captureSuppressed.current = false;
+									if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 									restoreFrame.current = null;
+								}}
+								// Letting go at the end, or a flick settling there, follows it
+								// again (spec 8.2); a row landing mid-drag never moves the list
+								// under the finger.
+								onScrollEndDrag={(event) => {
+									follow.dispatch({ type: "dragEnd", atEnd: atEnd(event.nativeEvent) });
+									settleAtEnd(atEnd(event.nativeEvent));
+									pageOlderNear(event.nativeEvent.contentOffset.y);
+									readerPositions.save(readerAnchor.current);
+									setLayoutRevision((revision) => revision + 1);
+								}}
+								onMomentumScrollBegin={(event) => {
+									follow.dispatch({ type: "momentumBegin" });
+									pageOlderNear(event?.nativeEvent.contentOffset.y);
+								}}
+								onMomentumScrollEnd={(event) => {
+									follow.dispatch({ type: "momentumEnd", atEnd: atEnd(event.nativeEvent) });
+									settleAtEnd(atEnd(event.nativeEvent));
+									pageOlderNear(event.nativeEvent.contentOffset.y);
+									readerPositions.save(readerAnchor.current);
+									setLayoutRevision((revision) => revision + 1);
+								}}
+								onScrollToIndexFailed={({ index, averageItemLength }) => {
+									// A match beyond the measured rows: move near it, so the
+									// rows on the way render, then try again.
+									if (findJumping.current) {
+										const progress = furthestMeasuredRowBeforeTarget(timelineRows, index, [
+											...readerMeasurements.current.values(),
+										]);
+										if (!findAttempts.current.retryUnmeasured(progress)) return;
+										timeline.current?.scrollToOffset({
+											offset: index * Math.max(1, averageItemLength),
+											animated: false,
+										});
+										findRetryFrame.current = requestAnimationFrame(retryFindMatch);
+										return;
+									}
 									const anchor = readerAnchor.current;
-									if (!anchor || readerDragging.current || readerMomentum.current) return;
-									captureSuppressed.current = true;
-									timeline.current?.scrollToOffset({
-										offset: Math.max(0, index * Math.max(1, averageItemLength) + anchor.withinItemOffset),
-										animated: false,
+									const targetIndex = anchor ? resolveReaderAnchor(anchor, timelineRows) : null;
+									if (targetIndex !== null && readerMeasurements.current.has(readerKey(timelineRows[targetIndex])))
+										return;
+									const measurementProgress =
+										targetIndex === null
+											? -1
+											: furthestMeasuredRowBeforeTarget(timelineRows, targetIndex, [
+													...readerMeasurements.current.values(),
+												]);
+									if (!readerRestoreAttempts.current.retryUnmeasured(measurementProgress)) return;
+									appliedReaderRestore.current = null;
+									restoreFrame.current = requestAnimationFrame(() => {
+										restoreFrame.current = null;
+										const anchor = readerAnchor.current;
+										if (!anchor || follow.state.current.touch !== "none") return;
+										captureSuppressed.current = true;
+										timeline.current?.scrollToOffset({
+											offset: Math.max(0, index * Math.max(1, averageItemLength) + anchor.withinItemOffset),
+											animated: false,
+										});
 									});
-								});
-							}}
-							keyboardShouldPersistTaps="handled"
-							ListHeaderComponent={
-								<View style={{ gap: 12, paddingBottom: 16 }}>
-									{readFailures >= 3 ? (
-										<Text
-											style={{
-												fontSize: 13,
-												lineHeight: 18,
-												color: colors.palette.inkLow,
-											}}
-										>
-											Couldn't load this session. Trying again on its own.
-										</Text>
-									) : null}
-									{/* A failed read says so above, once, and retries on its own. */}
-									<ErrorMessage message={snapshot.status === "error" ? null : snapshot.error} />
-									{/* A subagent's bar already says what you can do instead. */}
-									{connected && permitted && !subagentBar && !permitted.send && !permitted.steer && !permitted.queue ? (
-										<Copy muted>Sending is unavailable for this session.</Copy>
-									) : null}
-								</View>
-							}
-							// Until the conversation first loads, three quiet blocks stand
-							// in for it. A loaded conversation with no rows shows nothing:
-							// the composer's placeholder invites.
-							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
-						/>
-						<View
-							pointerEvents="box-none"
-							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
-						>
-							<SessionHeader
-								status={connectionText}
-								chips={chips}
-								find={
-									find ? (
-										<FindBar
-											query={find.query}
-											label={
-												find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
-											}
-											searchingOlder={find.seeking && snapshot.loadingOlder}
-											settled={!find.seeking}
-											onQuery={(query) => setFind(newFind(query))}
-											onStep={stepFind}
-											onDone={() => {
-												Keyboard.dismiss();
-												setFind(null);
-											}}
-										/>
-									) : undefined
-								}
-								hidden={headerHiding.hidden}
-								onChip={openChip}
-								notes={
-									notesPreview ? (
-										<NotesBar
-											preview={notesPreview}
-											onPress={() => {
-												Keyboard.dismiss();
-												// Showing your note, the editor opens with the caret at its end.
-												navigation.navigate("NotesSheet", {
-													hubId: route.params.hubId,
-													ref: route.params.ref,
-													focusEditor: notesPreview.glyph === "person",
-												});
-											}}
-										/>
-									) : undefined
+								}}
+								keyboardShouldPersistTaps="handled"
+								ListHeaderComponent={
+									<View style={{ gap: 12, paddingBottom: 16 }}>
+										{readFailures >= 3 ? (
+											<Text
+												style={{
+													fontSize: 13,
+													lineHeight: 18,
+													color: colors.palette.inkLow,
+												}}
+											>
+												Couldn't load this session. Trying again on its own.
+											</Text>
+										) : null}
+										{/* A failed read says so above, once, and retries on its own. */}
+										<ErrorMessage message={snapshot.status === "error" ? null : snapshot.error} />
+										{/* A subagent's bar already says what you can do instead. */}
+										{connected &&
+										permitted &&
+										!subagentBar &&
+										!permitted.send &&
+										!permitted.steer &&
+										!permitted.queue ? (
+											<Copy muted>Sending is unavailable for this session.</Copy>
+										) : null}
+										{/* Until the conversation first loads, three quiet blocks stand
+										    in for it, above any ghost already waiting. A loaded
+										    conversation with no rows shows nothing: the composer's
+										    placeholder invites. */}
+										{conversation ? null : <TranscriptSkeleton />}
+									</View>
 								}
 							/>
-						</View>
+						</GhostRowContext.Provider>
+						<SessionHeader
+							glassTop={navGlass ? headerHeight : undefined}
+							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+							status={connectionText}
+							chips={chips}
+							find={
+								find ? (
+									<FindBar
+										query={find.query}
+										label={
+											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
+										}
+										searchingOlder={
+											find.seeking &&
+											!olderHistory.permanent &&
+											(olderHistory.pending ||
+												snapshot.loadingOlder ||
+												!connected ||
+												!service ||
+												(findHits.length === 0 && olderPage !== null))
+										}
+										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
+										settled={!find.seeking}
+										onQuery={(query) => setFind(newFind(query))}
+										onStep={stepFind}
+										onDone={() => {
+											cancelFind();
+											Keyboard.dismiss();
+											setFind(null);
+										}}
+										onGlass={navGlass}
+									/>
+								) : undefined
+							}
+							hidden={headerHiding.hidden}
+							composerFocus={composerFocus}
+							onChip={openChip}
+							notes={
+								notesPreview ? (
+									<NotesBar
+										onGlass={navGlass}
+										preview={notesPreview}
+										onPress={() => {
+											Keyboard.dismiss();
+											// Showing your note, the editor opens with the caret at its end.
+											navigation.navigate("NotesSheet", {
+												hubId: route.params.hubId,
+												ref: route.params.ref,
+												focusEditor: notesPreview.glyph === "person",
+											});
+										}}
+									/>
+								) : undefined
+							}
+						/>
 						<FloatingStack
 							toast={toaster.toast ? <Toast toast={toaster.toast} dismiss={toaster.dismiss} /> : null}
 							next={
@@ -2827,38 +3227,53 @@ export function ConversationScreen({
 								) : null
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
+							barHeight={barHeight}
+							composerFocus={composerFocus}
 						/>
 					</View>
-					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
+					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
+					    over the transcript's end so the transcript runs under its glass,
+					    and never taller than four fifths of its room. */}
+					<BarFrame
+						testID="session-bottom-bar"
+						style={{
+							position: "absolute",
+							left: 0,
+							right: 0,
+							bottom: 0,
+							maxHeight:
+								bottomBarRoom.height === null
+									? (`${BAR_MAX_SHARE * 100}%` as const)
+									: bottomBarRoom.height * BAR_MAX_SHARE,
+							paddingTop: 8,
+						}}
+						onLayout={bottomBar.onLayout}
+					>
 						<ScrollView
-							style={{ flexGrow: 0, flexShrink: 1 }}
+							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
-							{composerShown ? null : waitingForAgent}
-							{conversation?.goal ? (
-								<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-									<Action tone="quiet" onPress={() => openSessionDestination("session")}>
-										{`Goal · ${conversation.goal.status}`}
-									</Action>
-								</View>
-							) : null}
+							{composerShown ? null : composerErrors}
 							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||
 									controlsState.lastAction === "setVisionModel" ||
 									controlsState.lastAction === "setReasoningEffort") ? (
-									<Action
-										tone="quiet"
+									<Button
+										text
+										quiet
+										label="Review settings error"
 										onPress={() => openModelSheet(controlsState.lastAction === "setVisionModel" ? "vision" : "model")}
-									>
-										Review settings error
-									</Action>
+									/>
 								) : null}
 							</View>
 						</ScrollView>
-						<View>
+						{/* Only the dock's slot gives up height, so a dock taller than the
+						    room left scrolls its body and keeps its answer controls on
+						    screen (spec 8.4); the tray and the composer keep theirs. */}
+						<View style={{ flexShrink: 1 }}>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.
@@ -2868,14 +3283,24 @@ export function ConversationScreen({
 									// waits, without Allow or Deny.
 									controls={approvalControls}
 									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
-									onDecided={(allowed) => toaster.show({ text: allowed ? "Allowed once" : "Denied" })}
+									onDecided={(allowed) => {
+										if (allowed) haptic("success");
+										toaster.show({ text: allowed ? "Allowed once" : "Denied" });
+									}}
 								/>
 							) : null}
 							{(bottom.dock === "question" || bottom.dock === "foldedQuestion") && questionBatch ? (
 								<QuestionDock
 									questions={questionBatch.questions}
 									draft={questionDraft}
-									ready={ready && !!permitted?.send && draft.loaded && !draft.error && unconfirmedSend === null}
+									ready={
+										(ready || offlineAdmits) &&
+										!!permitted?.send &&
+										draft.loaded &&
+										!draft.error &&
+										unconfirmedSend === null
+									}
+									waitsForConnection={!connected}
 									sending={draft.submitting || questionBatch.sending}
 									folded={bottom.dock === "foldedQuestion"}
 									onFold={setQuestionFolded}
@@ -2887,86 +3312,92 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-								/>
-							) : null}
-							{bottom.tray ? (
-								<LiveStatusTray
-									session={conversation}
-									frames={frames}
-									connected={connected}
-									canStop={!!permitted?.stop}
-									stopping={stopping || pending}
-									onStop={() => {
-										void stop();
-									}}
-									onJumpToLive={jumpToLive}
-								/>
-							) : null}
-							{subagentOf ? (
-								<SubagentPanel
-									hubId={route.params.hubId}
-									ref={route.params.ref}
-									coordinator={subagentOf}
-									inFront={focused}
-									barShown={subagentBar}
-									showToast={showSubagentToast}
-									navigation={navigation as never}
-								/>
-							) : null}
-							{composerShown ? (
-								<Composer
-									value={draft.record.draft}
-									editable={draft.loaded}
-									onChangeText={(text) => {
-										// A "/" that starts an empty draft opens Commands and
-										// skills in its place (spec 8.5).
-										if (text === "/" && draft.record.draft === "" && commandsHost) {
-											openCommands();
-											return;
-										}
-										document.edit(text);
-									}}
-									inputRef={composerInput}
-									placeholder={composerPlaceholder(action, answering)}
-									// Under an open dock, whose own button reads "Send answer",
-									// this Send says it sends what you typed.
-									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
-									sendEnabled={sendEnabled}
-									onSend={() => {
-										void send();
-									}}
-									onPhotoLibrary={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose();
-									}}
-									onCamera={() => {
-										Keyboard.dismiss();
-										void imageSelection.choose("camera");
-									}}
-									onCommands={commandsHost ? openCommands : undefined}
-									settings={bottom.modelChip ? composerSettings : null}
-									above={
-										<>
-											{waitingForAgent}
-											<ImageAttachments document={document} selection={imageSelection} />
-											<ErrorMessage message={imageState.error} />
-										</>
-									}
-								/>
-							) : notice ? (
-								<SessionNotice
-									kind={notice}
-									busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
-									disabled={!controls}
-									error={notice === "restartNeeded" ? restart.error : null}
-									onPress={() => {
-										if (notice === "paused") void controls?.resume();
-										else void restart.restart();
-									}}
+									composerFocus={composerFocus}
 								/>
 							) : null}
 						</View>
-					</View>
+						{bottom.tray ? (
+							<LiveStatusTray
+								session={conversation}
+								frames={frames}
+								activity={sessionActivity}
+								row={fleetRow}
+								connected={connected}
+								canStop={!!permitted?.stop}
+								stopping={stopping || pending}
+								onStop={() => {
+									void stop();
+								}}
+								onJumpToLive={jumpToLive}
+							/>
+						) : null}
+						{subagentOf ? (
+							<SubagentPanel
+								hubId={route.params.hubId}
+								ref={route.params.ref}
+								coordinator={subagentOf}
+								inFront={focused}
+								barShown={subagentBar}
+								showToast={showSubagentToast}
+								onRow={setSubagentRow}
+								onTreeThread={setCoordinatorThread}
+								navigation={navigation as never}
+							/>
+						) : null}
+						{composerShown ? (
+							<Composer
+								value={draft.record.draft}
+								editable={draft.loaded}
+								onChangeText={(text) => {
+									// A "/" that starts an empty draft opens Commands and
+									// skills in its place (spec 8.5).
+									if (text === "/" && draft.record.draft === "" && commandsHost) {
+										openCommands();
+										return;
+									}
+									document.edit(text);
+								}}
+								inputRef={composerInput}
+								focus={composerFocus}
+								placeholder={composerPlaceholder(onlineAction, answering)}
+								// Under an open dock, whose own button reads "Send answer",
+								// this Send says it sends what you typed.
+								sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
+								sendEnabled={sendEnabled}
+								onSend={() => {
+									void send();
+								}}
+								onPhotoLibrary={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose();
+								}}
+								onCamera={() => {
+									Keyboard.dismiss();
+									void imageSelection.choose("camera");
+								}}
+								onCommands={commandsHost ? openCommands : undefined}
+								settings={bottom.modelChip ? composerSettings : null}
+								above={
+									<>
+										{composerErrors}
+										<ImageAttachments document={document} selection={imageSelection} />
+										<ErrorMessage message={imageState.error} />
+									</>
+								}
+							/>
+						) : notice ? (
+							<SessionNotice
+								kind={notice}
+								busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
+								disabled={!controls}
+								error={notice === "restartNeeded" ? restart.error : null}
+								onPress={() => {
+									if (notice === "paused") void controls?.resume();
+									else void restart.restart();
+								}}
+							/>
+						) : null}
+					</BarFrame>
 				</View>
 			</KeyboardAvoidingView>
 		</SafeAreaView>

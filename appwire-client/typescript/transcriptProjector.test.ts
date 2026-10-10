@@ -1,8 +1,13 @@
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
-import { projectThread } from "./transcriptProjector";
-import { WarningCodeContextBudget } from "./warnings";
+import { entryDisplayKey, projectThread } from "./transcriptProjector";
+import {
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
+  WarningCodePluginCompatibility,
+} from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -207,26 +212,77 @@ describe("transcript projector", () => {
         item("turn-error", "systemMessage", { eventKind: "error", text: "Failure" }),
       );
       const entries = entriesFor(model, preset(level));
-      expect(entries.map((entry) => entry.id)).toEqual(
-        level === "chat" || level === "intent"
-          ? ["ask", "intent:failed-tool", "intent:active-tool", "hook-failure", "warning", "steer", "turn-error"]
-          : ["ask", "failed-tool", "active-tool", "hook-failure", "warning", "steer", "turn-error"],
-      );
+      const compact = level === "chat" || level === "intent";
+      const steer = level === "chat" ? [] : ["steer"];
+      expect(entries.map((entry) => entry.id)).toEqual([
+        "ask",
+        compact ? "intent:failed-tool" : "failed-tool",
+        compact ? "intent:active-tool" : "active-tool",
+        "hook-failure",
+        "warning",
+        ...steer,
+        "turn-error",
+      ]);
       expect(entries.find((entry) => entry.id === "ask")?.kind).toBe("critical");
-      const failedId = level === "chat" || level === "intent" ? "intent:failed-tool" : "failed-tool";
-      const activeId = level === "chat" || level === "intent" ? "intent:active-tool" : "active-tool";
-      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
-      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(
-        level === "chat" || level === "intent" ? "intent" : "item",
-      );
+      const failedId = compact ? "intent:failed-tool" : "failed-tool";
+      const activeId = compact ? "intent:active-tool" : "active-tool";
+      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(compact ? "intent" : "item");
+      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(compact ? "intent" : "item");
       expect(entries.find((entry) => entry.id === "hook-failure")?.kind).toBe("critical");
-      for (const id of ["warning", "steer", "turn-error"]) {
+      const criticalIds = ["warning", ...steer, "turn-error"];
+      for (const id of criticalIds) {
         expect(entries.find((entry) => entry.id === id)?.kind).toBe("critical");
       }
     },
   );
+
+  test("the chat preset hides daemon steering; intent, tools, activity, full and custom keep it", () => {
+    const model = threadWith(item("steer", "steering", { text: "Context a hook added", source: "" }));
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    for (const level of ["intent", "tools", "activity", "full"] as const) {
+      expect(entriesFor(model, preset(level)).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
+    }
+    const chatShapedCustom = custom({ toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+    expect(entriesFor(model, chatShapedCustom).map((entry) => [entry.id, entry.kind])).toEqual([["steer", "critical"]]);
+  });
+
+  test("a steer the human wrote shows at chat: it is the human's own words", () => {
+    const model = threadWith(
+      item("steer-user", "steering", { text: "Work in a new worktree.", source: "user" }),
+      item("note", "steering", {
+        text: "human updated their whiteboard: Ship Friday",
+        source: "user",
+        steeringKind: "human-note",
+      }),
+    );
+
+    expect(entriesFor(model, preset("chat")).map((entry) => entry.id)).toEqual(["steer-user", "note"]);
+    expect(entriesFor(model, preset("chat")).every((entry) => entry.kind === "critical")).toBe(true);
+  });
+
+  test("the terminal fallback does not resurrect a daemon steer chat hid when the error end cap renders", () => {
+    const failedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
+      status: "failed",
+      error: { message: "structured turn failure" },
+    });
+    const model = { ...threadWith(), turns: [failedTurn] } as ThreadModel;
+
+    expect(projectThread(model, preset("chat")).turns[0]?.entries).toEqual([]);
+    expect(entriesFor(model, preset("intent")).map((entry) => entry.id)).toEqual(["daemon-steer"]);
+  });
+
+  test("a turn interrupted on a daemon steer renders empty at chat, as the phone renders it", () => {
+    const interruptedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
+      status: "interrupted",
+    });
+    const model = { ...threadWith(), turns: [interruptedTurn] } as ThreadModel;
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("intent")).map((entry) => [entry.id, entry.kind])).toEqual([
+      ["daemon-steer", "critical"],
+    ]);
+  });
 
   test("keeps a blank-intent tool call visible without dropping the action", () => {
     const model = threadWith(item("blank-tool", "commandExecution", { toolName: "shell", description: "   " }));
@@ -254,19 +310,118 @@ describe("transcript projector", () => {
   });
 
   describe("informational warnings", () => {
+    test.each(["warning", "systemMessage"])(
+      "plugin compatibility advisory through %s is hidden at every level but full",
+      (type) => {
+        const warning = { code: WarningCodePluginCompatibility };
+        const model = threadWith(
+          item("compatibility", type, {
+            eventKind: "warning",
+            text: "allowed-tools is preserved as metadata but does not grant or restrict tools",
+            warning,
+            raw: { warning },
+          }),
+        );
+        for (const level of ["chat", "intent", "tools", "activity"] as const) {
+          expect(entriesFor(model, preset(level))).toEqual([]);
+        }
+        expect(entriesFor(model, preset("full"))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "compatibility" }),
+        ]);
+      },
+    );
+
+    test.each(["warning", "systemMessage"])(
+      "MCP recovery through %s hides without hiding a failed retry or sign-in",
+      (type) => {
+        const warning = { code: WarningCodeMCPReconnected };
+        const model = threadWith(
+          item("recovery", type, { eventKind: "warning", text: "connection-1", warning, raw: { warning } }),
+          item("retry", "commandExecution", {
+            status: "failed",
+            toolName: "server__probe",
+            description: "probe-1",
+            text: "failure-1",
+          }),
+          item("signin", "warning", { warning: { source: "mcp" }, text: "signin-1" }),
+          item("interruption", "systemMessage", { eventKind: "error", text: "interruption-1", raw: { warning } }),
+        );
+        for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+          const entries = entriesFor(model, preset(level));
+          expect(entries.some((entry) => entry.id === "recovery")).toBe(level === "full");
+          expect(entries.find((entry) => entry.id === "retry" || entry.id === "intent:retry")).toMatchObject(
+            level === "chat" || level === "intent"
+              ? { kind: "intent", failed: true }
+              : { kind: "item", item: { status: "failed" } },
+          );
+          expect(entries.find((entry) => entry.id === "signin")?.kind).toBe("critical");
+          expect(entries.find((entry) => entry.id === "interruption")?.kind).toBe("critical");
+        }
+      },
+    );
+
     const informational = () =>
       item("budget", "warning", {
         text: "Output allocation reduced for inst/model: requested=100 admitted=50",
         warning: { title: "Context budget", code: WarningCodeContextBudget },
       });
 
-    test("hidden below the high verbosity levels, critical at activity and full", () => {
+    test("hidden at every level but full, critical at full", () => {
       const model = threadWith(informational());
-      for (const level of ["chat", "intent", "tools"] as const) {
+      for (const level of ["chat", "intent", "tools", "activity"] as const) {
         expect(entriesFor(model, preset(level))).toEqual([]);
       }
-      for (const level of ["activity", "full"] as const) {
-        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+      expect(entriesFor(model, preset("full"))).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+    });
+
+    // The daemon's warnings reach a client as overlay notices: a
+    // systemMessage whose eventKind is "warning", its code on
+    // raw.warning.code (internal/appoverlay/notices.go warningAnnouncement).
+    // A coded one is the same informational notice as a warning item.
+    // The daemon retries a failed delegate-attention restore on its own and
+    // warns once per failure: detail for Full, never a Chat-level alarm.
+    test("a delegate-attention restore notice is hidden at every level but full", () => {
+      const model = threadWith(
+        item("restore", "systemMessage", {
+          eventKind: "warning",
+          description: "Evener error",
+          text: "restore delegate attention: delegate runtime is busy",
+          raw: { warning: { source: "evener", title: "Evener error", code: WarningCodeDelegateAttentionRestore } },
+        }),
+      );
+      for (const level of ["chat", "intent", "tools", "activity"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      expect(entriesFor(model, preset("full"))).toEqual([expect.objectContaining({ kind: "critical", id: "restore" })]);
+    });
+
+    test("a coded warning notice is hidden at every level but full, and an uncoded one shows at every level", () => {
+      const notice = (id: string, code?: string) =>
+        item(id, "systemMessage", {
+          eventKind: "warning",
+          description: "Context budget",
+          text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+          raw: {
+            warning: {
+              source: "evener",
+              title: "Context budget",
+              hint: "No action needed.",
+              ...(code ? { code } : {}),
+            },
+          },
+        });
+      const coded = threadWith(notice("budget-notice", WarningCodeContextBudget));
+      for (const level of ["chat", "intent", "tools", "activity"] as const) {
+        expect(entriesFor(coded, preset(level))).toEqual([]);
+      }
+      expect(entriesFor(coded, preset("full"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "budget-notice" }),
+      ]);
+      const uncoded = threadWith(notice("careful"));
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(uncoded, preset(level))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "careful" }),
+        ]);
       }
     });
 
@@ -277,8 +432,11 @@ describe("transcript projector", () => {
       expect(projection.anchors).toEqual([]);
     });
 
-    test("a custom vector gates informational warnings on expandByDefault", () => {
+    test("a custom vector shows informational warnings only when it is the full vector", () => {
       const model = threadWith(informational());
+      expect(
+        entriesFor(model, custom({ toolIntent: false, toolCalls: false, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
       expect(
         entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
       ).toEqual([]);
@@ -321,8 +479,8 @@ describe("transcript projector", () => {
           },
         ],
       } as unknown as ThreadModel;
-      expect(entriesFor(failedBudgetTurn, preset("tools"))).toEqual([]);
-      expect(entriesFor(failedBudgetTurn, preset("activity"))).toEqual([
+      expect(entriesFor(failedBudgetTurn, preset("activity"))).toEqual([]);
+      expect(entriesFor(failedBudgetTurn, preset("full"))).toEqual([
         expect.objectContaining({ kind: "critical", id: "budget" }),
       ]);
 
@@ -391,6 +549,28 @@ describe("transcript projector", () => {
     });
   });
 
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer, so its history row shows at every level, system events off.
+  test("an approval decision shows at every level", () => {
+    const model = threadWith(
+      item("approval", "systemMessage", {
+        eventKind: "approval_decision",
+        text: "Allowed write_file to access /tmp/a",
+        raw: { approvalDecision: { approved: true, tool: "write_file", kind: "file_tool", deniedPath: "/tmp/a" } },
+      }),
+    );
+    const quietest = custom({ toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false });
+    const configs = [
+      ...(["chat", "intent", "tools", "activity", "full"] as const).map((level) =>
+        preset(level, { systemEvents: false }),
+      ),
+      quietest,
+    ];
+    for (const config of configs) {
+      expect(entriesFor(model, config)).toEqual([expect.objectContaining({ kind: "item", id: "approval" })]);
+    }
+  });
+
   describe("tool-repair notices", () => {
     const repair = () =>
       item("repair", "systemMessage", {
@@ -398,14 +578,12 @@ describe("transcript projector", () => {
         text: 'Fixed the communicate call: filled the required "message" key.',
       });
 
-    test("hidden below the high verbosity levels, critical at activity and full", () => {
+    test("hidden at every level but full, critical at full", () => {
       const model = threadWith(repair());
-      for (const level of ["chat", "intent", "tools"] as const) {
+      for (const level of ["chat", "intent", "tools", "activity"] as const) {
         expect(entriesFor(model, preset(level))).toEqual([]);
       }
-      for (const level of ["activity", "full"] as const) {
-        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "repair" })]);
-      }
+      expect(entriesFor(model, preset("full"))).toEqual([expect.objectContaining({ kind: "critical", id: "repair" })]);
     });
 
     test("a hidden repair leaves no visible item or anchor behind", () => {
@@ -415,8 +593,11 @@ describe("transcript projector", () => {
       expect(projection.anchors).toEqual([]);
     });
 
-    test("a custom vector gates repair notices on expandByDefault", () => {
+    test("a custom vector shows repair notices only when it is the full vector", () => {
       const model = threadWith(repair());
+      expect(
+        entriesFor(model, custom({ toolIntent: false, toolCalls: false, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
       expect(
         entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
       ).toEqual([]);
@@ -448,8 +629,8 @@ describe("transcript projector", () => {
           },
         ],
       } as unknown as ThreadModel;
-      expect(entriesFor(failedRepairTurn, preset("tools"))).toEqual([]);
-      expect(entriesFor(failedRepairTurn, preset("activity"))).toEqual([
+      expect(entriesFor(failedRepairTurn, preset("activity"))).toEqual([]);
+      expect(entriesFor(failedRepairTurn, preset("full"))).toEqual([
         expect.objectContaining({ kind: "critical", id: "repair" }),
       ]);
 
@@ -496,13 +677,42 @@ describe("transcript projector", () => {
     ]);
   });
 
-  test("governs the notes-context event with Advanced systemEvents", () => {
+  test("hides notes-context at Conversation even with System events enabled", () => {
     const model = threadWith(item("notes-context", "systemMessage", { eventKind: "notes-context" }));
 
     expect(entriesFor(model, preset("chat"))).toEqual([]);
-    expect(entriesFor(model, preset("chat", { systemEvents: true }))).toEqual([
-      expect.objectContaining({ kind: "item", id: "notes-context" }),
-    ]);
+    const projection = projectThread(model, preset("chat", { systemEvents: true }));
+    expect(projection.turns[0]?.entries).toEqual([]);
+    expect(projection.turns[0]?.visibleItems).toEqual([]);
+    expect(projection.anchors).toEqual([]);
+  });
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "governs notes-context with System events at %s",
+    (level) => {
+      const model = threadWith(item("notes-context", "systemMessage", { eventKind: "notes-context" }));
+      expect(entriesFor(model, preset(level))).toEqual([]);
+      expect(entriesFor(model, preset(level, { systemEvents: true }))).toEqual([
+        expect.objectContaining({ kind: "item", id: "notes-context" }),
+      ]);
+    },
+  );
+
+  test.each(["failed", "interrupted"] as const)("never resurrects hidden notes in a %s turn", (status) => {
+    for (const error of [undefined, { message: "model call failed" }]) {
+      const model = {
+        ...BASE_THREAD,
+        turns: [
+          { id: "turn-1", status, error, items: [item("notes", "systemMessage", { eventKind: "notes-context" })] },
+        ],
+      } as ThreadModel;
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+        expect(entriesFor(model, preset(level, { systemEvents: true }))).toEqual(
+          level === "chat" ? [] : [expect.objectContaining({ id: "notes" })],
+        );
+      }
+    }
   });
 
   test("covers every current event kind with Advanced diagnostics enabled", () => {
@@ -536,17 +746,18 @@ describe("transcript projector", () => {
       ),
     );
 
-    // tool_repair stays in the vocabulary above - the projector must still
-    // know the kind - but it is the one member gated on high verbosity
-    // rather than the Advanced diagnostics flags, so it does not render at
-    // this chat-level config. The tool-repair notices block pins its own
-    // visibility matrix.
+    // Repairs require Full, and shared-notes snapshots never render at Chat.
+    // Both remain in the vocabulary and have their own visibility matrices.
     expect(
       entriesFor(
         model,
         preset("chat", { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" }),
       ).map((entry) => entry.id),
-    ).toEqual(eventKinds.map((_, index) => `event-${index}`).filter((id) => id !== "event-12"));
+    ).toEqual(
+      eventKinds.flatMap((kind, index) =>
+        kind === "tool_repair" || kind === "notes-context" ? [] : [`event-${index}`],
+      ),
+    );
   });
 
   test("keeps approval vocabulary and recovery events critical without parsing prose", () => {
@@ -665,7 +876,7 @@ describe("transcript projector", () => {
     expect(entries[0]).not.toMatchObject({ summary: "cut short" });
   });
 
-  test("keeps the typed failure marker for failed and interrupted turns", () => {
+  test("keeps the failed turn's typed marker at chat; an interrupted turn's steer marker shows where steering shows", () => {
     const model = {
       ...threadWith(),
       turns: [
@@ -681,6 +892,10 @@ describe("transcript projector", () => {
     } as ThreadModel;
 
     expect(projectThread(model, preset("chat")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
+      "critical",
+      undefined,
+    ]);
+    expect(projectThread(model, preset("intent")).turns.map((projected) => projected.entries[0]?.kind)).toEqual([
       "critical",
       "critical",
     ]);
@@ -861,5 +1076,68 @@ describe("transcript projector", () => {
 
     expect(customConfig.content.kind).toBe("custom");
     expect(entriesFor(model, customConfig)).toEqual(entriesFor(model, presetConfig));
+  });
+
+  // A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+  // until its round is recorded, when it becomes a history item with a new id
+  // (roundId stays). The round's first reply keys by the round, so a renderer
+  // that keys rows by displayKey reconciles it instead of remounting (markdown
+  // re-render, lost selection, dead anchor).
+  test("a streamed reply keeps its display key when history records its round", () => {
+    const streaming = threadWith(
+      item("stream:r1/0:agentMessage", "agentMessage", { roundId: "r1", text: "Looking", status: "inProgress" }),
+    );
+    const recorded = threadWith(item("item_assistant_1_0", "agentMessage", { roundId: "r1", text: "Looking" }));
+
+    const live = entriesFor(streaming, preset("chat")).map(entryDisplayKey).at(-1);
+    expect(live).toBe("round:r1:agentMessage");
+    expect(entriesFor(recorded, preset("chat")).map(entryDisplayKey).at(-1)).toBe(live);
+  });
+
+  // A round can record two replies (text before and after a tool call), so only
+  // the round's first reply takes the round key; keys stay unique. A
+  // communicate preview carries the round but is recorded with no round id, so
+  // it takes none.
+  test("only a round's first reply takes the round key", () => {
+    const model = threadWith(
+      item("stream:r1/0:agentMessage", "agentMessage", { roundId: "r1", text: "first" }),
+      item("item_assistant_1_1", "agentMessage", { roundId: "r1", text: "second" }),
+      item("stream:preview", "agentMessage", { roundId: "r2", callId: "call_1", text: "preview" }),
+    );
+
+    expect(entriesFor(model, preset("chat")).map(entryDisplayKey)).toEqual([
+      "round:r1:agentMessage",
+      "item_assistant_1_1",
+      "stream:preview",
+    ]);
+  });
+});
+
+// --- automatic memory refresh (eventKind "memory-context") ------------------
+// The refresh is a standalone collapsed notification a reader can always
+// reach: visible at every level independently of the system-events gate, and
+// opted out of the expand-everything (Full) disclosure baseline. Both are
+// shared projector rules; each client renders the typed kind as its own
+// collapsed "Refreshed my memory" disclosure.
+
+describe("memory refresh projection", () => {
+  function memoryItem(): ItemModel {
+    return item("item_memory_context_0", "systemMessage", {
+      eventKind: "memory-context",
+      description: "Memory context",
+      text: 'Personal memory index: "- [a](a.md) — a note\\n"',
+    });
+  }
+
+  test("stays a visible item entry at every preset, even with system events off", () => {
+    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+      const entries = entriesFor(threadWith(memoryItem()), preset(level));
+      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_memory_context_0" })]);
+    }
+  });
+
+  test("is not an eligible-disclosure id, so no general baseline can open it", () => {
+    const projection = projectThread(threadWith(memoryItem()), preset("full"));
+    expect(projection.eligibleDisclosureIds).not.toContain("item_memory_context_0");
   });
 });

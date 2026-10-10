@@ -3,12 +3,13 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
 import type { RowAction } from "./rowActions";
 import { ROW_ACTION_SYMBOLS, RowMenu, type RowMenuHost, RowMenuSheet, RowPreviewCard, rowMenuHosts } from "./RowMenu";
+import { FreshDot } from "../reader/FreshDot";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
 
@@ -82,10 +83,26 @@ describe("the preview card (spec 7.3)", () => {
 		expect(renderedText(tree)).not.toContain(" · ");
 	});
 
+	it("shows the blue dot after the title for an unseen session, and none for a seen one", () => {
+		const unseen = render(
+			<RowPreviewCard
+				item={{ ...item("idle", { state: "idle" }), unseen: true }}
+				hostLabel={hostLabel}
+				onPress={() => {}}
+			/>,
+		);
+		expect(unseen.root.findAllByType(FreshDot)).toHaveLength(1);
+		expect(unseen.root.findByType("Pressable" as never).props.accessibilityLabel).toMatch(/, unread$/);
+		const seen = render(
+			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
+		);
+		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
+	});
+
 	it("says what a working session is doing", () => {
 		const tree = render(
 			<RowPreviewCard
-				item={item("working", { state: "active", running_jobs: [{ command: "npm test" }] as never })}
+				item={item("working", { state: "active", running_job_count: 1, running_job_command: "npm test" })}
 				hostLabel={hostLabel}
 				onPress={() => {}}
 			/>,
@@ -105,29 +122,26 @@ describe("the row menu sheet (ruling 28)", () => {
 			hostLabel,
 			act: vi.fn((_, action) => calls.push(`act:${action}`)),
 			openSession: vi.fn(() => calls.push("open")),
+			held: () => [],
+			cancel: vi.fn((id) => calls.push(`cancel:${id}`)),
 			closed: vi.fn(),
 			...over,
 		};
 		return { provided, calls };
 	}
 	const owner = {};
-	// Every sheet a test mounts, so one that fails before its own unmount
-	// can't leave a sheet behind that answers the next test's host.
-	const sheets: ReactTestRenderer[] = [];
 	afterEach(() => {
-		for (const tree of sheets.splice(0)) act(() => tree.unmount());
+		unmountMountedTrees();
 		rowMenuHosts.release(sheetKey("hub-1"), owner);
 	});
 	function mountSheet(provided: RowMenuHost | undefined, ref = "studio:fix", archived = false) {
 		if (provided) rowMenuHosts.provide(sheetKey("hub-1"), owner, provided);
-		const tree = render(
+		return render(
 			<RowMenuSheet
 				route={{ key: "menu", name: "RowMenuSheet", params: { hubId: "hub-1", ref, archived } } as never}
 				navigation={navigation as never}
 			/>,
 		);
-		sheets.push(tree);
-		return tree;
 	}
 
 	it("shows Close, the card and the row's actions in order, Shut down in dangerInk", () => {
@@ -157,6 +171,13 @@ describe("the row menu sheet (ruling 28)", () => {
 		act(() => pressableLabelled(tree, "Shut down").props.onPress());
 		expect(calls).toEqual(["goBack", "act:shutDown"]);
 		expect(provided.act).toHaveBeenCalledWith(item("working", { state: "active" }), "shutDown");
+	});
+
+	it("offers to cancel what waits for the connection, after the actions (phase 6 ruling 18)", () => {
+		const { provided, calls } = host({ held: () => [{ id: "held-1", label: "Cancel Archive" }] });
+		const tree = mountSheet(provided);
+		act(() => pressableLabelled(tree, "Cancel Archive").props.onPress());
+		expect(calls).toEqual(["goBack", "cancel:held-1"]);
 	});
 
 	it("leaves, then opens the session from the card", () => {
@@ -193,11 +214,11 @@ describe("the row menu sheet (ruling 28)", () => {
 describe("the row's long press, with the sheet", () => {
 	it("opens the sheet after a 500ms press", () => {
 		const openSheet = vi.fn();
-		const shown = item("finished", { state: "idle" });
+		const shown = item("idle", { state: "idle" });
 		const tree = render(
 			<RowMenu
 				item={shown}
-				actions={["markRead"]}
+				actions={["pin"]}
 				hostLabel={hostLabel}
 				onOpenSession={() => {}}
 				onAction={() => {}}

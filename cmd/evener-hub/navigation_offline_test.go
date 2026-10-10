@@ -79,6 +79,25 @@ func TestNavigationOfflineSourceRowsCarryOfflineField(t *testing.T) {
 	}
 }
 
+// remoteNavigationProjection returns the navigation projection of a hub whose
+// remote thread cache holds threads: the setup every remote-row projection test
+// otherwise repeats.
+func remoteNavigationProjection(t *testing.T, threads []appwire.Thread) navigationProjection {
+	t.Helper()
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store(threads)
+	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	projection, err := buildNavigationProjection(captured.Inputs)
+	if err != nil {
+		t.Fatalf("buildNavigationProjection: %v", err)
+	}
+	return projection
+}
+
 func navigationProjectedSummary(t *testing.T, projection navigationProjection, ref string) hubapi.NavigationSessionSummary {
 	t.Helper()
 	location, ok := projection.locations[ref]

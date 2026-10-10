@@ -68,6 +68,7 @@ var (
 	EVENERHubToken                    = Var{Name: "EVENER_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}
 	EVENERLoginHeadless               = Var{Name: "EVENER_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
+	EVENERNoUserSkills                = Var{Name: "EVENER_NO_USER_SKILLS", Summary: "Set to 1 to omit the operator's user-global sources: their home skills (~/.agents/skills), user config skills directory, installed plugins' skills, global MCP servers (~/.config/evener/mcp.json), and evener-wide commands (~/.config/evener/commands). Bundled, project, and explicitly added sources remain. The tool-fluency harness sets it so eval rounds depend only on the revision under test.", Visibility: Tooling}
 	EVENEROffline                     = Var{Name: "EVENER_OFFLINE", Summary: "Set to 1 to keep the provider registry offline: no models.dev refresh, embedded snapshot only.", Visibility: Public}
 	EVENEROpenAIResponsesContinuation = Var{Name: "EVENER_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
 	EVENERPprofAddr                   = Var{Name: "EVENER_PPROF_ADDR", Summary: "Serves live net/http/pprof profiles from evener serve and evener hub on this loopback host:port (port 0 picks a free one, logged at startup); unset disables it. Hub-spawned daemons inherit it.", Visibility: Tooling}
@@ -156,6 +157,7 @@ var (
 	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
+	GoEnv          = Var{Name: "GOENV", Summary: "Names the go env file a sandboxed session reads at start to find a GOPATH set with go env -w (off disables it).", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
@@ -210,6 +212,7 @@ var allVars = []Var{
 	EVENERHubToken,
 	EVENERLoginHeadless,
 	EVENERModel,
+	EVENERNoUserSkills,
 	EVENEROffline,
 	EVENEROpenAIResponsesContinuation,
 	EVENERPprofAddr,
@@ -291,6 +294,7 @@ var allVars = []Var{
 	XDGStateHome,
 	CargoHome,
 	Display,
+	GoEnv,
 	GoModCache,
 	GoPath,
 	Home,

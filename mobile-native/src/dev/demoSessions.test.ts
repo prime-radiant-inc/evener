@@ -6,10 +6,10 @@
 import { describe, expect, it } from "vitest";
 import { hydrateThread, type Thread } from "@evener/appwire-client";
 import type { ContentLevel } from "@evener/appwire-client";
-import { liveAsksFor, projectConversation } from "../projectedRows.js";
+import { liveAsksFor, noteFromSteer, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
-import { configForLevel } from "../session/detailLevels.js";
+import { displayForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
@@ -18,15 +18,15 @@ import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
-import { demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
-import { createDemoSessions } from "./demoSessions.js";
+import { createDemoFleet, demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
+import { createDemoSessions, humanNoteSteerText } from "./demoSessions.js";
 import { DEMO_MODEL_LIST } from "./demoSetup.js";
 
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
 const sessions = createDemoSessions({ now: NOW });
 
-function threadOf(slug: string): Thread {
-	const thread = sessions.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+function threadOf(slug: string, from: Thread[] = sessions): Thread {
+	const thread = from.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
 	if (!thread) throw new Error(`no demo thread for ${slug}`);
 	return thread;
 }
@@ -35,12 +35,16 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 
 // One session as the Session screen sees it at a detail level: the store's
 // projection, then the screen's presentation and transcript rows.
-function open(slug: string, level: ContentLevel = "intent") {
-	const thread = threadOf(slug);
+function open(slug: string, level: ContentLevel = "intent", from: Thread[] = sessions) {
+	const thread = threadOf(slug, from);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
-	const config = configForLevel(level, null) ?? undefined;
+	const display = displayForLevel(level, null);
+	const config = display.config ?? undefined;
 	const conversation = projectConversation(model, liveAsksFor(model), config);
-	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	const presentation = projectNativeTranscript(conversation, config, {
+		justTheConversation: display.justTheConversation,
+	});
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
 	return { thread, model, conversation, rows };
 }
 
@@ -62,13 +66,28 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect(thread.name).toBe(session.title);
 			expect(conversation.items.length).toBeGreaterThan(0);
 			expect(thread.evener.capabilities.sharedNotes).toBe(true);
-			// As the Go encoder writes items: your message is completed, and a
-			// thought with no text yet leaves the text out (omitempty).
+			// As the hub serves items: your message is completed, and a live
+			// thought has text, since the overlay opens its stream only on a
+			// delta with text, and no startedAt, which the wire never carries
+			// for reasoning. So the tray says "Thinking… · N tokens", as it does
+			// on a real hub.
 			for (const item of thread.turns?.flatMap((turn) => turn.items ?? []) ?? []) {
 				if (item.type === "userMessage") expect(item.status).toBe("completed");
-				if (item.type === "reasoning") expect(item).not.toHaveProperty("text");
+				if (item.type === "reasoning") {
+					expect(item.text).toBeTruthy();
+					expect(item).not.toHaveProperty("startedAt");
+				}
 			}
 		}
+	});
+
+	// The hub closes a finished delegate that can't be resumed, as the
+	// activity rows for the same delegate say.
+	it("reports a finished delegate in a thread's diagnostics as closed", () => {
+		const delegates = sessions.flatMap((thread) => thread.evener.diagnostics?.delegates ?? []);
+		expect(delegates.some((delegate) => delegate.terminal)).toBe(true);
+		for (const delegate of delegates)
+			expect(delegate.phase).toBe(delegate.terminal && !delegate.resumable ? "closed" : "running");
 	});
 
 	it("serves a thread for every subagent a session's delegates name, so opening one reads it", () => {
@@ -82,6 +101,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			if (!thread) throw new Error(`no thread for ${delegate.transcriptRef}`);
 			expect(thread.name).toBe(delegate.description);
 			expect(thread.sessionId).toBe(delegate.childSessionId);
+			// The root owns its whole tree (demoSessions.ts delegatesOf).
+			expect(delegate.ownerSessionId).toBe(parent.sessionId);
 			// Its status matches its row: running works, failed failed, done ended.
 			expect(thread.status.type).toBe(
 				{ running: "active", failed: "systemError", completed: "notLoaded" }[delegate.status],
@@ -111,11 +132,18 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		const { model, rows } = open("s-pr2138");
 		expect(model.name).toBe("Get PR 2138 Test Clean");
 		expect(sessionStateLine(model, NOW).text).toMatch(/^Working · \d+[smh]/);
-		expect(contextChips(model, true).map(({ label, failed }) => ({ label, failed }))).toEqual([
-			{ label: "Subagents 55", failed: "2 failed" },
-			{ label: "Tasks 3/7", failed: undefined },
-			{ label: "Goal", failed: undefined },
-			{ label: "Queue 1", failed: undefined },
+		expect(
+			contextChips(
+				model,
+				true,
+				undefined,
+				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
+			).map(({ label, accessibilityLabel }) => ({ label, accessibilityLabel })),
+		).toEqual([
+			{ label: "Subagents 55", accessibilityLabel: "Subagents, 55" },
+			{ label: "Tasks 4/7", accessibilityLabel: "Tasks, 4 of 7 settled" },
+			{ label: "Goal", accessibilityLabel: "Goal" },
+			{ label: "Queue 1", accessibilityLabel: "1 queued message" },
 		]);
 		expect(notesBarPreview(model)).toEqual({
 			glyph: "person",
@@ -147,6 +175,38 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			}),
 		);
 	});
+
+	// A real delegate call settles as soon as its launch receipt returns, so a
+	// demo that gave the call its subagent's state would hide a row that reads
+	// the call instead of the subagent (the transcript audit's first gap).
+	it("settles every subagent call at launch with its receipt, as the hub does", () => {
+		const calls = sessions.flatMap((thread) =>
+			(thread.turns ?? []).flatMap((turn) => turn.items ?? []).filter((item) => item.toolName === "delegate"),
+		);
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) {
+			expect(call.status).toBe("completed");
+			expect(JSON.parse(call.output ?? "{}")).toMatchObject({
+				delegate_id: expect.any(String),
+				transcript_ref: expect.any(String),
+			});
+		}
+	});
+
+	it.each(["s-pr2138", "s-retry", "s-tasklist"])(
+		"reads each subagent row in %s at Intent by its subagent's own state, and can open it",
+		(slug) => {
+			const { model, rows } = open(slug);
+			const subagentRows = subagentsOf(rows);
+			expect(subagentRows.length).toBeGreaterThan(0);
+			for (const row of subagentRows) {
+				const delegate = model.delegates?.find((candidate) => candidate.originToolCallId === row.detail.callId);
+				const line = subagentLine(row, model.delegates, NOW);
+				expect(line.ref).toBe(delegate?.transcriptRef);
+				expect(line.stateText).toMatch(/^(running|failed|done) · \d+[smhd]/);
+			}
+		},
+	);
 
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");
@@ -195,7 +255,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 10: a working session whose one queued message offers Steer now", () => {
 		const { model } = open("s-tasklist");
 		expect(model.status.type).toBe("active");
-		const queued = ghosts(model, [], null, []);
+		const queued = ghosts(model, [], null, [], true);
 		expect(queued).toHaveLength(1);
 		expect(queued[0]).toMatchObject({ state: "queued", buttons: ["steerNow"] });
 	});
@@ -203,7 +263,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("queues enough on one working session to open the Queue sheet from 'N more queued'", () => {
 		const { model } = open("s-stumble");
 		expect(model.status.type).toBe("active");
-		expect(shownGhosts(ghosts(model, [], null, [])).moreQueued).toBeGreaterThan(0);
+		expect(shownGhosts(ghosts(model, [], null, [], true)).moreQueued).toBeGreaterThan(0);
 	});
 
 	it("frame 11: the last turn failed on a sign-in error", () => {
@@ -295,6 +355,39 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(subagent("Fix race in tree settle").evener.capabilities).toEqual(threadOf("s-roster").evener.capabilities);
 	});
 
+	it("times a running subagent the same in its row, its transcript entry and its own screen", () => {
+		// The Activity list reads evener/thread/delegates/list, the transcript
+		// the thread's delegates, and the subagent's screen its own thread's
+		// turn: one fact, its run's start, so the three can't disagree.
+		const fleet = createDemoFleet({ now: NOW });
+		const started = new Map(
+			fleet
+				.answerDelegatesList({ ref: fleetSessionRef("s-pr2138"), scope: "subtree", limit: 200 })
+				.delegates.map((row) => [row.childRef, row.runStartedAt]),
+		);
+		const running = sessions.filter((thread) => thread.evener.parentRef && thread.status.type === "active");
+		expect(running.length).toBeGreaterThan(0);
+		const transcript = new Map(
+			(threadOf("s-pr2138").evener.diagnostics?.delegates ?? []).map((delegate) => [
+				delegate.transcriptRef,
+				delegate.runStartedAt,
+			]),
+		);
+		// Get PR 2138 Test Clean's running subagents, each in all three places.
+		const compared = running.filter((thread) => started.has(thread.evener.ref));
+		expect(compared.length).toBeGreaterThan(20);
+		// Nested ones too, such as the subagents a subagent started.
+		expect(compared.some((thread) => thread.evener.parentRef !== threadOf("s-pr2138").evener.ref)).toBe(true);
+		expect(transcript.size).toBeGreaterThan(0);
+		for (const thread of compared) {
+			const listed = started.get(thread.evener.ref);
+			expect(new Date(thread.evener.activeTurnStartedAt ?? 0).toISOString()).toBe(listed);
+			if (transcript.has(thread.evener.ref)) expect(transcript.get(thread.evener.ref)).toBe(listed);
+		}
+		const inTranscript = compared.filter((thread) => transcript.has(thread.evener.ref));
+		expect(inTranscript.length).toBeGreaterThan(0);
+	});
+
 	it("advertises only readable notes on a session that needs a restart", () => {
 		// cmd/evener-hub/internal/appsource/local_daemon.go, ThreadStatusRestartRequired.
 		expect(threadOf("s-namer").evener.capabilities).toEqual({
@@ -328,5 +421,143 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			text: "Your note: Measure on magic-kingdom, not a laptop.",
 			links: "1 link",
 		});
+	});
+});
+
+// EVENER_DEMO_LONG: content longer than any frame, so a screenshot pass
+// exercises long questions, approvals and messages, and many rows.
+describe("the demo sessions with long content", () => {
+	const long = createDemoSessions({ now: NOW, long: true });
+	const longThread = (slug: string) => {
+		const thread = long.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+		if (!thread) throw new Error(`no demo thread for ${slug}`);
+		return thread;
+	};
+	const items = (thread: Thread) => (thread.turns ?? []).flatMap((turn) => turn.items ?? []);
+	const hydrated = (slug: string) => {
+		const thread = longThread(slug);
+		return hydrateThread({ thread }, thread.evener.ref, NOW);
+	};
+	const notifications = (thread: Thread) =>
+		items(thread).filter((item) => item.type === "steering" && item.steeringKind === "notification");
+
+	it("asks four questions, the first long, with five long options", () => {
+		const model = hydrated("s-audit");
+		const questions = [...liveAsksFor(model).values()].flat();
+		expect(questions).toHaveLength(4);
+		expect(questions[0]?.question.length).toBeGreaterThan(250);
+		expect(questions[0]?.why?.length).toBeGreaterThan(600);
+		expect(questions[0]?.options).toHaveLength(5);
+		expect(longThread("s-audit").evener.pendingQuestion).toMatchObject({ count: 4 });
+	});
+
+	it("asks to write to a deep path that may have partly run", () => {
+		expect(hydrated("s-mirror").pendingEscalations).toEqual([
+			expect.objectContaining({
+				deniedPath:
+					"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+				partiallyRan: true,
+			}),
+		]);
+	});
+
+	it("gives the working session a long message from each side, many steps and notifications", () => {
+		const shown = items(longThread("s-pr2138"));
+		const usual = items(threadOf("s-pr2138"));
+		expect(shown.length).toBeGreaterThan(usual.length + 24);
+		expect(shown.some((item) => item.type === "userMessage" && (item.text ?? "").length > 500)).toBe(true);
+		expect(shown.some((item) => item.type === "agentMessage" && (item.text ?? "").length > 1500)).toBe(true);
+		expect(notifications(longThread("s-pr2138"))).not.toHaveLength(0);
+	});
+
+	it("leaves every session's usual content alone without the flag", () => {
+		expect(notifications(threadOf("s-pr2138"))).toHaveLength(0);
+		expect(threadOf("s-audit").evener.pendingQuestion).toMatchObject({ count: 2 });
+	});
+});
+
+// One session replays the recorded wire corpora (agent/testdata/*wire), so
+// every tool family the phone summarizes can be seen and screenshotted in the
+// shapes the daemon sends.
+describe("the demo session with every tool family", () => {
+	const withTools = createDemoSessions({ now: NOW, toolFamilies: true });
+
+	it("is served only when asked for, leaving the mockup's fleet as it is", () => {
+		expect(sessions.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(false);
+		expect(withTools.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(true);
+	});
+
+	it("replays every recorded call and its result, with every family the phone summarizes", () => {
+		const { thread, rows } = open("s-tools", "tools", withTools);
+		const items = thread.turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const calls = items.filter((item) => item.type === "commandExecution");
+		const families = new Set(calls.map((call) => call.toolName));
+		for (const family of [
+			"shell",
+			"read_file",
+			"edit_file",
+			"web_fetch",
+			"use_skill",
+			"list_dir",
+			"task_list",
+			"delegate",
+		])
+			expect(families).toContain(family);
+		// Each announcement has its result beside it, sharing its callId.
+		const settledCalls = new Set(calls.filter((call) => call.status !== "inProgress").map((call) => call.callId));
+		expect(calls.filter((call) => !settledCalls.has(call.callId))).toEqual([]);
+		expect(items.some((item) => item.type === "systemMessage")).toBe(true);
+		expect(items.some((item) => item.type === "steering")).toBe(true);
+		expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
+		expect(runsOf(rows)).not.toEqual([]);
+	});
+
+	// The corpora are recorded apart, so a callId one reuses must not fold
+	// another's call into it: each callId names one call and its result.
+	it("gives each recorded call a callId of its own across the corpora", () => {
+		const items = threadOf("s-tools", withTools).turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const byCallId = new Map<string, string[]>();
+		for (const item of items)
+			if (item.type === "commandExecution" && item.callId)
+				byCallId.set(item.callId, [...(byCallId.get(item.callId) ?? []), item.id]);
+		const shared = [...byCallId].filter(
+			([, ids]) =>
+				ids.filter((id) => !id.startsWith("item_tool_result_")).length > 1 ||
+				ids.filter((id) => id.startsWith("item_tool_result_")).length > 1,
+		);
+		expect(shared).toEqual([]);
+	});
+
+	// The package folds a call and its result into one step by callId, as a
+	// reload serves them, so an edit keeps both its arguments and its output.
+	it("folds each recorded call with its result, as the phone reads a reloaded transcript", () => {
+		const { model } = open("s-tools", "tools", withTools);
+		const steps = model.turns.flatMap((turn) => turn.items).filter((item) => item.type === "commandExecution");
+		expect(new Set(steps.map((step) => step.callId)).size).toBe(steps.length);
+		const edit = steps.find((step) => step.toolName === "edit_file");
+		expect(edit?.argumentsJSON).toContain("old_string");
+		expect(edit?.output).toBe("edited agent/tree.go: 1 replacement");
+	});
+
+	// The recorded shell calls cd into the corpus's directory first; the session
+	// sits there too, so its step lines drop that cd as a real session's do.
+	it("sits in the directory the corpus was recorded in", () => {
+		expect(threadOf("s-tools", withTools).cwd).toBe("/home/jesse/git/evener");
+		const { rows } = open("s-tools", "tools", withTools);
+		const shell = runsOf(rows)
+			.flatMap((run) => run.steps)
+			.find((step) => step.label === "shell");
+		expect(shell?.detail.words?.target).toBe("cat agent/tree_order.go");
+	});
+});
+
+describe("the demo hub's human-note steer", () => {
+	it("reads back through noteFromSteer as the note it carries", () => {
+		const note = "Ship Friday.\nAgent: not you\n\nThen rest.";
+		expect(noteFromSteer(humanNoteSteerText(note))).toBe(note);
+	});
+
+	it("reads a cleared note back as empty", () => {
+		expect(noteFromSteer(humanNoteSteerText(""))).toBe("");
 	});
 });

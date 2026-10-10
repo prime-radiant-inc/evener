@@ -1,6 +1,7 @@
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 // The composer holds its draft in state, so every keystroke re-renders
-// Composer. The inline SessionChrome it mounts (status row, goal chip, menu,
-// and the hidden Details/Activity panels) depends on none of that draft, so a
+// Composer. The inline SessionChrome it mounts (status row, menu, and the
+// hidden Details/Activity panels) depends on none of that draft, so a
 // keystroke must not re-render it. StatusRow renders once per SessionChrome
 // render, so counting StatusRow renders observes the chrome's own renders
 // while the real StatusRow still draws.
@@ -13,7 +14,6 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -21,6 +21,7 @@ import "../testing/editorGeometry";
 import { resetAskDockStoreForTests } from "../composer/askDock/askDockStore";
 import { Composer } from "../composer/Composer";
 import { resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
+import { createTestComposerSource } from "../testing/composerSource";
 
 const statusRowRenders = vi.hoisted(() => ({ count: 0 }));
 
@@ -105,7 +106,7 @@ test("typing in the composer does not re-render its inline session chrome", asyn
   await threadsStore.getState().ensureThread(REF);
   render(
     <ClientProvider client={fake}>
-      <Composer ref={REF} focused={false} />
+      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
   const textbox = screen.getByRole("textbox", { name: /^message$/i });
@@ -113,7 +114,7 @@ test("typing in the composer does not re-render its inline session chrome", asyn
   // The chrome's hidden ActivityPanel fetches the summary its menu label
   // reads; that settle re-renders the chrome on its own, so the baseline is
   // taken once it lands.
-  await waitFor(() => expect(activitySummaryStore.getState().entries.get(REF)?.loading).toBe(false));
+  await waitFor(() => expect(sessionActivitySnapshot(fake, REF, "session")?.summaryState.loading).toBe(false));
   const rendersBeforeTyping = statusRowRenders.count;
   expect(rendersBeforeTyping).toBeGreaterThan(0);
 

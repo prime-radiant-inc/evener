@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -18,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -201,8 +203,10 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
+		s.appHeldSettledEffect = nil
 		s.appReservedTurnID = ""
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
@@ -361,6 +365,10 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
+		supersededSettledStatus := event.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked()
+		if event.Kind == events.EventStatusSettled {
+			s.settledStatusLocked(event, supersededSettledStatus)
+		}
 		if started, ok := event.Data.(events.ExecutionStartedData); ok && started.TurnID != "" && started.TurnID == s.appPendingStableTurnID {
 			// The execution SetProcessingTurn published has started, so a
 			// terminal status from the input before it must not be replayed
@@ -368,6 +376,12 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
+		if event.Kind == events.EventSessionEnd {
+			// Every SESSION_END ends the input that held a rest, including an
+			// interrupted one, whose status effect is nil and so can't drop it.
+			s.appHeldSettledEffect = nil
+		}
+		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
 		threadID, ref := s.appRootIdentityLocked()
@@ -377,13 +391,33 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
+		history := s.appHistories.get(threadID)
+		if changed, ok := event.Data.(events.EnvironmentChangedData); ok && event.Kind == events.EventEnvironmentChanged {
+			s.appEnvelope.WorkingDir = changed.WorkingDir
+			s.appEnvelope.cwdCarrierGeneration++
+			resync := appwire.ThreadResyncParams{
+				ThreadID:       threadID,
+				Ref:            ref,
+				BootGeneration: s.appBootGeneration,
+			}
+			if history != nil {
+				resync.Epoch = history.Epoch()
+			}
+			pending = append(pending, pendingAppNotification{
+				threadID: threadID,
+				ref:      ref,
+				method:   appwire.NotifyEvenerThreadResync,
+				params:   resync,
+			})
+		}
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
 			// synchronously with the session loop. The projector's execution
 			// statuses reach the bridge later, and one from an execution that
 			// ended would land over the next one's active status.
-			if item.Method == appwire.NotifyThreadStatusChanged && isExecutionBoundary(event) {
+			if item.Method == appwire.NotifyThreadStatusChanged && (isExecutionBoundary(event) || supersededSettledStatus) {
 				continue
 			}
 			// A queued terminal event can end the input before an execution
@@ -467,7 +501,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 			})
 		}
-		history := s.appHistories.get(threadID)
 		s.mu.Unlock()
 		// The overlay's changes commit with the projector's, in the same
 		// order the session emitted the event.
@@ -536,8 +569,9 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 }
 
 // finishProcessing ends the running input and publishes the thread settled
-// (idle, or the awaiting or closed state already recorded), or the terminal
-// status its SESSION_END deferred, in one projection commit. A thread whose
+// (the state the session's events stored, or idle standing in for a
+// published turn's end that hasn't arrived yet), or the terminal status its
+// SESSION_END deferred, in one projection commit. A thread whose
 // processing already ended publishes nothing: the bridge's status effect for
 // a SESSION_END (applySessionEventStatus) clears processing, except for an
 // interrupted one, so after any other its status was the last word. After an
@@ -547,6 +581,10 @@ func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
+		// A published turn whose end the bridge hasn't reached yet: its
+		// SESSION_END will state the resting state, and until then idle
+		// stands in for it rather than the rest from before the turn.
+		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
@@ -560,12 +598,23 @@ func (s *Server) finishProcessing() {
 			pending = append(pending, item)
 		}
 		s.appDeferredTerminalNotifications = nil
+		held := s.appHeldSettledEffect
+		s.appHeldSettledEffect = nil
+		// A deferred terminal status comes from a published turn, and
+		// publishing a turn drops the held rest, so the two never meet.
+		if held != nil {
+			held(s)
+		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The session state still says what the input left running
-			// ("active") until serve samples it after this call: nothing runs
-			// now, so that reads as idle.
+			// The stored state is what the session's own events stated: a
+			// pass that ran no turn left it as it was, and a held rest or an
+			// interrupted turn's end restated it. Nothing runs once processing
+			// ends, so a stored active (a forecast that work would follow)
+			// reads idle, stored and published alike; work that does follow
+			// publishes its own turn.
 			status := appStatus(s.status.State, false, false)
-			if status == appwire.ThreadStatusActive {
+			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}
 			pending = append(pending, pendingAppNotification{
@@ -578,6 +627,25 @@ func (s *Server) finishProcessing() {
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, pending)
 	})
+}
+
+// settledStatusLocked applies a resting status that settled outside any turn
+// (EventStatusSettled) in the same lock hold that decides whether it is
+// published: applied when it can be published now; held for the end of
+// processing when an input is being taken and no turn is published or
+// reserved yet, since that input may end without a turn; dropped otherwise.
+// The caller holds s.mu.
+func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool) {
+	effect := sessionEventStatusEffect(event)
+	if effect == nil {
+		return
+	}
+	switch {
+	case !superseded:
+		effect(s)
+	case s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed):
+		s.appHeldSettledEffect = effect
+	}
 }
 
 // pendingRootStatus reports whether pending already holds a status change for
@@ -654,6 +722,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
@@ -901,6 +970,17 @@ func cloneGoalState(value *appwire.GoalState) *appwire.GoalState {
 	return &clone
 }
 
+// cloneThreadAccess copies a session's access value so a snapshot owns it
+// rather than aliasing the cached envelope's or a descendant projection's
+// pointer (S15). Access holds only value fields, so one level is enough.
+func cloneThreadAccess(value *appwire.ThreadAccess) *appwire.ThreadAccess {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
 func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpdatedParams) {
 	if threadID == s.appThreadID {
 		s.appEnvelope.Tasks = taskPatch(params)
@@ -1126,6 +1206,7 @@ func (s *Server) acceptsSessionEventLocked(sessionID string) bool {
 
 func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
+	s.registerSessionActivityHandlers()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
@@ -1154,6 +1235,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodEvenerTasksList, s.handleAppTasksList)
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsList, s.handleAppJobsList)
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsGet, s.handleAppJobsGet)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
 	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
@@ -1431,6 +1513,7 @@ func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 	thread := projection.thread
 	s.mu.RUnlock()
 	thread.Evener.ActiveTurnID = s.descendantRunningTurnID(threadID)
+	thread.Evener.Access = cloneThreadAccess(thread.Evener.Access)
 	return thread, true
 }
 
@@ -1468,21 +1551,7 @@ func transcriptHeader(path string, maxLineBytes int) (transcript.Header, error) 
 // transcriptHeaderFromReader reads source's leading header line and nothing
 // past its read buffer.
 func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.Header, error) {
-	reader := bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes)
-	for {
-		lineBytes, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
-		if err != nil {
-			return transcript.Header{}, err
-		}
-		if !complete {
-			return transcript.Header{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
-		}
-		line := strings.TrimSpace(string(lineBytes))
-		if line == "" {
-			continue
-		}
-		return transcript.DecodeHeader([]byte(line))
-	}
+	return transcript.ReadHeader(context.Background(), bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes), maxLineBytes)
 }
 
 // handleAppThreadTurnsList pages backward (older) through the thread's
@@ -1490,6 +1559,10 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
+	}
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
 	}
 	if threadID == "" {
@@ -1500,7 +1573,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
 	}
 	epoch := history.Epoch()
-	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
+	turns, olderCursor, snapshot, err := history.before(history.ref, params)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}
@@ -1541,6 +1614,9 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	// support it cannot deliver. Exact catalog identity and invocation policy
 	// remain consumption-time checks in the session.
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1584,6 +1660,9 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1689,6 +1768,9 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
@@ -1722,6 +1804,10 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+
+	}
 	params.Input = input.Items
 	if fn == nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
@@ -1732,7 +1818,8 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 }
 
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
-// active-turn and queue compare-and-commit decisions to the Session callback.
+// queue compare-and-commit decisions to the Session callback. No turn in
+// flight is required.
 func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
@@ -2330,6 +2417,23 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 	return appwire.JobsOutputResponse{Data: data}, nil
 }
 
+func (s *Server) handleAppJobsGet(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	s.mu.RLock()
+	fn := s.jobGetFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.JobsGetResponse{}, appwire.Unavailable("job not available")
+	}
+	data, found, err := fn(params.JobID)
+	if err != nil {
+		return appwire.JobsGetResponse{}, err
+	}
+	if !found {
+		return appwire.JobsGetResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
+	}
+	return appwire.JobsGetResponse{Data: data}, nil
+}
+
 func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	s.mu.RLock()
 	fn := s.listModelsFunc
@@ -2424,9 +2528,13 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	visionModel := envelope.VisionModel
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
-	access := envelope.Access
+	access := cloneThreadAccess(envelope.Access)
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
+	workingDir := envelope.WorkingDir
+	if workingDir == "" && envelope.cwdCarrierGeneration == 0 {
+		workingDir = status.WorkingDir
+	}
 	if threadPreview == "" {
 		threadPreview = status.SessionID
 	}
@@ -2437,8 +2545,8 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Preview:       threadPreview,
 		ModelProvider: status.Model,
 		Status:        appwire.ThreadStatus{Type: statusType},
-		CWD:           status.WorkingDir,
-		Path:          filepath.Base(status.WorkingDir),
+		CWD:           workingDir,
+		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
 			Ref:                   ref,
@@ -2481,6 +2589,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 
 func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
 	out := &appwire.EvenerDiagnostics{}
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
 	}
@@ -2535,7 +2644,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 		out.Jobs = append(out.Jobs, appJobFromDetailedStatus(job))
 	}
 	for _, delegate := range ds.Delegates {
-		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
+		out.Delegates = append(out.Delegates, appwire.SlimDelegateForRoster(appDelegateFromDetailedStatus(delegate)))
 	}
 	for _, watch := range ds.Watches {
 		out.Watches = append(out.Watches, appWatchFromDetailedStatus(watch))
@@ -2561,7 +2670,7 @@ func appStatusDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDi
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, appwire.EvenerDelegateInfo{
-			DelegateID: delegate.DelegateID, ChildSessionID: delegate.ChildSessionID, Lifecycle: delegate.Lifecycle,
+			RunGeneration: delegate.RunGeneration, DelegateID: delegate.DelegateID, ChildSessionID: delegate.ChildSessionID, Lifecycle: delegate.Lifecycle,
 		})
 	}
 	for _, watch := range ds.Watches {
@@ -2720,8 +2829,8 @@ func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.EvenerDe
 		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-		Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
-		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
+		Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
+		RunGeneration: delegate.RunGeneration, NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
 		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
 		ReasoningEffort: delegate.ReasoningEffort, OriginTurnID: delegate.OriginTurnID, OriginToolCallID: delegate.OriginToolCallID,
@@ -2869,7 +2978,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// own answers; this is the live daemon-sourced projection only. Every
 		// handler's skill-input gate enforces its own seam's wiring, so an
 		// advertised true means every endpoint really consumes selections.
-		SkillInput: s.skillInputSupportedLocked(),
+		SkillInput:   s.skillInputSupportedLocked(),
+		CommandInput: s.skillInputSupportedLocked(),
 	}
 }
 

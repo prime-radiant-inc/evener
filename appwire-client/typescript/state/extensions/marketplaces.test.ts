@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
+import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
+import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import {
   createMarketplacesStore,
   MARKETPLACE_REFETCH_DEBOUNCE_MS,
@@ -17,10 +19,14 @@ const BROWSE = "evener/marketplace/browse";
 
 type BrowseResult = { name: string; description?: string; plugins: MarketplaceCatalogPlugin[] };
 
-function storeWithFake() {
+function storeWithFake(gate: HubWriteGate = createHubWriteGate()) {
   const fake = new FakeClient("ready");
-  return { fake, store: createMarketplacesStore(fake) };
+  return { fake, store: createMarketplacesStore(fake, gate) };
 }
+
+// The revision fence's ordering cases issue two writes at once; see
+// testing/hubWriteGate.ts for why they use a permissive gate double.
+const permissiveGate = permissiveHubWriteGate();
 
 function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> = {}): WireError {
   return new WireError("clone could not be removed", -32603, {
@@ -160,6 +166,30 @@ describe("store shape", () => {
     first.store.reset();
     expect(first.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().marketplacesError).toBe("boom");
+  });
+});
+
+describe("the shared hub write gate serializes marketplace writes", () => {
+  test("a marketplace mutation is refused while another write already holds the gate", async () => {
+    const fake = new FakeClient("ready");
+    const gate = createHubWriteGate();
+    const store = createMarketplacesStore(fake, gate);
+    let settle!: () => void;
+    const held = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const holding = gate.run(() => held);
+
+    await expect(store.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } })).rejects.toBeInstanceOf(
+      HubWriteBusyError,
+    );
+    expect(fake.calls).toEqual([]);
+
+    settle();
+    await holding;
+    fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
+    await store.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } });
+    expect(store.getState().marketplaces).toEqual([ACME]);
   });
 });
 
@@ -522,7 +552,7 @@ describe("reconnect", () => {
 
 describe("list ordering", () => {
   test("an accepted newer list retires a catalog omitted by an older applied failure", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -558,7 +588,7 @@ describe("list ordering", () => {
   });
 
   test("a newer successful write wins over an older applied clone-litter failure", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -577,7 +607,7 @@ describe("list ordering", () => {
   });
 
   test("a newer failed write releases an older applied clone-litter outcome", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -652,7 +682,7 @@ describe("marketplace publication version", () => {
   });
 
   test("a held applied failure advances only when a newer failed write releases it", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     const settlements = gateSettlements(fake, "evener/marketplace/remove");

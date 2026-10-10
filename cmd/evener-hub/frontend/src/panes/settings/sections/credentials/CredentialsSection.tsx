@@ -36,6 +36,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useAuthStatusesStore } from "../../../../stores/authStatuses";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
   Button,
@@ -167,6 +168,7 @@ export function CredentialsSection({
     error,
     fetch,
     listingFromPreviousConnection,
+    refreshingInstances,
   } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
   // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
@@ -187,12 +189,12 @@ export function CredentialsSection({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
   // Live-model refresh for the sheet is manual: the hub prefetches every
-  // instance's listing at startup and every few minutes after, so the
+  // instance's listing once at startup and never polls after, so the
   // Models toggles read cached inventory. The Refresh button below
-  // re-fetches on demand; failures toast and keep the cached rows. The
-  // pending set holds every in-flight instance, so concurrent refreshes
-  // for A and B each disable only their own sheet.
-  const [refreshingInstances, setRefreshingInstances] = useState<ReadonlySet<string>>(new Set());
+  // re-fetches on demand; failures toast and keep the cached rows. The store
+  // publishes which instances have a refresh out, so concurrent refreshes
+  // for A and B each disable only their own sheet without this section
+  // tracking them again.
   // Pending model toggles by `instance/model`: switches stay enabled
   // only when no write for their row is in flight, so rapid clicks
   // cannot submit duplicate or reordered writes against a stale
@@ -205,13 +207,10 @@ export function CredentialsSection({
   const pendingToggleKeys = useRef(new Set<string>());
 
   async function handleRefreshModels(name: string): Promise<void> {
-    setRefreshingInstances((current) => new Set(current).add(name));
     try {
       await credentialsStore.getState().refreshModels(name);
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
-    } finally {
-      setRefreshingInstances((current) => withoutKey(current, name));
     }
   }
   const previousInstances = useRef(instances);
@@ -256,6 +255,16 @@ export function CredentialsSection({
   // handshake finishes, and credentialsStore.fetch() requires a connected
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
+  // The hub's credential statuses, for a provider whose credential it found an
+  // error with (#3539); the store follows evener/auth/updated from here on.
+  // The statuses store drops a replaced hub's statuses itself; this gate covers
+  // the other half: a listing kept from a replaced connection is the previous
+  // hub's until this one reads its own, so the new hub's statuses are not shown
+  // against it either.
+  const readAuthStatuses = useAuthStatusesStore((state) => state.authStatuses);
+  const authStatuses = listingFromPreviousConnection ? null : readAuthStatuses;
+  const fetchAuthStatuses = useAuthStatusesStore((state) => state.fetchAuthStatuses);
+  useConnectedEffect(fetchAuthStatuses, [fetchAuthStatuses]);
 
   // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
   // action and the device editor's "Start again" - always begins with
@@ -581,12 +590,14 @@ export function CredentialsSection({
           instances={instances}
           availableProviders={availableProviders}
           onSelect={setSelectedInstance}
+          authStatuses={authStatuses}
         />
       )}
 
       <InstanceSheet
         name={selectedInstance}
         writesRefused={writesRefused}
+        authError={selectedInstance === null ? undefined : authStatuses?.get(selectedInstance)?.error}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() =>
           openEditorFromSheet((name) =>

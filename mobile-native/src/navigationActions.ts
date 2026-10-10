@@ -14,10 +14,11 @@ import type {
 	NavigationOperation,
 } from "./navigationActionRepository";
 import { type SessionDeletionResult, sessionDeletionResult } from "./sessionDeletionResult";
+import { refreshLoadedArchivedLists } from "./archivedLists";
 
-const unresolved = "A previous organization change needs to be checked. Refresh before making another change.";
+const unresolved = "A previous organization change needs to be checked. Check it before making another change.";
 const storageError =
-	"Could not read or save organization recovery on this device. Refresh to retry; no change will be sent until recovery is available.";
+	"Could not read or save organization recovery on this device. Try again; no change will be sent until recovery is available.";
 
 export class NavigationActions {
 	private state = {
@@ -190,8 +191,8 @@ export class NavigationActions {
 				uncertain: true,
 				recovery,
 				error: recovery
-					? "Could not confirm current navigation for the previous change. Refresh before trying again."
-					: "Could not load the current navigation. Refresh before trying again.",
+					? "Could not confirm current navigation for the previous change. Check it before trying again."
+					: "Could not load the current navigation. Check it before trying again.",
 			});
 		}
 	}
@@ -234,6 +235,9 @@ export class NavigationActions {
 			const response = await request();
 			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
+			// A page showing an archived list waits for this read, and reads
+			// again only if it failed (ArchivedPages.refreshAfter).
+			refreshLoadedArchivedLists(this.client);
 			if (checkpoint && this.storage) {
 				savingRecovery = true;
 				// Preserve a known result even when its screen has gone away. Exact
@@ -269,10 +273,10 @@ export class NavigationActions {
 				uncertain: true,
 				storageUnavailable: savingRecovery,
 				error: savingRecovery
-					? "The change was accepted, but its recovery record could not be updated. Refresh to confirm the current state before trying again."
+					? "The change was accepted, but its recovery record could not be updated. Check the current state before trying again."
 					: accepted
-						? "The change was accepted, but refreshed navigation could not be confirmed. Refresh before trying again."
-						: "Could not confirm the change. Refresh before trying again; it may have been applied.",
+						? "The change was accepted, but the updated navigation could not be confirmed. Check it before trying again."
+						: "Could not confirm the change. It may have been applied; check before trying again.",
 			});
 		}
 	}

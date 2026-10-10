@@ -1,8 +1,11 @@
 // @vitest-environment node
 
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
+import { parseSkillDocument, skillAtomMentions } from "../panes/session/composer/skillDocument";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -558,6 +561,46 @@ describe("MutationOutboxIndexedDB", () => {
     ]);
     expect(updated?.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
   });
+
+  test.each(["partial", "replace", "clear", "relocate"] as const)(
+    "recovery mentions follow their paired composer text on a %s update",
+    async (mode) => {
+      const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+      const mentions: ComposerMention[] = [
+        { kind: "command", name: "same", offset: 0 },
+        { kind: "skill", name: "same", offset: 6 },
+      ];
+      const original = await store.enqueueIntent({
+        ...intent("/same /same /same"),
+        composerText: "/same /same /same",
+        composerMentions: mentions,
+      });
+      await store.transferToRecovery(original.clientMutationId, "rejected");
+      const nextMentions: ComposerMention[] | undefined =
+        mode === "clear" ? [] : mode === "relocate" ? [{ kind: "command", name: "same", offset: 6 }] : undefined;
+      const composerText = mode === "partial" ? undefined : mode === "replace" ? "plain replacement" : "/same /same";
+      const inputText = composerText ?? "/same /same /same";
+      const input: InputItem[] = [{ type: "text", text: inputText }];
+      if (mode !== "replace") input.push({ type: "skill", name: "same" }, { type: "command", name: "same" });
+      const updated = await store.updateRecoveryInput(
+        original.clientMutationId,
+        input,
+        undefined,
+        composerText,
+        nextMentions,
+      );
+      const expected = mode === "partial" ? mentions : nextMentions;
+      expect(updated?.composerMentions).toEqual(expected);
+      expect(updated?.composerText).toBe(inputText);
+      const reopened = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+      const recovered = await reopened.getRecovery(original.clientMutationId);
+      expect(recovered?.composerMentions).toEqual(expected);
+      if (!recovered) throw new Error("the updated recovery record was not persisted");
+      const draft = recoveryComposerDraft(recovered);
+      expect(draft.text).toBe(inputText);
+      expect(skillAtomMentions(parseSkillDocument(draft))).toEqual(expected ?? []);
+    },
+  );
 
   test("discardRecovery removes only the selected durable draft", async () => {
     const store = new MutationOutboxIndexedDB({

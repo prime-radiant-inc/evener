@@ -25,8 +25,8 @@ func TestHubNavigationReadRejectsV1Params(t *testing.T) {
 	for _, raw := range []string{
 		`{"resource":"manifest"}`,
 		`{"resource":"manifest","representationVersion":1}`,
-		`{"resource":"manifest","representationVersion":2,"etag":"abc"}`,
-		`{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":1,"etag":"e"},"etag":"abc"}`,
+		`{"resource":"manifest","representationVersion":3,"etag":"abc"}`,
+		`{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":1,"etag":"e"},"etag":"abc"}`,
 	} {
 		_, err := dispatchNavigationReadRaw(t, server, raw)
 		assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
@@ -298,8 +298,8 @@ func TestHubNavigationReadRejectsIncompleteBaseBeforeService(t *testing.T) {
 	registerNavigationReadHandler(server, nil)
 
 	for name, raw := range map[string]string{
-		"revision omitted": `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`,
-		"revision null":    `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`,
+		"revision omitted": `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","etag":"e"}}`,
+		"revision null":    `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":null,"etag":"e"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := dispatchNavigationReadRaw(t, server, raw)
@@ -411,13 +411,13 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(server, service)
 
-	first := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "manifest", RepresentationVersion: 2})
+	first := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "manifest", RepresentationVersion: 3})
 	if first.Status != "ok" || first.Representation != appwire.NavigationRepresentationSnapshot {
 		t.Fatalf("initial response = %+v, want ok snapshot", first)
 	}
 	conditional := appwire.NavigationReadParams{
 		Resource:              "manifest",
-		RepresentationVersion: 2,
+		RepresentationVersion: 3,
 		Base:                  &appwire.NavigationReadBase{GenerationID: first.GenerationID, Revision: first.Revision, ETag: first.ETag},
 	}
 	notModified := dispatchNavigationRead(t, server, conditional)
@@ -428,23 +428,27 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 		t.Fatalf("conditional envelope = %+v, want %+v", notModified, first)
 	}
 
-	v2 := func(params appwire.NavigationReadParams) appwire.NavigationReadParams {
-		params.RepresentationVersion = 2
+	v3 := func(params appwire.NavigationReadParams) appwire.NavigationReadParams {
+		params.RepresentationVersion = 3
 		return params
 	}
 	var err error
 	for _, params := range []appwire.NavigationReadParams{
 		{Resource: "project", ProjectKey: "missing"},
 		{Resource: "pin_section", SectionID: "missing"},
-		{Resource: "location", Ref: "missing"},
 	} {
-		_, err = dispatchNavigationReadResult(t, server, v2(params))
+		_, err = dispatchNavigationReadResult(t, server, v3(params))
 		assertNavigationWireError(t, err, appwire.CodeUnavailable, appwire.ErrorActionUnavailable)
+	}
+	// A location that resolves nowhere is gone, a real answer, not a retryable
+	// unavailable error.
+	if gone := dispatchNavigationRead(t, server, v3(appwire.NavigationReadParams{Resource: "location", Ref: "missing"})); gone.Status != "gone" || gone.GenerationID == "" {
+		t.Fatalf("unknown location = %+v, want gone", gone)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = dispatchNavigationReadResultWithContext(canceled, t, server, v2(appwire.NavigationReadParams{Resource: "manifest"}))
+	_, err = dispatchNavigationReadResultWithContext(canceled, t, server, v3(appwire.NavigationReadParams{Resource: "manifest"}))
 	assertNavigationWireError(t, err, appwire.CodeUnavailable, appwire.ErrorActionUnavailable)
 
 	failingSource := newTestNavigationSource(testNavigationNow())
@@ -452,7 +456,7 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	failingService := newTestNavigationService(t, failingSource)
 	failingServer := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(failingServer, failingService)
-	_, err = dispatchNavigationReadResult(t, failingServer, v2(appwire.NavigationReadParams{Resource: "manifest"}))
+	_, err = dispatchNavigationReadResult(t, failingServer, v3(appwire.NavigationReadParams{Resource: "manifest"}))
 	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
 
 	source.mu.Lock()
@@ -468,7 +472,7 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	}
 	var delta hubapi.NavigationDelta
 	if err := json.Unmarshal(changed.Data, &delta); err != nil {
-		t.Fatalf("decode v2 delta: %v", err)
+		t.Fatalf("decode v3 delta: %v", err)
 	}
 	if delta.Metadata == nil {
 		t.Fatalf("delta = %+v, want changed manifest metadata", delta)
@@ -515,7 +519,7 @@ func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 
-	response, err := client.NavigationRead(ctx, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1", RepresentationVersion: 2})
+	response, err := client.NavigationRead(ctx, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1", RepresentationVersion: 3})
 	if err != nil {
 		t.Fatalf("navigation read: %v", err)
 	}
@@ -574,7 +578,7 @@ func dispatchNavigationReadResult(t *testing.T, server *appserver.Server, params
 
 func dispatchNavigationReadResultWithContext(ctx context.Context, t *testing.T, server *appserver.Server, params appwire.NavigationReadParams) (appwire.NavigationReadResponse, error) {
 	t.Helper()
-	params.RepresentationVersion = 2
+	params.RepresentationVersion = 3
 	raw, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal params: %v", err)
@@ -642,7 +646,7 @@ func TestHubNavigationFailedDeltaServesSnapshotAndLogs(t *testing.T) {
 	registerNavigationReadHandler(server, service)
 
 	limit := uint32(1)
-	params := appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current", Limit: &limit, RepresentationVersion: 2}
+	params := appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current", Limit: &limit, RepresentationVersion: 3}
 	first := dispatchNavigationRead(t, server, params)
 	if first.Status != "ok" || first.Representation != appwire.NavigationRepresentationSnapshot {
 		t.Fatalf("initial response = %+v, want ok snapshot", first)
@@ -665,5 +669,58 @@ func TestHubNavigationFailedDeltaServesSnapshotAndLogs(t *testing.T) {
 	}
 	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "navigation delta fallback:") {
 		t.Errorf("server diagnostics did not record the abandoned delta: %q", logs)
+	}
+}
+
+// A key held by two catalogs reads the first by key alone (#3597). A session
+// only the other catalog's project holds is located with that catalog, and a
+// project or project page read naming it returns the project that holds the
+// session, so a reveal pages the list the session is in (#3799).
+func TestHubNavigationLocatesAShadowedSessionInItsOwnCatalog(t *testing.T) {
+	now := testNavigationNow()
+	node := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)}
+	}
+	const activeID, runID = "01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+	source := newTestNavigationSource(now)
+	source.inputs.Tree = hubcore.Tree{Projects: []hubcore.TreeProject{
+		{Key: "no-project", Name: "no-project", Current: []hubcore.TreeNode{node(activeID)}},
+		{Key: "no-project", Name: "no-project", IsTestRun: true, Current: []hubcore.TreeNode{node(runID)}},
+	}}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, newTestNavigationService(t, source))
+
+	locate := func(id string) map[string]any {
+		t.Helper()
+		var snapshot struct {
+			Metadata map[string]any `json:"metadata"`
+		}
+		response := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "location", Ref: "local:" + id})
+		if err := json.Unmarshal(response.Data, &snapshot); err != nil {
+			t.Fatalf("decode location: %v", err)
+		}
+		return snapshot.Metadata
+	}
+	for _, tc := range []struct{ id, other, catalog string }{{activeID, runID, "projects"}, {runID, activeID, "test_runs"}} {
+		location := locate(tc.id)
+		if location["catalog"] != tc.catalog || location["project_key"] != "no-project" {
+			t.Fatalf("location of %s = %v, want project no-project in catalog %s", tc.id, location, tc.catalog)
+		}
+		for _, params := range []appwire.NavigationReadParams{
+			{Resource: "project", ProjectKey: "no-project", Catalog: tc.catalog},
+			{Resource: "project_page", ProjectKey: "no-project", Catalog: tc.catalog, Tier: "current"},
+		} {
+			response := dispatchNavigationRead(t, server, params)
+			if !bytes.Contains(response.Data, []byte(tc.id)) || bytes.Contains(response.Data, []byte(tc.other)) {
+				t.Fatalf("%s read in catalog %s does not hold just %s: %s", params.Resource, tc.catalog, tc.id, response.Data)
+			}
+		}
+	}
+	if _, err := dispatchNavigationReadResult(t, server, appwire.NavigationReadParams{Resource: "project", ProjectKey: "no-project", Catalog: "bogus"}); err == nil {
+		t.Fatal("a project read naming an unknown catalog was accepted")
+	}
+	// By key alone the first catalog's project answers, as before.
+	if response := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "project", ProjectKey: "no-project"}); !bytes.Contains(response.Data, []byte(activeID)) {
+		t.Fatalf("project read by key alone does not hold the first catalog's session: %s", response.Data)
 	}
 }

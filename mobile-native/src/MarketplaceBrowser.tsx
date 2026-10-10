@@ -1,23 +1,17 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	FlatList,
-	KeyboardAvoidingView,
-	Modal,
-	Platform,
-	Pressable,
-	ScrollView,
-	TextInput,
-	View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { Alert, Text, TextInput, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
-import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	HUB_WRITE_BUSY,
+	type HubWriteGate,
+	type MarketplacesStore,
+	type PluginsStore,
+	runGatedMutation,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
-import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
+import { scaledType, space, uiType } from "./design/tokens";
 import { HubPathField } from "./HubPathField";
 import {
 	appliedRemovalNotice,
@@ -25,33 +19,43 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { ModalConnectionStatus } from "./retainedScreen";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import {
+	Button,
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	Segmented,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
+import { ModalSheet } from "./sheet/ModalSheet";
+import { SheetStatus } from "./sheet/SheetStatus";
+import { guardLeave } from "./sheet/confirmDiscard";
+import { SearchField } from "./sheet/SearchField";
+import { Spinner } from "./sheet/Spinner";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
+import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
-const MARKETPLACES_FAILED = "Could not load marketplaces. Try again when connected.";
-const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
-export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins. Try again when connected.";
+const MARKETPLACES_FAILED = "Could not load marketplaces.";
+const CATALOG_FAILED = "Could not load this catalog.";
+export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins.";
 const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
 
-export function MarketplaceBrowser({
-	client,
-	connectionState,
-	hubName,
-	installed,
-	marketplaces,
-	lastAddMarketplaces,
-	gate,
-	ready,
-	canUseConnection,
-	onOpenPlugin,
-	appliedRemovalNames,
-	onAppliedRemoval,
-	onAuthoritativeMarketplaces,
-	onMarketplaceAdded,
-	onRemovedMarketplace,
-}: {
+/** What the Plugins page hands its marketplace views: the list and add flow
+ * take the list's half, and a marketplace's own page the writes' half. */
+type MarketplaceProps = {
+	/** Which half of the browser the Plugins page shows: "marketplaces" lists
+	 * each marketplace with its source, adds one, and opens one to update its
+	 * source or remove it; "browse" opens a marketplace's catalog to install
+	 * from, beside the same Update source and Remove. */
+	segment?: "marketplaces" | "browse";
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
 	hubName: string;
@@ -71,10 +75,11 @@ export function MarketplaceBrowser({
 	// write started here keeps running after this view is gone, so the lock
 	// it takes has to outlive the view - and living at the screen means the
 	// installed list sees a marketplace write as busy too, and vice versa.
-	gate: PluginMutationGate;
+	gate: HubWriteGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
-	onOpenPlugin(target: PluginRefParams): void;
+	/** Opens a marketplace's own page, pushed over the list. */
+	onOpenMarketplace(name: string): void;
 	/** The applied removals this client already recorded: a name in it is one
 	 * the hub says is already gone, so the write that would remove it again
 	 * stays fenced. */
@@ -132,351 +137,101 @@ export function MarketplaceBrowser({
 	 * raised, the same way an applied outcome with nothing to say does
 	 * (onAppliedRemoval's null notice). */
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
-}) {
-	const colors = useColors();
+};
+
+export function MarketplaceBrowser({
+	segment = "browse",
+	client,
+	connectionState,
+	hubName,
+	marketplaces,
+	lastAddMarketplaces,
+	gate,
+	ready,
+	canUseConnection,
+	onOpenMarketplace,
+	onAuthoritativeMarketplaces,
+	onMarketplaceAdded,
+}: Omit<MarketplaceProps, "installed" | "appliedRemovalNames" | "onAppliedRemoval" | "onRemovedMarketplace">) {
 	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
-	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
 	// Marketplace writes take the same gate an install does; see
-	// pluginMutationGate.ts for why the gate exists.
+	// createHubWriteGate (the package's hubWriteGate.ts) for why the gate exists.
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
-	const [selected, setSelected] = useState<string | null>(null);
 	const [adding, setAdding] = useState(false);
-	const [query, setQuery] = useState("");
-	const [error, setError] = useState<string | null>(null);
-	const revision = useRef(0);
-	// The removal confirmation is native and outlives the renders around it:
-	// the screen's guard can fence or retire a name while its dialog is open,
-	// and the callback the confirm fires holds only the set it captured when
-	// the dialog opened. The ref keeps the latest set reachable from that
-	// callback - assigned in an effect, never during render (the PluginsScreen
-	// currentClient pattern).
-	const appliedRemovalNamesRef = useRef(appliedRemovalNames);
-	useEffect(() => {
-		appliedRemovalNamesRef.current = appliedRemovalNames;
-	}, [appliedRemovalNames]);
 	useEffect(() => {
 		if (state.marketplaces !== null)
 			onAuthoritativeMarketplaces(state.marketplaces, client, state.marketplacesPublicationVersion);
 	}, [client, onAuthoritativeMarketplaces, state.marketplaces, state.marketplacesPublicationVersion]);
 	useEffect(() => {
 		void marketplaces.getState().fetchMarketplaces();
-		return () => {
-			revision.current += 1;
-		};
 	}, [marketplaces]);
-	// A new selection starts clean: the filter and the last action's error
-	// belong to the marketplace they were typed against.
-	function select(name: string | null) {
-		revision.current += 1;
-		setSelected(name);
-		setError(null);
-		setQuery("");
-	}
-	// The selected catalog is read from the store's cache. A mutation here or a
-	// change from another client retires the entry, and an empty slot is this
-	// view's cue to request it again - the web's expanded node does the same.
-	const catalog = selected ? state.browseCatalogs.get(selected) : undefined;
-	const loaded = catalog?.status === "loaded" ? catalog : undefined;
-	const browseTarget = catalogToBrowse(selected, state.marketplaces, state.browseCatalogs);
-	useEffect(() => {
-		if (browseTarget) void state.browseMarketplace(browseTarget);
-	}, [browseTarget, state.browseMarketplace]);
-	// A marketplace removed here or by another client leaves the list; its
-	// selection goes with it.
-	useEffect(() => {
-		if (selected && state.marketplaces && !state.marketplaces.some((item) => item.name === selected)) setSelected(null);
-	}, [selected, state.marketplaces]);
-	// Every write goes through the gate; a refusal reads as busy, a throw as
-	// failure. A not-ready press runs nothing and retires nothing - the copy
-	// the user was reading survives the no-op. remove() runs its own copy of
-	// this shape below, because an applied removal must reach the parent's
-	// guard and warning rather than this view's error slot.
-	async function act(action: () => Promise<void>) {
-		const version = revision.current;
-		const outcome = await runGatedMutation(gate, canUseConnection, action);
-		if (revision.current !== version) return;
-		if (outcome === "not-ready") return;
-		setError(null);
-		if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
-		else if (outcome === "failed") setError(WRITE_FAILED);
-	}
-	function install(target: PluginRefParams) {
-		void act(() => plugins.installPlugin(target.plugin, target.marketplace));
-	}
-	const marketplace = state.marketplaces?.find((item) => item.name === selected);
-	function refresh() {
-		if (!marketplace || busy || !canUseConnection()) return;
-		void act(() => state.refreshMarketplace(marketplace.name));
-	}
-	function remove() {
-		if (!marketplace || busy || !canUseConnection() || appliedRemovalNames.has(marketplace.name)) return;
-		const name = marketplace.name;
-		const version = revision.current;
-		Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
-			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Remove",
-				style: "destructive",
-				onPress: () => {
-					// The dialog can stay open across another client's removal, which
-					// a trusted read lands without the name, and across the screen
-					// fencing it: re-read both the guard the screen holds now and the
-					// store's own state, never the captured ones, because a removal
-					// that already stood must not be issued again. A failed read
-					// cannot vouch either way, so its retained rows never stop the
-					// write - the hub's own applied answer is what speaks then.
-					const current = marketplaces.getState();
-					if (
-						revision.current !== version ||
-						!canUseConnection() ||
-						appliedRemovalNamesRef.current.has(name) ||
-						(current.marketplacesError === null &&
-							current.marketplaces !== null &&
-							!current.marketplaces.some((item) => item.name === name))
-					)
-						return;
-					// Classify, record, and reconcile BEFORE the revision fence: the
-					// guard and warning live at the screen, so they must survive this
-					// view's selection changes and remounts; only the browser-local
-					// busy and write-failed displays stay behind the fence.
-					void (async () => {
-						let caught: unknown;
-						const outcome = await runGatedMutation(gate, canUseConnection, () =>
-							state.removeMarketplace(name).catch((error: unknown) => {
-								caught = error;
-								throw error;
-							}),
-						);
-						if (outcome === "not-ready") {
-							// Nothing ran, so nothing reports: a not-ready removal is
-							// not one the hub confirmed, and reporting it would retire a
-							// cleanup warning that still stands. The status copy the
-							// connection banner already shows covers the reason nothing
-							// ran, and the write-failed copy an earlier outcome left
-							// stays too - a press that ran nothing retires nothing.
-							return;
-						}
-						setError(null);
-						if (outcome === "refused") {
-							if (revision.current !== version) return;
-							setError(PLUGIN_MUTATION_BUSY);
-							return;
-						}
-						if (outcome === "ran") {
-							// Report before the revision fence, the way an applied outcome
-							// records: the warning is the screen's, so it must survive this
-							// view's selection changes and remounts.
-							onRemovedMarketplace(name, client);
-							return;
-						}
-						// An applied removal (appliedRemovalNotice's doc) never reads as
-						// a failed write: record it with the parent's guard - the notice
-						// becomes the screen-level warning, null shows nothing - and
-						// reconcile a stale list, never a retry hint.
-						const notice = appliedRemovalNotice(caught);
-						if (notice !== undefined) {
-							// The store as the outcome landed - the screen's own, which
-							// survives this view: the snapshot decides whether a fence is
-							// needed at all, and its publication version is the baseline
-							// the screen records against that name. Everything the store
-							// published at or below it predates this fence - including a
-							// stale read's answer the rejection just passed ownership to -
-							// so only a later publication retires it (the prop's doc).
-							// The reconciliation read still publishes somewhere a mounted
-							// browser reads: this view's own unmount must not stop it -
-							// the remount whose first read fails is exactly the case the
-							// retained model exists for.
-							const current = marketplaces.getState();
-							if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
-								return;
-							if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
-							return;
-						}
-						if (revision.current !== version) return;
-						setError(WRITE_FAILED);
-					})();
-				},
-			},
-		]);
-	}
-	const needle = query.trim().toLowerCase();
-	const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
-		`${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle),
-	);
 	const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
-	const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
-	const installedError = plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
-	const browsing = catalog?.status === "loading";
-	const header = (
-		<View style={{ gap: 8, paddingBottom: 12 }}>
-			<Copy muted>{hubName}</Copy>
-			<ErrorMessage message={error || listError} />
-			{listError && (
-				<Action
-					disabled={!ready}
-					onPress={whenReady(canUseConnection, () => {
-						void state.fetchMarketplaces();
-					})}
-				>
-					Retry marketplaces
-				</Action>
-			)}
-			{selected ? (
-				<>
-					<Action onPress={() => select(null)}>All marketplaces</Action>
-					<Copy>{selected}</Copy>
-					{marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
-					{loaded?.description && <Copy>{loaded.description}</Copy>}
-					<View style={[styles.row, { flexWrap: "wrap" }]}>
-						<Action disabled={busy || !ready} onPress={refresh}>
-							Refresh source
-						</Action>
-						<Action disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")} onPress={remove}>
-							Remove marketplace
-						</Action>
-					</View>
-					<TextInput
-						accessibilityLabel="Filter marketplace plugins"
-						placeholder="Filter this catalog"
-						placeholderTextColor={colors.secondary}
-						value={query}
-						onChangeText={setQuery}
-						autoCapitalize="none"
-						autoCorrect={false}
-						style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-					/>
-					<ErrorMessage message={catalogError || installedError} />
-					{catalogError && (
-						<Action
-							disabled={!ready}
-							onPress={whenReady(canUseConnection, () => {
-								void state.reloadCatalog(selected);
-							})}
-						>
-							Retry catalog
-						</Action>
-					)}
-					{installedError && (
-						<Action
-							disabled={!ready}
-							onPress={whenReady(canUseConnection, () => {
-								void plugins.fetchPlugins();
-							})}
-						>
-							Retry installed status
-						</Action>
-					)}
-				</>
-			) : (
-				<Action disabled={busy || !ready} onPress={whenReady(canUseConnection, () => setAdding(true))}>
-					Add marketplace
-				</Action>
-			)}
-			{busy && <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />}
-		</View>
-	);
+	// A failed read keeps the last list in the store; rows a failed read
+	// cannot vouch for stay hidden until a fresh read lands, and the error copy
+	// and Retry speak instead. The empty-state copy claims only what the
+	// retained list itself says: a non-empty list a failed read hides must not
+	// also read as "no marketplaces" beside that error, while a list the last
+	// trusted read left genuinely empty may still say so.
+	const rows = state.marketplacesError === null ? (state.marketplaces ?? []) : [];
 	return (
 		<>
-			{selected ? (
-				<FlatList
-					data={catalogPlugins}
-					keyExtractor={(item) => item.name}
-					contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-					keyboardShouldPersistTaps="handled"
-					ListHeaderComponent={header}
-					refreshing={browsing}
-					onRefresh={() => {
-						if (canUseConnection()) void state.reloadCatalog(selected);
-					}}
-					ListEmptyComponent={
-						browsing ? (
-							<ActivityIndicator accessibilityLabel="Loading marketplace catalog" />
-						) : loaded ? (
-							<Copy muted>{needle ? "No matching plugins." : "No plugins in this catalog."}</Copy>
-						) : null
-					}
-					renderItem={({ item }) => {
-						const target = { plugin: item.name, marketplace: selected };
-						const existing = plugins.plugins?.some(
-							(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
-						);
-						return (
-							<View
-								style={{
-									paddingVertical: 10,
-									borderBottomWidth: 0.5,
-									borderColor: colors.border,
-									gap: 4,
-								}}
-							>
-								<Copy>{item.name}</Copy>
-								{item.description && <Copy muted>{item.description}</Copy>}
-								{item.author && <Copy muted>{item.author}</Copy>}
-								<Action
-									disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
-									label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
-									onPress={() => {
-										if (existing) onOpenPlugin(target);
-										else install(target);
-									}}
-								>
-									{existing ? "Installed · Open" : "Install"}
-								</Action>
-							</View>
-						);
-					}}
-				/>
-			) : (
-				<FlatList
-					// A failed read keeps the last list in the store; rows a failed
-					// read cannot vouch for stay hidden until a fresh read lands, and
-					// the error copy and Retry above speak instead. The empty-state
-					// copy below claims only what the retained list itself says: a
-					// non-empty list a failed read hides must not also read as "no
-					// marketplaces" beside that error, while a list the last trusted
-					// read left genuinely empty may still say so.
-					data={state.marketplacesError === null ? (state.marketplaces ?? []) : []}
-					keyExtractor={(item) => item.name}
-					contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-					ListHeaderComponent={header}
-					refreshing={state.marketplacesLoading}
-					onRefresh={() => {
-						if (canUseConnection()) void state.fetchMarketplaces();
-					}}
-					ListEmptyComponent={
-						state.marketplacesLoading ? (
-							<ActivityIndicator accessibilityLabel="Loading marketplaces" />
-						) : state.marketplaces?.length === 0 ? (
-							<Copy muted>No marketplaces on this hub.</Copy>
-						) : null
-					}
-					renderItem={({ item }) => (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`Browse ${item.name}`}
-							onPress={() => select(item.name)}
-							style={({ pressed }) => ({
-								minHeight: 56,
-								paddingVertical: 9,
-								borderBottomWidth: 0.5,
-								borderColor: colors.border,
-								opacity: pressed ? 0.65 : 1,
-							})}
-						>
-							<Copy>{item.name}</Copy>
-							<Copy muted numberOfLines={2}>
-								{marketplaceSourceLabel(item.source)}
-							</Copy>
-						</Pressable>
+			<MarketplaceProblems
+				problem={listError}
+				listError={listError}
+				busy={busy}
+				ready={ready}
+				canUseConnection={canUseConnection}
+				retry={() => void state.fetchMarketplaces()}
+			/>
+			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
+			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
+				// Add marketplace is on the Marketplaces segment only.
+				<GroupFooter>
+					{segment === "marketplaces"
+						? "No marketplaces on this hub. Add one to browse its plugins."
+						: "No marketplaces on this hub. Add one on Marketplaces to browse its plugins."}
+				</GroupFooter>
+			) : null}
+			{rows.length > 0 ? (
+				<Group>
+					{rows.map((item) =>
+						segment === "browse" ? (
+							<Row
+								key={item.name}
+								label={item.name}
+								accessibilityLabel={`Browse ${item.name}`}
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
+							/>
+						) : (
+							<Row
+								key={item.name}
+								label={item.name}
+								sub={marketplaceSourceLabel(item.source)}
+								machineSub
+								chevron
+								onPress={() => onOpenMarketplace(item.name)}
+							/>
+						),
 					)}
-				/>
-			)}
+				</Group>
+			) : null}
+			{segment === "marketplaces" ? (
+				<Group>
+					<Row
+						label="Add marketplace…"
+						accessibilityLabel="Add marketplace"
+						tone="accent"
+						disabled={busy || !ready}
+						onPress={whenReady(canUseConnection, () => setAdding(true))}
+					/>
+				</Group>
+			) : null}
 			{adding && (
 				<AddMarketplace
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
-					gate={gate}
 					ready={ready}
 					canUseConnection={canUseConnection}
 					onClose={() => setAdding(false)}
@@ -519,11 +274,358 @@ export function MarketplaceBrowser({
 	);
 }
 
+/** What a marketplace's page writes through: the Plugins page's stores, gate
+ * and applied-removal guard. */
+export type MarketplaceWrites = Pick<
+	MarketplaceProps,
+	| "client"
+	| "hubName"
+	| "installed"
+	| "marketplaces"
+	| "gate"
+	| "ready"
+	| "canUseConnection"
+	| "appliedRemovalNames"
+	| "onAppliedRemoval"
+	| "onRemovedMarketplace"
+>;
+
+/** One marketplace's page, pushed over the Plugins page's list: its source,
+ * Update source and Remove, and on Browse its catalog to install from. The
+ * Plugins page owns everything it writes through (MarketplaceBrowser's props
+ * say why), and hands it down. */
+export function MarketplaceDetail({
+	segment,
+	name,
+	client,
+	hubName,
+	installed,
+	marketplaces,
+	gate,
+	ready,
+	canUseConnection,
+	appliedRemovalNames,
+	onAppliedRemoval,
+	onRemovedMarketplace,
+	onOpenPlugin,
+	onGone,
+}: MarketplaceWrites & {
+	segment: "marketplaces" | "browse";
+	name: string;
+	onOpenPlugin(target: PluginRefParams): void;
+	/** The marketplace left the hub's list, removed here or elsewhere. */
+	onGone(): void;
+}) {
+	const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
+	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
+	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
+	const [query, setQuery] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const revision = useRef(0);
+	// The removal confirmation is native and outlives the renders around it:
+	// the screen's guard can fence or retire a name while its dialog is open,
+	// and the callback the confirm fires holds only the set it captured when
+	// the dialog opened. The ref keeps the latest set reachable from that
+	// callback - assigned in an effect, never during render (the PluginsPage
+	// currentClient pattern).
+	const appliedRemovalNamesRef = useRef(appliedRemovalNames);
+	useEffect(() => {
+		appliedRemovalNamesRef.current = appliedRemovalNames;
+	}, [appliedRemovalNames]);
+	// A write or a Remove confirmation belongs to the stores it began on: when
+	// the Plugins page hands down new ones (a reconnect's new client) or this
+	// page goes, the bump fences it, so it neither runs nor reports here.
+	useEffect(
+		() => () => {
+			revision.current += 1;
+		},
+		[marketplaces],
+	);
+	// The selected catalog is read from the store's cache. A mutation here or a
+	// change from another client retires the entry, and an empty slot is this
+	// view's cue to request it again - the web's expanded node does the same.
+	// Only Browse shows a catalog, so only Browse reads one.
+	const catalogName = segment === "browse" ? name : null;
+	const catalog = catalogName ? state.browseCatalogs.get(catalogName) : undefined;
+	const loaded = catalog?.status === "loaded" ? catalog : undefined;
+	const browseTarget = catalogToBrowse(catalogName, state.marketplaces, state.browseCatalogs);
+	useEffect(() => {
+		if (browseTarget) void state.browseMarketplace(browseTarget);
+	}, [browseTarget, state.browseMarketplace]);
+	// A marketplace removed here or by another client leaves the list; its
+	// page goes with it, once, however often the list changes while it leaves.
+	const gone = useRef(false);
+	useEffect(() => {
+		if (gone.current || !state.marketplaces || state.marketplaces.some((item) => item.name === name)) return;
+		gone.current = true;
+		onGone();
+	}, [name, state.marketplaces, onGone]);
+	// Every write goes through the gate; a refusal reads as busy, a throw as
+	// failure. A not-ready press runs nothing and retires nothing - the copy
+	// the user was reading survives the no-op. remove() runs its own copy of
+	// this shape below, because an applied removal must reach the parent's
+	// guard and warning rather than this view's error slot.
+	async function act(action: () => Promise<void>) {
+		const version = revision.current;
+		const outcome = await runGatedMutation(canUseConnection, action);
+		if (revision.current !== version) return;
+		if (outcome === "not-ready") return;
+		setError(null);
+		if (outcome === "refused") setError(HUB_WRITE_BUSY);
+		else if (outcome === "failed") setError(WRITE_FAILED);
+	}
+	function install(target: PluginRefParams) {
+		void act(() => plugins.installPlugin(target.plugin, target.marketplace));
+	}
+	const marketplace = state.marketplaces?.find((item) => item.name === name);
+	function refresh() {
+		if (!marketplace || busy || !canUseConnection()) return;
+		void act(() => state.refreshMarketplace(marketplace.name));
+	}
+	function remove() {
+		if (!marketplace || busy || !canUseConnection() || appliedRemovalNames.has(marketplace.name)) return;
+		const name = marketplace.name;
+		const version = revision.current;
+		Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
+			{ text: "Cancel", style: "cancel" },
+			destructiveButton("Remove", () => {
+				// The dialog can stay open across another client's removal, which
+				// a trusted read lands without the name, and across the screen
+				// fencing it: re-read both the guard the screen holds now and the
+				// store's own state, never the captured ones, because a removal
+				// that already stood must not be issued again. A failed read
+				// cannot vouch either way, so its retained rows never stop the
+				// write - the hub's own applied answer is what speaks then.
+				const current = marketplaces.getState();
+				if (
+					revision.current !== version ||
+					!canUseConnection() ||
+					appliedRemovalNamesRef.current.has(name) ||
+					(current.marketplacesError === null &&
+						current.marketplaces !== null &&
+						!current.marketplaces.some((item) => item.name === name))
+				)
+					return;
+				// Classify, record, and reconcile BEFORE the revision fence: the
+				// guard and warning live at the screen, so they must survive this
+				// view's selection changes and remounts; only the browser-local
+				// busy and write-failed displays stay behind the fence.
+				void (async () => {
+					let caught: unknown;
+					const outcome = await runGatedMutation(canUseConnection, () =>
+						state.removeMarketplace(name).catch((error: unknown) => {
+							caught = error;
+							throw error;
+						}),
+					);
+					if (outcome === "not-ready") {
+						// Nothing ran, so nothing reports: a not-ready removal is
+						// not one the hub confirmed, and reporting it would retire a
+						// cleanup warning that still stands. The status copy the
+						// connection banner already shows covers the reason nothing
+						// ran, and the write-failed copy an earlier outcome left
+						// stays too - a press that ran nothing retires nothing.
+						return;
+					}
+					setError(null);
+					if (outcome === "refused") {
+						if (revision.current !== version) return;
+						setError(HUB_WRITE_BUSY);
+						return;
+					}
+					if (outcome === "ran") {
+						// Report before the revision fence, the way an applied outcome
+						// records: the warning is the screen's, so it must survive this
+						// view's selection changes and remounts.
+						onRemovedMarketplace(name, client);
+						return;
+					}
+					// An applied removal (appliedRemovalNotice's doc) never reads as
+					// a failed write: record it with the parent's guard - the notice
+					// becomes the screen-level warning, null shows nothing - and
+					// reconcile a stale list, never a retry hint.
+					const notice = appliedRemovalNotice(caught);
+					if (notice !== undefined) {
+						// The store as the outcome landed - the screen's own, which
+						// survives this view: the snapshot decides whether a fence is
+						// needed at all, and its publication version is the baseline
+						// the screen records against that name. Everything the store
+						// published at or below it predates this fence - including a
+						// stale read's answer the rejection just passed ownership to -
+						// so only a later publication retires it (the prop's doc).
+						// The reconciliation read still publishes somewhere a mounted
+						// browser reads: this view's own unmount must not stop it -
+						// the remount whose first read fails is exactly the case the
+						// retained model exists for.
+						const current = marketplaces.getState();
+						if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
+							return;
+						if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
+						return;
+					}
+					if (revision.current !== version) return;
+					setError(WRITE_FAILED);
+				})();
+			}),
+		]);
+	}
+	const needle = query.trim().toLowerCase();
+	const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
+		`${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle),
+	);
+	const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
+	const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
+	const installedError = plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
+	const browsing = catalog?.status === "loading";
+	const catalogProblem = catalogError || installedError;
+	return (
+		<>
+			<MarketplaceProblems
+				problem={error || listError}
+				listError={listError}
+				busy={busy}
+				ready={ready}
+				canUseConnection={canUseConnection}
+				retry={() => void state.fetchMarketplaces()}
+			/>
+			{/* The page's title names the marketplace. */}
+			<Group>
+				{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
+				{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
+				<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
+				<Row
+					label="Remove"
+					accessibilityLabel="Remove marketplace"
+					tone="danger"
+					disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")}
+					onPress={remove}
+				/>
+			</Group>
+			{segment === "browse" ? (
+				<>
+					{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
+					<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
+						<SearchField label="Filter this catalog" value={query} onChangeText={setQuery} />
+					</View>
+					{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
+					{catalogProblem ? (
+						<Group>
+							{catalogError ? (
+								<Row
+									label="Retry catalog"
+									tone="accent"
+									disabled={!ready}
+									onPress={whenReady(canUseConnection, () => {
+										void state.reloadCatalog(name);
+									})}
+								/>
+							) : null}
+							{installedError ? (
+								<Row
+									label="Retry installed status"
+									tone="accent"
+									disabled={!ready}
+									onPress={whenReady(canUseConnection, () => {
+										void plugins.fetchPlugins();
+									})}
+								/>
+							) : null}
+						</Group>
+					) : null}
+					{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
+					{!browsing && loaded && catalogPlugins.length === 0 ? (
+						<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
+					) : null}
+					{catalogPlugins.length > 0 ? (
+						<Group>
+							{catalogPlugins.map((item) => {
+								const target = { plugin: item.name, marketplace: name };
+								const existing = plugins.plugins?.some(
+									(value) => value.plugin === target.plugin && value.marketplace === target.marketplace,
+								);
+								return (
+									<Row
+										key={item.name}
+										label={item.name}
+										sub={[item.description, item.author].filter(Boolean).join(" · ") || undefined}
+										// The prototype's mini button: the row's own control.
+										accessory={
+											<Button
+												mini
+												label={existing ? "Open" : "Install"}
+												accessibilityLabel={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
+												disabled={busy || !plugins.plugins || !!installedError || (!existing && !ready)}
+												onPress={() => {
+													if (existing) onOpenPlugin(target);
+													else install(target);
+												}}
+											/>
+										}
+									/>
+								);
+							})}
+						</Group>
+					) : null}
+				</>
+			) : null}
+		</>
+	);
+}
+
+/** The error both marketplace views lead with, Retry when the list failed to
+ * load, and the spinner while a marketplace or plugin write runs. */
+function MarketplaceProblems({
+	problem,
+	listError,
+	busy,
+	ready,
+	canUseConnection,
+	retry,
+}: {
+	problem: string | null;
+	listError: string | null;
+	busy: boolean;
+	ready: boolean;
+	canUseConnection: LiveReadiness;
+	retry(): void;
+}) {
+	return (
+		<>
+			{problem ? <GroupFooter tone="danger">{problem}</GroupFooter> : null}
+			{listError ? (
+				<Group>
+					<Row
+						label="Retry marketplaces"
+						tone="accent"
+						disabled={!ready}
+						onPress={whenReady(canUseConnection, retry)}
+					/>
+				</Group>
+			) : null}
+			{busy ? <Spinner label="Updating marketplace or plugin" /> : null}
+		</>
+	);
+}
+
+type MarketplaceKind = "url" | "github" | "directory";
+
+/** Each kind's segment, and what its source row asks for. A hub directory is
+ * picked with the hub path browser instead of a typed row. */
+const MARKETPLACE_KINDS: readonly {
+	value: MarketplaceKind;
+	label: string;
+	sourceLabel?: string;
+	placeholder?: string;
+}[] = [
+	{ value: "url", label: "Git URL", sourceLabel: "Git URL", placeholder: "https://example.com/plugins.git" },
+	{ value: "github", label: "GitHub", sourceLabel: "Repository", placeholder: "owner/repo" },
+	{ value: "directory", label: "Hub directory" },
+];
+
 export function AddMarketplace({
 	connectionState,
 	client,
 	hubName,
-	gate,
 	ready,
 	canUseConnection,
 	onClose,
@@ -531,21 +633,24 @@ export function AddMarketplace({
 }: {
 	connectionState: ConnectionState;
 	hubName: string;
-	gate: PluginMutationGate;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
 	onClose(): void;
-	/** The write itself; the gate around it lives here, so a refusal keeps the
-	 * modal open on the busy copy just as it does everywhere else. */
+	/** The write itself; the store's shared gate refuses it if another write
+	 * holds it, so a refusal keeps the modal open on the busy copy just as it
+	 * does everywhere else. */
 	onAdd(params: MarketplaceAddParams): Promise<void>;
 	client: ConversationClientLike;
 }) {
 	const colors = useColors();
-	const [kind, setKind] = useState<"url" | "github" | "directory">("url");
+	const scale = useTextScale();
+	const [kind, setKind] = useState<MarketplaceKind>("url");
 	const [source, setSource] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
+	const nameInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while
 	// disconnected on its own.
@@ -562,7 +667,7 @@ export function AddMarketplace({
 		setBusy(true);
 		setError(null);
 		const value = source.trim();
-		const outcome = await runGatedMutation(gate, canUseConnection, () =>
+		const outcome = await runGatedMutation(canUseConnection, () =>
 			onAdd({
 				name: name.trim(),
 				source:
@@ -583,47 +688,69 @@ export function AddMarketplace({
 			return;
 		}
 		if (outcome === "refused") {
-			setError(PLUGIN_MUTATION_BUSY);
+			setError(HUB_WRITE_BUSY);
 			return;
 		}
 		if (outcome === "failed")
 			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
 		else onClose();
 	}
+	// Cancel and a swipe down wait out an add in flight, and ask before a
+	// typed source or name goes (spec 6).
+	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || name.trim()) }, onClose);
+	const add = whenReady(canUseConnection, () => {
+		void submit();
+	});
+	const typed = MARKETPLACE_KINDS.find((option) => option.value === kind);
 	return (
-		<Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<View style={styles.fill}>
-						<Copy muted>{hubName}</Copy>
-					</View>
-					<Action onPress={onClose}>Cancel</Action>
-				</View>
-				<ModalConnectionStatus connectionState={connectionState} />
-				<KeyboardAvoidingView style={styles.fill} enabled={Platform.OS === "android"} behavior="height">
-					<ScrollView
-						automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-						keyboardShouldPersistTaps="handled"
-						contentContainerStyle={{ padding: 20, gap: 12 }}
+		<ModalSheet
+			title="Add marketplace"
+			onCancel={leave}
+			cancelDisabled={busy}
+			done={{
+				label: busy ? "Adding…" : "Add",
+				disabled: disabled || !source.trim(),
+				busy,
+				onPress: add,
+			}}
+			onRequestClose={leave}
+			accessory={
+				<>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							textAlign: "center",
+							color: colors.palette.inkMid,
+							...scaledType(uiType.footnote, scale),
+							paddingBottom: 6,
+						}}
 					>
-						<Copy>Add marketplace</Copy>
-						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							{(["url", "github", "directory"] as const).map((value) => (
-								<Choice
-									key={value}
-									label={value === "url" ? "Git URL" : value === "github" ? "GitHub repository" : "Hub directory"}
-									selected={kind === value}
-									disabled={busy}
-									onPress={() => {
-										if (value === kind) return;
-										setKind(value);
-										setSource("");
-									}}
-								/>
-							))}
-						</View>
-						<Copy>{kind === "url" ? "Git URL" : kind === "github" ? "owner/repo" : `Directory on ${hubName}`}</Copy>
-						{kind === "directory" ? (
+						{hubName}
+					</Text>
+					{connectionState === "ready" ? null : <SheetStatus />}
+				</>
+			}
+		>
+			<GroupedPage scrollRef={page}>
+				<FormError error={error} />
+				<GroupGap />
+				<Segmented<MarketplaceKind>
+					label="Kind"
+					options={MARKETPLACE_KINDS}
+					value={kind}
+					disabled={busy}
+					onChange={(value) => {
+						// Segmented skips a tap on the chosen kind already; this keeps the
+						// source safe even so.
+						if (value === kind) return;
+						setKind(value);
+						setSource("");
+					}}
+				/>
+				{kind === "directory" ? (
+					<>
+						<GroupLabel>{`Directory on ${hubName}`}</GroupLabel>
+						<View style={{ marginHorizontal: space.margin }}>
 							<HubPathField
 								kind="dir"
 								client={client}
@@ -632,41 +759,35 @@ export function AddMarketplace({
 								onChange={setSource}
 								disabled={disabled}
 							/>
-						) : (
-							<TextInput
-								accessibilityLabel="Marketplace source"
-								value={source}
-								onChangeText={setSource}
-								editable={!busy}
-								autoCapitalize="none"
-								autoCorrect={false}
-								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-							/>
-						)}
-						{kind === "directory" && <Copy muted>This path is on the hub, not this phone.</Copy>}
-						<Copy>Name (optional)</Copy>
-						<TextInput
-							accessibilityLabel="Marketplace name"
-							value={name}
-							onChangeText={setName}
-							editable={!busy}
-							autoCapitalize="none"
-							autoCorrect={false}
-							style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+						</View>
+						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
+					</>
+				) : (
+					<Group label={typed?.sourceLabel ?? ""}>
+						<TextFieldRow
+							label="Marketplace source"
+							placeholder={typed?.placeholder}
+							value={source}
+							onChangeText={setSource}
+							disabled={busy}
+							returnKeyType="next"
+							onSubmitEditing={() => nameInput.current?.focus()}
 						/>
-						<ErrorMessage message={error} />
-						{busy && <ActivityIndicator accessibilityLabel="Adding marketplace" />}
-						<Action
-							disabled={disabled || !source.trim()}
-							onPress={whenReady(canUseConnection, () => {
-								void submit();
-							})}
-						>
-							Add marketplace
-						</Action>
-					</ScrollView>
-				</KeyboardAvoidingView>
-			</SafeAreaView>
-		</Modal>
+					</Group>
+				)}
+				<Group label="Name">
+					<TextFieldRow
+						label="Marketplace name"
+						value={name}
+						onChangeText={setName}
+						disabled={busy}
+						returnKeyType="done"
+						onSubmitEditing={add}
+						ref={nameInput}
+					/>
+				</Group>
+				<GroupFooter>Optional.</GroupFooter>
+			</GroupedPage>
+		</ModalSheet>
 	);
 }

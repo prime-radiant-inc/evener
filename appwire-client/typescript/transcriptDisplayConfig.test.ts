@@ -7,6 +7,7 @@ import {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -104,6 +105,26 @@ describe("transcript display config", () => {
     expect(contentSummary(custom.content)).toBe("Custom");
   });
 
+  test("contentVectorForConfig reads the preset vector or the custom one (the one lookup web and native share)", () => {
+    for (const level of LEVELS)
+      expect(contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level }))).toEqual(
+        presetContent(level),
+      );
+    const config = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
+    expect(contentVectorForConfig(config)).toMatchObject({
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+    });
+  });
+
   test("normalizes named presets and retains non-preset Custom vectors", () => {
     expect(normalizeContent({ kind: "preset", level: "intent" })).toEqual({ kind: "preset", level: "intent" });
     expect(
@@ -194,6 +215,19 @@ describe("transcript display config", () => {
     expect(fromWireConfig({ ...wire, advanced: { ...wire.advanced, hookExits: undefined } })).toBeUndefined();
   });
 
+  test("rejects a non-plain-object wire value (the shared strict plain-object guard)", () => {
+    // A class instance carries the same own keys as a wire config but its
+    // prototype is not Object.prototype. The shared isPlainObject guard rejects
+    // it; a private loose "non-null, non-array object" guard accepted it.
+    const wire = toWireConfig(shippedDefaults.desktop.config);
+    class WireConfigStub {
+      version = wire.version;
+      content = wire.content;
+      advanced = wire.advanced;
+    }
+    expect(fromWireConfig(new WireConfigStub())).toBeUndefined();
+  });
+
   test("fromWireDefault accepts future top-level fields", () => {
     const wire = toWireDefault(shippedDefaults.desktop);
     expect(fromWireDefault({ ...wire, futureField: "ignored" })).toEqual(shippedDefaults.desktop);
@@ -244,21 +278,38 @@ describe("transcript display config", () => {
         "criticalRows",
         "toolIntent",
         "toolCalls",
+        "daemonSteering",
         "roundTimings",
         "tokenCounts",
         "hookExits",
       ],
-      hidden: ["reasoning", "expandedDetails", "informationalNotices", "estimatedCost", "systemEvents", "promptEvents"],
+      hidden: [
+        "reasoning",
+        "expandedDetails",
+        "informationalNotices",
+        "sharedNotes",
+        "estimatedCost",
+        "systemEvents",
+        "promptEvents",
+      ],
     });
   });
 
-  test("inventory gates informational notices on expandByDefault (the high verbosity levels)", () => {
-    for (const level of ["activity", "full"] as const) {
-      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
-        "informationalNotices",
+  test.each(LEVELS)("inventory reports shared-notes visibility at %s", (level) => {
+    for (const systemEvents of [false, true]) {
+      const inventory = visibleCategoryInventory(
+        makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
       );
+      expect(level !== "chat" && systemEvents ? inventory.visible : inventory.hidden).toContain("sharedNotes");
+      expect(level !== "chat" && systemEvents ? inventory.hidden : inventory.visible).not.toContain("sharedNotes");
     }
-    for (const level of ["chat", "intent", "tools"] as const) {
+  });
+
+  test("inventory shows informational notices at full only, and for a custom vector that is full's", () => {
+    expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "full" })).visible).toContain(
+      "informationalNotices",
+    );
+    for (const level of ["chat", "intent", "tools", "activity"] as const) {
       expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).hidden).toContain(
         "informationalNotices",
       );
@@ -269,11 +320,44 @@ describe("transcript display config", () => {
           kind: "custom",
           toolIntent: true,
           toolCalls: true,
-          reasoning: false,
+          reasoning: true,
           expandByDefault: true,
         }),
       ).visible,
     ).toContain("informationalNotices");
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: false,
+          toolCalls: false,
+          reasoning: true,
+          expandByDefault: false,
+        }),
+      ).hidden,
+    ).toContain("informationalNotices");
+  });
+
+  test("inventory shows daemon steering at every level but the chat preset", () => {
+    expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })).hidden).toContain(
+      "daemonSteering",
+    );
+    for (const level of ["intent", "tools", "activity", "full"] as const) {
+      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
+        "daemonSteering",
+      );
+    }
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: false,
+          toolCalls: false,
+          reasoning: false,
+          expandByDefault: false,
+        }),
+      ).visible,
+    ).toContain("daemonSteering");
   });
 
   test("maps legacy values with exact fallbacks and hook precedence", () => {

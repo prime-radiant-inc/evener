@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -39,6 +40,10 @@ type WebServer struct {
 	hostManage *hubHostManager
 	// notices derives the Board's notices (S11); main.go runs its watcher.
 	notices *hubNotices
+	// auth is the hub's credential controller, for the live listings this
+	// server runs outside an RPC (the picker's, the background prefetch):
+	// they record what a provider said about a credential (#3539).
+	auth *hubAuthController
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -51,6 +56,28 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
+	// launchModels caches the evener launch model list per working dir, so a
+	// picker open does not re-run `evener launch-check --models` (a live
+	// provider listing that takes seconds) every time.
+	launchModels *launchModelsCache
+	// launchModelsChanged, when set, is told that a background refresh of a
+	// cached launch model list landed with a different list, so clients can
+	// update a picker that is already showing the old one.
+	launchModelsChanged func()
+	// launchRefreshes tracks request-triggered launch-model refreshes so the
+	// shutdown path can await them; otherwise their `evener launch-check` child
+	// outlives the hub. launchRefreshesClosed, guarded by launchRefreshMu, is
+	// the gate that keeps a still-open AppWire request from Adding while that
+	// group is Waited on.
+	launchRefreshes       sync.WaitGroup
+	launchRefreshMu       sync.Mutex
+	launchRefreshesClosed bool
+	// lifetime is the hub run's context. Background work a request triggers —
+	// the launch-model refresh — hangs off it rather than off the request, so
+	// shutdown cancels it instead of leaving the child to outlive the hub.
+	// runMain overrides the Background default; a WebServer built elsewhere
+	// (tests) keeps it.
+	lifetime context.Context
 	// treeCache memoizes the shared tree projection used by the remaining
 	// mutation handlers. NavigationService owns AppWire navigation generations
 	// and captures its source directly rather than using this cache.
@@ -162,6 +189,8 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		startedAt:                 time.Now().UTC(),
 		lastGoodThreads:           map[string][]appwire.Thread{},
 		liveModels:                &modelsCache{},
+		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:                  context.Background(),
 		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
@@ -173,9 +202,18 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
-	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin, hostManage, notices := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	if web.cfg.LaunchModels == nil {
+		web.cfg.LaunchModels = web.fetchLaunchModels
+	}
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
+	server, hostAdmin, hostManage, notices, auth := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
+	// A launch model list a picker was served stale has been refreshed with a
+	// different one. evener/auth/updated's no-data form is the broadcast the
+	// hub sends when a model listing changes what clients show, and every
+	// client re-reads its model list on it.
+	web.launchModelsChanged = func() { notifyInstanceUpdated(server, "") }
+	web.auth = auth
 	web.hostAdmin = hostAdmin
 	web.hostManage = hostManage
 	web.notices = notices

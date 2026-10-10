@@ -212,7 +212,7 @@ func fuzzScenarioCoveragePureEdges(t *testing.T) {
 	if q := ftsQuery("!!!"); q != "" {
 		t.Fatal(q)
 	}
-	if q := ftsQuery("A_b c"); q != "a_b* AND c*" {
+	if q := ftsQuery("A_b c"); q != "a* AND b* AND c*" {
 		t.Fatal(q)
 	}
 

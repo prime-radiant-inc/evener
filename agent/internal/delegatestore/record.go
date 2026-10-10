@@ -47,6 +47,10 @@ const (
 	OutcomeStopped   OutcomeStatus = "stopped"
 )
 
+// ReasonStoppedByParent is the outcome reason of a generation a parent's stop
+// ended.
+const ReasonStoppedByParent = "stopped_by_parent"
+
 type ExhaustionBudget string
 
 const (
@@ -61,6 +65,22 @@ const MaxTerminalStructuredResultBytes = 1024 * 1024
 const (
 	PacketReported      PacketKind = "reported"
 	PacketTerminalError PacketKind = "terminal_error"
+	// PacketUpdate is a running generation's mid-work update, queued by
+	// delegate_update_posted. It never settles a run: validateTerminalPacket
+	// refuses it on every terminal path.
+	PacketUpdate PacketKind = "update"
+)
+
+// StructuredResultSource names where a terminal packet's structured result
+// came from (#3548): a result schema's own output, or a no-schema delegate's
+// captured default output envelope, which a client unwraps to its data.
+// Without the marker a schema result that wears the default envelope's exact
+// shape is byte-identical to a no-schema capture.
+type StructuredResultSource string
+
+const (
+	StructuredResultSourceSchema          StructuredResultSource = "schema"
+	StructuredResultSourceDefaultEnvelope StructuredResultSource = "default_envelope"
 )
 
 type Descriptor struct {
@@ -124,6 +144,8 @@ type SandboxSnapshot struct {
 }
 
 type Aggregate struct {
+	// CreatedAt is immutable membership order, independent of later run updates.
+	CreatedAt          time.Time         `json:"created_at,omitzero"`
 	DelegateID         string            `json:"delegate_id"`
 	Descriptor         Descriptor        `json:"descriptor"`
 	Generation         uint64            `json:"generation"`
@@ -150,9 +172,13 @@ type Aggregate struct {
 	ProjectionRevision uint64    `json:"projection_revision"`
 }
 
+// Outcome is how a run ended. Reason is a code (runtime_lost, cancelled…);
+// Error is a failed run's cause in words, its error's first line, empty for
+// any other ending and in journals written before it existed.
 type Outcome struct {
 	Status           OutcomeStatus    `json:"status"`
 	Reason           string           `json:"reason,omitempty"`
+	Error            string           `json:"error,omitempty"`
 	EndedAt          time.Time        `json:"ended_at"`
 	ExhaustionBudget ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit  int              `json:"exhaustion_limit,omitempty"`
@@ -165,8 +191,13 @@ type TerminalPacket struct {
 	StructuredResult       json.RawMessage `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool           `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string          `json:"structured_result_reason,omitempty"`
-	Warnings               []string        `json:"warnings,omitempty"`
-	Metadata               json.RawMessage `json:"metadata,omitempty"`
+	// StructuredResultSource names where StructuredResult came from (#3548),
+	// so a client can tell a schema result from a no-schema capture without
+	// matching the envelope's shape. Empty on packets recorded before the
+	// field existed, where the client falls back to the shape heuristic.
+	StructuredResultSource StructuredResultSource `json:"structured_result_source,omitempty"`
+	Warnings               []string               `json:"warnings,omitempty"`
+	Metadata               json.RawMessage        `json:"metadata,omitempty"`
 }
 
 type PendingDelivery struct {

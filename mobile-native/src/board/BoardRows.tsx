@@ -18,6 +18,8 @@ export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel"
 	menu: (item: ClassifiedRow, archived: boolean) => Omit<RowMenuProps, "item" | "hostLabel" | "children">;
 	/** Each session's latest activity read (S5), by ref. */
 	activityOf: (ref: string) => SessionActivity | undefined;
+	/** What waits for the connection on a row, by ref (boardHold.ts). */
+	waiting: (ref: string) => string | null;
 };
 
 /** One Board row, swipeable and with a long-press menu. `archived` rows sit
@@ -43,15 +45,19 @@ export function BoardListRow({
 	context: RowContext;
 	onSwipeActive?: (active: boolean) => void;
 }): ReactElement {
-	const { draftRefs, swipes, menu, activityOf, ...shared } = context;
+	const { draftRefs, swipes, menu, activityOf, waiting: waitingFor, ...shared } = context;
 	const { leading, trailing, dimmed } = swipes(item, archived);
+	// A row something waits on dims until it has gone, as an unconfirmed
+	// archive does (spec 14).
+	const waiting = waitingFor(item.row.ref);
 	const row = {
 		item,
 		variant,
 		moving,
 		hasDraft: draftRefs.has(item.row.ref),
 		activity: activityOf(item.row.ref),
-		dimmed,
+		dimmed: dimmed || waiting !== null,
+		waiting,
 		wash,
 		...shared,
 	};

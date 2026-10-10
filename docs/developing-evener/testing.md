@@ -348,14 +348,43 @@ for a write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and
 skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
 sibling check.
 
-What it writes, and where: under the host's `HOME` it creates its own
-`evener-deploy-e2e-{source,binary}` directory, deploys the binary to
-`<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
-`hub.toml` and state root beside it so the host hub it starts uses its own
-loopback port (`127.0.0.1:19180` / `:19181`) and its own lock. It removes that
-directory when it finishes. It never addresses the host's real install
-(`~/.local/bin/evener`); the check hashes that file before and after and fails if
-it changed.
+What it writes, and where: under the host's `/tmp` it creates its own
+`evener-deploy-e2e-{source,binary}-<run-id>` directory with an atomic claim that
+refuses existing paths. Both machines need a writable `/tmp` ancestor for catalog
+previews, while the run-unique project paths exist only on the host. It deploys
+the binary to `<dir>/bin/evener` (the basename `checkRunTarget` requires), and
+writes a private `hub.toml` beside it. The config explicitly sets the hub state root, daemon
+directory, project-state glob and history database under `<dir>/state`, alongside
+its loopback port (`127.0.0.1:19180` / `:19181`) and private lock. Setting only
+`hub_state_root` leaves the other runtime paths on their normal defaults.
+The controller's fixture-only SSH wrapper executes the real OpenSSH client and
+sets the remote command's `HOME` to `<dir>/home`, with config, state and cache XDG
+roots beneath that home. It unsets inherited `EVENER_PROVIDERS_CONFIG`,
+`EVENER_CREDENTIALS_CONFIG` and `EVENER_STATE_DIR` overrides before bootstrap or
+attach. Startup extension directories and child processes therefore use private
+roots too. The host's login environment and SSH server configuration are unchanged.
+Cleanup signals only
+a listener whose command line names that private config. It removes the directory
+only after proving shutdown; an unproved shutdown fails the check and leaves the
+directory in place. It never writes the host's real install (`~/.local/bin/evener`);
+the check hashes that file before and after and fails if it changed. A failed or
+unrecognized hash probe cannot establish absence.
+
+Each case creates two private remote projects with distinct command and skill
+descriptors. Forwarded slash catalogs must follow an alpha → beta → alpha
+directory switch without leaking the other project's or controller's entries.
+Direct controller calls for the same host-only paths must exclude those remote
+entries. A separate controller project supplies the local positive control.
+
+Use an unmanaged host for this fixture and inspect its supervisor listings before
+running it. The current bootstrap selects evener hub launchd/systemd units by
+name, without matching the private config or port; a matching loaded unit can
+start or restart the regular hub. These private paths do not establish isolation
+on a managed host.
+
+The SSH target must provide a separate filesystem for its private catalog
+projects. Localhost on the controller's filesystem cannot satisfy the host-only
+path checks or the direct-controller negative control.
 
 Prerequisites: a disposable host reachable over non-interactive ssh, with a
 supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
@@ -367,6 +396,59 @@ the cross-compile verifies before it builds.
 ~~~sh
 EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
+~~~
+
+### `EVENER_SSH_E2E_CONTAINER=1` — the live deploy pipeline against a disposable container host
+
+The deploy pipeline kept after comp08 passes 1–3 (the crash-fencing stack's
+removal): an alpine+sshd Docker container stands in for the disposable host (the
+accepted D-7 plan), and the check drives the hub's own AppWire client through the
+pipeline's whole wire path — `evener/host/add` → `evener/host/attach` (which
+provisions the bare host) → `evener/host/plan` (mints the confirmation token) →
+`evener/host/deploy` → `evener/host/restart` → `evener/host/operations`. It
+asserts the operation records' pending → running → complete lifecycle and
+identity pair, the token's single use (a replay refuses the typed `token-missing`
+arm), the restart's host-side process replacement (the same endpoint serves the
+same stamped build from a provably later process start), and the host's own
+`launch-check` reporting the controller's build. It also pins the
+simplification's live proof: the container carries no evener-fence helper, no
+claim primitive, and no fencing state, and the happy path carries no
+fencing-flavoured refusal or prose.
+
+**This gate writes to the host** — it creates its own run-target directory there
+and starts a hub from it — which is why it needs `EVENER_SSH_E2E_DEPLOY=1` on top
+of `EVENER_SSH_E2E=1`, like the sibling deploy check. It skips under `-short`.
+`EVENER_SSH_E2E_HOST` targets an existing disposable host instead of the
+container (the override path) and skips the container; `EVENER_SSH_E2E_USER`
+sets that entry's ssh user, as in the sibling checks.
+
+Docker: the check caches one small image, `evener-e2e-ssh:local` (alpine plus
+openssh, curl, lsof, and procps — the host tools the product's ssh paths
+invoke), and removes its container when the run finishes; remove the cached
+image with `docker rmi evener-e2e-ssh:local`. When Docker or its daemon is
+unavailable (and no `EVENER_SSH_E2E_HOST` is set), the check skips with that
+reason; so does a `DOCKER_HOST` — or an active docker context — naming a
+non-local daemon, because the check publishes the container's sshd on this
+controller's `127.0.0.1` and cannot reach a remote daemon's port.
+
+How the container is reached: a per-run ed25519 key authorized in the container,
+the container's sshd published on a per-run loopback port, and a per-run
+`ssh_config` naming the alias. The product's plain `ssh` invocations are
+redirected to it by a per-run `ssh` shim placed first on `PATH`, because OpenSSH
+resolves its user config from the passwd-database home and NOT `$HOME` — a config
+in the controller's isolated HOME (the convention the other live checks use for
+hub state) would never be consulted. The shim hands the per-run config to exactly
+the alias's invocations and passes every other invocation through unchanged, so
+no product code changes.
+
+Prerequisites: Docker with a reachable daemon (or `EVENER_SSH_E2E_HOST`), a
+**clean** checkout (the controller's build identity is stamped from `HEAD`, and
+the check skips on a dirty tree), and the Go toolchain. Only the container's
+`linux/amd64` target is supported for the Docker path; other targets skip.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostDeployPipelineContainerE2E' -count=1 -v
 ~~~
 
 ### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
@@ -430,16 +512,19 @@ and the UI's writes go through: the host's `AGENTS.md` via Save, the in-repo
 pane's own **Trust**, and a credential push from the `credentials` pane's own
 button.
 
-Eight of the nine are held to a value seeded only on the host: the pane must
+All nine are held to a value seeded only on the host: the pane must
 render the HOST's value and must not render this hub's. `credentials`,
 `agents-md`, `launch-evener`, `project`, `plugins`, `skills` and `mcp` read a
 seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose text
 the pane shows as a preview, and the check then drives the pane's own **Trust**
 action and requires the host to report the file trusted — so that pane proves the
-read AND exercises a host-side write. `plugins-manager` asserts structure — the
-pane rendered, with no load error, carrying the selected host — because its
-catalog is a set of marketplaces CLONED under the host rather than a file, so a
-file seed cannot produce a listing. That is the honest limit of this check.
+read AND exercises a host-side write. `plugins-manager` is held to a seeded
+value too: the check seeds the host's own `known_marketplaces.json` over ssh
+before the host hub starts (a file the store reads, whose directory source is
+referenced in place), then requires the host's seeded marketplace to be listed
+and the controller's default marketplace names to be absent. The seed and the
+read are pinned without a host by
+`TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore`.
 
 The `credentials` pane also carries the credential-push action, and the check
 drives it end to end. The controller's own store is seeded first, through the
@@ -448,8 +533,8 @@ name matches one of the disposable host's own provider instances — so the host
 locked conditional set classifies the pushed key `added` rather than skipping it
 as "no matching instance on the host". The driver then presses **Push
 credentials to <host>**, waits for the `Push report for <host>` region, and
-requires it to name the seeded instance with action `added` (anything but
-`added`/`updated` — including a `failed` row, a skip, or an unrecognized value —
+requires it to name the seeded instance with action `added` or `updated`
+(anything else — including a `failed` row, a skip, or an unrecognized value —
 fails the run and prints what it saw), and requires the failure alert to be
 absent. Because a report the browser rendered is not proof that a write landed,
 the load-bearing assertion is the Go owner's: it reads the DISPOSABLE host's own
@@ -672,8 +757,8 @@ coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
 explicitly set. The CI web check runs as two lanes on separate runners,
-web-unit (make test-web) and web-browser (make build-web and make
-test-web-browser), and the required `web` job passes only when both do. The
+web-unit (make test-web) and web-browser (make test-web-browser), and the
+required `web` job passes only when both do. The
 deterministic Go check runs the same way: `tests / root` (ROOT_FULL=1 WEB=0
 make test TEST_SCOPE=root) and `tests / nonroot` (TEST_SCOPE=nonroot, every
 other module) on separate runners, with the required `tests` job passing only
@@ -736,10 +821,12 @@ their workspace under it.
 
 Tests clean up after themselves without the runner, too: a direct `go test`
 must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
-that harder than it looks. A closing session retains its scratch directory and
-its world-usable temp container for the crashed-scratch sweep's 24h reclaim
-(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
-the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+that harder than it looks. A closing session keeps its named scratch
+(`evener-scratch-<root>/<session>`) until its root is archived, a session a
+test kills leaves its disposable scratch for the crashed-scratch sweep's 24h
+reclaim (`sandbox.SweepCrashedSessionScratch`), and a detached command's
+world-usable temp container lives in `/tmp` or `/var/tmp`, which no `TMPDIR`
+moves. So a
 package whose tests run sessions routes its TestMain through
 `agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
 TestMain that does more, point `TMPDIR` and the container bases into one root
@@ -747,9 +834,10 @@ and remove it when the run ends. Self-exec helper children inherit that
 `TMPDIR`, so what they leave when they are killed on purpose goes with it.
 The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
 `evener serve` a test starts inherits them too. That matters beyond leftovers:
-each of those processes runs the crashed-scratch sweep at startup, and without
-the variable it reclaims other sessions' abandoned scratch from the
-developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+each of those processes runs the crashed-scratch sweep at startup, so without
+the variable a test
+reclaims other sessions' abandoned scratch from the developer's real `/tmp`
+and `/var/tmp`. A TestMain that clears every product
 `EVENER_*` variable after `RedirectHostTemp` keeps that one value
 (`sandboxtest.Redirected`), and a test that builds a child environment from
 scratch must pass it on. A test that sets the bases itself has to prove they
@@ -757,9 +845,9 @@ are in force before it mints or sweeps anything, so a regression fails the
 test instead of reaching `/tmp`.
 
 A test that drives the crashed-scratch sweep itself confines it to scratch it
-owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
-unleased scratch it can see, including another process's.
+owns (its own `TMPDIR` and user cache dir, no container bases), because the
+sweep deletes any aged, unleased scratch it can see, including another
+process's.
 
 A fixture built once and cached for the whole package run (a `sync.Once`
 repo, a built binary) belongs in the package's own fixture root, never in
@@ -780,6 +868,43 @@ npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
+The production editorial-preview config still refuses a symlinked
+`node_modules`: its server boundary must not serve dependencies that concurrent
+lanes can write. Its Node isolation tests do not skip in a worktree that uses
+the lockfile-matched shared install. They copy the real frontend, AppWire
+sources, and dependency tree into a private repository-shaped fixture, then run
+the config, HTTP routes, and wrapper there. Never run `npm ci` through the
+shared symlink to make those tests pass.
+
+A fresh agent worktree has no frontend install. The cheap setup that stays
+inside every preflight's rules is to symlink a lockfile-matched real install
+from another tree: `cmp` this tree's `package-lock.json` against the
+install's first, then `ln -s`. The frontend tree's `.gitignore` ignores the
+link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
+match a symlink: that link shows as untracked in `git status`, so keep it
+out of commits by path, not by ignore.
+
+The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+`vitest_run_args` selects `--configLoader runner` (Vite's default loader
+writes a bundled config under `node_modules/.vite-temp`), and the plugin
+that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
+not read-only yet. Vitest still writes its dependency cache to the
+checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
+phase loads Vite configs with the default loader in
+`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
+`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
+(issue #4193). So a read-only lane still needs a scratch config for focused
+experiments: run
+it with `--configLoader runner --cache=false`, and give the scratch-rooted
+Vite config a `server.fs.allow` that names the checkout, the AppWire
+package and the dependency realpath, or external setup imports fail as
+`Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
+the custom config, test files, cacheDir and dependency symlink in scratch,
+reuse the frontend's resolve aliases and test setup, and keep at least two
+workers (the vmThreads isolation floor explained below). These runs are
+probes; canonical verdicts stay with `make test-web`, which cannot run in
+a read-only lane until those writes are gone.
+
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
@@ -799,6 +924,17 @@ extends the same reasoning to the other gate runs sharing it, which a fixed
 count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
+
+One in-band check does not share that protection: the flush-scope hygiene
+meta-test (src/testFlushScopeHygiene.test.ts) parses every test file under
+the frontend's `src/` with the TypeScript compiler inside a single vitest
+test bounded only
+by the default 5000ms, so its runtime grows with the tree and with CPU
+contention (issue #3966). `make test-web` run beside another heavy lane can
+time that one test out with everything else green. Run the heavy local
+gates — `make test-web`, `make vet`, `make lint` — one at a time, and rerun
+the gate alone before diagnosing that timeout as a regression.
+
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own
 checkout and cache restore are still in the one-minute average when the gate
@@ -842,6 +978,12 @@ timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
 crosses the show delay on a fake clock scoped to the hover, so it needs none
 of that wiring, and it must be called on real timers.
 
+The frontend has no jest-dom (it is not in `package.json`), so matchers
+such as `toHaveValue`, `toBeDisabled` or `toBeInTheDocument` fail
+`npm run typecheck` even when vitest, which never typechecks, runs them
+green. Assert on the DOM directly (`input.value`, `el.textContent`,
+`button.disabled`, `document.activeElement`).
+
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await` has to
 be awaited, never asserted right after the click. Work that goes through
@@ -851,8 +993,12 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 (src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
-has settled, and the dispatched request has gone out by then. A `waitFor`
-on the request races that chain against a 1000ms ceiling, which a loaded
+has settled, and the dispatched request has gone out by then. The flush
+waits only for work registered with that tracker: if production code adds
+an awaited step outside storage (say, a component awaits a store call
+before clearing its state), wrap the whole operation in
+`trackProjectionWork` (src/stores/projectionWork.ts), or the flush returns
+early. A `waitFor` on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
 tracked work open on purpose (a held read or commit) cannot flush until it
@@ -864,6 +1010,72 @@ then can be the next test's fake client, so the next test sees an extra
 call. For the same reason a suite resets every global store it renders
 against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
 toast from the previous test can satisfy this test's assertion.
+
+### Frontend store-fixture contracts
+
+Five contracts that repeatedly bite store-test authors, none of them visible
+from the assertion that fails:
+
+- A store fixture's `thread/read` handler must echo the request generation
+  (`requestGeneration: params.requestGeneration ?? …`), or the response is
+  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  discards a latest-window response whose `requestGeneration` is older than
+  the held history's `issuedGeneration`, so a handler returning a static
+  fixture with a stale default generation turns the read into a silent no-op
+  — issued on the wire, never applied to the model. Assert on wire request
+  counts when only issuance matters.
+- `holdNextWriteTransaction(stores)`
+  (src/stores/testing/stalledIndexedDB.ts) matches the next readwrite
+  transaction opened over exactly that store set, not the cache method that
+  opened it, so an earlier matching transaction can consume a broadly armed
+  hold. Arm it immediately before the intended real `put` call
+  in a call-through spy, and observe the method entry and the hold's
+  `reached` boundary separately. The helper lets fake-indexeddb commit and
+  withholds the completion event; it does not prove an active transaction
+  lock blocks other writes, so diagnose a stalled successor from its actual
+  pending operation.
+- To test a boundary before commit, while the write can still abort, hook
+  the request itself: wrap the object-store method in a call-through spy
+  that either holds the request's `success` event with `holdIndexedDBEvent`
+  or calls `this.transaction.abort()`. Match the call by `this.name` and the
+  exact key the caller builds, not by call order, since production may add
+  an earlier read. Worked example: src/stores/humanNoteDrafts.test.ts.
+- fake-indexeddb throws a synchronous `DataError` from the store method
+  itself for a put/add whose key cannot be derived (`buildRecordAddPut`
+  throws before any request is created). Such a test proves method-fault
+  handling only; request-error and rollback proofs need an actual failing
+  request, its observed error and transaction abort, and a reopen check that
+  earlier writes did not persist.
+- Both the real client and `FakeClient` isolate notification-handler errors
+  — a throwing subscriber must not abort dispatch — so an assertion inside
+  a notification callback is swallowed instead of failing the test, and the
+  failure surfaces later as an unrelated stall or timeout. Capture callback
+  assertion errors outside the catching pipeline and assert them in the test
+  body.
+
+The console guard (src/testConsoleGuard.ts) fails a test on any unspied
+`console.error`/`warn`/`log`/`info`/`debug` call, with a message that
+names the call and the `vi.spyOn(console, …)` recipe. A diagnostic probe
+that prints its
+observations therefore reports a phantom failure: record probe observations
+to a scratch file or spy on the console.
+
+### Navigation fixtures
+
+- A session summary in a v3 navigation graph may not nest other sessions:
+  the TS codec (appwire-client/typescript/state/navigation/codec.ts) and Go
+  schema both enforce flat session rows ("Session summaries are flat; the
+  empty owned slot preserves graph structure", navigation_schema.go). A
+  fixture that nests fails the TS codec as `invalid resource graph`, not as
+  the behavior under test. Prove a recursive roster walk at the
+  selector/helper level, and
+  discovery through real stores with flat rows.
+- The store's progress validator rejects an empty page only when it still
+  reports data ("… returned no rows with remaining data",
+  state/navigation/store.ts), and the codec accepts `sessions: [],
+  remaining: 0, truncated: true`, so `remaining === 0` alone is not proof
+  that a roster sweep completed. Absence proofs must check truncation; keep
+  the ordinary non-truncated empty terminal page as a removal control.
 
 ### Whole-system residue audit
 
@@ -906,6 +1118,14 @@ inside their process-owned state root. Apple container is diagnostic evidence
 for this contract, not a local or CI gate dependency.
 
 ## The Native Gate Bundles the App
+
+Both native npm test commands (`test` and `test:shared`) use
+`scripts/native/run-tests.sh` to size Vitest with the shared load-aware budget.
+The pool is capped at four workers and shrinks to one when spare capacity is
+exhausted. An unavailable machine probe falls back to four. Native uses isolated
+forks, so it can run with one worker without the frontend VM pool's two-worker
+floor. The budget is sampled when each command starts; it does not coordinate
+concurrent gates or change per-test deadlines or file isolation.
 
 `make test-native` starts by bundling the real iOS entry point
 (`make test-native-bundle`, `scripts/native/test-native-bundle.sh`). Nothing
@@ -951,9 +1171,15 @@ Enforcement of the ratios is conditional. A local run only warns. A package over
 budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
 CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
 `testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
-`make test-rebaseline` lands a measured baseline. A clean-host baseline is
-checked in, so the ratios are enforced under `CHECK=1` in a CI-shaped
-environment today.
+`make test-rebaseline` lands a measured baseline. The checked-in baseline
+predates issue #172's switch to package wall time, so the Go-package ratio check
+stays warn-only even under `CHECK=1` until `make test-rebaseline` rewrites it
+under the new metric (#141): a budget whose Go-package numbers were blessed
+under a different metric is never enforced, and a full rebaseline records the
+metric marker that re-enables enforcement. A narrowed `--modules`/`--no-web`
+rebaseline never adds the marker; it only preserves one a full rebaseline
+already stamped. The `"web"` row and the per-test ceiling keep the metrics
+issue #172 did not change, so both stay enforced either way.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never
@@ -972,11 +1198,12 @@ exists to protect. Wiring real enforcement into CI needs the durations sourced
 from the gate's own run instead of a second one. Deciding how to do that is an
 open follow-up (kata b6rv).
 
-## The Browser Guards, and Why There Are Six
+## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Five checks in
-`cmd/evener-hub/frontend` cover it, and the split matters:
+of frontend defect is structurally invisible to `vitest`. Real cross-tab
+coordination also needs browser coverage beyond injected channels and fake
+IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
   `tokens.css` and component stylesheets, in headless Chrome. Cheap — static
@@ -986,7 +1213,10 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document.
+  document. The floating fixture waits for the restored workspace before opening
+  Settings. A held lazy DockHost request verifies that it captures no pane ID
+  before restoration, then proves real placement, overhang, native input and
+  resize after the request resumes. Workspace restoration and Dockview stay real.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
 - **`npm run transcriptscrollguard`** renders the real transcript through the
@@ -994,7 +1224,19 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
   there, including after content grows below the reader and after the
-  scroll port itself shrinks (the pane header growing).
+  scroll port itself shrinks (the pane header growing). Paged-open readiness
+  waits through asynchronous cache/read admission until the actual scroll port
+  mounts and its geometry settles. An explicitly deferred read exercises those
+  pre-mount frames without a fixed delay or a wider readiness deadline.
+- **`node scripts/sessioncacheguard/run.mjs`** drives TWO REAL TABS through the
+  real session-cache store, native BroadcastChannel and IndexedDB, with only
+  AppWire scripted. It proves sibling deletion suppression and refusal to
+  resurrect, clear-epoch suppression before the receiving tab does storage I/O,
+  and version/source-id filtering. A same-source message is ignored by its
+  owner but accepted by the other tab. Successful writes without deletion or
+  clear are the controls. Native message-delivery barriers bound the negative
+  filtering checks without fixed sleeps. It does not cover display-settings
+  synchronization, hub/daemon behavior, or native/mobile contexts.
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
@@ -1004,8 +1246,20 @@ first could not have caught the bug that prompted it. Hand-authored markup
 freezes whatever was current when the case was written, so restoring the old
 glyph would have left the guard green while the app broke.
 
-The sixth guard is a different KIND of check, and that is why it exists
-separately rather than as a sixth `scripts/<guard>/run.mjs` case:
+A new dev harness entry that mounts the app-router SPA itself — none of
+the existing `src/dev/*-entry.tsx` guards does this today; they mount
+fixtures or shell components directly — needs two things, or it presents as
+a dead document with no error captured anywhere: reset the
+route before the app import — a router-driven shell renders NotFound from the
+harness path, so call `window.history.replaceState(null, "", "/")` —
+and set a synchronous boot-marker global before any top-level
+`await import("../main")`, because the `load` event fires while that import's
+top-level await is still pending, and a boot check on a global set after it
+re-navigates the live document forever. Order the entry: synchronous
+install/setup, boot marker, `replaceState`, then the dynamic import, and
+wait for the real evidence global separately, with its own timeout.
+
+The full-stack skill guard is a different KIND of check:
 
 - **`web-skillguard`** (`make test-web-browser`'s last step;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
@@ -1019,14 +1273,15 @@ separately rather than as a sixth `scripts/<guard>/run.mjs` case:
   failed-activation retry, and offline outbox behavior through real DOM
   gestures; the Go test asserts what the daemons ACTUALLY received (provider
   request payloads, `<skill-context>` documents, durable transcripts,
-  held-turn choreography through the fixture's control IPC). The five guards
-  above test the frontend against scripted stores; this one is the only place
+  held-turn choreography through the fixture's control IPC). The guards
+  above test the frontend against scripted clients; this one is the only place
   the frontend's skill contract is tested against the daemons and hub that
-  must honor it. It needs the BUILT frontend (the hub
-  serves the embedded dist), so the gate (`evener-dev dev web-browser-guards`,
-  cmd/evener-dev/webbrowser.go) builds it when missing rather than skipping.
+  must honor it. It needs the BUILT frontend (the hub serves the embedded
+  dist): `make test-web-browser` builds it first via `build-web`, and the gate
+  (`evener-dev dev web-browser-guards`, cmd/evener-dev/webbrowser.go) still
+  builds one when the dist is missing rather than skipping.
 
-All six are owned by `make test-web-browser`, which is required by the CI web
+These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs
 Chrome.
 
@@ -1228,12 +1483,13 @@ lags, bubbletea reports every printable rune of one read as a single
 KeyMsg, and a command mode that matches on `msg.String()` reads "kkf" as
 one unmatchable message instead of three keys (kata fazd — reproducible on
 an idle machine with one `send-keys -l` write). The dashboard replays such
-bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`), but
-browse mode's batch-as-text behavior is pinned pending a design decision
-(kata 7hh0), so its command sequences must never coalesce in the first
-place: see `TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the
-selection render after each `k`. Arrow and control keys are escape
-sequences and immune; only printable runes batch.
+bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`).
+Browse is text-first (kata 7hh0): every printable rune is composer text at any
+delivery timing, so its commands — Escape to leave, ctrl+up/ctrl+down to move
+the selection, ctrl+f to fork — are all escape sequences and immune to
+batching. Only printable runes batch: see
+`TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the selection render
+after each ctrl+up.
 
 ## A Test That Never Runs
 
@@ -1461,6 +1717,18 @@ does slip through shows up on the hub's stderr:
 [hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
 ```
 
+## Driving Turns from a Go Fixture
+
+A session runs one turn at a time. A `turn/start` during an active turn is
+refused with `turn is already active`, so a fixture must wait for each turn
+to finish before starting the next.
+
+To wait on the turn lifecycle, call `thread/read` with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same daemon connection
+before `TurnStart`. Without `Subscribe: true` the read returns a snapshot
+and subscribes to nothing, so `Client.Notifications()` never carries that
+thread's `thread/status/changed` or `history/updated`.
+
 ## A Disposable Hub Needs Its Own HOME
 
 The hub is a host singleton guarded by an exclusive flock on
@@ -1648,17 +1916,18 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | The Go toolchain (the gate is the prebuilt evener-dev) and the installed Node dependencies; deterministic after those. Each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
-| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium and the Go toolchain (the gate is the prebuilt evener-dev); each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend (built automatically when dist is missing). | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, sessioncacheguard, retirementguard, mermaidguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, session-cache deletion healing, clear-epoch suppression and envelope filtering across two real tabs with native BroadcastChannel and IndexedDB, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium and the Go toolchain (the gate is the prebuilt evener-dev); each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend, which this target builds first (`build-web`); the gate still builds one when the dist is missing. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
 | `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, the `mobile-native/src` and `mobile/src` sources match the native Biome formatter config (`mobile-native/biome.jsonc`, the `npm run lint` step), and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, shared-session tests, native typechecking, formatting, or script module resolution fail. |
 | `make native-preflight` | Ensure the mobile-native dependency install is present, real, and lockfile-compatible before any native target runs. | mobile-native/node_modules exists as a real directory, matches package-lock.json, and holds an executable .bin/expo, so Metro bundles with the pinned Expo instead of whatever `npx` finds on PATH. | Setup prerequisite for the native gates. | Node 22.13+; never installs, refusing instead with the command to run. | node_modules is missing, is a symlink (the bundler resolves no module through one, whatever the lockfiles say), is older than package-lock.json, or has no executable .bin/expo; the message names `cd mobile-native && npm ci`. |
 | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
+| `make check-podfile-lock` | Check that mobile-native/Podfile.lock locks exactly the iOS pods autolinking resolves. | every pod the Expo and React Native autolinking the generated Podfile runs would link, Expo's companion pods included, is in the lock's DEPENDENCIES under the same name and directory, and every autolinked pod the lock lists is still linked. | Native CI; local pre-merge when mobile-native/package.json, package-lock.json or Podfile.lock change. | Node 22.13+ and an already-installed, real (not symlinked) mobile-native dependency tree; no macOS, CocoaPods, Xcode or generated ios/ project. Expo's precompiled mode and extraPods are not handled. | an autolinked pod is not locked, or the lock lists an autolinked pod nothing links (a version change inside an already locked pod is not checked), or the script's own tests (check-podfile-lock.test.mjs) fail. |
 | `make api-package-preflight` | Ensure the appwire-client/typescript dependency install is present and healthy before the qualification runner starts. | node_modules carries the pinned tsc and the ws the qualification runner imports, or is repaired with npm ci. | Setup prerequisite for test-api-package. | Node 22+; never runs npm ci through a symlinked node_modules. | node_modules is missing and npm ci fails, is a mismatched symlink, or lacks a working tsc / ws; on a real install the message names `cd appwire-client/typescript && npm ci`, and on a symlinked one it names the shared install instead. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
-| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A bless writes every package it measured and preserves the rest of the file, so a narrowed run refreshes part of the file instead of deleting the entries it did not measure. Under CHECK=1 in a CI-shaped environment a package over 1.5x its budget or any per-test ceiling breach is nonzero too; a missing or empty budget file always exits zero. |
+| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row and the per-test ceiling keep their unchanged metrics and stay enforced. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios are warnings. The "web" row and any per-test ceiling breach are metric-independent and nonzero regardless, and a missing or empty budget file always exits zero. |
 
 ### Other targets
 

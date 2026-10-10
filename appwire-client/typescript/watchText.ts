@@ -6,7 +6,7 @@
 // typechecks as part of its own build, so importing these from the rail's React
 // component file dragged every widget stylesheet into that graph - a dependency
 // the mobile check rejects, correctly. Keep this file importable from anywhere.
-import type { NavigationWatchCadence, NavigationWatchSummary } from "./types.gen";
+import type { EvenerWatchCadence, SessionWatch, SessionWatchState } from "./types.gen";
 
 // A watch's cadence in the rail's compact shorthand: seconds in, "10m" out.
 // Deliberately coarse: the PERIOD is real, and that is what this label carries.
@@ -55,9 +55,9 @@ const CLOCK_CADENCE_KINDS = new Set(["after", "every", "progress"]);
 // clock-driven, carries no derived instant, or that instant cannot be parsed.
 // A derived instant already in the past also returns "": there is no honest
 // future fire to promise from it.
-export function watchNextFireLabel(cadence: NavigationWatchCadence, now: number): string {
+export function watchNextFireLabel(cadence: EvenerWatchCadence, now: number): string {
   if (!CLOCK_CADENCE_KINDS.has(cadence.kind)) return "";
-  const instant = cadence.derived_next_fire_at === undefined ? Number.NaN : Date.parse(cadence.derived_next_fire_at);
+  const instant = cadence.derivedNextFireAt === undefined ? Number.NaN : Date.parse(cadence.derivedNextFireAt);
   if (!Number.isFinite(instant)) return "";
   const remaining = (instant - now) / 1000;
   if (remaining <= 0) return "";
@@ -68,7 +68,7 @@ export function watchNextFireLabel(cadence: NavigationWatchCadence, now: number)
 // One wire cadence row as a phrase a person reads. "after"/"every"/"progress"
 // all carry a period; "output"/"events" are conditions with no period at all,
 // which is exactly why they read "on ..." instead of "every ...".
-export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
+export function watchCadenceLabel(cadence: EvenerWatchCadence): string {
   switch (cadence.kind) {
     case "after":
       return `after ${watchDurationLabel(cadence.seconds)}`.trim();
@@ -101,21 +101,21 @@ export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
 
 // The armed wording, in one place so the rail's gloss and the session panel's
 // own watch rows can never disagree about it.
-export function watchArmedLabel(active: boolean): string {
-  return active ? "armed" : "not armed";
+export function watchArmedLabel(state: SessionWatchState): string {
+  return state === "armed" ? "armed" : state === "ended" ? "not armed" : "unknown";
 }
 
 // A watch row's second line: what it is waiting on, and whether it is still
 // armed. One line per watch, never a countdown - see watchDurationLabel.
-export function watchGloss(watch: NavigationWatchSummary): string {
-  const parts = (watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
-  parts.push(watchArmedLabel(watch.active));
+export function watchGloss(watch: SessionWatch): string {
+  const parts = (watch.watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
+  parts.push(watchArmedLabel(watch.state));
   return parts.join(" · ");
 }
 
 // The title a watch row shows: the note the watch was armed with - the reason
 // a person wrote down. The id is the fallback for a note the wire omitted or
 // truncated to nothing, so a row is never blank.
-export function watchTitle(watch: NavigationWatchSummary): string {
-  return watch.note?.trim() || watch.id;
+export function watchTitle(watch: SessionWatch): string {
+  return watch.watch.note?.trim() || watch.watch.id;
 }

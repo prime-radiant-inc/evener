@@ -183,7 +183,9 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 // marker survives to be finalized (fabricating a `committed` receipt for a
 // refused mutation) and the provisional receipt survives as a dedup hit.
 func compensationChange(plan *hostCommitPlan) hostPersistChange {
-	return hostPersistChange{dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name}
+	return hostPersistChange{
+		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
+	}
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase

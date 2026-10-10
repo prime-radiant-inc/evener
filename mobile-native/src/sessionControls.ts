@@ -41,6 +41,11 @@ export class SessionControls {
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
+	// Counts catalog reads (a refresh or a load), so a refresh publishes only
+	// when no newer read has started.
+	private catalogReads = 0;
+	// An announcement arrived while a load was out, to be read once it settles.
+	private refreshAfterLoad = false;
 	constructor(
 		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
 			ConversationRecoveryActions &
@@ -53,7 +58,12 @@ export class SessionControls {
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
 		> | null,
 		private canMutate: () => boolean,
-	) {}
+		// The catalog the screen already knows, from its last binding: the
+		// model's name needs no read to show.
+		catalog: ModelListResponse | null = null,
+	) {
+		this.state = { ...this.state, catalog };
+	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -98,19 +108,56 @@ export class SessionControls {
 	setVisionModel(visionModel: string) {
 		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
 	}
+	/** Reads the model catalog. The catalog it has stays until the new one
+	 * lands, so a model's name never falls back to its id mid-read; a failed
+	 * read clears it, so the picker offers no stale choices. A read the
+	 * binding moved on from still ends the load, so the next one reads again
+	 * rather than waiting on it forever. */
 	async loadModels() {
 		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
-		this.publish({ catalog: null, loadingModels: true, modelError: null });
+		// A load is the newest read: a refresh still out answers older.
+		this.catalogReads++;
+		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({ catalog, loadingModels: false });
+			if (this.disposed) return;
+			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
 		} catch (error) {
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({
-				loadingModels: false,
-				modelError: error instanceof Error ? error.message : "Could not load models.",
-			});
+			if (this.disposed) return;
+			this.publish(
+				this.isCurrent()
+					? {
+							catalog: null,
+							loadingModels: false,
+							modelError: error instanceof Error ? error.message : "Could not load models.",
+						}
+					: { loadingModels: false },
+			);
+		}
+		if (this.refreshAfterLoad) {
+			this.refreshAfterLoad = false;
+			void this.refreshModels();
+		}
+	}
+	/** Reads a loaded catalog again after the hub announced a refreshed list
+	 * (evener/auth/updated), replacing it in place. Unlike a load, a failed
+	 * read keeps the catalog: the list the hub last served still stands. With
+	 * no catalog loaded there is nothing on screen to refresh. A load in
+	 * flight may have read the list before the hub refreshed it, so an
+	 * announcement during one reads again once it settles. Each announcement
+	 * reads again, and the newest read's catalog is the one that stays. */
+	async refreshModels() {
+		if (this.state.loadingModels) {
+			this.refreshAfterLoad = true;
+			return;
+		}
+		if (this.disposed || !this.isCurrent() || !this.state.catalog) return;
+		const read = ++this.catalogReads;
+		try {
+			const catalog = await this.service.models();
+			if (!this.disposed && read === this.catalogReads && this.isCurrent()) this.publish({ catalog });
+		} catch {
+			// A failed refresh keeps the catalog on screen.
 		}
 	}
 	changeModel(provider: string, model: string): Promise<boolean> {

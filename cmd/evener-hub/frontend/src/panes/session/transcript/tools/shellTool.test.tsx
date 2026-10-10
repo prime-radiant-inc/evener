@@ -1,9 +1,9 @@
+import { stripRedundantCd } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { toolRendererFor } from "../toolRenderers";
-import { stripRedundantCd } from "./shellTool";
 import "./shellTool";
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
 

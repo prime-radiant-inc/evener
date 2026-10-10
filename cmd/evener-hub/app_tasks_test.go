@@ -101,10 +101,7 @@ func TestHubTasksList_ServesPersistedTasksForExitedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubTasksList: %v", err)
 	}
-	tasks, ok := resp.Data.([]task.Task)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want []task.Task", resp.Data, resp.Data)
-	}
+	tasks := resp.Data
 	if len(tasks) != 1 || tasks[0].Description != "ship the fix" {
 		t.Fatalf("tasks = %+v, want one task %q", tasks, "ship the fix")
 	}
@@ -123,10 +120,7 @@ func TestHubTasksList_AbsentTaskFileIsEmptySuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubTasksList: %v", err)
 	}
-	tasks, ok := resp.Data.([]task.Task)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want []task.Task", resp.Data, resp.Data)
-	}
+	tasks := resp.Data
 	if len(tasks) != 0 {
 		t.Fatalf("tasks = %+v, want empty", tasks)
 	}
@@ -179,8 +173,8 @@ func TestHubTasksList_LiveSourceTakesPrecedenceOverPast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubTasksList: %v", err)
 	}
-	tasks, ok := resp.Data.([]task.Task)
-	if !ok || len(tasks) != 1 || tasks[0].Description != "live task" {
+	tasks := resp.Data
+	if len(tasks) != 1 || tasks[0].Description != "live task" {
 		t.Fatalf("resp.Data = %#v, want the live task (past must not be consulted)", resp.Data)
 	}
 }

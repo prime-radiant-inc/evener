@@ -47,6 +47,7 @@ func promptConfigs() []promptConfig {
 		{"root interactive anthropic", buildRootInteractiveAnthropicSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, true)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, false)
@@ -87,6 +88,7 @@ func promptConfigs() []promptConfig {
 		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
 			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
@@ -111,6 +113,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the delegating subagent override",
 				d.Role == strings.TrimSpace(defaultDelegatingSubagentInstructions), true)
@@ -119,6 +122,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the bundled subagent body", d.Role == bundledAgentBody(t, "subagent"), true)
 		}},
@@ -143,6 +147,7 @@ func promptConfigs() []promptConfig {
 		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
 				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
@@ -519,6 +524,26 @@ func TestSystemPromptLoadedSources(t *testing.T) {
 	}
 	if got := drainPromptLoadedLabels(overrides); !slices.Equal(got, cases[0].want) {
 		t.Errorf("PROMPT_LOADED events = %q, want %q", got, cases[0].want)
+	}
+}
+
+// TestSystemPromptDiagramGuidanceClaimsNoRendering pins the #3455 fix: the
+// diagram guidance must not tell the model that the reader's app renders
+// mermaid, because some clients (cmd/evener-tui and one-shot `evener run`)
+// show the ```mermaid fence as its source. The guidance itself stays, because
+// the web hub and native app do render it.
+func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
+	t.Parallel()
+	s := buildRootInteractiveAnthropicSession(t)
+	prompt, warning := s.renderSystemPrompt(s.env)
+	if warning != "" {
+		t.Fatalf("render failed: %s", warning)
+	}
+	if strings.Contains(prompt, "which the user's app renders") {
+		t.Errorf("the diagram guidance still claims the reader's app renders mermaid, false on the TUI and one-shot `evener run`:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "```mermaid code block") {
+		t.Errorf("the mermaid diagram guidance is missing from the rendered prompt")
 	}
 }
 

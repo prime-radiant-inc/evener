@@ -11,8 +11,10 @@ import { type SFSymbol, SymbolView } from "expo-symbols";
 import { cloneElement, type ReactElement, useEffect } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
+import { FreshDot } from "../reader/FreshDot";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, stateWord, whyLine } from "./attention";
 import { Fact, WhyText } from "./BoardRow";
@@ -21,8 +23,6 @@ import { StateMark } from "./StateMark";
 
 export const ROW_ACTION_SYMBOLS: Record<RowAction, SFSymbol> = {
 	pin: "pin.fill",
-	markRead: "circle",
-	markUnread: "circle.fill",
 	stop: "stop.fill",
 	shutDown: "power",
 	archive: "archivebox",
@@ -39,6 +39,10 @@ export interface RowMenuHost {
 	actions(item: ClassifiedRow, archived: boolean): RowAction[];
 	hostLabel(hostId: string): string;
 	act(item: ClassifiedRow, action: RowAction): void;
+	/** What waits for the connection on this row, to cancel (phase 6 ruling
+	 * 18): each held action's id and its "Cancel …" label. */
+	held(item: ClassifiedRow): { id: string; label: string }[];
+	cancel(id: string): void;
 	openSession(item: ClassifiedRow): void;
 	/** The menu went away, however it closed. */
 	closed(): void;
@@ -61,12 +65,12 @@ export function RowPreviewCard({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
-	// Finished, Idle and Shut down have no reason: the word says it.
+	// Idle and Shut down have no reason: the word says it.
 	const why = whyLine(item) ?? { text: stateWord(state) };
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Open ${row.title}`}
+			accessibilityLabel={`Open ${row.title}${item.unseen ? ", unread" : ""}`}
 			onPress={onPress}
 			style={({ pressed }) => ({
 				marginHorizontal: 16,
@@ -90,6 +94,11 @@ export function RowPreviewCard({
 				>
 					{row.title}
 				</Text>
+				{item.unseen ? (
+					<View style={{ height: 22 * scale, justifyContent: "center" }}>
+						<FreshDot />
+					</View>
+				) : null}
 			</View>
 			<WhyText why={why} />
 			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
@@ -104,8 +113,6 @@ export function RowPreviewCard({
 export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuSheet">) {
 	const { hubId, ref, archived } = route.params;
 	const navigation = useNavigation();
-	const { palette } = useColors();
-	const scale = useTextScale();
 	// `host` is read when the sheet goes away, by then from its last render.
 	const sheet = useSheet({ onClosed: () => host?.closed() });
 	const host = useSheetHost(rowMenuHosts, sheetKey(hubId), sheet);
@@ -133,28 +140,16 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 					onPress={() => leaveThen(() => host.openSession(item))}
 				/>
 				{host.actions(item, archived).map((action) => (
-					<Pressable
+					<MenuItem
 						key={action}
-						accessibilityRole="button"
-						accessibilityLabel={ROW_ACTION_LABELS[action]}
+						label={ROW_ACTION_LABELS[action]}
+						symbol={ROW_ACTION_SYMBOLS[action]}
+						danger={action === "shutDown"}
 						onPress={() => leaveThen(() => host.act(item, action))}
-						style={({ pressed }) => ({
-							minHeight: 44,
-							paddingHorizontal: 16,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 12,
-							backgroundColor: pressed ? palette.pressed : palette.canvas,
-						})}
-					>
-						<SymbolView name={ROW_ACTION_SYMBOLS[action]} size={18 * scale} tintColor={palette.inkMid} />
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 17 * scale, color: action === "shutDown" ? palette.dangerInk : palette.inkHi }}
-						>
-							{ROW_ACTION_LABELS[action]}
-						</Text>
-					</Pressable>
+					/>
+				))}
+				{host.held(item).map(({ id, label }) => (
+					<MenuItem key={id} label={label} symbol="xmark.circle" onPress={() => leaveThen(() => host.cancel(id))} />
 				))}
 			</ScrollView>
 		</Sheet>
@@ -186,4 +181,42 @@ const LONG_PRESS_MS = 500;
  * sheet here without its callers changing. */
 export function RowMenu({ onOpenSheet, children }: RowMenuProps) {
 	return cloneElement(children, { onLongPress: onOpenSheet, delayLongPress: LONG_PRESS_MS });
+}
+
+function MenuItem({
+	label,
+	symbol,
+	danger = false,
+	onPress,
+}: {
+	label: string;
+	symbol: SFSymbol;
+	danger?: boolean;
+	onPress: () => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={label}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				paddingHorizontal: 16,
+				flexDirection: "row",
+				alignItems: "center",
+				columnGap: 12,
+				backgroundColor: pressed ? palette.pressed : palette.canvas,
+			})}
+		>
+			<SymbolView name={symbol} size={18 * scale} tintColor={palette.inkMid} />
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ fontSize: 17 * scale, color: danger ? palette.dangerInk : palette.inkHi }}
+			>
+				{label}
+			</Text>
+		</Pressable>
+	);
 }

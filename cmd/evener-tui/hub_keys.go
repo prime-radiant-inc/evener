@@ -111,12 +111,11 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// it silently (kata fazd). Only here: where a text surface has focus —
 	// the composer, the palette and dashboard filters, the panels — a batch
 	// is the typed text and must stay whole (a split "/interrupt" in the
-	// composer would open the palette instead). Browse/transcript view is
-	// neither: a command mode whose coalesced runes still fall through to
-	// the composer as text, so the same word means different things at
-	// different delivery timings. That ambiguity is unresolved by design
-	// record (kata 7hh0); TestHubModelBrowseKeepsComposerVisibleAndTyping
-	// pins the coalesced behavior until it is decided.
+	// composer would open the palette instead). Browse is a text surface too
+	// (kata 7hh0, text-first): every printable rune and paste reaches the
+	// composer as text at any delivery timing, so a batch needs no replay —
+	// and browse's row selection and fork sit on non-printable chords, never
+	// on the printable alphabet.
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
 		return m.replayKeyBurst(msg)
 	}

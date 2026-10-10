@@ -45,6 +45,7 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -144,10 +145,13 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={REF} focused={false} />
+      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(REF);
+  // The mount starts its own pending-turns refresh; settle it here so its
+  // state update lands inside act rather than during a later bare await.
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 
@@ -330,7 +334,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .then(() => {
         render(
           <ClientProvider client={fake}>
-            <Composer ref={REF} focused={false} />
+            <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
           </ClientProvider>,
         );
         act(() => {
@@ -468,11 +472,41 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
     });
   });
 
+  await settleActivityDiscovery(REF);
   const model = threadsStore.getState().threads.get(REF);
   expect({ status: model?.status.type, send: model?.capabilities.send }).toEqual({ status: "closed", send: true });
   expect(screen.queryByTestId("composer-input-card")).not.toBeNull();
   expect(screen.queryByRole("textbox", { name: /^message$/i })).not.toBeNull();
 });
+
+test.each(["closed", "ended", "notLoaded"])(
+  "an empty focused editor keeps its controls when a live session becomes %s",
+  async (status) => {
+    const user = userEvent.setup();
+    const fake = await mountComposer("active", daemonCapabilities(true));
+    const editor = screen.getByRole("textbox", { name: /^message$/i });
+    await user.click(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.textContent).toBe("");
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: `thr_${REF}`, ref: REF, status: { type: status }, capabilities: COLD_CAPABILITIES },
+      });
+    });
+    await settleActivityDiscovery(REF);
+
+    expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.style.minHeight).toBe("3lh");
+    expect(screen.queryByTestId("session-chrome-inline")).not.toBeNull();
+    expect(screen.queryByTestId("model-switch-trigger")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeNull();
+    expect(submitButton().disabled).toBe(true);
+    expect(editor.textContent).toBe("");
+  },
+);
 
 // The follow-up a resumable ended session can actually be sent: the card is
 // only half the affordance if its Send stays grey. Steer and Stop stay gone —

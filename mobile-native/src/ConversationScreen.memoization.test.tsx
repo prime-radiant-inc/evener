@@ -7,12 +7,15 @@
 // This mounts the real ConversationScreen (only native edges mocked, as in
 // ConversationScreen.send.test.tsx) and pins both references across a
 // re-render that carries the same route and the same connection.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivityReadParams } from "@evener/appwire-client";
+import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { render, screenConnection } from "./renderNative.testkit";
+import { keyboard, render, renderedText, screenConnection, settle, unmountMountedTrees } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { TimelineItem } from "./TimelineItem";
 
@@ -28,22 +31,41 @@ const navigationState = vi.hoisted(() => ({
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
+// How many times the screen has rendered: the transcript list renders with it.
+const screen = vi.hoisted(() => ({ listRenders: 0 }));
+
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
+	const List = mock.FlatList;
 	return {
 		...mock,
+		FlatList: (props: ComponentProps<typeof List>) => {
+			screen.listRenders += 1;
+			return createElement(List, props);
+		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
 			props.visible ? createElement("Modal", null, props.children) : null,
+	};
+});
+// How many times a transcript row has rendered, for the keyboard probe below.
+const rows = vi.hoisted(() => ({ renders: 0 }));
+vi.mock("./TimelineItem", async (original) => {
+	const real = await original<typeof import("./TimelineItem")>();
+	return {
+		...real,
+		TimelineItem: (props: ComponentProps<typeof real.TimelineItem>) => {
+			rows.renders += 1;
+			return createElement(real.TimelineItem, props);
+		},
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -137,16 +159,6 @@ const navigation = {
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
-
 const CAPABILITIES = {
 	send: true,
 	steer: true,
@@ -209,20 +221,20 @@ function twoTurns(ref: string): Thread {
 // mutation. No frame is pushed, so the conversation stays as read.
 function hubClient(served: Thread) {
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready"), {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
 		resumeThread: async () => {},
-		request: async (method: string) => {
+		request: async (method: string, params?: unknown) => {
 			if (method === "thread/read") return { thread: served };
+			if (method === "evener/thread/activity/read")
+				return threadActivityFixture(served, params as SessionActivityReadParams).summary;
 			if (method === "thread/turns/list") return { data: [] };
 			return {};
 		},
-	};
+	});
 	return client;
 }
 
@@ -279,4 +291,95 @@ it("keeps one fork callback across the same re-render", async () => {
 	rerender(tree, route);
 	await settle();
 	expect(forkOf(tree)).toBe(before);
+});
+
+afterEach(() => {
+	unmountMountedTrees();
+	keyboard.reset();
+});
+
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
+// The keyboard rising or falling, and the composer's focus, change only what
+// steps aside over the composer (Next, the header's chips); each reads them
+// itself, so the flip never re-renders the screen
+// or its transcript rows. A screen-wide commit as the keyboard starts to
+// move holds back the keyboard controller's per-frame padding for as long as
+// it takes (#3247).
+it("re-renders no transcript row when the keyboard comes up or goes down", async () => {
+	const { tree } = await mount(twoTurns("ref-memo-keyboard"));
+	expect(tree.root.findAll((node) => node.type === TimelineItem)).not.toEqual([]);
+	rows.renders = 0;
+	typeInComposer(tree);
+	await settle();
+	act(() => keyboard.hide());
+	await settle();
+	expect(rows.renders).toBe(0);
+});
+
+// With a message queued, its ghost is a transcript row that reads the
+// screen's state by context (GhostRowContext). Typing into an empty draft
+// changes that state (Edit can't bring a message back over your text) and
+// re-renders the screen, but no other row: the list hands its cells a stable
+// renderer (strictMode), and they re-render only for a new renderItem, new
+// rows, or the extraData they read (#3247).
+it("re-renders no transcript row when you type with a message queued", async () => {
+	const served = twoTurns("ref-memo-queued");
+	(served as unknown as { evener: { queue: unknown } }).evener.queue = {
+		revision: 1,
+		depth: 1,
+		preview: ["check the logs"],
+		texts: ["check the logs"],
+		ids: ["queue_1"],
+	};
+	const { tree } = await mount(served);
+	const composer = () =>
+		tree.root.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message");
+	expect(renderedText(tree)).toContain("check the logs");
+	rows.renders = 0;
+	typeInComposer(tree);
+	act(() => composer().props.onChangeText("a"));
+	await settle();
+	act(() => composer().props.onChangeText(""));
+	await settle();
+	act(() => keyboard.hide());
+	await settle();
+	expect(renderedText(tree)).toContain("check the logs");
+	expect(rows.renders).toBe(0);
+});
+
+// Each transcript cell reports its layout as it mounts or reflows, and the
+// list its content size with them. They feed the reading-position restore,
+// which reads them from refs; re-rendering the whole screen for each one was
+// a commit per cell per frame while streaming or scrolling (G15).
+it("re-renders the screen for no cell layout or content size change", async () => {
+	const { tree } = await mount(twoTurns("ref-memo-layout"));
+	const list = () => transcriptList(tree);
+	act(() => list().props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	const cells = () =>
+		list()
+			.findAll((node) => String(node.type) === "Item")
+			.map((item) => item.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0]);
+	const layOut = (height: number) =>
+		cells().forEach((cell, index) =>
+			act(() => cell?.props.onLayout({ nativeEvent: { layout: { x: 0, y: index * height, width: 390, height } } })),
+		);
+	// The rows measure and the session opens at its end.
+	layOut(150);
+	await settle();
+	expect(cells()).toHaveLength(4);
+	screen.listRenders = 0;
+	// They reflow (a text size change, a chip landing) and the content grows.
+	layOut(180);
+	act(() => list().props.onContentSizeChange(390, 800));
+	await settle();
+	expect(screen.listRenders).toBe(0);
 });

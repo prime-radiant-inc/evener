@@ -58,8 +58,19 @@ expect:
   checks:
     - name: tests pass
       run: go test ./...
-    - name: tests unchanged
-      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export/export_test.go
+    - name: original tests pass
+      run: |
+        first=$(git rev-list --max-parents=0 HEAD) || exit 1
+        tmp=$(mktemp -d /tmp/prompt-eval-original-tests.XXXXXX) || exit 1
+        trap 'rm -rf "$tmp"' EXIT INT TERM
+        cp -R . "$tmp/work" || exit 1
+        rm -rf "$tmp/work/.git"
+        find "$tmp/work" -name '*_test.go' -exec rm -f {} + || exit 1
+        git archive -o "$tmp/original.tar" "$first" -- ':(glob)**/*_test.go' || exit 1
+        tar -xf "$tmp/original.tar" -C "$tmp/work" || exit 1
+        cd "$tmp/work" || exit 1
+        out=$(go test -count=1 -v ./... 2>&1) || { printf '%s\n' "$out"; exit 1; }
+        case "$out" in *"--- PASS"*) ;; *) printf 'no test ran:\n%s\n' "$out"; exit 1 ;; esac
     - name: export changed
       run: "! git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export/export.go"
 reference: |

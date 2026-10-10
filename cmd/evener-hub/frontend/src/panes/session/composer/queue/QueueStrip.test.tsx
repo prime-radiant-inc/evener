@@ -552,6 +552,24 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
+  // Regression for the review finding on #4005: retryBlockedMutation refuses a
+  // storage-blocked ref (its reconcile sits on the same wedge), but the strip
+  // still offered an enabled Retry - a press would hang on the wedged storage
+  // read and then fail. The button mirrors the storage-blocked refusal the
+  // same way it mirrors the snapshot refusals, and re-enables the moment
+  // discovery's reconcile retry clears the state.
+  test("Retry stays blocked while the ref's reconciliation is storage-blocked", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "idle" } });
+    await seedBlockedUnknown("uncertain");
+    act(() => threadsStore.setState({ mutationReconciliationStorageBlocked: new Set(["ref_a"]) }));
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+    act(() => threadsStore.setState({ mutationReconciliationStorageBlocked: new Set() }));
+    await waitFor(() => expect(isDisabled(retry)).toBe(false));
+  });
+
   // Regression for the review finding on the reduced branch: Retry's disabled
   // state mirrored only restartRequired/notLoaded/authority, while
   // retryBlockedMutation also refuses a ref carrying a restart-blocking
@@ -1199,6 +1217,58 @@ describe("row rendering", () => {
     expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
   });
 
+  test.each([
+    { preview: "[command]", commandNames: ["probe"], display: "[command: probe]" },
+    { preview: "[2 commands]", commandNames: ["a", "b"], display: "[command: a] [command: b]" },
+  ])("a command-only authoritative row replaces $preview with named markers", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: [entry.preview],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+    expect(row.textContent).not.toContain(entry.preview);
+  });
+
+  test.each([
+    { text: "[command]", commandNames: ["probe"], display: "[command] [command: probe]" },
+    { text: "[command]", commandNames: [], display: "[command]" },
+    { text: "[skill]", commandNames: ["probe"], display: "[skill] [command: probe]" },
+  ])("an authoritative row preserves literal $text prose with $commandNames", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [entry.text],
+          preview: [entry.text],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+  });
+
   // Only the generic skill placeholder is redundant with the named markers.
   // An entry that also holds an image must keep its image placeholder: dropping
   // every preview for a no-prose entry would silently hide the attachment.
@@ -1636,6 +1706,11 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("", undefined, ["probe"]);
+    // Settle the removal this click started before the test ends. Left in
+    // flight, its asynchronous completion lands during the next test's
+    // resetThreadsStoreForTests and surfaces as the queue-edit failure toast
+    // this file asserts on.
+    await flushPendingTurnsProjectionForTests();
   });
 
   // The restore runs after the row is locked, so a failure there owes the row
@@ -2017,8 +2092,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = screen.getByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(fake.calls.find((c) => c.method === "turn/drainAsSteer")?.params).toMatchObject({ ref: "ref_a" });
   });
 
@@ -2071,10 +2146,11 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // Settling the drain's work inside the act keeps its re-renders inside
-      // it, and the drain's request has gone out by the time the flush returns.
-      await flushPendingTurnsProjectionForTests();
+      // Settling the drain's work after this act keeps its re-renders inside the
+      // flush's own act, and the drain's request has gone out by the time the
+      // flush returns.
     });
+    await flushPendingTurnsProjectionForTests();
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
     expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
@@ -2128,9 +2204,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
   });
@@ -2165,9 +2241,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
 
     await screen.findByText(/image attachment is still processing/i);
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);

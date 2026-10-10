@@ -4,6 +4,10 @@
 // it out of the front. Its header's title and ⋯ menu open those sheets and
 // act on the session (spec 8.1). On ConversationScreen.recovery.test.tsx's
 // harness.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivityReadParams } from "@evener/appwire-client";
+import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
+import { CommonActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -14,15 +18,28 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { createElement } from "react";
 import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
-import type { Thread } from "@evener/appwire-client";
-import { alertRequests, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { type Thread, WireError } from "@evener/appwire-client";
+import {
+	alertRequests,
+	keyboard,
+	playedHaptics,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	unmountMountedTrees,
+} from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
+import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
+import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
+import { archivedListStoreFor } from "./archivedLists";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -36,6 +53,8 @@ const stack = vi.hoisted(() => ({
 
 // Every scrollToOffset the screen asks of its list, oldest first.
 const listScrolls = vi.hoisted(() => [] as { offset: number; animated?: boolean }[]);
+const endScrolls = vi.hoisted(() => vi.fn());
+const appStateListeners = vi.hoisted(() => new Set<(state: string) => void>());
 
 // One sqlite double per database name, keyed the way the singletons open them.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
@@ -51,26 +70,29 @@ vi.mock("react-native", async () => {
 			useImperativeHandle(props.ref as never, () => ({
 				scrollToOffset: (options: { offset: number; animated?: boolean }) => listScrolls.push(options),
 				scrollToIndex: () => {},
-				getScrollResponder: () => ({ scrollToEnd: () => {} }),
+				getScrollResponder: () => ({ scrollToEnd: endScrolls }),
 			}));
 			return mock.FlatList(props);
 		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
-			addEventListener: () => ({ remove: () => {} }),
+			addEventListener: (event: string, listener: (state: string) => void) => {
+				if (event === "change") appStateListeners.add(listener);
+				return { remove: () => appStateListeners.delete(listener) };
+			},
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
-		// The real Modal renders its children only while visible; the inert host
-		// string would render them always, so the panel would look mounted even
-		// with the modal closed. This stub keeps the screen's open/closed state
-		// observable in the tree: no visible modal, no panel.
+		// The real Modal renders its children while visible, its own default
+		// being visible; the inert host string would render them always, so the
+		// panel would look mounted even with the modal closed. This stub keeps
+		// the screen's open/closed state observable in the tree: a modal told to
+		// hide renders no panel, and one that says nothing holds, as it does.
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
-			props.visible ? createElement("Modal", null, props.children) : null,
+			props.visible !== false ? createElement("Modal", null, props.children) : null,
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -226,29 +248,23 @@ type Answers = Record<string, unknown>;
  * request the screen makes. */
 function sessionClient(read: Thread, answers: Answers) {
 	const requests: { method: string; params: unknown }[] = [];
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
-			if (method === "thread/read") return { thread: read };
 			if (method in answers) {
 				const answer = answers[method];
 				if (typeof answer === "function") return answer(params);
 				if (answer instanceof Error) throw answer;
 				return answer;
 			}
+			if (method === "thread/read") return { thread: read };
+			if (method === "thread/unsubscribe") return {};
+			if (method === "evener/thread/activity/read")
+				return threadActivityFixture(read, params as SessionActivityReadParams).summary;
 			return new Promise<never>(() => {});
 		},
-		onNotification: () => () => {},
-	};
-	return { client, requests };
-}
-
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
+	return { client, requests, notify: client.emitNotification.bind(client) };
 }
 
 const screen = () => (
@@ -256,7 +272,7 @@ const screen = () => (
 );
 
 function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
-	const { client, requests } = sessionClient(read, answers);
+	const { client, requests, notify } = sessionClient(read, answers);
 	harness.connection = {
 		...screenConnection(client, "ready"),
 		error: null,
@@ -264,7 +280,7 @@ function mount(read: Thread = thread, answers: Answers = {}, connection: Record<
 		...connection,
 	};
 	const tree = render(screen());
-	return { tree, requests, client };
+	return { tree, requests, client, notify };
 }
 
 function subscribedReads(requests: { method: string; params: unknown }[]) {
@@ -273,18 +289,32 @@ function subscribedReads(requests: { method: string; params: unknown }[]) {
 	);
 }
 
+// Keep diagnostics visible and check the entire case, including afterEach teardown.
+beforeEach(({ onTestFinished }) => {
+	const errors = vi.spyOn(console, "error");
+	const warnings = vi.spyOn(console, "warn");
+	onTestFinished(() => {
+		try {
+			expect({ errors: errors.mock.calls, warnings: warnings.mock.calls }).toEqual({ errors: [], warnings: [] });
+		} finally {
+			errors.mockRestore();
+			warnings.mockRestore();
+		}
+	});
+});
 beforeEach(() => {
 	stack.focused = true;
 	stack.state = { index: 0, routes: [session] };
 	navigation.navigate.mockClear();
 	navigation.push.mockClear();
 	navigation.pop.mockClear();
-	navigation.goBack.mockClear();
+	navigation.goBack.mockReset();
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
 	listScrolls.length = 0;
 	// Each test starts with no detail level chosen on this device.
 	forgetDetailLevelsForHub("hub-1");
+	forgetHistoryForHub("hub-1");
 });
 
 /** The header options the screen set last. */
@@ -322,18 +352,29 @@ const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
 });
 
+// A session with shell jobs and no subagents has an Activity list too, and
+// the session can't tell from its read whether it has jobs, so the menu
+// offers Activity whenever it's connected, as it offers Tasks.
+it("offers Activity from the header menu with no subagents", async () => {
+	const { tree } = mount();
+	await settle();
+
+	act(() => menuAction("Activity").onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
+	await act(async () => tree.unmount());
+});
+
 it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
-	await flush();
+	await settle();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
-	if (!tasks) throw new Error("no Tasks item in the header menu");
-	act(() => tasks.onPress());
+	act(() => menuAction("Tasks").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
@@ -341,27 +382,20 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 		threadId: "thread-1",
 		hasTasks: true,
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Notes & links from the header menu as the NotesSheet route, without focusing the editor", async () => {
 	const { tree } = mount(withCapabilities({ sharedNotes: true }));
-	await flush();
+	await settle();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
-	if (!notes) throw new Error("no Notes & links item in the header menu");
-	act(() => notes.onPress());
+	act(() => menuAction("Notes & links").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",
 		ref,
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps its session subscribed while its own sheet covers it", async () => {
@@ -371,10 +405,10 @@ it("keeps its session subscribed while its own sheet covers it", async () => {
 		routes: [session, { key: "tasks-sheet", name: "TasksSheet" }],
 	};
 	const { tree, requests } = mount();
-	await flush();
+	await settle();
 
 	expect(subscribedReads(requests).length).toBeGreaterThan(0);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("follows no session while a screen is pushed over it", async () => {
@@ -384,36 +418,49 @@ it("follows no session while a screen is pushed over it", async () => {
 		routes: [session, { key: "reader", name: "Reader" }],
 	};
 	const { tree, requests } = mount();
-	await flush();
+	await settle();
 
 	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("titles the header with the session's state, and opens its info on a press", async () => {
 	const { tree } = mount();
-	await flush();
+	await settle();
 
 	const title = header().headerTitle;
 	if (typeof title !== "function") throw new Error("no header title component");
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Finished" } });
+	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Idle" } });
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 	// The sheet reads the session through the host the screen provides.
 	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
-	tree.unmount();
+	await act(async () => tree.unmount());
+});
+
+it("opens New session like this one: its host, folder, model and effort", async () => {
+	const { tree } = mount({ ...thread, evener: { ...thread.evener, reasoningEffort: "high" } });
+	await settle();
+
+	act(() => menuAction("New session like this").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
+		hubId: "hub-1",
+		hubName: expect.any(String),
+		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
+	});
+	await act(async () => tree.unmount());
 });
 
 it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
 	const { tree } = mount();
-	await flush();
+	await settle();
 
 	act(() => menuAction("Session info").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 /** The Session sheet's host, as the screen provides it now. */
@@ -423,13 +470,124 @@ function sessionInfoHost() {
 	return host;
 }
 
+// The model's name comes from the catalog, which the screen keeps across a
+// screen pushed over it and back: its new controls start from it, so the
+// Session sheet never names the model by its raw id while the next read is
+// out (audit N6).
+it("keeps naming the model after a screen pushed over it closes, while the catalog reads again", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				// The first read answers; the one after the push never does.
+				return modelReads === 1
+					? { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] }
+					: new Promise<never>(() => {});
+			},
+		},
+	);
+	await settle();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await settle();
+	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
+	await act(async () => tree.unmount());
+});
+
+// The hub announces a refreshed model list on evener/auth/updated (#3539):
+// the screen reads the catalog again and the model's name follows it, with no
+// reopening.
+it("reads the catalog again when the hub announces a refreshed model list", async () => {
+	let modelReads = 0;
+	const { tree, notify } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				const displayName = modelReads === 1 ? "DeepSeek 4.1 Flash" : "DeepSeek 4.1 Flash (refreshed)";
+				return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName }] };
+			},
+		},
+	);
+	try {
+		await settle();
+		expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+		act(() => notify({ method: "evener/auth/updated", params: {} }));
+		await settle();
+		expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({
+			reads: 2,
+			label: "DeepSeek 4.1 Flash (refreshed)",
+		});
+	} finally {
+		act(() => tree.unmount());
+	}
+});
+
+// The phone switched to another hub while this session stayed open: the
+// sheet still names this hub's own machine for this hub, from the hub list,
+// and shows it offline (audit N6).
+it("names the hub's own machine for its hub after another hub becomes active", async () => {
+	const profiles = [
+		{ id: "hub-1", name: "Work hub", origin: "https://work.example" },
+		{ id: "hub-2", name: "Home hub", origin: "https://home.example" },
+	];
+	const { tree } = mount(thread, {}, { profiles });
+	await settle();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: true });
+	harness.connection = { ...harness.connection, activeProfile: { id: "hub-2", name: "Home hub" } };
+	act(() => tree.update(screen()));
+	await settle();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: false });
+	await act(async () => tree.unmount());
+});
+
+// A failed catalog read clears the catalog, so the picker offers no stale
+// choices; the screen forgets it too, so controls made after a pushed screen
+// closes don't bring the old catalog back.
+it("brings no catalog back after a failed read and a screen pushed over it", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				if (modelReads === 1)
+					return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+				if (modelReads === 2) throw new Error("The hub couldn't list its models.");
+				return new Promise<never>(() => {});
+			},
+		},
+	);
+	await settle();
+	const pushAndReturn = async () => {
+		stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+		act(() => tree.update(screen()));
+		await settle();
+		stack.state = { index: 0, routes: [session] };
+		act(() => tree.update(screen()));
+		await settle();
+	};
+	await pushAndReturn();
+	expect(modelReads).toBe(2);
+	await pushAndReturn();
+	expect(modelReads).toBe(3);
+	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
+	await act(async () => tree.unmount());
+});
+
 it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
 	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
 		"evener/archive/set": {},
 		"thread/compact/start": {},
 		"thread/shutdown": {},
 	});
-	await flush();
+	await settle();
 
 	let archived: unknown;
 	await act(async () => {
@@ -461,16 +619,16 @@ it("runs the Session sheet's actions as the menu does, and hands back their toas
 	// Its toast shows on the session, once the sheet has gone.
 	act(() => sessionInfoHost().toast({ text: "Session archived" }));
 	expect(renderedText(tree)).toContain("Session archived");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when the hub went away before a Session sheet action could run", async () => {
 	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }));
-	await flush();
+	await settle();
 	// The confirmation was up when the connection dropped.
 	harness.connection = { ...harness.connection, state: "connecting" };
 	act(() => tree.update(screen()));
-	await flush();
+	await settle();
 
 	let stopped: unknown;
 	let compacted: unknown;
@@ -481,35 +639,65 @@ it("says so when the hub went away before a Session sheet action could run", asy
 	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
 	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
 	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens Pin to category… from the Session sheet as its screen", async () => {
 	const { tree } = mount();
-	await flush();
+	await settle();
 
 	await act(async () => {
 		await sessionInfoHost().act("pin");
 	});
 	expect(navigation.navigate).toHaveBeenCalledWith("PinAssignment", { hubId: "hub-1", ref, title: "Session" });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("shows the chosen detail level and confirms it", async () => {
 	const { tree } = mount();
-	await flush();
+	await settle();
 
+	playedHaptics.length = 0;
 	act(() => levelAction("Full").onPress());
 
+	// Spec 16.6: a selection tick on a detail level.
+	expect(playedHaptics).toEqual(["selection"]);
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
-	tree.unmount();
+	await act(async () => tree.unmount());
+});
+
+/** The ⋯ button in the header, as the screen last set it. */
+function menuButton(): ReactElement<{ onPress(): void }> {
+	const button = header().headerRight?.({ canGoBack: true });
+	if (!button) throw new Error("the header set no ⋯ button");
+	return button as ReactElement<{ onPress(): void }>;
+}
+
+it("opens Find in session from the Android ⋯ menu", async () => {
+	const { tree } = mount();
+	await settle();
+
+	act(() => menuButton().props.onPress());
+	const find = tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
+	)[0];
+	if (!find) throw new Error("no Find in session in the ⋯ menu");
+	act(() => find.props.onPress());
+	await settle();
+
+	expect(
+		tree.root.findAll(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		),
+	).toHaveLength(1);
+	await act(async () => tree.unmount());
 });
 
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {
 	const { tree, requests } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": {} });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Shut down").onPress());
 	const [confirm] = alertRequests;
@@ -525,7 +713,7 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	const reads = () => requests.filter(({ method }) => method === "thread/read").length;
 	const readsBefore = reads();
 	act(() => confirm?.buttons?.[1]?.onPress?.());
-	await flush();
+	await settle();
 
 	// It rereads the session it stays on.
 	expect(reads()).toBeGreaterThan(readsBefore);
@@ -537,20 +725,20 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Session shut down");
 	expect(renderedText(tree)).not.toContain("Runtime stop requested.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when a shut down can't be confirmed (coordinator ruling: silence reads as success)", async () => {
 	const { tree } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": new Error("refused") });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Shut down").onPress());
 	const [confirm] = alertRequests;
 	act(() => confirm?.buttons?.[1]?.onPress?.());
-	await flush();
+	await settle();
 
 	expect(renderedText(tree)).toContain("Couldn't shut down this session.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("has no Shut down item on an already shut-down session, even if the hub still reports the capability", async () => {
@@ -559,32 +747,96 @@ it("has no Shut down item on an already shut-down session, even if the hub still
 	// session whose own status is already closed/ended.
 	for (const status of ["closed", "ended"] as const) {
 		const { tree } = mount({ ...withCapabilities({ shutdown: true }), status: { type: status } });
-		await flush();
+		await settle();
 
 		expect(menuItems().find((item) => item.label === "Shut down")).toBeUndefined();
-		tree.unmount();
+		await act(async () => tree.unmount());
 	}
 });
 
 it("archives the session, with an Undo that restores it", async () => {
 	const { tree, requests } = mount(thread, { "evener/archive/set": {} });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Archive").onPress());
-	await flush();
+	await settle();
 
 	const archives = () => requests.filter(({ method }) => method === "evener/archive/set").map(({ params }) => params);
 	expect(archives()).toEqual([{ kind: "session", id: ref, archived: true }]);
 	expect(renderedText(tree)).toContain("Session archived");
 	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
 	act(() => undo.props.onPress());
-	await flush();
+	await settle();
 
 	expect(archives()).toEqual([
 		{ kind: "session", id: ref, archived: true },
 		{ kind: "session", id: ref, archived: false },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
+});
+
+const acceptedArchive = { ok: true, navigation: { generation_id: "g", targets: [] } };
+
+/** The screen over a connection with one archived list loaded, and a count
+ * of that list's reads. */
+async function mountWithLoadedArchivedList(archive: unknown) {
+	const { tree, client, requests } = mount(thread, {
+		"evener/archive/set": archive,
+		"evener/archived/list": { sessions: [], total: 0 },
+	});
+	await settle();
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list").length;
+	return { tree, archivedReads };
+}
+
+// Archiving a session moves it into its project's archived tier, and an
+// archived list no view is following hears no invalidation, so the
+// connection's loaded archived lists read again.
+it("reads the connection's loaded archived lists again once the hub accepts an archive", async () => {
+	const { tree, archivedReads } = await mountWithLoadedArchivedList(acceptedArchive);
+	expect(archivedReads()).toBe(1);
+
+	act(() => menuAction("Archive").onPress());
+	await settle();
+
+	expect(archivedReads()).toBe(2);
+	await act(async () => tree.unmount());
+});
+
+// A refused archive moves nothing, so no archived list reads again.
+it("reads no archived list again when the hub refuses an archive", async () => {
+	const { tree, archivedReads } = await mountWithLoadedArchivedList(new Error("refused"));
+
+	act(() => menuAction("Archive").onPress());
+	await settle();
+
+	expect(renderedText(tree)).toContain("Couldn't archive this session.");
+	expect(archivedReads()).toBe(1);
+	await act(async () => tree.unmount());
+});
+
+// An accepted Undo moves the session back out of the archived tier, so the
+// loaded archived lists read again; a refused one moves nothing.
+it.each([
+	["accepted", acceptedArchive, 3],
+	["refused", new Error("refused"), 2],
+])("reads the loaded archived lists again for an %s Undo only if the hub accepts it", async (_name, undone, reads) => {
+	const { tree, archivedReads } = await mountWithLoadedArchivedList((params: unknown) => {
+		if ((params as { archived: boolean }).archived) return acceptedArchive;
+		if (undone instanceof Error) throw undone;
+		return undone;
+	});
+
+	act(() => menuAction("Archive").onPress());
+	await settle();
+	expect(archivedReads()).toBe(2);
+	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
+	act(() => undo.props.onPress());
+	await settle();
+
+	expect(archivedReads()).toBe(reads);
+	await act(async () => tree.unmount());
 });
 
 it("says so when Undo can't restore the session (coordinator ruling: silence reads as success)", async () => {
@@ -594,27 +846,27 @@ it("says so when Undo can't restore the session (coordinator ruling: silence rea
 			throw new Error("refused");
 		},
 	});
-	await flush();
+	await settle();
 
 	act(() => menuAction("Archive").onPress());
-	await flush();
+	await settle();
 	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
 	act(() => undo.props.onPress());
-	await flush();
+	await settle();
 
 	expect(renderedText(tree)).toContain("Couldn't undo the archive.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when the hub refuses to archive", async () => {
 	const { tree } = mount(thread, { "evener/archive/set": new Error("refused") });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Archive").onPress());
-	await flush();
+	await settle();
 
 	expect(renderedText(tree)).toContain("Couldn't archive this session.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("opens an aside as its own session", async () => {
@@ -622,29 +874,29 @@ it("opens an aside as its own session", async () => {
 		thread: { ...thread, id: "thread-2", name: "Side question", evener: { ...thread.evener, ref: "local:aside" } },
 	};
 	const { tree } = mount(withCapabilities({ forkFromTurn: true }), { "thread/fork": aside });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Ask aside…").onPress());
-	await flush();
+	await settle();
 
 	expect(navigation.push).toHaveBeenCalledWith("Conversation", {
 		hubId: "hub-1",
 		ref: "local:aside",
 		title: "Side question",
 	});
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says so when an aside cannot start", async () => {
 	const { tree } = mount(withCapabilities({ forkFromTurn: true }), { "thread/fork": new Error("refused") });
-	await flush();
+	await settle();
 
 	act(() => menuAction("Ask aside…").onPress());
-	await flush();
+	await settle();
 
 	expect(navigation.push).not.toHaveBeenCalled();
 	expect(renderedText(tree)).toContain("Couldn't start an aside.");
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("projects the transcript at the level chosen for it, from the menu or elsewhere", async () => {
@@ -667,19 +919,58 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 		],
 	};
 	const { tree } = mount({ ...thread, turns: [turn] } as unknown as Thread);
-	await flush();
+	await settle();
 
 	act(() => levelAction("Chat").onPress());
-	await flush();
+	await settle();
 	expect(renderedText(tree)).toContain("look");
 	expect(renderedText(tree)).not.toContain("shell");
 
 	// Another screen choosing for this session reaches this one too.
 	act(() => detailLevels("hub-1").set(ref, "full"));
-	await flush();
+	await settle();
 	expect(renderedText(tree)).toContain("pondering the fix");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
-	tree.unmount();
+	await act(async () => tree.unmount());
+});
+
+it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+	const running = {
+		...thread,
+		status: { type: "active" },
+		evener: { ...thread.evener, activeTurnId: "t1" },
+		turns: [
+			{
+				id: "t1",
+				status: "inProgress",
+				items: [
+					{ id: "u", turnId: "t1", type: "userMessage", text: "look", status: "completed" },
+					{
+						id: "c",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "shell",
+						argumentsJson: '{"command":"ls"}',
+						output: "a.txt",
+						status: "completed",
+					},
+				],
+			},
+		],
+	} as unknown as Thread;
+	const { tree } = mount(running);
+	await settle();
+	// A run's fold control names it collapsed or expanded; a run held open
+	// while live has none.
+	const folds = () =>
+		tree.root.findAll((node) => /^1 step\b.*, (collapsed|expanded)$/.test(String(node.props.accessibilityLabel ?? "")));
+	act(() => detailLevels("hub-1").set(ref, "intent"));
+	await settle();
+	expect(folds()[0]?.props.accessibilityLabel).toMatch(/, collapsed$/);
+	act(() => detailLevels("hub-1").set(ref, "tools"));
+	await settle();
+	expect(folds()).toEqual([]);
+	await act(async () => tree.unmount());
 });
 
 /** A session with a subagent, tasks, a blocked goal and two queued
@@ -711,6 +1002,45 @@ const busy = {
 	},
 } as unknown as Thread;
 
+// Spec 13.1: the tray names the hub's running-subagent count, the one the
+// Board's row names, polled for this session alone. The thread's own
+// delegates list only the subagent it started itself; the hub counts 3 at
+// every depth.
+it("names the hub's running-subagent count in the tray, as the Board's row does", async () => {
+	const working = { ...busy, status: { type: "active" } } as Thread;
+	const { tree, requests } = mount(working, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] },
+	});
+	await settle();
+	const reads = requests.filter((request) => request.method === "evener/activity/read");
+	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
+	expect(renderedText(tree)).toContain("Waiting on 3 subagents");
+	await act(async () => tree.unmount());
+});
+
+// The screen polls its own session's activity only while it is in front,
+// whether or not the agent is working: the tray's count, and the last motion
+// the in-front seen mark follows.
+it("polls its session's activity while in front, at rest too, and not while covered", async () => {
+	const resting = mount(thread, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0 }] },
+	});
+	await settle();
+	expect(
+		resting.requests.filter((request) => request.method === "evener/activity/read").map((request) => request.params),
+	).toContainEqual({ refs: [ref] });
+	await act(async () => resting.tree.unmount());
+
+	stack.focused = false;
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	const covered = mount(thread, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0 }] },
+	});
+	await settle();
+	expect(covered.requests.filter((request) => request.method === "evener/activity/read")).toEqual([]);
+	await act(async () => covered.tree.unmount());
+});
+
 /** The screen's header block, its list, and scrolling it. */
 function sessionList(tree: ReturnType<typeof render>) {
 	const block = () => tree.root.findByType(SessionHeader);
@@ -718,8 +1048,13 @@ function sessionList(tree: ReturnType<typeof render>) {
 	return {
 		block,
 		list,
-		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		/** The block's panel reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() =>
+				block()
+					.findByType(GlassHeaderPanel)
+					.props.onLayout({ nativeEvent: { layout: { height } } }),
+			),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
@@ -729,26 +1064,29 @@ function sessionList(tree: ReturnType<typeof render>) {
 					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
 				}),
 			),
+		// As React Native does, the drag's end carries where it let go.
 		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() =>
-				list().props.onScroll({
-					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-				}),
-			);
-			act(() => list().props.onScrollEndDrag());
+			const event = {
+				nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			};
+			act(() => list().props.onScrollBeginDrag(event));
+			act(() => list().props.onScroll(event));
+			act(() => list().props.onScrollEndDrag(event));
 		},
 	};
 }
 
 it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
 	const { tree } = mount(busy);
-	await flush();
+	await settle();
 	const session = sessionList(tree);
 
 	// A live connection says nothing, and the old Reconnect row is gone.
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	// The goal is a context chip (spec 8.1) and nothing else: the bottom bar
+	// doesn't repeat it as a row, which would cost the transcript a line.
+	expect(renderedText(tree)).not.toContain("Goal · blocked");
 	const chip = (label: string) => {
 		const found = session
 			.block()
@@ -769,7 +1107,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Subagents").onPress());
+	act(() => menuAction("Activity").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
 		hubId: "hub-1",
 		ref,
@@ -777,7 +1115,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 
-	act(() => chip("Tasks, 1 of 2 done").props.onPress());
+	act(() => chip("Tasks, 1 of 2 settled").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
 		ref,
@@ -798,12 +1136,12 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(session.block().props.hidden).toBe(false);
 	// Hiding never moves the list.
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("hides the Subagents and Tasks chips once the connection bar itself would say something, but keeps the cached Goal and Queue chips", async () => {
-	const { tree } = mount(busy);
-	await flush();
+	const { tree, client } = mount(busy);
+	await settle();
 	vi.useFakeTimers();
 	try {
 		const { block } = sessionList(tree);
@@ -811,7 +1149,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		expect(label("Subagents, 1")).toHaveLength(1);
 
 		// The connection drops; the thread's cached delegates/tasks survive.
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 		// A blip shorter than the bar's own grace period (spec 14) - the chips
 		// stay exactly as visible as they were, since the bar itself says
@@ -823,22 +1161,22 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		});
 		act(() => tree.update(screen()));
 		expect(label("Subagents, 1")).toEqual([]);
-		expect(label("Tasks, 1 of 2 done")).toEqual([]);
+		expect(label("Tasks, 1 of 2 settled")).toEqual([]);
 		// Goal and Queue need no connection, so they still show.
 		expect(label("Goal, blocked")).toHaveLength(1);
 		expect(label("2 queued messages")).toHaveLength(1);
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("a Subagents/Tasks chip tap still works during a blip shorter than the connection bar's own grace period (Calm)", async () => {
-	const { tree } = mount(busy);
-	await flush();
+	const { tree, client } = mount(busy);
+	await settle();
 	vi.useFakeTimers();
 	try {
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 
 		const { block } = sessionList(tree);
@@ -857,12 +1195,79 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
+});
+
+// While you type in the composer, the chips and the note row step aside so
+// the transcript keeps its room; the nav bar stays (spec 8.1).
+// Whether the header's chips-and-note row is slid away behind the nav bar
+// (out of VoiceOver's reach while it is), whatever slid it: a downward scroll
+// or typing, which the header reads from the keyboard itself.
+const slidAway = (block: ReturnType<ReturnType<typeof sessionList>["block"]>) =>
+	block.findAll((node) => String(node.type) === "Animated.View")[0]?.props.accessibilityElementsHidden;
+
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReturnType<typeof render>) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
+it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
+	const { tree } = mount(busy);
+	await settle();
+	const session = sessionList(tree);
+	expect(slidAway(session.block())).toBe(false);
+	typeInComposer(tree);
+	expect(slidAway(session.block())).toBe(true);
+	act(() => keyboard.hide());
+	expect(slidAway(session.block())).toBe(false);
+	await act(async () => tree.unmount());
+});
+
+it("keeps the nav bar while you type", async () => {
+	const { tree } = mount(busy);
+	await settle();
+	navigation.setOptions.mockClear();
+	act(() => keyboard.show());
+	const calls = navigation.setOptions.mock.calls as [NativeStackNavigationOptions][];
+	expect(calls.some(([options]) => options.headerShown === false)).toBe(false);
+	act(() => keyboard.hide());
+	await act(async () => tree.unmount());
+});
+
+it("keeps the find bar in place while you type in it", async () => {
+	const { tree } = mount(busy);
+	await settle();
+	const session = sessionList(tree);
+	act(() => menuAction("Find in session").onPress());
+	act(() => keyboard.show());
+	expect(slidAway(session.block())).toBe(false);
+	expect(session.block().props.find).toBeDefined();
+	act(() => keyboard.hide());
+	await act(async () => tree.unmount());
+});
+
+it("stays hidden after the keyboard lowers when a downward scroll hid the chips", async () => {
+	const { tree } = mount(busy);
+	await settle();
+	const session = sessionList(tree);
+	act(() => session.list().props.onScrollBeginDrag());
+	session.scroll(40);
+	expect(slidAway(session.block())).toBe(true);
+	typeInComposer(tree);
+	expect(slidAway(session.block())).toBe(true);
+	act(() => keyboard.hide());
+	expect(slidAway(session.block())).toBe(true);
+	await act(async () => tree.unmount());
 });
 
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {
 	const { tree } = mount(busy);
-	await flush();
+	await settle();
 	const session = sessionList(tree);
 
 	// A reading-position restore or following the latest message moves the
@@ -877,14 +1282,18 @@ it("hides the chips only for the person's own drag, never for the app moving the
 	// A coast after the drag counts as the person's too.
 	act(() => session.list().props.onMomentumScrollBegin());
 	session.scroll(4010);
-	act(() => session.list().props.onMomentumScrollEnd());
+	act(() =>
+		session.list().props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 4010 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
 	expect(session.block().props.hidden).toBe(false);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("keeps the transcript in place when the connection bar comes and goes", async () => {
 	const { tree } = mount(busy);
-	await flush();
+	await settle();
 	const session = sessionList(tree);
 	session.measure(48);
 	session.drag(500);
@@ -900,12 +1309,12 @@ it("keeps the transcript in place when the connection bar comes and goes", async
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 	expect(listScrolls.at(-1)).toEqual({ offset: 500, animated: false });
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("composes two header-height changes correctly even before the list's own onScroll catches up (scrollEventThrottle)", async () => {
 	const { tree } = mount(busy);
-	await flush();
+	await settle();
 	const session = sessionList(tree);
 	session.measure(48);
 	session.drag(500);
@@ -922,18 +1331,18 @@ it("composes two header-height changes correctly even before the list's own onSc
 		{ offset: 524, animated: false },
 		{ offset: 548, animated: false },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("stays at the top when the header changes there", async () => {
 	const { tree } = mount(busy);
-	await flush();
+	await settle();
 	const session = sessionList(tree);
 	session.measure(48);
 	session.measure(72);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 88 });
 	expect(listScrolls).toEqual([]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 const OLD_PROTOCOL_ERROR = "This app and hub need compatible versions. Update them together, then reconnect.";
@@ -941,7 +1350,7 @@ const OLD_TRANSPORT_ERROR = "Could not connect. Check the hub address, token, an
 
 it("says Update needed, with the spec's hint, when no retry can fix the connection", async () => {
 	const { tree } = mount(busy, {}, { state: "closed", fatal: true, error: OLD_PROTOCOL_ERROR });
-	await flush();
+	await settle();
 
 	expect(sessionList(tree).block().props.status).toBe("Update needed");
 	const bar = tree.root.find((node) => node.type === ("Text" as never) && node.props.children === "Update needed");
@@ -949,17 +1358,17 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
 	);
 	expect(renderedText(tree)).not.toContain(OLD_PROTOCOL_ERROR);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
 	const { tree, client } = mount(busy);
-	await flush();
+	await settle();
 	vi.useFakeTimers();
 	try {
 		harness.connection = {
 			...harness.connection,
-			state: "reconnecting",
+			...screenConnection(client, "reconnecting"),
 			error: OLD_TRANSPORT_ERROR,
 		};
 		act(() => tree.update(screen()));
@@ -973,7 +1382,11 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 		expect(status()).toBe("Reconnecting…");
 		advance(28_000);
 		expect(status()).toBe("Offline · updated 1m ago");
-		advance(180_000);
+		// The status re-renders once a minute of the data's age, one tick per
+		// act.
+		advance(30_000);
+		advance(60_000);
+		advance(60_000);
 		expect(status()).toBe("Offline · updated 3m ago");
 		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
 		expect(renderedText(tree)).toContain("Offline · updated 3m ago");
@@ -985,16 +1398,527 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 	} finally {
 		vi.useRealTimers();
 	}
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("marks its session seen through the read's turn end once it has loaded in front (S4)", async () => {
 	const endedAt = Date.UTC(2026, 8, 26, 12, 0, 0, 123);
 	const { tree, requests } = mount({ ...thread, evener: { ...thread.evener, lastTurnEndedAt: endedAt } });
-	await flush();
+	await settle();
 
 	expect(requests.filter((request) => request.method === "evener/session/seen/set")).toEqual([
 		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
 	]);
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
+
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
+
+function olderHistoryAnswers(page: () => unknown, source: Thread = busy): Answers {
+	return {
+		"thread/read": {
+			thread: {
+				...source,
+				turns: [
+					{
+						id: "current-turn",
+						status: "completed",
+						itemsView: "full",
+						items: [
+							{
+								id: "current-message",
+								turnId: "current-turn",
+								type: "userMessage",
+								status: "completed",
+								text: "loaded current message",
+							},
+						],
+					},
+				],
+			},
+			olderCursor: "older-page",
+		},
+		"thread/turns/list": page,
+	};
+}
+
+function olderHistoryPage(text: string, id = "older") {
+	return {
+		data: [
+			{
+				id: `${id}-turn`,
+				status: "completed",
+				itemsView: "full",
+				items: [{ id: `${id}-message`, turnId: `${id}-turn`, type: "userMessage", status: "completed", text }],
+			},
+		],
+		nextCursor: null,
+	};
+}
+
+async function advanceHistory(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
+function openFind(tree: ReturnType<typeof render>, query: string) {
+	act(() => menuAction("Find in session").onPress());
+	const field = tree.root.find(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+	);
+	act(() => field.props.onChangeText(query));
+}
+
+it("recovers prolonged older-history demand without a second scroll and keeps the reader away from live", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 12) throw new Error("temporary history failure");
+			return olderHistoryPage("older sought message");
+		}),
+	);
+	await settle();
+	const reader = sessionList(tree);
+	const loaded = reader.list().props.data;
+	expect(loaded.length).toBeGreaterThan(0);
+	vi.useFakeTimers();
+	endScrolls.mockClear();
+	reader.drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(reader.list().props.data).toEqual(loaded);
+	await advanceHistory(999);
+	expect(attempts).toBe(1);
+	await advanceHistory(300_000);
+	expect(attempts).toBe(13);
+	expect(renderedText(tree)).toContain("older sought message");
+	expect(reader.list().props.data.length).toBeGreaterThan(loaded.length);
+	const keys = reader.list().props.data.map(readerKey);
+	expect(new Set(keys).size).toBe(keys.length);
+	const loadedKeys = loaded.map(readerKey);
+	expect(keys.filter((key: string) => loadedKeys.includes(key))).toEqual(loadedKeys);
+	expect(endScrolls).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps Find incomplete through failure and an inactive screen, then finds the healed page on return", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 2) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await settle();
+	vi.useFakeTimers();
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(renderedText(tree)).not.toContain("No matches");
+	expect(renderedText(tree)).toContain("Searching older messages");
+	act(() => {
+		for (const listener of appStateListeners) listener("background");
+	});
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	act(() => {
+		for (const listener of appStateListeners) listener("active");
+	});
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await advanceHistory(10_000);
+	expect(attempts).toBe(3);
+	expect(renderedText(tree)).toContain("unique search needle");
+	expect(renderedText(tree)).toContain("1 of 1");
+	expect(renderedText(tree)).not.toContain("No matches");
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("keeps quiet Find incomplete until history advances or ends (match: %s)", async (withMatch) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) return { data: [], nextCursor: "older-page" };
+			return withMatch ? olderHistoryPage("unique search needle") : { data: [], nextCursor: null };
+		}),
+	);
+	await settle();
+	const loaded = sessionList(tree).list().props.data;
+	vi.useFakeTimers();
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	const bar = () => tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+	expect(attempts).toBe(1);
+	expect(bar().props).toMatchObject({ settled: false, searchingOlder: true });
+	expect(renderedText(tree)).not.toContain("No matches");
+	expect(sessionList(tree).list().props.data).toEqual(loaded);
+	await advanceHistory(999);
+	expect(attempts).toBe(1);
+	expect(bar().props).toMatchObject({ settled: false, searchingOlder: true });
+	await advanceHistory(1);
+	expect(attempts).toBe(2);
+	expect(bar().props).toMatchObject({ settled: true, searchingOlder: false });
+	expect(bar().props.label).toBe(withMatch ? "1 of 1" : "No matches");
+	await advanceHistory(60_000);
+	expect(attempts).toBe(2);
+	act(() => tree.unmount());
+});
+
+it("explains a proven permanent older-history failure without claiming Find has no matches", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			throw new WireError("Update this client to read history.", -32000, { evenerErrorInfo: "upgradeRequired" });
+		}),
+	);
+	await settle();
+	vi.useFakeTimers();
+	openFind(tree, "unknown needle");
+	await advanceHistory(0);
+	expect(renderedText(tree)).toContain("Search incomplete");
+	expect(renderedText(tree)).toContain("Update this client to read history.");
+	expect(renderedText(tree)).not.toContain("No matches");
+	await advanceHistory(300_000);
+	expect(attempts).toBe(1);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("closing Find cancels only its demand (browse waiting: %s)", async (browse) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await settle();
+	vi.useFakeTimers();
+	if (browse) {
+		sessionList(tree).drag(100);
+		await advanceHistory(0);
+	}
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	const bar = tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+	act(() => bar.props.onDone());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(browse ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(browse);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("jumping live cancels browse demand and preserves Find (Find waiting: %s)", async (find) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await settle();
+	vi.useFakeTimers();
+	sessionList(tree).drag(100);
+	await advanceHistory(0);
+	if (find) {
+		openFind(tree, "unique search needle");
+		await advanceHistory(0);
+	}
+	const composer = tree.root.findAll((node) => typeof node.props.onJumpToLive === "function")[0];
+	expect(composer).toBeDefined();
+	act(() => composer.props.onJumpToLive());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(find ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(find);
+	act(() => tree.unmount());
+});
+
+it.each(["closed", "ended"] as const)("Find reads older history for a %s session", async (status) => {
+	let attempts = 0;
+	const source = { ...busy, status: { type: status } };
+	const { tree } = mount(
+		source,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("temporary");
+			return olderHistoryPage("finished session needle");
+		}, source),
+	);
+	await settle();
+	vi.useFakeTimers();
+	openFind(tree, "finished session needle");
+	await advanceHistory(10_000);
+	expect(attempts).toBe(2);
+	expect(renderedText(tree)).toContain("1 of 1");
+	act(() => tree.unmount());
+});
+
+it.each([
+	[false, false],
+	[true, false],
+	[false, true],
+])("handles pending history through a replacement connection (Find: %s, new binding: %s)", async (find, newBinding) => {
+	let attempts = 0;
+	const page = () => {
+		attempts += 1;
+		if (attempts === 1) throw new Error("temporary history failure");
+		return olderHistoryPage("replacement search needle");
+	};
+	const answers = olderHistoryAnswers(page);
+	const { tree } = mount(busy, answers);
+	await settle();
+	vi.useFakeTimers();
+	if (find) openFind(tree, "replacement search needle");
+	else sessionList(tree).drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	let finishRead: ((value: unknown) => void) | undefined;
+	const read = new Promise((resolve) => {
+		finishRead = resolve;
+	});
+	const replacement = sessionClient(busy, { ...answers, "thread/read": () => read });
+	harness.connection = { ...screenConnection(replacement.client, "ready"), error: null, disconnect: () => {} };
+	act(() => tree.update(screen()));
+	await advanceHistory(0);
+	if (find) expect(renderedText(tree)).not.toContain("No matches");
+	await act(async () => {
+		finishRead?.(
+			newBinding
+				? olderHistoryAnswers(page, { ...busy, evener: { ...busy.evener, instanceId: "replacement-instance" } })[
+						"thread/read"
+					]
+				: answers["thread/read"],
+		);
+	});
+	await advanceHistory(10_000);
+	expect(attempts).toBe(newBinding ? 1 : 2);
+	expect(renderedText(tree).includes("replacement search needle")).toBe(!newBinding);
+	if (find) expect(renderedText(tree)).toContain("1 of 1");
+	act(() => tree.unmount());
+});
+
+/** The pinned stack router pops the detail route. Board navigation then
+ * creates a new route and mounts a fresh screen and store. */
+function boardJourney(answers: Answers) {
+	const { client, requests } = sessionClient(busy, answers);
+	harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+	const router = StackRouter({ initialRouteName: "Sessions" });
+	const options = { routeNames: ["Sessions", "Conversation"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	const view = () => {
+		stack.state = state;
+		const current = state.routes[state.index];
+		return current?.name === "Conversation" ? (
+			<ConversationScreen
+				key={current.key}
+				route={current as ConversationScreenProps["route"]}
+				navigation={navigation as unknown as ConversationScreenProps["navigation"]}
+			/>
+		) : (
+			<></>
+		);
+	};
+	const tree = render(view());
+	const dispatch = (action: Parameters<typeof router.getStateForAction>[1]) => {
+		const next = router.getStateForAction(state, action, options);
+		if (!next) throw new Error("stack rejected action");
+		state = router.getRehydratedState(next, options);
+		act(() => tree.update(view()));
+	};
+	navigation.goBack.mockImplementation(() => dispatch(CommonActions.goBack()));
+	return {
+		tree,
+		requests,
+		open: () => dispatch(CommonActions.navigate("Conversation", route.params)),
+		back: () => {
+			const options = (navigation.setOptions.mock.calls as [NativeStackNavigationOptions][])
+				.map(([value]) => value)
+				.findLast((value) => value.headerLeft);
+			if (!options?.headerLeft) throw new Error("no Back header");
+			const button = options.headerLeft({ canGoBack: true }) as ReactElement<{ onPress(): void }>;
+			act(() => button.props.onPress());
+			expect(state.routes.map((value) => value.name)).toEqual(["Sessions"]);
+		},
+	};
+}
+
+it.each(["browse", "find"])("resumes %s demand after actual Back pop and Board reopen", async (demand) => {
+	let attempts = 0;
+	const journey = boardJourney(
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	try {
+		journey.open();
+		await settle();
+		vi.useFakeTimers();
+		if (demand === "find") openFind(journey.tree, "unique search needle");
+		else sessionList(journey.tree).drag(100);
+		await advanceHistory(0);
+		expect(attempts).toBe(1);
+		journey.back();
+		expect(appStateListeners.size).toBe(0);
+		expect(vi.getTimerCount()).toBe(0);
+		await advanceHistory(60_000);
+		expect(attempts).toBe(1);
+		journey.open();
+		await advanceHistory(1000);
+		expect(attempts).toBe(2);
+		expect(renderedText(journey.tree)).toContain("unique search needle");
+		if (demand === "find") {
+			const bar = journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+			expect(bar.props).toMatchObject({ query: "unique search needle", settled: true, label: "1 of 1" });
+		}
+	} finally {
+		act(() => journey.tree.unmount());
+	}
+});
+
+it("resumes an older-match search beyond its saved boundary after actual route disposal", async () => {
+	const cursors: unknown[] = [];
+	let failed = false;
+	const answers = olderHistoryAnswers(() => ({}));
+	const read = answers["thread/read"] as { thread: Thread };
+	const current = read.thread.turns?.[0]?.items?.[0];
+	if (!current || current.type !== "userMessage") throw new Error("missing hydrated message");
+	current.text = "needle latest";
+	answers["thread/turns/list"] = (params: { cursor: string }) => {
+		cursors.push(params.cursor);
+		if (params.cursor === "older-page")
+			return { ...olderHistoryPage("needle middle", "middle"), nextCursor: "oldest-page" };
+		if (!failed) {
+			failed = true;
+			throw new Error("temporary oldest page failure");
+		}
+		return olderHistoryPage("needle oldest", "oldest");
+	};
+	const journey = boardJourney(answers);
+	try {
+		journey.open();
+		await settle();
+		vi.useFakeTimers();
+		openFind(journey.tree, "needle");
+		const bar = () => journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+		expect(bar().props.label).toBe("1 of 1");
+		act(() => bar().props.onStep(-1));
+		await advanceHistory(0);
+		expect(bar().props).toMatchObject({ settled: true, label: "1 of 2" });
+		act(() => bar().props.onStep(-1));
+		await advanceHistory(0);
+		expect(cursors).toEqual(["older-page", "oldest-page"]);
+		expect(bar().props.settled).toBe(false);
+		journey.back();
+		await advanceHistory(60_000);
+		expect(cursors).toHaveLength(2);
+		journey.open();
+		await advanceHistory(1000);
+		expect(cursors).toEqual(["older-page", "oldest-page", "older-page"]);
+		expect(bar().props.settled).toBe(false);
+		await advanceHistory(1999);
+		expect(cursors).toHaveLength(3);
+		await advanceHistory(1);
+		expect(cursors).toEqual(["older-page", "oldest-page", "older-page", "oldest-page"]);
+		expect(bar().props).toMatchObject({ query: "needle", settled: true, label: "1 of 3" });
+	} finally {
+		act(() => journey.tree.unmount());
+	}
+});
+
+it.each(["close Find", "jump live", "remove hub", "new binding"])(
+	"does not restore abandoned intent on Board reopen after %s",
+	async (stop) => {
+		let attempts = 0;
+		const answers = olderHistoryAnswers(() => {
+			++attempts;
+			throw new Error("temporary");
+		});
+		const journey = boardJourney(answers);
+		try {
+			journey.open();
+			await settle();
+			vi.useFakeTimers();
+			if (stop === "jump live") sessionList(journey.tree).drag(100);
+			else openFind(journey.tree, "needle");
+			await advanceHistory(0);
+			expect(attempts).toBe(1);
+			if (stop === "close Find") {
+				const bar = journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+				act(() => bar.props.onDone());
+			}
+			if (stop === "jump live") {
+				const composer = journey.tree.root.find((node) => typeof node.props.onJumpToLive === "function");
+				act(() => composer.props.onJumpToLive());
+			}
+			journey.back();
+			if (stop === "remove hub") forgetHistoryForHub("hub-1");
+			if (stop === "new binding") {
+				const read = answers["thread/read"] as { thread: Thread };
+				read.thread = { ...read.thread, evener: { ...read.thread.evener, instanceId: "replacement-instance" } };
+			}
+			journey.open();
+			await advanceHistory(60_000);
+			expect(attempts).toBe(1);
+			expect(
+				journey.tree.root.findAll((node) => typeof node.type === "function" && node.type.name === "FindBar"),
+			).toHaveLength(0);
+		} finally {
+			act(() => journey.tree.unmount());
+		}
+	},
+);
+
+it.each(["browse", "Find"])(
+	"preserves imperative %s while disconnected and recovers on reconnection",
+	async (demand) => {
+		let attempts = 0;
+		const { tree, client } = mount(
+			busy,
+			olderHistoryAnswers(() => {
+				++attempts;
+				return olderHistoryPage("offline search needle");
+			}),
+		);
+		try {
+			await settle();
+			vi.useFakeTimers();
+			harness.connection = { ...screenConnection(client, "reconnecting"), error: null, disconnect: () => {} };
+			act(() => tree.update(screen()));
+			if (demand === "browse") sessionList(tree).drag(100);
+			else openFind(tree, "offline search needle");
+			await advanceHistory(60_000);
+			expect(attempts).toBe(0);
+			if (demand === "Find") expect(renderedText(tree)).not.toContain("No matches");
+			harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+			act(() => tree.update(screen()));
+			await advanceHistory(1000);
+			expect(attempts).toBe(1);
+			expect(renderedText(tree)).toContain("offline search needle");
+			if (demand === "Find") expect(renderedText(tree)).toContain("1 of 1");
+		} finally {
+			act(() => tree.unmount());
+		}
+	},
+);

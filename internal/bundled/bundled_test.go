@@ -68,6 +68,15 @@ func bundledMetaString(t *testing.T, meta map[string]any, key string) string {
 	return s
 }
 
+// Not parallel: Skills reads the package-wide subFS seam.
+func TestMemoryGardeningBundled(t *testing.T) {
+	meta := bundledMeta(t, Skills(), "gardening-memory/SKILL.md")
+	if name := bundledMetaString(t, meta, "name"); name != "gardening-memory" {
+		t.Fatalf("skill name=%q", name)
+	}
+	_ = bundledMetaString(t, meta, "description")
+}
+
 // bundledMetaStringList returns a required list-of-strings frontmatter field,
 // as YAML decodes a flow or block sequence.
 func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []string {

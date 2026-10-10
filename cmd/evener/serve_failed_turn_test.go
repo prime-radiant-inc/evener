@@ -101,10 +101,9 @@ func TestServe_FailedTurnReportsSystemErrorAcrossRestart(t *testing.T) {
 }
 
 // TestServe_StartupWritePublishesTheRestoredFailure pins serve's synchronous
-// startup SetState on its own. Two later writers publish the same WireState
-// and would mask a wrong startup write: the bridge's restored SessionStart, and
-// the input loop's first pass, which publishes WireState even when it claims
-// nothing. So the bridge never drains here, and the read happens in
+// startup SetState on its own. The bridge's restored SessionStart publishes
+// the same WireState later and would mask a wrong startup write, so the bridge
+// never drains here, and the read happens in
 // observeCallbacks, which runs after the startup write and before the input
 // loop starts: the startup write is the only status there is to read (#251).
 // It must be the restored session's WireState, systemError, rather than its

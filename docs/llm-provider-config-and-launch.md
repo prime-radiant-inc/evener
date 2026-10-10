@@ -212,6 +212,19 @@ deleting it by hand.
 
 ## Hub launch / spawn process model
 
+The hub's private [preview preparation](../cmd/evener-hub/app_launch_preview.go)
+owns directory and layer resolution for `plugin/preview` and the blank or
+missing-directory branches of `spawn/slashCatalog`. Blank CWD resolves only
+the user layer and launch overrides. A missing directory uses a disposable
+probe under the nearest existing ancestor, preserving the eventual target's
+project identity and excluding the ancestor's cwd-local launch layers. The
+probe stays alive through preview and command/skill discovery, and is removed
+on success or resolution failure without creating the target. Slash catalog's
+existing-directory branch retains its canonicalization and resolver seams and
+error classification. These previews apply no runtime defaults or model
+admission; `thread/start` owns scalar precedence and launch admission, while
+`launch/resolve` requires an existing directory and includes its display defaults.
+
 This is the part most worth internalizing: **the hub orchestrates, separate
 `evener` processes do the work.**
 

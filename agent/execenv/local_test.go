@@ -16,6 +16,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // writeExecFixture writes an executable that a parallel test then runs through
@@ -162,13 +165,12 @@ func TestEditFile_NoMatch_ShowsNearestText(t *testing.T) {
 }
 
 func TestLocalExecutionEnvironment_WriteFile_OutsideRoot_Rejected(t *testing.T) {
-	// Writing to an absolute path above the worktree must fail. This is the
-	// guard that would have prevented the flint-oak-willow incident where a
-	// debug_fix agent wrote to toil's own source tree from inside a project
-	// worktree.
+	// A confined policy rejects writes outside the workspace.
 	root := t.TempDir()
 	outside := t.TempDir()
 	env := NewLocalExecutionEnvironment(root)
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+	t.Cleanup(env.Cleanup)
 
 	target := filepath.Join(outside, "evil.go")
 	if _, err := env.WriteFile(target, "pwned"); err == nil {
@@ -185,6 +187,8 @@ func TestLocalExecutionEnvironment_EditFile_OutsideRoot_Rejected(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	env := NewLocalExecutionEnvironment(root)
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+	t.Cleanup(env.Cleanup)
 
 	target := filepath.Join(outside, "existing.go")
 	original := "package foo\n// do not touch\n"
@@ -205,12 +209,12 @@ func TestLocalExecutionEnvironment_EditFile_OutsideRoot_Rejected(t *testing.T) {
 }
 
 func TestLocalExecutionEnvironment_ExecCommand_WorkingDirOutsideRoot_Rejected(t *testing.T) {
-	// An explicit absolute workingDir outside the worktree must be refused.
-	// (Shell-internal `cd` to another directory is out of scope — the
-	// agent can still escape via `cd /other && …`. That's option B.)
+	// A confined policy rejects command working directories outside the workspace.
 	root := t.TempDir()
 	outside := t.TempDir()
 	env := NewLocalExecutionEnvironment(root)
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+	t.Cleanup(env.Cleanup)
 
 	res, err := env.ExecCommand(context.Background(), "pwd", 1000, outside, nil)
 	if err == nil {
@@ -247,6 +251,8 @@ func TestLocalExecutionEnvironment_WriteFile_DotDotEscape_Rejected(t *testing.T)
 	// given.
 	root := t.TempDir()
 	env := NewLocalExecutionEnvironment(root)
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
+	t.Cleanup(env.Cleanup)
 
 	// `../escape.txt` cleans to the parent of RootDir.
 	if _, err := env.WriteFile("../escape.txt", "nope"); err == nil {
@@ -939,9 +945,10 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(result), "\n")
-	if len(lines) > 5 {
-		t.Fatalf("expected at most 5 results, got %d", len(lines))
+	entries, notes := searchresult.Split(result)
+	lines := strings.Split(entries, "\n")
+	if len(lines) > 5 || notes != grepTruncationNote(5) {
+		t.Fatalf("expected at most 5 results then the truncation note, got %q", result)
 	}
 	// Lower bound: a mutation returning "" would yield len==1 with lines[0]==""
 	// and pass the upper-bound check above; pin that the result is non-empty.

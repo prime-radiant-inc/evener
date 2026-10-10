@@ -42,18 +42,19 @@ func (m hubModel) hubAuthLoginBlockedReason(name string) string {
 
 func authStatusFromAppWire(status appwire.AuthStatusResponse) authStatus {
 	return authStatus{
-		Provider:       status.Provider,
-		Supported:      status.Supported,
-		SignedIn:       status.SignedIn,
-		ActiveSource:   status.ActiveSource,
-		AuthModes:      status.AuthModes,
-		HasStoredOAuth: status.HasStoredOAuth,
-		Email:          status.Email,
-		StoredEmail:    status.StoredEmail,
-		AccountID:      status.AccountID,
-		WorkspaceID:    status.WorkspaceID,
-		NeedsRefresh:   status.NeedsRefresh,
-		NeedsLogin:     status.NeedsLogin,
-		Error:          status.Error,
+		Provider:        status.Provider,
+		Supported:       status.Supported,
+		SignedIn:        status.SignedIn,
+		ActiveSource:    status.ActiveSource,
+		AuthModes:       status.AuthModes,
+		HasStoredOAuth:  status.HasStoredOAuth,
+		Email:           status.Email,
+		StoredEmail:     status.StoredEmail,
+		AccountID:       status.AccountID,
+		WorkspaceID:     status.WorkspaceID,
+		NeedsRefresh:    status.NeedsRefresh,
+		NeedsLogin:      status.NeedsLogin,
+		RefreshRejected: status.RefreshRejected,
+		Error:           status.Error,
 	}
 }

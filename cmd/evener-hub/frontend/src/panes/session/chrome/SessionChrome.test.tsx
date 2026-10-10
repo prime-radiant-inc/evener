@@ -5,23 +5,32 @@ import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadR
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
+import { lazy } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../../motion";
+import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
+import {
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../../shell/clientContext";
-import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
+import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
+import { registerPaneForTests } from "../../../shell/paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
+import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
-import { topNotesStore } from "../../../stores/topNotes";
-import { ActivityPanelBody } from "./ActivityPanel";
-import { SessionChrome as SessionChromeView } from "./SessionChrome";
-import { TopNotesPanel } from "./TopNotesPanel";
+import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -103,7 +112,7 @@ function setLocation(ref: string): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -136,7 +145,7 @@ function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
+  const fake = activityClient();
   chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
@@ -152,14 +161,14 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
-  topNotesStore.getState().resetForTests();
 });
 
 afterEach(() => {
   cleanup();
+  resetActivitySidebarStoreForTests();
+  resetFocusedActivityScopeForTests();
   // @ts-expect-error jsdom has no matchMedia by default; individual mobile
   // tests install the narrow viewport explicitly.
   delete window.matchMedia;
@@ -178,35 +187,26 @@ test("renders nothing for a ref with no tracked model yet (defensive - Session.t
   expect(container.firstChild).toBeNull();
 });
 
-test("composes the status row, the session menu, and the goal control once the ref's thread is tracked", async () => {
+test("composes the status row and the session menu once the ref's thread is tracked", async () => {
   const fake = connectFakeClient();
-  // Seed a goal so GoalControl has something to render: with no goal it
-  // renders nothing at all (setting a goal lives in the command palette's
-  // /goal builtin), so a goal is what proves GoalControl is actually
-  // composed here.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
-        goal: { status: "active", iterations: 2 },
       },
     }),
   );
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
 
   // Status row: model chip.
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
-  // Goal control: the goal chip, once a goal is set. Two triggers share this
-  // accessible name now (the full chip and the compact glyph trigger that
-  // takes over below 560px - GoalControl.tsx), so a role/name query alone is
-  // ambiguous; the testid picks the chip specifically.
-  expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy();
 });
 
 test("composer placement renders one ordered inline status and actions cluster without footer-only controls", async () => {
@@ -230,6 +230,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   await threadsStore.getState().ensureThread("ref_composer");
 
   render(<SessionChrome ref="ref_composer" placement="composer" />);
+  await settleActivityDiscovery("ref_composer");
 
   const cluster = screen.getByTestId("session-chrome-inline");
   const statusContainer = within(cluster).getByTestId("session-chrome-inline-status");
@@ -252,12 +253,48 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
   expect(screen.queryByTestId("session-chrome")).toBeNull();
   expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
-  // GoalControl rides the inline status too: production only ever mounts
-  // placement="composer" (Composer.tsx), so leaving it footer-only made it
-  // unreachable in the real app — the live E2E pass caught the regression.
-  // The testid picks the full chip specifically - a role/name query is
-  // ambiguous now that the compact glyph trigger shares its accessible name.
-  expect(within(statusContainer).getByTestId("goal-chip-trigger")).toBeTruthy();
+  // The goal chip is gone entirely (Jesse's 2026-09-28 design ruling, "drop
+  // goal inline in the composer", taken to its conclusion by deleting the
+  // production-dead GoalControl): the goal objective stays visible and
+  // editable through the composer's own CurrentWork goal row and its inline
+  // /goal built-in.
+  expect(screen.queryByTestId("goal-chip-trigger")).toBeNull();
+  expect(screen.queryByTestId("goal-compact-trigger")).toBeNull();
+});
+
+// The composer's narrow layout relocates Stop and Steer into this menu
+// (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap), so the verbs
+// must reach it ONLY through the composer placement: the footer and
+// menu-only mounts share SessionMenu with the rail, where no draft exists
+// for Steer to send.
+test("turn verbs ride the composer placement's menu and no other placement's", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_turn"));
+  await threadsStore.getState().ensureThread("ref_turn");
+  const turnVerbs = {
+    stop: { onSelect: () => {} },
+    steer: { onSelect: () => {} },
+  };
+
+  const expectNoTurnVerbs = async (placement?: SessionChromePlacement) => {
+    render(<SessionChromeView ref="ref_turn" placement={placement} turnVerbs={turnVerbs} />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+    cleanup();
+  };
+
+  render(<SessionChromeView ref="ref_turn" placement="composer" turnVerbs={turnVerbs} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Steer" })).toBeTruthy();
+  cleanup();
+
+  // The default (footer) and menu-only mounts share SessionMenu with the
+  // rail, where no draft exists for Steer to send.
+  await expectNoTurnVerbs();
+  await expectNoTurnVerbs("menu");
 });
 
 test("default placement preserves the standalone session chrome presentation", async () => {
@@ -266,18 +303,20 @@ test("default placement preserves the standalone session chrome presentation", a
   await threadsStore.getState().ensureThread("ref_footer");
 
   render(<SessionChrome ref="ref_footer" />);
+  await settleActivityDiscovery("ref_footer");
 
   expect(screen.getByTestId("session-chrome")).toBeTruthy();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
 });
 
-test("status row has no inline Details/Tasks/Activity/Notes buttons; they live in the menu", async () => {
+test("status row has no inline pane buttons; inspection offers Overview without Details", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
 
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
@@ -285,49 +324,16 @@ test("status row has no inline Details/Tasks/Activity/Notes buttons; they live i
   expect(screen.queryByRole("button", { name: "Notes" })).toBeNull();
 
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: /Tasks/ })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Notes" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: /Overview/ })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Activity/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
 });
 
-// Exercise the shared SessionMenu through its real chrome adapter, proving
-// capability reaches the menu instead of testing only the menu's boolean prop.
-test.each(["desktop", "mobile"] as const)(
-  "%s Notes menu must not expose an unsupported blank panel",
-  async (viewport) => {
-    const restoreViewport = viewport === "mobile" ? installMobileViewport() : () => {};
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("thread/read", () =>
-      readResponse("ref_no_notes", {
-        evener: { ref: "ref_no_notes", capabilities: { ...CAPABILITIES, sharedNotes: false }, queue: { revision: 0 } },
-      }),
-    );
-    await threadsStore.getState().ensureThread("ref_no_notes");
-
-    try {
-      render(<SessionChrome ref="ref_no_notes" placement="composer" />);
-      await user.click(screen.getByRole("button", { name: "Session actions" }));
-      const opener = screen.queryByRole("menuitem", { name: "Notes" });
-      expect.soft(opener).toBeNull();
-      if (opener) await user.click(opener);
-      expect(topNotesStore.getState().isExpanded("ref_no_notes")).toBe(false);
-    } finally {
-      restoreViewport();
-    }
-  },
-);
-
-test.each([
-  { status: "idle", editable: true },
-  { status: "active", editable: true },
-  { status: "ended", editable: false },
-  { status: "closed", editable: false },
-  { status: "notLoaded", editable: false },
-] as const)(
-  "Notes navigation keeps supported $status content reachable (editable=$editable)",
-  async ({ status, editable }) => {
+test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
+  "Notes is absent from the menu for supported %s sessions",
+  async (status) => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
@@ -348,30 +354,8 @@ test.each([
     // Saved notLoaded sessions mount the menu-only placement, not the composer.
     render(<SessionChrome ref="ref_notes" placement={status === "notLoaded" ? "menu" : "composer"} />);
     await user.click(screen.getByRole("button", { name: "Session actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-    expect(topNotesStore.getState().isExpanded("ref_notes")).toBe(true);
-    // Menu invocation requests editor focus too, matching the palette /notes
-    // instead of leaving keyboard and mouse openers inconsistent.
-    expect(topNotesStore.getState().hasPendingFocus("ref_notes")).toBe(true);
-
-    const model = threadsStore.getState().threads.get("ref_notes")!;
-    render(<TopNotesPanel sessionRef="ref_notes" model={model} />);
-
-    expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent read sentinel");
-    expect(screen.getByRole("link", { name: "reference sentinel" }).getAttribute("href")).toBe(
-      "https://notes.test/read",
-    );
-    if (editable) {
-      expect((screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement).value).toBe(
-        "human read sentinel",
-      );
-      expect(screen.getByRole("button", { name: "Remove reference sentinel" })).toBeTruthy();
-    } else {
-      expect(screen.getByTestId("shared-notes-human").textContent).toBe("human read sentinel");
-      expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Remove reference sentinel" })).toBeNull();
-    }
-    expect(fake.calls.filter((call) => call.method === "notes/human/set" || call.method === "urls/remove")).toEqual([]);
+    expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
   },
 );
 
@@ -392,7 +376,7 @@ test("SessionChrome keeps its actions-menu tasks entry count-free", async () => 
 
   render(<SessionChrome ref="ref_outcomes" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
 });
 
 test("SessionChrome keeps the menu entry count-free even when an outcome is omitted", async () => {
@@ -412,7 +396,7 @@ test("SessionChrome keeps the menu entry count-free even when an outcome is omit
 
   render(<SessionChrome ref="ref_remaining" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
@@ -493,31 +477,89 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
   }
 });
 
-test("menu Tasks item toggles the sessionTasks workspace pane open and closed on desktop", async () => {
+test("mobile Overview focuses and scopes a background session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const backgroundRef = "ref_background_activity";
+  const focusedRef = "ref_focused_activity";
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? backgroundRef));
+  await threadsStore.getState().ensureThread(backgroundRef);
+  await threadsStore.getState().ensureThread(focusedRef);
+  workspaceStore.setState({
+    panes: [
+      { id: "pane_background_activity", type: "session", params: { ref: backgroundRef }, slot: "main" },
+      { id: "pane_focused_activity", type: "session", params: { ref: focusedRef }, slot: "secondary" },
+    ],
+    focusedPaneId: "pane_focused_activity",
+  });
+
+  try {
+    render(
+      <>
+        <SessionChromeView ref={backgroundRef} />
+        <SessionChromeView ref={focusedRef} />
+      </>,
+    );
+    const actions = screen.getAllByRole("button", { name: "Session actions" });
+    const backgroundActions = actions[0];
+    if (!backgroundActions) throw new Error("background SessionChrome action is missing");
+    await user.click(backgroundActions);
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+
+    expect(workspaceStore.getState().focusedPaneId).toBe(
+      workspaceStore.getState().panes.find((pane) => (pane.params as { ref?: string }).ref === backgroundRef)?.id,
+    );
+    expect(activitySidebarStore.getState().ref).toBe(backgroundRef);
+    expect(activitySidebarStore.getState().open).toBe(true);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("mobile Overview menu marks the sidebar open for its session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const ref = "ref_mobile_activity_check";
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  workspaceStore.setState({
+    panes: [{ id: "pane_mobile_activity_check", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "pane_mobile_activity_check",
+  });
+  activitySidebarStore.getState().openWith();
+
+  try {
+    render(<SessionChromeView ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.getByRole("menuitem", { name: "Overview ✓" })).toBeTruthy();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("Tasks is absent from the desktop session menu", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
-
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
-
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
+  expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
 });
 
 test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "ended" } }));
   await threadsStore.getState().ensureThread("ref_a");
   setLocation("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
@@ -641,12 +683,13 @@ test("menu Shut down is gated on capabilities.shutdown", async () => {
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
 
   expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
 });
 
-test("the details panel reads the work time of the SAME ref passed to SessionChrome", async () => {
+test("Overview About reads the work time of the SAME ref passed to SessionChrome", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -657,11 +700,21 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   );
   await threadsStore.getState().ensureThread("ref_d");
 
-  render(<SessionChrome ref="ref_d" />);
+  workspaceStore.setState({
+    panes: [{ id: "session-d", type: "session", params: { ref: "ref_d" }, slot: "main" }],
+    focusedPaneId: "session-d",
+  });
+  render(
+    <MotionProvider>
+      <SessionChrome ref="ref_d" />
+      <ActivitySidebar mobile />
+    </MotionProvider>,
+  );
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Details" }));
+  await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+  await user.click(await screen.findByRole("radio", { name: "About" }));
 
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
+  expect((await screen.findByTestId("session-details-work-time")).textContent).toContain("2m");
   restoreViewport();
 });
 
@@ -690,63 +743,70 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
   await waitFor(() => expect(renamedTo).toEqual({ ref: "ref_b", name: "New name" }));
 });
 
-test("the tasks panel fetches for the SAME ref passed to SessionChrome", async () => {
+test("the session menu does not expose the tasks panel", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_c"));
   await threadsStore.getState().ensureThread("ref_c");
-  let calledRef: unknown;
-  fake.on("evener/tasks/list", (params) => {
-    calledRef = params.ref;
-    return { data: [] };
-  });
-
   render(<SessionChrome ref="ref_c" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Tasks" }));
-
-  await waitFor(() => expect(calledRef).toBe("ref_c"));
+  expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
   restoreViewport();
 });
 
-// The tasks half of this pair (above) and the activity half join the same two
-// facts from opposite ends: ActivityPanel.test.tsx proves the panel fetches for
-// whatever sessionRef prop it is HANDED, and this proves SessionChrome hands
-// it its own. Neither alone catches a chrome that wires the panel to a wrong
-// or stale ref - both files stay green while the sheet quietly reports
-// another session's activity.
-test("the activity panel fetches for the SAME ref passed to SessionChrome", async () => {
+test("mobile Overview opens the shared sidebar for the SessionChrome ref", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_e"));
   await threadsStore.getState().ensureThread("ref_e");
-  let calledRef: unknown;
-  fake.on("evener/jobs/list", (params) => {
-    calledRef = params.ref;
-    return { data: [] };
-  });
 
-  render(<SessionChrome ref="ref_e" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+  try {
+    render(<SessionChrome ref="ref_e" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
 
-  await waitFor(() => expect(calledRef).toBe("ref_e"));
-  restoreViewport();
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "session")).toEqual([]);
+  } finally {
+    restoreViewport();
+  }
 });
 
-// --- panes through the menu (2026-08-05-unified-session-context-menu) --------
-//
-// Details/Tasks/Activity are the menu's leading group at every width and on
-// every host: desktop items toggle the workspace panes, mobile items open the
-// Sheets through the panels' imperative handles (openX branches on isMobile).
+test("desktop Overview toggles the sidebar without changing a saved Details pane", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_inline"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_inline");
+  workspaceStore.setState({
+    panes: [
+      { id: "session-inline", type: "session", params: { ref: "ref_inline" }, slot: "main" },
+      { id: "saved-details", type: "sessionDetails", params: { ref: "ref_inline" }, slot: "secondary" },
+    ],
+    focusedPaneId: "session-inline",
+  });
+  const panes = workspaceStore.getState().panes;
 
-test.each([
-  ["Details", "sessionDetails"],
-  ["Tasks", "sessionTasks"],
-  ["Activity", "sessionActivity"],
-] as const)("desktop %s menu item opens and closes its pane for the SessionChrome ref", async (label, type) => {
+  render(<SessionChrome ref="ref_inline" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(workspaceStore.getState().panes).toEqual(panes);
+
+  // The checked adornment is a live toggle, not a label: selecting a checked
+  // item must CLOSE the sidebar.
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Overview ✓" }));
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(workspaceStore.getState().panes).toEqual(panes);
+});
+
+// Desktop Activity opens the activity sidebar (the zoom system's triage
+// surface), not a workspace pane; its checked adornment is the sidebar's own
+// open state. Mobile still opens the Sheet (the mobile test below keeps that).
+test("desktop Overview menu item toggles the activity sidebar", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_inline"));
@@ -754,135 +814,215 @@ test.each([
   await threadsStore.getState().ensureThread("ref_inline");
 
   render(<SessionChrome ref="ref_inline" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: label }));
-  expect(workspaceStore.getState().panes).toContainEqual(
-    expect.objectContaining({ type, params: { ref: "ref_inline" } }),
-  );
+  // The chrome's Overview ✓ reads the sidebar scoped to THIS session, which
+  // production guarantees by the pane being focused while its menu is used;
+  // the bare test render focuses it explicitly through a fixture pane.
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_inline" });
+    });
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "session")).toEqual([]);
 
-  // The checked adornment is a live toggle, not a label: selecting a checked
-  // item must CLOSE its pane.
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
-  expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Overview ✓" }));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    restoreSession();
+  }
 });
 
-test("the menu marks every pre-opened session pane as checked", async () => {
+test("the menu marks Overview checked without exposing a pre-opened Details pane", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_checked"));
   fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
   await threadsStore.getState().ensureThread("ref_checked");
   workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked" });
-  workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked" });
-  workspaceStore.getState().openPane("sessionActivity", { ref: "ref_checked" });
+  // Activity's check is the sidebar's open state, scoped to this session.
+  activitySidebarStore.getState().openWith();
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref: "ref_checked" });
 
-  render(<SessionChrome ref="ref_checked" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Details ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    render(<SessionChrome ref="ref_checked" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.queryByRole("menuitem", { name: /Details/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Overview ✓" })).toBeTruthy();
+  } finally {
+    restoreSession();
+  }
 });
 
-test("mobile chrome opens Sheets without changing workspace panes", async () => {
+test("desktop Overview toggles closed only when the sidebar is scoped to this session", async () => {
+  // The scope follows focus: focusing session B re-scopes the open sidebar to
+  // B, so B's chrome menu reads "Overview ✓" and the item toggles closed.
+  // "Open on session A while B's menu is in use" is unreachable in
+  // production (dockview unmounts an inactive pane's chrome) - the reachable
+  // contract is that Activity never closes a sidebar scoped elsewhere.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_b"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_b");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    // Sidebar open on session A.
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith();
+    expect(activitySidebarStore.getState().open).toBe(true);
+
+    // Focusing session B re-scopes the open sidebar to it (the scope follows
+    // focus): B's chrome shows the checked item, and selecting it closes.
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "ref_b" });
+    });
+    render(<SessionChrome ref="ref_b" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Overview ✓" }));
+    expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    restoreSession();
+  }
+});
+
+test("desktop Overview preserves a retained Details placement when it opens the sidebar", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_orphan"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_orphan");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  const restoreDetailsPane = registerPaneForTests({
+    id: "sessionDetails",
+    title: () => "details",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref: "ref_orphan" });
+    const details = workspaceStore.getState().openPane("sessionDetails", { ref: "ref_orphan" });
+    const panes = workspaceStore.getState().panes;
+    render(<SessionChrome ref="ref_orphan" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual(panes);
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === details)?.type).toBe("sessionDetails");
+  } finally {
+    restoreSession();
+    restoreDetailsPane();
+  }
+});
+
+test("mobile chrome opens Overview without changing workspace panes", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_mobile"));
   await threadsStore.getState().ensureThread("ref_mobile");
 
+  workspaceStore.setState({
+    panes: [{ id: "session-mobile", type: "session", params: { ref: "ref_mobile" }, slot: "main" }],
+    focusedPaneId: "session-mobile",
+  });
+  const panes = workspaceStore.getState().panes;
   try {
-    render(<SessionChrome ref="ref_mobile" />);
-    expect(workspaceStore.getState().panes).toEqual([]);
+    render(
+      <MotionProvider>
+        <SessionChrome ref="ref_mobile" />
+        <ActivitySidebar mobile />
+      </MotionProvider>,
+    );
+    expect(workspaceStore.getState().panes).toEqual(panes);
     await user.click(screen.getByRole("button", { name: /session actions/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
-    expect(workspaceStore.getState().panes).toEqual([]);
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+    await user.click(screen.getByRole("radio", { name: "About" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" })));
+    expect(workspaceStore.getState().panes).toEqual(panes);
   } finally {
     restoreViewport();
   }
 });
 
-// --- activity panel background refresh ---------------------------------------
-//
-// The panels stay mounted triggerless. Established summaries refresh in the
-// background for the menu's "Activity · N" label, while initial discovery is
-// an explicit opt-in at live-session chrome mounts.
-
-test("triggerless chrome refreshes an established Activity summary in the background", async () => {
+test("session action markers name their owning ref and pane instead of the focused session", async () => {
   const fake = connectFakeClient();
-  let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_bg"));
-  fake.on("evener/jobs/list", () => {
-    fetches += 1;
-    return { data: emptyActivityTree() };
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? "ref_owner"));
+  await threadsStore.getState().ensureThread("ref_owner");
+  workspaceStore.setState({
+    panes: [
+      { id: "owner-pane", type: "session", params: { ref: "ref_owner" }, slot: "main" },
+      { id: "other-pane", type: "session", params: { ref: "ref_other" }, slot: "secondary" },
+    ],
+    focusedPaneId: "other-pane",
   });
-  await threadsStore.getState().ensureThread("ref_activity_bg");
-  const initial = threadsStore.getState().threads.get("ref_activity_bg");
-  if (!initial) throw new Error("missing background activity model");
-  const model = { ...initial, jobsUpdatedAt: 1 };
-  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-  activitySummaryStore.setState({
-    entries: new Map([
-      [
-        model.ref,
-        { counts: undefined, established: true, mountedBodies: 0, loading: false, lastFetchedBump: 0, requestID: 1 },
-      ],
-    ]),
-  });
-
-  render(<SessionChrome ref={model.ref} />);
-
-  // No trigger ever renders, yet the established summary refreshes against
-  // the newer bump - the menu's badge depends on exactly this.
-  await waitFor(() => expect(fetches).toBe(1));
+  render(<SessionChrome ref="ref_owner" />);
+  await settleActivityDiscovery("ref_owner");
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  const marker = trigger.querySelector<HTMLElement>("[data-session-actions-ref]");
+  expect(marker?.dataset.sessionActionsRef).toBe("ref_owner");
+  expect(marker?.dataset.paneId).toBe("owner-pane");
 });
 
-test("desktop Activity waits for the body's first root attempt before owning later refreshes", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_fresh"));
-  fake.on("evener/jobs/list", () => {
-    fetches += 1;
-    const tree = emptyActivityTree();
-    tree.root.counts.active = fetches;
-    return { data: tree };
-  });
-  await threadsStore.getState().ensureThread("ref_activity_fresh");
-  const initial = threadsStore.getState().threads.get("ref_activity_fresh");
-  if (!initial) throw new Error("missing initial activity freshness model");
-  threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
-
-  const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
-  await act(async () => Promise.resolve());
-  expect(fetches).toBe(0);
-  expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
-
-  const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
-  await waitFor(() => expect(fetches).toBe(1));
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
-  await user.keyboard("{Escape}");
-  body.unmount();
-
-  const current = threadsStore.getState().threads.get("ref_activity_fresh");
-  if (!current) throw new Error("missing activity freshness model");
-  act(() => {
-    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
-  });
-  // Two more fetches, not one: the unmount hands refresh ownership back to
-  // the chrome, which first catches up on bump 1 (the body's attempt ran at
-  // a null bump), and bump 2 - arriving while that catch-up is in flight -
-  // is queued and re-issued rather than dropped (the old drop was the
-  // stale-badge bug: the UI would never have fetched bump 2's jobs at all).
-  await waitFor(() => expect(fetches).toBe(3));
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
-  await Promise.resolve();
-  expect(fetches).toBe(3);
-  chrome.unmount();
-});
+test.each(["removed", "hidden ancestor"])(
+  "phone Overview returns to a visible session action when its original trigger is %s",
+  async (condition) => {
+    const restoreViewport = installMobileViewport();
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_return"));
+    await threadsStore.getState().ensureThread("ref_return");
+    workspaceStore.setState({
+      panes: [{ id: "return-pane", type: "session", params: { ref: "ref_return" }, slot: "main" }],
+      focusedPaneId: "return-pane",
+    });
+    try {
+      const original = render(<SessionChrome ref="ref_return" />);
+      const replacement = render(<SessionChrome ref="ref_return" placement="menu" />);
+      render(
+        <MotionProvider>
+          <ActivitySidebar mobile />
+        </MotionProvider>,
+      );
+      await user.click(within(original.container).getByRole("button", { name: "Session actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+      const sidebar = await screen.findByTestId("activity-sidebar");
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+      if (condition === "removed") original.unmount();
+      else original.container.style.display = "none";
+      await user.click(screen.getByRole("radio", { name: "About" }));
+      await user.keyboard("{Escape}");
+      const trigger = within(replacement.container).getByRole("button", { name: "Session actions" });
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+      expect(trigger.querySelector<HTMLElement>("[data-session-actions-ref]")?.dataset.paneId).toBe("return-pane");
+    } finally {
+      restoreViewport();
+    }
+  },
+);
 
 // Mobile cadence relocation (2026-07-30-mobile-session-layout-design.md,
 // decision 3): the session header's liveness cadence moves into the footer
@@ -895,6 +1035,7 @@ test("composes the session liveness cadence into the chrome row", async () => {
   await threadsStore.getState().ensureThread("ref_cad");
 
   render(<SessionChrome ref="ref_cad" />);
+  await settleActivityDiscovery("ref_cad");
 
   const slot = document.querySelector('[data-testid="session-chrome-cadence"]');
   expect(slot).not.toBeNull();
@@ -965,4 +1106,52 @@ test("the inline chrome keeps its fixed actions outside the shrinkable status qu
   expect(inline?.[1]).toContain("min-width: 0");
   expect(inline?.[1]).not.toContain("container-type");
   expect(body?.[1]).toContain("container-type: inline-size");
+});
+
+test("triggerless chrome shares summary ownership and refreshes its menu on typed invalidation", async () => {
+  const fake = connectFakeClient(),
+    ref = "ref_activity_bg";
+  let active = 1;
+  fake.on("thread/read", () => readResponse(ref));
+  // The menu counts subagents at every depth: the subtree read, which the
+  // subagent count owns apart from the session's discovery read.
+  fake.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(ref, scope),
+    // The session's own delegate count never moves; only the subtree's
+    // does, so the label can only follow the subtree count.
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: active, active, completed: 0, failed: 0 }
+        : { known: true, total: 9, active: 9, completed: 0, failed: 0 },
+    jobs: { known: true, total: 0, active: 0, completed: 0, failed: 0 },
+  }));
+  const reads = (subtree: boolean) =>
+    fake.calls.filter(
+      (c) =>
+        c.method === "evener/thread/activity/read" &&
+        ((c.params as { scope?: string }).scope === "subtree") === subtree,
+    );
+  const sessionReads = () => reads(false);
+  const subtreeReads = () => reads(true);
+  await threadsStore.getState().ensureThread(ref);
+  render(<SessionChrome ref={ref} />);
+  await settleActivityDiscovery(ref);
+  expect(sessionReads()).toHaveLength(1);
+  // The menu's subagent count is one shared read.
+  await waitFor(() => expect(subtreeReads()).toHaveLength(1));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(await screen.findByRole("menuitem", { name: "Overview · 1 active" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  active = 3;
+  act(() => fake.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
+  await waitFor(() => expect(sessionReads()).toHaveLength(2));
+  await waitFor(() => expect(subtreeReads()).toHaveLength(2));
+  await settleActivityDiscovery(ref);
+  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "subtree")?.summary?.delegates.active).toBe(3));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(await screen.findByRole("menuitem", { name: "Overview · 3 active" })).toBeTruthy();
+  expect(
+    fake.calls.filter((c) => c.method === "evener/thread/jobs/list" || c.method === "evener/thread/delegates/list"),
+  ).toHaveLength(0);
 });

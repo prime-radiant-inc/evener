@@ -18,6 +18,39 @@ except where a line says so itself.
 
 ## Composer
 
+### Atomic skill and command selections
+
+- Session and launcher composers share the real ProseMirror editor. Explicit
+  completion creates distinct indivisible skill or command atoms anywhere in
+  the prompt. Plain inline typed/pasted references remain prose.
+- Backspace/Delete remove an atom in one step. Undo/redo restore its kind and
+  canonical name. IME composition refuses completion without dismissing the menu.
+- Command atoms submit `{type: "command", name}` with empty arguments, while
+  leading typed commands and built-in controls keep their existing behavior.
+- Structured drafts and durable recovery retain kind and mention locations when
+  needed to distinguish same-spelling atoms from prose. Attachments preserve
+  selection intent while inserting/removing anchors and renumbering recovery.
+- Removing submitted image markers preserves each retained atom between them,
+  including its UTF-16 location, concurrent edits and same-spelling prose. The
+  session pane's source owns text, command/skill selections and mention locations
+  across editor remounts, cascade promotion and Return. It restores those mapped
+  identities during each exact submitted-marker cleanup, retaining the shared
+  draft ownership and source-lifetime fences for detached continuations.
+  The launch draft owns its restoration signal so a remounted editor receives
+  the same mapped selections in the same render as the cleaned prompt.
+- Recovery updates retain stored mention locations when composer text is omitted.
+  Replacing composer text replaces its locations too; omitted locations then
+  clear the old set, and an explicit empty set clears all selections.
+- Accepted text items retain validated UTF-16 mention locations in daemon-owned
+  input. Queue reads, push events and edits preserve those locations even in a
+  new client without the original local outbox; deleting a chosen atom does not
+  select another same-spelling prose token.
+- The launcher uses the selected target's pre-session catalog, keeps plain
+  Enter as newline/completion and submits only on Mod+Enter. Failed creation,
+  project navigation and remount retain unsent selections and attachments.
+- Session commands require `commandInput` at submission/resend. Unsupported
+  targets preserve the draft rather than silently sending only its prose.
+
 ### test-composer-shortcuts.js
 - in the main workspace, Cmd+Enter submits the composer and Shift+Enter triggers steer (test-composer-shortcuts.js)
 - with the enterToSend preference off (default), Cmd+Enter still submits and Shift+Enter still steers, identical to the unset default (test-composer-shortcuts.js)
@@ -58,6 +91,16 @@ except where a line says so itself.
 - test-composer-status-compact.js
 
 ## Queue (edit / cancel / promote / drain)
+
+- Authoritative queue rows name selected skills and commands once. Named markers
+  replace synthetic selection-only previews such as `[skill]`, `[command]` or
+  `[2 commands]` when the row has no user prose.
+- User prose, including literal `[skill]` or `[command]`, and image placeholders
+  stay visible beside the named selections.
+- Queued skill-only and command-only inputs count as user work even without text
+  or images. After the current turn completes, the session drain runs them as
+  distinct turns, records their selections in the transcript and settles their
+  durable mutations rather than leaving them claimed without dispatch.
 
 ### test-queue-and-drain.js
 - the queue preview panel starts hidden with depth 0 and an empty list on init (test-queue-and-drain.js)

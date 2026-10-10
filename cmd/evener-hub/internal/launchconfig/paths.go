@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -36,14 +37,17 @@ func PathsFor(stateRoot, cwd string) (Paths, error) {
 }
 
 func pathsForProject(stateRoot, cwd string, project identifier.Project) Paths {
-	projectDir := filepath.Join(stateRoot, "projects", project.ID)
 	return Paths{
-		Global:        filepath.Join(stateRoot, "launch.toml"),
+		// The user-level layers live under the user config root; an empty root
+		// (unresolvable) must yield no path rather than a relative one, so
+		// joining goes through userdirs.Subdir. The repo and project layers are
+		// anchored on cwd, which is always an absolute working directory.
+		Global:        userdirs.Subdir(stateRoot, "launch.toml"),
 		Repo:          filepath.Join(cwd, ".evener", "launch.toml"),
 		Project:       project,
 		ProjectFile:   filepath.Join(cwd, ".evener", "launch.local.toml"),
-		LegacyProject: filepath.Join(projectDir, "launch.toml"),
-		Meta:          filepath.Join(projectDir, "meta.toml"),
+		LegacyProject: userdirs.Subdir(stateRoot, filepath.Join("projects", project.ID, "launch.toml")),
+		Meta:          userdirs.Subdir(stateRoot, filepath.Join("projects", project.ID, "meta.toml")),
 	}
 }
 

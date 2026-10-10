@@ -4,27 +4,22 @@
 // copy control as every descriptor body that already uses it (A4) - a
 // same-shaped block is the whole point of a fallback.
 
+import { prettyJSON } from "@evener/appwire-client";
 import { CodeBlock } from "../../../widgets";
 import type { ToolRenderProps } from "./toolRenderers";
 
 // A tool whose result IS JSON (job_status, job_list, most MCP tools) emits it
 // as one compact line, which wraps into an unreadable wall in the block. When
-// the whole output parses as JSON, display it pretty-printed - the same
+// the whole output is a JSON object or array (@evener/appwire-client's
+// prettyJSON, which the phone reads too), display it pretty-printed - the same
 // display preparation the shell row's pretty-printed command gets - while the
 // copy control still writes the tool's original bytes (copyText, as
 // ShellCommandBlock does for the raw command).
-function prettyPrintJson(output: string): string | undefined {
-  try {
-    return JSON.stringify(JSON.parse(output), null, 2);
-  } catch {
-    return undefined;
-  }
-}
 
 export function RawToolOutput({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  const pretty = prettyPrintJson(output);
+  const pretty = prettyJSON(output);
   if (pretty === undefined || pretty === output) {
     return <CodeBlock text={output} copyLabel="Copy output" />;
   }

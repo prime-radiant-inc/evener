@@ -3,7 +3,7 @@
 // signature + a minimal working body (bare
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
-import type { AppwireClientLike, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
+import type { AppwireClientLike, ComposerMention, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
 import { buildComposerInput } from "@evener/appwire-client";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
@@ -12,6 +12,9 @@ export interface SpawnRequest {
   cwd: string; // required (ThreadStartParams.cwd)
   prompt: string; // RAW, untrimmed - floor §1.12 (bar the marker translation startThread applies)
   attachments?: InputAttachment[];
+  skillNames?: readonly string[];
+  commandNames?: readonly string[];
+  mentions?: readonly ComposerMention[];
   harness?: string;
   modelProvider?: string; // evener-model harness: "<provider>/<model>" split -> provider half
   model?: string; // model id (bare id for a non-evener harness - floor §1.4)
@@ -46,7 +49,10 @@ export interface SpawnResult {
 // SessionActionsMenu.tsx resp.thread.evener.ref for fork children). Stripping
 // here would open a dead-on-arrival session pane.
 export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
-  const params: ThreadStartParams = { cwd: req.cwd, input: buildComposerInput(req.prompt, req.attachments) };
+  const params: ThreadStartParams = {
+    cwd: req.cwd,
+    input: buildComposerInput(req.prompt, req.attachments, req.skillNames, req.commandNames, req.mentions),
+  };
   if (req.harness) params.harness = req.harness;
   if (req.modelProvider) params.modelProvider = req.modelProvider;
   if (req.model) params.model = req.model;

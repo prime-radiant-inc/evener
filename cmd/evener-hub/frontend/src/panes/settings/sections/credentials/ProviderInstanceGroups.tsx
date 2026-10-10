@@ -4,7 +4,7 @@
 // header label, and the list chrome live here once, so the two surfaces render
 // the same listing and the same group CSS and cannot drift; the only difference
 // is whether a row is tappable.
-import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { groupByProvider } from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
@@ -39,7 +39,14 @@ export type ProviderInstanceGroupsProps = {
        * needs a browser the remote host does not have. */
       onHostSignIn?: (name: string) => void;
     }
-  | { readOnly?: false; onSelect: (name: string) => void; onHostSignIn?: never }
+  | {
+      readOnly?: false;
+      onSelect: (name: string) => void;
+      onHostSignIn?: never;
+      /** The hub's credential statuses by instance name, for the rows'
+       * errors (#3539); this hub's own listing only. */
+      authStatuses?: ReadonlyMap<string, AuthStatusResponse> | null;
+    }
 );
 
 export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
@@ -51,6 +58,7 @@ export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
   // Read from the variant that has it: the type keeps an interactive listing
   // from passing one at all (see ProviderInstanceGroupsProps).
   const onHostSignIn = props.readOnly === true ? props.onHostSignIn : undefined;
+  const authStatuses = props.readOnly === true ? null : props.authStatuses;
   return (
     <div className={CLASS.groups}>
       {groups.map((group) => (
@@ -72,7 +80,12 @@ export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
                   }
                 />
               ) : (
-                <InstanceRow key={instance.name} instance={instance} onSelect={() => onSelect(instance.name)} />
+                <InstanceRow
+                  key={instance.name}
+                  instance={instance}
+                  authError={authStatuses?.get(instance.name)?.error}
+                  onSelect={() => onSelect(instance.name)}
+                />
               ),
             )}
           </ul>

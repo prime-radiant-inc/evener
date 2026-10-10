@@ -1,6 +1,10 @@
 package appwire
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"reflect"
+)
 
 const (
 	CodeParseError     = -32700
@@ -21,18 +25,20 @@ const (
 	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
 	// plain validation refusals, so a client that wants to place a message on
 	// an input must match this discriminant, never the code.
-	ErrorInvalidHostField          ErrorInfo = "invalidHostField"
-	ErrorResourceNotFound          ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound            ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable       ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable        ErrorInfo = "sessionUnavailable"
-	ErrorConflict                  ErrorInfo = "conflict"
-	ErrorActionUnavailable         ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch                 ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial        ErrorInfo = "queuedDrainPartial"
-	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
-	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
-	ErrorInternal                  ErrorInfo = "internal"
+	ErrorInvalidHostField           ErrorInfo = "invalidHostField"
+	ErrorResourceNotFound           ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound             ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable        ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
+	ErrorConflict                   ErrorInfo = "conflict"
+	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch                  ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial         ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"
+	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
+	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
+	ErrorJobOutputPruned            ErrorInfo = "jobOutputPruned"
+	ErrorInternal                   ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
 	// outside the entries (I/O, a corrupt index) three times in a row, and a
@@ -139,9 +145,8 @@ const (
 	// open/wait, never a bare retry.
 	ErrorHostBusyOperation ErrorInfo = "host-busy-operation"
 	// ErrorHostBusyTransient marks the same busy class with no operation
-	// reference: `plan`'s validation-plus-mint window (and, where fencing ships,
-	// an open `orphan-unverified` fence's non-teardown refusals — crash-fencing
-	// spec §8). The UI retries with backoff and shows no open/wait affordance.
+	// reference: `plan`'s validation-plus-mint window. The UI retries with
+	// backoff and shows no open/wait affordance.
 	ErrorHostBusyTransient ErrorInfo = "host-busy-transient"
 	// ErrorTokenMissing marks a deploy presenting a token the store holds no
 	// row for: nothing was minted, or the row is gone (consumed, superseded,
@@ -535,6 +540,34 @@ func (e WireError) Error() string {
 	return e.Message
 }
 
+// TransportFailureError reports that Client.Request failed at the transport
+// layer rather than by returning an error frame the peer sent: the connection's
+// read loop is gone (or its notification buffer overflowed), so the client
+// synthesized an InternalError-shaped failure for a request the peer never
+// answered. The embedded WireError keeps the shape generic callers already
+// match — errors.As still finds a CodeInternalError WireError — while the
+// distinct type is the provenance an adapter uses to tell a lost response from
+// an InternalError that arrived intact. Without it an adapter has only the
+// message text, and reclassifies an application error such as "cannot parse
+// transcript: unexpected EOF" as host unavailability, driving an automatic
+// mutation retry for a failure that was never a transport loss.
+type TransportFailureError struct {
+	WireError
+}
+
+// Unwrap exposes the synthesized WireError so errors.As(err, &WireError) still
+// matches exactly as it did before provenance was retained.
+func (e TransportFailureError) Unwrap() error { return e.WireError }
+
+// IsTransportFailure reports whether err is a failure the client synthesized
+// because its read loop is gone (see TransportFailureError), as opposed to an
+// error frame the peer sent. Adapters check it instead of reconstructing
+// transport provenance from message text.
+func IsTransportFailure(err error) bool {
+	_, ok := errors.AsType[TransportFailureError](err)
+	return ok
+}
+
 func InvalidParams(message string) WireError {
 	return WireError{
 		Code:    CodeInvalidParams,
@@ -553,6 +586,38 @@ func TranscriptItemCursorStale() WireError {
 		Data: ErrorData{
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// SessionActivityCursorStale reports a cursor whose read source incarnation
+// changed. Clients restart only the affected collection and retain useful rows.
+func SessionActivityCursorStale() WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: "session activity cursor is stale; refresh the collection",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorSessionActivityCursorStale,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// JobOutputPrunedErrorData names the coherent bounds that rejected a selector.
+type JobOutputPrunedErrorData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	RetainedStartBytes int64     `json:"retainedStartBytes"`
+	TotalBytes         int64     `json:"totalBytes"`
+}
+
+func JobOutputPruned(retainedStartBytes, totalBytes int64) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "job output is no longer retained",
+		Data: JobOutputPrunedErrorData{
+			EvenerErrorInfo:    ErrorJobOutputPruned,
+			RetainedStartBytes: retainedStartBytes,
+			TotalBytes:         totalBytes,
 		},
 	}
 }
@@ -670,6 +735,78 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			RetryDisposition: RetryDispositionNone,
 		},
 	}
+}
+
+// NotAccepted marks the refusal as a request that wasn't carried out and isn't
+// to be retried as it is, since it would be refused the same way.
+// clientMutationID names the refused mutation, or is empty when the request
+// carried none. The code and message stay, and so does the data: the standard
+// ErrorData, or a struct that embeds it (HostFieldErrorData,
+// LifecycleErrorData and the like), is marked where it stands, keeping its
+// evenerErrorInfo and every field of its own. Data of any other shape, or
+// none, gives way to a bare ErrorData, so the outcome is always readable.
+func (e WireError) NotAccepted(clientMutationID string) WireError {
+	e.Data = markedNotAccepted(e.Data, clientMutationID)
+	return e
+}
+
+var errorDataType = reflect.TypeFor[ErrorData]()
+
+// ErrorDataOf is the standard data an error's Data is, or a struct of it embeds
+// (HostFieldErrorData and the like), and whether it has one.
+func ErrorDataOf(data any) (ErrorData, bool) {
+	if plain, ok := data.(ErrorData); ok {
+		return plain, true
+	}
+	value := reflect.ValueOf(data)
+	if value.Kind() != reflect.Struct {
+		return ErrorData{}, false
+	}
+	field, ok := embeddedErrorData(value)
+	if !ok {
+		return ErrorData{}, false
+	}
+	return field.Interface().(ErrorData), true
+}
+
+// markedNotAccepted is a copy of data with its ErrorData marked: data itself
+// when it is one, or the ErrorData a struct embeds. The error data types embed
+// ErrorData by value, and Data holds them by value, so reaching the embedded
+// one means copying the struct into something settable; reflection does that
+// for every such type without each one opting in, so a new wrapper can't be
+// missed. Data of any other shape gives way to a fresh ErrorData.
+func markedNotAccepted(data any, clientMutationID string) any {
+	mark := func(data *ErrorData) {
+		data.ClientMutationID = clientMutationID
+		data.MutationOutcome = MutationOutcomeNotAccepted
+		data.RetryDisposition = RetryDispositionNone
+	}
+	if plain, ok := data.(ErrorData); ok {
+		mark(&plain)
+		return plain
+	}
+	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
+		copied := reflect.New(value.Type()).Elem()
+		copied.Set(value)
+		if field, ok := embeddedErrorData(copied); ok {
+			mark(field.Addr().Interface().(*ErrorData))
+			return copied.Interface()
+		}
+	}
+	var fresh ErrorData
+	mark(&fresh)
+	return fresh
+}
+
+// embeddedErrorData is the ErrorData field a struct value embeds itself,
+// settable when the struct is. FieldByName also finds one promoted from a
+// deeper embed (a longer Index), which isn't this data's, so that doesn't count.
+func embeddedErrorData(value reflect.Value) (reflect.Value, bool) {
+	field, ok := value.Type().FieldByName("ErrorData")
+	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
+		return reflect.Value{}, false
+	}
+	return value.Field(field.Index[0]), true
 }
 
 func MutationUnknown(clientMutationID, message string) WireError {

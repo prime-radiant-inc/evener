@@ -834,10 +834,9 @@ test("a pending Remove confirm does not follow a selection change", async () => 
   expect(fake.calls.some((c) => c.method === "evener/marketplace/remove")).toBe(false);
 });
 
-// removeBusy belongs to the request that set it, and that request names the
-// marketplace it was confirmed for: left standing, it disables the next
-// marketplace's confirm before the user has asked for anything.
-test("a remove still in flight does not leave the next marketplace's confirm busy", async () => {
+// The stores serialize every write behind this host's one hub write gate, so
+// a removal in flight disables the next marketplace's Remove until it lands.
+test("an in-flight removal disables the next marketplace's Remove until it lands", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   let release: (() => void) | undefined;
   const removal = new Promise<{ marketplaces: MarketplaceEntry[] }>((resolve) => {
@@ -852,23 +851,21 @@ test("a remove still in flight does not leave the next marketplace's confirm bus
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
   select("other");
-  // Scoped to the sheet: a confirm the selection change failed to close would
-  // otherwise put a second Remove button on screen.
-  await user.click(within(screen.getByRole("dialog", { name: "other" })).getByRole("button", { name: "Remove" }));
-  const confirm = screen.getByRole("dialog", { name: "Remove marketplace" });
-  expect(within(confirm).getByText(/"other"/)).toBeTruthy();
-  expect((within(confirm).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => {
     release?.();
     await removal;
   });
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false),
+  );
 });
 
 // The removal names the marketplace it was confirmed for, and so does the
-// sheet-local half of its continuation: a sheet the user has moved on to has
-// its own confirm up, about its own marketplace. The toast is not sheet-local
-// - like a save's, it reports a write that landed, wherever the user has gone.
-test("a remove that resolves after another marketplace opened leaves that sheet's confirm standing", async () => {
+// sheet-local half of its continuation: a sheet the user has moved on to stays
+// standing on its own marketplace. The toast is not sheet-local - like a
+// save's, it reports a write that landed, wherever the user has gone.
+test("a remove that resolves after another marketplace opened leaves that sheet standing", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   let release: (() => void) | undefined;
   fake.on("evener/marketplace/remove", (params) => {
@@ -885,53 +882,38 @@ test("a remove that resolves after another marketplace opened leaves that sheet'
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
   select("other");
-  await user.click(within(screen.getByRole("dialog", { name: "other" })).getByRole("button", { name: "Remove" }));
   await act(async () => release?.());
   // The removal landed - the store says so - so its continuation has run.
   expect(extensionsStore.getState().marketplaces).toEqual([OTHER]);
-  const confirm = screen.getByRole("dialog", { name: "Remove marketplace" });
-  expect(within(confirm).getByText(/"other"/)).toBeTruthy();
+  // The sheet the user moved to is still open, still on its own marketplace.
+  const sheet = screen.getByRole("dialog", { name: "other" });
+  expect(within(sheet).getByRole("heading", { name: "other" })).toBeTruthy();
   expect(getToasts().some((t) => t.kind === "success" && t.text === "Removed marketplace acme")).toBe(true);
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false),
+  );
 });
 
-// removeBusy is the confirm's disabled state and belongs to the request that
-// set it: an earlier marketplace's removal landing must not present the
-// user's own, still-running one as finished.
-test("a remove that resolves late leaves another marketplace's in-flight remove busy", async () => {
+// The confirm's busy state is the shared hub write gate: while its own
+// removal is in flight the confirm disables both buttons, and it stays up
+// until the write lands.
+test("a removal's confirm is busy while the write holds the shared gate", async () => {
   const fake = connectionStore.getState().client as FakeClient;
-  const release = new Map<string, () => void>();
-  fake.on(
-    "evener/marketplace/remove",
-    ({ name }) =>
-      new Promise((resolve) => {
-        release.set(name, () => resolve({ marketplaces: [OTHER] }));
-      }),
-  );
-  const { select } = renderSheet(ACME);
+  let release: (() => void) | undefined;
+  fake.on("evener/marketplace/remove", () => {
+    return new Promise((resolve) => {
+      release = () => resolve({ marketplaces: [OTHER] });
+    });
+  });
+  renderSheet(ACME);
   act(() => extensionsStore.setState({ marketplaces: [ACME, OTHER] }));
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Remove" }));
-  await user.click(
-    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
-  );
-  select("other");
-  await user.click(within(screen.getByRole("dialog", { name: "other" })).getByRole("button", { name: "Remove" }));
-  await user.click(
-    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
-  );
-  await waitFor(() =>
-    expect(
-      (
-        within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", {
-          name: "Remove",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true),
-  );
-  await act(async () => release.get("acme")?.());
   const confirm = screen.getByRole("dialog", { name: "Remove marketplace" });
+  await user.click(within(confirm).getByRole("button", { name: "Remove" }));
   expect((within(confirm).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
   expect((within(confirm).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => release?.());
 });
 
 test("closes itself when the entry disappears from the store", async () => {

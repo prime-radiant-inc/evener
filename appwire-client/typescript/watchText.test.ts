@@ -55,23 +55,19 @@ describe("watchNextFireLabel", () => {
   const now = Date.parse("2026-09-12T10:00:00.000Z");
 
   test("a derived fire a few hundred milliseconds away renders no countdown", () => {
-    expect(watchNextFireLabel({ kind: "every", derived_next_fire_at: "2026-09-12T10:00:00.400Z" }, now)).toBe("");
+    expect(watchNextFireLabel({ kind: "every", derivedNextFireAt: "2026-09-12T10:00:00.400Z" }, now)).toBe("");
   });
 
   test("a derived fire rounds to an honest whole-second approximation", () => {
-    expect(watchNextFireLabel({ kind: "every", derived_next_fire_at: "2026-09-12T10:00:00.600Z" }, now)).toBe(
-      "next ~1s",
-    );
-    expect(watchNextFireLabel({ kind: "after", derived_next_fire_at: "2026-09-12T10:00:04.000Z" }, now)).toBe(
-      "next ~4s",
-    );
+    expect(watchNextFireLabel({ kind: "every", derivedNextFireAt: "2026-09-12T10:00:00.600Z" }, now)).toBe("next ~1s");
+    expect(watchNextFireLabel({ kind: "after", derivedNextFireAt: "2026-09-12T10:00:04.000Z" }, now)).toBe("next ~4s");
   });
 
   test("an already-past fire renders no countdown", () => {
-    expect(watchNextFireLabel({ kind: "every", derived_next_fire_at: "2026-09-12T09:59:59.000Z" }, now)).toBe("");
+    expect(watchNextFireLabel({ kind: "every", derivedNextFireAt: "2026-09-12T09:59:59.000Z" }, now)).toBe("");
   });
 
   test("a non-clock cadence never renders a countdown", () => {
-    expect(watchNextFireLabel({ kind: "output", derived_next_fire_at: "2026-09-12T10:00:04.000Z" }, now)).toBe("");
+    expect(watchNextFireLabel({ kind: "output", derivedNextFireAt: "2026-09-12T10:00:04.000Z" }, now)).toBe("");
   });
 });

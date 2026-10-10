@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
@@ -64,10 +64,12 @@ func (e *terminalRecordPersistError) Unwrap() error {
 type jobManager struct {
 	// retirementOwner is installed before publication and never rebound. Unlike
 	// stable-parent routing, process admission follows the Session's atomic pointer.
-	retirementOwner *Session
-	mu              sync.Mutex
-	watchNotifyMu   sync.Mutex
-	watchPersistMu  sync.Mutex
+	retirementOwner        *Session
+	mu                     sync.Mutex
+	watchActivityMu        sync.Mutex
+	watchActivityReceivers map[string]struct{}
+	watchNotifyMu          sync.Mutex
+	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
 	// and wait only after releasing that mutex.
@@ -747,12 +749,21 @@ func (jm *jobManager) createJobOutputForID(jobID string) (string, *jobstore.Outp
 }
 
 func (jm *jobManager) close() error {
-	runtimeErr := jm.closeRuntimeState()
+	runtimeErr := jm.closeRuntimeState(context.Background())
 	storeErr := jm.closeStoreOnly()
 	return errors.Join(runtimeErr, storeErr)
 }
 
-func (jm *jobManager) closeRuntimeState() error {
+// closeRuntimeState tears down the manager's process-local runtime. ctx is the
+// shared close-cascade context (see ensureCloseBudget): its Done bounds the
+// running-job wait so serial child teardown cannot renew a fresh closeGrace
+// window per child after the inherited deadline has expired. A nil ctx carries
+// no deadline, preserving the previous behavior for callers with no cascade to
+// inherit from.
+func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
@@ -811,6 +822,10 @@ waitLoop:
 	for _, run := range running {
 		select {
 		case <-run.done:
+		case <-ctx.Done():
+			waitErr = errors.New("job manager close timed out waiting for running jobs")
+			jm.abandonRunningJobs()
+			break waitLoop
 		case <-deadline.C():
 			waitErr = errors.New("job manager close timed out waiting for running jobs")
 			jm.abandonRunningJobs()
@@ -1282,64 +1297,66 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if rec == nil {
 		return "", 0, false, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
+	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, tailBytes, false)
+}
+
+// readOutputPage resolves the live owner first and reads one coherent raw page.
+func (jm *jobManager) readOutputPage(jobID string, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, bool, error) {
+	run, rec, err := jm.recordForRead(jobID)
 	if err != nil {
-		return "", 0, false, err
+		return jobstore.OutputWindowSnapshot{}, false, err
 	}
-	return tailOutputFile(path, tailBytes, validatedTotal)
+	if run != nil {
+		page, err := run.output.ReadPage(beforeBytes, maxBytes)
+		return page, true, err
+	}
+	if rec == nil {
+		return jobstore.OutputWindowSnapshot{}, false, nil
+	}
+	page, err := readJobOutputPageForRecord(jm.outputPathForJob(rec, jobID), rec, beforeBytes, maxBytes)
+	return page, true, err
 }
 
-// jobOutputWindow is one paged read of a job's output in lifetime offsets:
-// the content covering [start, end) of total bytes ever written, where
-// earliest is the oldest still-retained offset (the evicted prefix length).
-type jobOutputWindow struct {
-	content  string
-	start    int64
-	end      int64
-	total    int64
-	earliest int64
+func readJobOutputPageForRecord(path string, rec *jobstore.JobRecord, beforeBytes *int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	page, err := readLocalJobOutputPageSnapshot(path, beforeBytes, maxBytes)
+	if err == nil || errors.Is(err, jobstore.ErrOutputPruned) || errors.Is(err, jobstore.ErrInvalidOffset) {
+		if err := checkOutputTotalForRecord(rec, page.TotalBytes); err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
+		}
+	}
+	return page, err
 }
 
-// readOutputWindow reads up to maxBytes of jobID's output ending at lifetime
-// offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
-// evener/jobs/output paging for both the live output store and terminal logs.
-func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
+// recordForRead resolves jobID's record with the live-first order both
+// readOutputPage and Session.JobGet depend on: the running record when the
+// job is live, else the store's folded record. run is non-nil only when a live
+// job owns jobID (readOutputPage reads the live output buffer through it);
+// rec is a SNAPSHOT of the live record when the job is running, else the
+// store's already-folded record, and nil when neither holds the job.
+//
+// The live record is cloned under jm.mu: the job path mutates it in place
+// there (finalizeJob, stampLastActivityLocked, noteJobActivity), and a caller
+// reads the returned record after the lock is released - the same reason every
+// other live-record reader in this file clones under the lock.
+func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstore.JobRecord, err error) {
+	if jm == nil {
+		return nil, nil, nil
+	}
 	jm.mu.Lock()
-	run := jm.running[jobID]
+	run = jm.running[jobID]
+	var snapshot *jobstore.JobRecord
+	if run != nil {
+		snapshot = cloneJobRecord(run.rec)
+	}
 	jm.mu.Unlock()
 	if run != nil {
-		buf, start, end, total, err := run.output.Window(beforeBytes, int(maxBytes))
-		if err != nil {
-			return jobOutputWindow{}, err
-		}
-		return jobOutputWindow{
-			content:  string(buf),
-			start:    start,
-			end:      end,
-			total:    total,
-			earliest: run.output.RetainedStart(),
-		}, nil
+		return run, snapshot, nil
 	}
-
 	recs, err := jm.store.Load()
 	if err != nil {
-		return jobOutputWindow{}, err
+		return nil, nil, err
 	}
-	rec := recs[jobID]
-	if rec == nil {
-		return jobOutputWindow{}, errJobNotFound(jobID)
-	}
-	path := jm.outputPathForJob(rec, jobID)
-	total, earliest, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return jobOutputWindow{}, err
-	}
-	content, start, end, err := windowOutputFile(path, beforeBytes, maxBytes, total, earliest)
-	if err != nil {
-		return jobOutputWindow{}, err
-	}
-	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
+	return nil, recs[jobID], nil
 }
 
 //nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
@@ -1359,17 +1376,12 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 	if rec == nil {
 		return "", 0, false, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return "", 0, false, err
-	}
-	return headOutputFile(path, headBytes, validatedTotal)
+	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, headBytes, true)
 }
 
-// outputDropped returns the number of bytes permanently evicted off the head of
-// jobID's output by the retention cap (0 when nothing has been pruned), for both
-// the live store and the closed-file fallback.
+// outputDropped returns the number of bytes before the first visible byte of
+// jobID's output, which the retention cap keeps from readers (0 when nothing has
+// been pruned), for both the live store and the closed-file fallback.
 //
 //nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
 func (jm *jobManager) outputDropped(jobID string) (int64, error) {
@@ -1387,9 +1399,14 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 	if rec == nil {
 		return 0, errJobNotFound(jobID)
 	}
-	path := jm.outputPathForJob(rec, jobID)
-	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
-	return retainedStart, err
+	snapshot, err := readLocalJobOutputSnapshot(jm.outputPathForJob(rec, jobID), 0, true)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
+		return 0, err
+	}
+	return snapshot.RetainedStart, nil
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
@@ -1428,12 +1445,8 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 		return nil, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
-	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		return nil, err
-	}
 	// Full retained scan (same budget rationale as above).
-	return grepOutputFile(path, re, maxJobOutputRetentionBytes, retainedStart)
+	return grepOutputFile(path, re, maxJobOutputRetentionBytes, rec)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -1700,6 +1713,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 // EventJobNotificationPending or enqueue an owner notification — the model
 // already received the complete result inline (spec §6.4d).
 func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	terminal := run.terminal
 	jm.mu.Unlock()
@@ -2014,6 +2028,7 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
@@ -2290,184 +2305,39 @@ func stringOutputResult(b []byte, total int64, truncated bool, err error) (strin
 	return string(b), total, truncated, nil
 }
 
-func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, retainedStart int64, err error) {
-	total, retainedStart, err = jobstore.OutputFileStats(path)
-	if err != nil {
-		return 0, 0, err
-	}
+// checkOutputTotalForRecord rejects a finished job's output file whose
+// lifetime total disagrees with the job record.
+func checkOutputTotalForRecord(rec *jobstore.JobRecord, total int64) error {
 	if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != total {
-		return 0, 0, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
+		return fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
 	}
-	return total, retainedStart, nil
+	return nil
 }
 
-func tailOutputFile(path string, tailBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
-	return tailOutputFileWithOpen(path, tailBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
-}
-
-// windowOutputFile reads the on-disk log's [start, end) lifetime window for a
-// beforeBytes/maxBytes page request (beforeBytes <= 0 reads the tail), the
-// file-based counterpart of jobstore.OutputStore.Window. total and earliest
-// come from the output metadata (validatedOutputStatsForRecord): earliest is
-// the evicted prefix length, so lifetime offsets map onto the file by
-// subtracting it.
-func windowOutputFile(path string, beforeBytes, maxBytes, total, earliest int64) (output string, start, end int64, err error) {
-	return windowOutputFileWithOpen(path, beforeBytes, maxBytes, total, earliest, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
-}
-
-func windowOutputFileWithOpen(path string, beforeBytes, maxBytes, total, earliest int64, open func(string) (jobOutputReadFile, error)) (output string, start, end int64, err error) {
-	if maxBytes < 0 {
-		return "", 0, 0, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, maxBytes)
-	}
-	start, end = jobstore.WindowBounds(beforeBytes, maxBytes, total, earliest)
-
-	f, err := open(path)
+// readClosedJobOutput reads a head or tail window of a closed job's visible
+// output. The window and the metadata describing it come from one opened
+// regular file (readLocalJobOutputSnapshot reopens once on a concurrent
+// change), and output whose lifetime total disagrees with rec is refused.
+func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fromHead bool) (output string, totalBytes int64, truncated bool, err error) {
+	snapshot, err := readLocalJobOutputSnapshot(path, maxBytes, fromHead)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("jobstore: open output: %w", err)
+		return "", 0, false, err
 	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	info, err := f.Stat()
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
+	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
+		return "", 0, false, err
 	}
-	// The file's own size bounds the read; the metadata's total can outrun it
-	// only while a writer is mid-append, and a short read must not become one.
-	fileStart := start - earliest
-	fileEnd := end - earliest
-	fileEnd = min(fileEnd, info.Size())
-	fileStart = min(fileStart, info.Size())
-	if _, err := f.Seek(fileStart, 0); err != nil {
-		return "", 0, 0, err
-	}
-	buf := make([]byte, fileEnd-fileStart)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", 0, 0, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if fileStart > 0 {
-		// Same mid-rune rule as tailOutputFileWithOpen: the window SHRINKS and
-		// start advances, so start still names the first byte returned.
-		before := len(buf)
-		buf = runetrim.TrimLeadingPartial(buf)
-		start += int64(before - len(buf))
-	}
-	return string(buf), start, end, nil
+	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
 }
 
-type jobOutputReadFile interface {
-	io.Reader
-	io.Seeker
-	Stat() (os.FileInfo, error)
-	Close() error
-}
-
-func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
-	if tailBytes < 0 {
-		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
-	}
-
-	f, err := open(path)
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	info, err := f.Stat()
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	retained := info.Size()
-	totalBytes = total
-	start := int64(0)
-	if retained > int64(tailBytes) {
-		start = retained - int64(tailBytes)
-		truncated = true
-	}
-	if totalBytes > retained {
-		truncated = true
-	}
-	if _, err := f.Seek(start, 0); err != nil {
-		return "", totalBytes, truncated, err
-	}
-	buf := make([]byte, retained-start)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if start > 0 {
-		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
-		// dangling continuation bytes rather than reading further back: the window
-		// SHRINKS, which keeps retainedStart (total - len(output), computed by
-		// jobOutputTailFrom) naming the first byte actually returned. Only our own cut
-		// is realigned — at start 0 the first byte is the file's own, and binary output
-		// keeps it.
-		buf = runetrim.TrimLeadingPartial(buf)
-	}
-	return string(buf), totalBytes, truncated, nil
-}
-
-func headOutputFile(path string, headBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
-	return headOutputFileWithOpen(path, headBytes, total, func(path string) (jobOutputReadFile, error) { return os.Open(path) })
-}
-
-func headOutputFileWithOpen(path string, headBytes int, total int64, open func(string) (jobOutputReadFile, error)) (output string, totalBytes int64, truncated bool, err error) {
-	if headBytes < 0 {
-		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, headBytes)
-	}
-
-	f, err := open(path)
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	info, err := f.Stat()
-	if err != nil {
-		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
-	}
-	retained := info.Size()
-	totalBytes = total
-	n := retained
-	if n > int64(headBytes) {
-		n = int64(headBytes)
-		truncated = true
-	}
-	if totalBytes > retained {
-		truncated = true
-	}
-	buf := make([]byte, n)
-	if len(buf) > 0 {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
-		}
-	}
-	if n < retained {
-		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
-		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
-		// Only our own cut is realigned — when the window reaches the end of the file
-		// the last byte is the file's own, and binary output keeps it.
-		buf = runetrim.TrimTrailingPartial(buf)
-	}
-	return string(buf), totalBytes, truncated, nil
-}
-
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, retainedStart int64) (matches []jobstore.Match, err error) {
-	return jobstore.GrepFileLimitAt(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, retainedStart)
+// grepOutputFile greps a closed job's visible output through one opened
+// regular file (reopened once on a concurrent change), refusing it before any
+// scanning when its metadata total disagrees with rec.
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstore.JobRecord) ([]jobstore.Match, error) {
+	return readOpenedJobOutput(path, func(f *os.File) ([]jobstore.Match, error) {
+		return jobstore.GrepOutputFileLimitFromFile(path, f, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
+			return checkOutputTotalForRecord(rec, total)
+		})
+	})
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

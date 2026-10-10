@@ -13,62 +13,63 @@ import {
 	NAVIGATION_SECTION_LIMIT,
 	relativeAge,
 } from "@evener/appwire-client/state/navigation";
-import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { capability, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type {
+	ActivityReadParams,
+	ActivityReadResponse,
+	ArchivedListParams,
+	ArchivedListResponse,
 	ArchiveParams,
 	ArchiveResponse,
 	AuthListResponse,
+	NoticesListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
-	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
 	NavigationReadResponse,
 	NavigationSessionSummary,
+	SessionActivity,
+	SessionActivityReadParams,
+	SessionActivityListParams,
+	SessionActivitySummary,
+	SessionDelegatesResponse,
+	SessionJobsResponse,
+	SessionWatchesResponse,
 	PluginListResponse,
 	SearchParams,
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
+import {
+	type DemoCoordinator,
+	type DemoShellJob,
+	type DemoSubagent,
+	demoActivityTree,
+	demoJobOutput,
+} from "./demoSubagents.js";
+import { parseActivityTree } from "@evener/appwire-client";
+import { flattenJobs } from "../subagents/subagentModel.js";
+import { createDemoSessionActivity } from "./demoSessionActivity.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
-// initialize handshake. Every wireV2 response must carry the exact same id:
+// initialize handshake. Every wireSnapshot response must carry the exact same id:
 // the shared navigation store rejects any other generation as a mismatch
 // (appwire-client/typescript/state/navigation/revalidator.ts's `validate`,
 // "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
 // Every resource shares one revision, bumped when the fleet changes (the
-// question askQuestion below poses, or an archive), so an invalidation's
+// steps below play, or an archive), so an invalidation's
 // target revision is one the next read actually reaches: the navigation
 // store refuses a response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
-	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
+	wireSnapshot(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
 const M = 60;
 const H = 3600;
 const D = 86400;
 
-// The hub's own truncation policy for a session's children
-// (maxNavigationChildren in cmd/evener-hub/navigation_projection.go): past
-// this many, the rest are counted in omitted_descendants instead of sent.
-// Mirrored here so a swarm as busy as s-pr2138 (54) or s-fuzz (467) behaves
-// like the real hub instead of shipping an unbounded payload.
-const MAX_CHILDREN = 50;
-
-// The hub's projectNode applies that same cap recursively, at every depth of
-// a session's descendant tree, not only its immediate children -- so this is
-// shared by both toRow (a session's own children) and toChildRow (a child's
-// own children), rather than the top level capping and a nested level not.
-export function capChildren<T>(children: T[]): { capped: T[]; omitted: number } {
-	const capped = children.slice(0, MAX_CHILDREN);
-	return { capped, omitted: children.length - capped.length };
-}
-
 const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED · 271")
-// How many archived rows a "project" overview embeds as a preview, versus a
-// project_page(tier=archived) read paging through the real, full list.
-const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
 
 // The base62 alphabet the hub's own ids use
 // (appwire-client/typescript/entityIds.ts, identifier/uuid.go). A real hub
@@ -169,7 +170,6 @@ type ProtoHost = "magic-kingdom" | "paradise-park";
 // the wire's below. "shutdown" covers every non-live session (shut down,
 // test-run and archived alike -- data.js sets `live: false` on all of them).
 export type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
-type SubState = RawSubagent["state"];
 
 // A subagent as data.js's swarms name it, with the detail the Subagents
 // list's rows show (demoSubagents.ts).
@@ -186,9 +186,16 @@ interface RawSession {
 	archived?: boolean;
 	test?: boolean;
 	activity?: string; // data.js's `activity`; a "Running <cmd>" one becomes a running job
+	// The scripted quiet gap evener/activity/read reports while this session is
+	// working with no subagent running, in minutes at startup (the read adds the
+	// clock's elapsed time). The fixture's working sessions all changed seconds
+	// before startup, too short to reach the Board's Quiet (3m) and May-be-stuck
+	// (10m) labels, which the demo exists to show.
+	quietMinutes?: number;
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
 	model?: string; // data.js's session model, for a coordinator's subagent tree
+	jobs?: DemoShellJob[]; // its own finished shell jobs, in its Activity list
 }
 
 // data.js's swarm for s-pr2138: two named failures plus 31 running, 3 waiting
@@ -464,7 +471,7 @@ const SESSIONS: RawSession[] = [
 	},
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
-	// Finished, not yet seen (4)
+	// Idle, not yet seen: the blue dot (4)
 	{
 		id: "s-hier",
 		title: "Host Project Hierarchy UI Mockups",
@@ -493,6 +500,7 @@ const SESSIONS: RawSession[] = [
 		ago: 5,
 		category: "release",
 		children: PR2138_CHILDREN,
+		jobs: [{ id: "pr2138-build", command: "go build ./...", ago: 12 * M, elapsed: 40 }],
 		activity: "Waiting on 31 subagents",
 	},
 	{
@@ -512,7 +520,15 @@ const SESSIONS: RawSession[] = [
 		subs: { run: 4, fail: 0, done: 5 },
 		activity: "Editing agent/tool_repair.go",
 	},
-	{ id: "s-gateway", title: "Design Gateway Token Command MVP", state: "working", ago: 2, activity: "Thinking" },
+	{
+		id: "s-gateway",
+		title: "Design Gateway Token Command MVP",
+		state: "working",
+		ago: 2,
+		activity: "Thinking",
+		// Silent this long: the demo's May-be-stuck row.
+		quietMinutes: 12,
+	},
 	{
 		id: "s-wasm",
 		title: "Port Allocator to WASM Target",
@@ -529,6 +545,9 @@ const SESSIONS: RawSession[] = [
 		state: "working",
 		ago: 4,
 		activity: "Reading agent/session_resume.go",
+		// Quiet, but under the Board's Quiet threshold, so it still shows its
+		// tool intent.
+		quietMinutes: 1,
 	},
 	{
 		id: "s-readintent",
@@ -545,6 +564,8 @@ const SESSIONS: RawSession[] = [
 		state: "working",
 		ago: 9,
 		activity: "Writing site/index.md",
+		// The demo's Quiet row.
+		quietMinutes: 4,
 	},
 	{
 		id: "s-sdk",
@@ -554,9 +575,9 @@ const SESSIONS: RawSession[] = [
 		ago: 11,
 		subs: { run: 2, fail: 0, done: 4 },
 		// Spelled out in prose, not as a path: scripts/sdk/
-		// package-import-paths-check.sh greps every quoted string in this tree
-		// for the AppWire package spelled by path, and cannot tell this fixture
-		// string from a real import (its own header comment says so).
+		// package-import-paths-check.sh flags a quoted relative path into the
+		// AppWire package ("./" or "../"), and this fixture string names no
+		// such path.
 		activity: "Running npm test in the AppWire TypeScript package",
 	},
 
@@ -629,11 +650,8 @@ const SESSIONS: RawSession[] = [
 
 	// data.js pins archivedTotal at 271 (Board mockup: "ARCHIVED · 271")
 	// without individually naming 266 of them. These fill that count with
-	// plain, clearly-generic entries so the archived tier is a real, fully
-	// pageable list of 271 -- the hub's own archived tier is real paged rows,
-	// never five real ones plus a promise of 266 more that never arrive --
-	// instead of a page that stalls the moment a client asks for more than
-	// the 5 named above.
+	// plain, clearly-generic entries so evener's archived list pages through
+	// all 271 rows its total reports, as a hub's archived list does.
 	...Array.from({ length: ARCHIVED_TOTAL - 5 }, (_, i) => ({
 		id: `s-archived-filler-${i}`,
 		title: SWARM_NAMES[i % SWARM_NAMES.length] as string,
@@ -690,13 +708,14 @@ function hostId(host: ProtoHost | undefined): string {
 
 // The prototype's states on the wire. An approval stays "active" (the phone
 // infers approval from the row's presence in needs_you, plus approvalPending
-// saying why), and "yourmove" is a turn that ended without asking.
+// saying why), and "yourmove" is a turn that ended without asking, which
+// rests idle (#4093).
 const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approvalPending?: true }> = {
 	failed: { state: "errored" },
 	question: { state: "awaiting", askPending: true },
 	approval: { state: "active", approvalPending: true },
 	restart: { state: "restartRequired" },
-	yourmove: { state: "awaiting" },
+	yourmove: { state: "idle" },
 	working: { state: "active" },
 	idle: { state: "idle" },
 	shutdown: { state: "ended" },
@@ -707,44 +726,6 @@ const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approva
 // is "active" on the wire, like the working band.
 const NEEDS_YOU_STATES = new Set<ProtoState>(["failed", "question", "approval", "restart"]);
 
-const SUBAGENT_WIRE_STATE: Record<SubState, { state: string; live: boolean }> = {
-	running: { state: "active", live: true },
-	failed: { state: "errored", live: false },
-	done: { state: "ended", live: false },
-};
-
-// cmd/evener-hub/navigation_projection.go's projectShallow sets Offline the
-// same way for every projected node, subagents included -- it reads the
-// row's own HostID, not anything about its parent -- so a session's
-// children from an offline source are offline too, not just the parent row.
-function toChildRow(
-	sub: RawSubagent,
-	ownerHostId: string,
-	project: string,
-	startupMs: number,
-	offline: boolean,
-): NavigationSessionSummary {
-	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
-	const { capped, omitted } = capChildren(sub.children ?? []);
-	// A subagent is a session like any other, named by a hub-shaped id; its
-	// parent's delegates name its transcript by this same ref (demoSessions.ts).
-	const sessionId = demoSessionId(sub.id);
-	return {
-		ref: hostSessionRef(ownerHostId, sub.id),
-		host_id: ownerHostId,
-		session_id: sessionId,
-		title: sub.title,
-		project,
-		state,
-		kind: "subagent",
-		live,
-		...(offline ? { offline: true as const } : {}),
-		updated_at: new Date(startupMs - sub.ago * 1000).toISOString(),
-		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
-		children: capped.map((child) => toChildRow(child, ownerHostId, project, startupMs, offline)),
-	};
-}
-
 // Explicitly named subagents (RETRY_CHILDREN etc.) or ones generated from
 // subs counts (genericChildren) -- never both; data.js does the same (a
 // session either names its subagents or just counts them).
@@ -754,18 +735,61 @@ function rawChildren(raw: RawSession): RawSubagent[] {
 	return [];
 }
 
+// A live top-level session: not shut down and not archived, the set Live's rows
+// and the pulse read both report.
+function isLiveSession(raw: RawSession): boolean {
+	return raw.state !== "shutdown" && !raw.archived;
+}
+
+// A live root's compact whole-tree tally. Activity trees retain the detailed
+// descendants independently of the flat navigation records.
+function subagentTally(subs: readonly RawSubagent[]): { running: number; failed: number; done: number } {
+	const tally = { running: 0, failed: 0, done: 0 };
+	for (const sub of subs) {
+		tally[sub.state] += 1;
+		const nested = subagentTally(sub.children ?? []);
+		tally.running += nested.running;
+		tally.failed += nested.failed;
+		tally.done += nested.done;
+	}
+	return tally;
+}
+
 // "Running <command>" activity lines become a running job; anything else
 // ("Thinking", "Editing ...", "Waiting on N subagents") is not a command.
-function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
+function runningCommand(raw: RawSession): string | undefined {
 	if (!raw.activity?.startsWith("Running ")) return undefined;
-	return [
-		{
-			job_id: `${raw.id}-job`,
-			job_type: "bash",
-			status: "running",
-			command: raw.activity.slice("Running ".length),
-		},
-	];
+	return Array.from(raw.activity.slice("Running ".length)).slice(0, 512).join("");
+}
+
+// The session's own newest tool-call intent (S5's latestIntent), as the demo
+// fixture models it: an `activity` line that names what the session set out to
+// do. A running command ("Running <cmd>") becomes the row's running job, a wait
+// ("Waiting on N subagents") becomes the subagent tally, and "Thinking" names
+// no tool call at all, so each of those carries no intent and lets the why line
+// fall through to the job or the bare "Working" word.
+function latestIntentOf(raw: RawSession): string | undefined {
+	const activity = raw.activity;
+	if (
+		activity === undefined ||
+		activity === "Thinking" ||
+		runningCommand(raw) !== undefined ||
+		activity.startsWith("Waiting on ")
+	)
+		return undefined;
+	return activity;
+}
+
+// The pace of a working session over the seven minutes the meter draws, oldest
+// first. The fixture models no per-minute history, so the counts are the demo's
+// scripted shape scaled by how much work is in flight; a session at rest emits
+// nothing, and the newest minutes a quiet gap covers are zeroed so a Quiet or
+// May-be-stuck row does not draw an active meter.
+function pulseMinutes(working: boolean, level: number, quietForMs?: number): number[] {
+	if (!working) return [0, 0, 0, 0, 0, 0, 0];
+	const shape = [1, 2, 1, 3, 2, 4, 2];
+	const silent = quietForMs === undefined ? 0 : Math.floor(quietForMs / 60_000);
+	return shape.map((events, index) => (index >= shape.length - silent ? 0 : events * Math.max(1, level)));
 }
 
 // The project a fleet session belongs to; the fixture leaves evener's unset.
@@ -797,18 +821,36 @@ export interface FleetSession {
 	ago: number;
 	activity?: string;
 	subagents: RawSubagent[];
+	/** A subagent's own session: when its run started (demoRunStartedAt), which
+	 * its working time counts from. */
+	runStartedAt?: number;
+}
+
+// Not in the Board mockup, so served only with EVENER_DEMO_FLEET_TOOLS: a
+// session whose transcript replays the recorded wire corpora, one step of
+// every tool family (demoToolFamilies.ts).
+const TOOL_FAMILIES_SESSION: RawSession = {
+	id: "s-tools",
+	title: "Show Every Tool Family",
+	state: "yourmove",
+	ago: 4 * H,
+};
+
+/** The fleet's sessions, with the tool families session when asked for. */
+function fleetList(toolFamilies = false): RawSession[] {
+	return toolFamilies ? [...SESSIONS, TOOL_FAMILIES_SESSION] : SESSIONS;
 }
 
 // The ref the fleet names a session by, from its fixture slug.
 export function fleetSessionRef(slug: string): string {
-	const raw = SESSIONS.find((candidate) => candidate.id === slug);
+	const raw = fleetList(true).find((candidate) => candidate.id === slug);
 	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
 	return sessionRef(raw);
 }
 
 // Every session the fleet holds, in the fleet's own order.
-export function fleetSessions(): FleetSession[] {
-	return SESSIONS.map((raw) => {
+export function fleetSessions(toolFamilies = false): FleetSession[] {
+	return fleetList(toolFamilies).map((raw) => {
 		const projectKey = projectKeyOf(raw);
 		return {
 			slug: raw.id,
@@ -832,15 +874,21 @@ export function enabledPluginNames(): string[] {
 	return PLUGINS.filter((plugin) => plugin.on).map((plugin) => plugin.id);
 }
 
-function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
+function toRow(
+	raw: RawSession,
+	startupMs: number,
+	offlineHost: boolean,
+	modelNames: Readonly<Record<string, string>>,
+): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = projectKeyOf(raw);
 	const sessionId = demoSessionId(raw.id);
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
-	const { capped, omitted } = capChildren(rawChildren(raw));
-	const jobs = runningJobs(raw);
+	const subs = rawChildren(raw);
+	const command = runningCommand(raw);
+	const modelName = raw.model === undefined ? undefined : modelNames[raw.model];
 	return {
 		ref: sessionRef(raw),
 		host_id: owner,
@@ -854,9 +902,10 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		...(approvalPending ? { approval_pending: true as const } : {}),
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
-		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
-		...(jobs ? { running_jobs: jobs } : {}),
-		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
+		...(live && subs.length > 0 ? { subagents: subagentTally(subs) } : {}),
+		...(command ? { running_job_count: 1, running_job_command: command } : {}),
+		...(modelName ? { model_name: modelName } : {}),
+		children: [],
 	};
 }
 
@@ -895,19 +944,41 @@ export interface DemoFleetOptions {
 	// offline and every one of its rows offline, for the offline frames.
 	offlineHost?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_EMPTY: serves a hub with nothing live -- zero
-	// sessions, so the manifest, sections, pin catalog, project catalogs and
-	// search all come back empty. The sources still name a host (a real empty
-	// hub is still a hub), so only offlineHost touches them. For the Board's
-	// EmptyBoard state.
+	// sessions, so the manifest, sections, project catalogs and search all come
+	// back empty. The pin catalog still names both durable pin sections, each
+	// with count 0, as the real hub keeps them. The sources still name a host
+	// (a real empty hub is still a hub), so only offlineHost touches them. For
+	// the Board's EmptyBoard state.
 	empty?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_ASK_AFTER: that many seconds after the demo
 	// hub starts, the working row s-gateway ("Design Gateway Token Command
 	// MVP") asks a question, moving from Working into Needs you, so the
 	// Board's spring and amber wash can be watched on a still list. The fleet
-	// itself only knows how to make the change (askQuestion); demo-hub.mts
+	// itself only knows how to make the change (step("question")); demo-hub.mts
 	// owns the timer and sends the resulting invalidation, so a test fires the
-	// change by calling askQuestion directly instead of sleeping.
+	// change by calling step("question") directly instead of sleeping.
 	askAfterSeconds?: number;
+	// Mirrors EVENER_DEMO_FLEET_PLAN_REVISED: demo-hub.mts serves the
+	// settle-race plan's revision rather than its first text, so a Reader that
+	// read the plan before the restart shows what changed (frame 17).
+	planRevised?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_OLDER: demo-hub.mts puts fifteen older turns
+	// ahead of s-pr2138's and pages them by item (dev/demoOlderHistory.ts).
+	olderHistory?: boolean;
+	// Mirrors EVENER_DEMO_LONG: demo-hub.mts serves the sessions' long content
+	// (demoSessions.ts LONG_CONTENT) in place of the usual.
+	long?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
+	// Idle, a session replaying the recorded wire corpora.
+	toolFamilies?: boolean;
+	// The provider instance each model id runs on (demoSetup.ts's catalog),
+	// which the fleet's rows don't say: a sign-in notice counts the live
+	// sessions on its provider's models. None by default.
+	modelProviders?: Readonly<Record<string, string>>;
+	// Each model id's display name (demoSetup.ts's catalog), which a row
+	// carries as its model_name (S17) for "Show model on Board rows". None by
+	// default.
+	modelNames?: Readonly<Record<string, string>>;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -917,12 +988,29 @@ export interface DemoFleetOptions {
 
 interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
+	/** evener/archived/list, as cmd/evener-hub/navigation_archived_list.go
+	 * serves it: a project's archived rows, read from the catalog holding it,
+	 * paged by a cursor bound to the hint and project, with the tier's total. */
+	answerArchivedList(params: ArchivedListParams): ArchivedListResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
+	/** evener/notices/list (S11), derived as cmd/evener-hub/app_notices.go
+	 * derives it. */
+	answerNoticesList(): NoticesListResponse;
 }
 
 export interface DemoFleet extends FleetAnswers {
+	answerActivityRead(params: SessionActivityReadParams): SessionActivitySummary;
+	/** evener/activity/read (S5): the pulse meter for every live top-level
+	 * session, its running-subagent tally, the Quiet and May-be-stuck quiet time
+	 * and its latest tool intent, as cmd/evener-hub/app_activity.go serves it.
+	 * Distinct from answerActivityRead above, which answers the shared client's
+	 * evener/thread/activity/read. */
+	answerPulseRead(params: ActivityReadParams): ActivityReadResponse;
+	answerDelegatesList(params: SessionActivityListParams): SessionDelegatesResponse;
+	answerSessionJobsList(params: SessionActivityListParams): SessionJobsResponse;
+	answerWatchesList(params: SessionActivityListParams): SessionWatchesResponse;
 	// demo-hub.mts's handshake capability, carrying the sequence the fleet
 	// has reached: the navigation store refuses a reconnect whose sequence
 	// moved backward within the generation. Built here so this is the one
@@ -932,39 +1020,72 @@ export interface DemoFleet extends FleetAnswers {
 	// import it -- this one qualifies by living under src/dev/, the way the
 	// web's own analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
 	navigationCapability(): NavigationCapability;
-	// Turns ASKING_SESSION_ID's working row into a pending question and
+	// Plays one of the prototype's scripted events (sim.js's `events`) and
 	// returns the evener/navigation/invalidated payload a real hub would send
-	// for that change.
-	askQuestion(): NavigationInvalidatedPayload;
+	// for that change. "question" turns ASKING_SESSION_ID's working row into
+	// a pending question.
+	step(name: DemoStep): NavigationInvalidatedPayload;
+	// Moves the session named by its wire `ref` to `state` and returns the
+	// evener/navigation/invalidated payload for that row change, or null when
+	// the fleet doesn't hold the session or its row is already in that state.
+	// demo-hub.mts calls this when a fleet session's turn starts or stops, so
+	// the Board's row follows the session's thread.
+	setSessionState(ref: string, state: ProtoState): NavigationInvalidatedPayload | null;
 	// Answers evener/archive/set for a session, named as the Board's
 	// archiveTarget names it: a local row by its session id (or its local:
 	// ref), another host's by its ref. Returns the reply and the
 	// evener/navigation/invalidated payload a real hub sends for it.
 	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
-	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
-	// root for any other fleet session (demoSubagents.ts).
-	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
+	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
+	// only for the session that owns it (its ownerRef), as a hub answers.
+	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
 export const ASKING_SESSION_ID = "s-gateway";
-const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
+
+/** The prototype's scripted events (sim.js's `events`), for the phase 6
+ * alert screenshots: a row changing state, or paradise-park going offline
+ * and back (what EVENER_DEMO_FLEET_OFFLINE_HOST sets at startup). */
+export type DemoStep = "question" | "failure" | "approval" | "finish" | "host-offline" | "host-online";
+
+// The row each row step changes, and the state it moves to. An approval
+// stays "active" on the wire and joins needs_you, as the hub promotes an
+// escalation; a finish is a turn ending without asking, which rests idle.
+export const ROW_STEPS: Record<Exclude<DemoStep, "host-offline" | "host-online">, [string, ProtoState]> = {
+	question: [ASKING_SESSION_ID, "question"],
+	failure: ["s-readintent", "failed"],
+	approval: ["s-landing", "approval"],
+	finish: ["s-resume", "yourmove"],
+};
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
-	const offlineHost = options.offlineHost ?? false;
+	let offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
+	const modelProviders = options.modelProviders ?? {};
+	const modelNames = options.modelNames ?? {};
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
 	// The fleet as it stands; each change replaces it with a changed copy.
-	let sessionsList = options.empty ? [] : SESSIONS;
+	let sessionsList = options.empty ? [] : fleetList(options.toolFamilies);
 	// Every resource's revision is one ahead of the navigation sequence: both
 	// start there and each change advances them together.
 	let sequence = 0;
-	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders, modelNames);
+	const activity = createDemoSessionActivity((ref) => {
+		const owner = sessionsList.find(
+			(raw) =>
+				sessionRef(raw) === ref || findSubagent(rawChildren(raw), ref, (id) => hostSessionRef(hostId(raw.host), id)),
+		);
+		if (!owner) return null;
+		const tree = parseActivityTree(demoActivityTree(coordinatorOf(owner), startupMs).data);
+		if (!tree) throw new Error("Invalid demonstration activity authority");
+		return { tree, availability: owner.state === "shutdown" ? "retained" : "live" };
+	}, `demo-activity-${startupMs}`);
 
 	// Moves the fleet to `changed` at the next sequence and revision, and
 	// returns the evener/navigation/invalidated payload for the targets the
@@ -976,27 +1097,49 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		sessionsList = changed;
 		sequence += 1;
 		const revision = sequence + 1;
-		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock, modelProviders, modelNames);
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
-	function askQuestion(): NavigationInvalidatedPayload {
-		// A negative `ago` puts updated_at at the moment of asking, after
-		// startup, the way a real hub stamps a row when its state changes.
-		const askedAgo = (startupMs - clock()) / 1000;
-		const asked = sessionsList.map((raw) =>
-			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
-		);
+	// Moves `target`'s row to `state` at the next revision and returns the
+	// invalidation for one row's state change. A negative `ago` puts updated_at
+	// at the moment of the change, after startup, the way a real hub stamps a
+	// row when its state changes.
+	function commitRowState(target: RawSession, state: ProtoState): NavigationInvalidatedPayload {
+		const changedAgo = (startupMs - clock()) / 1000;
+		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, state, ago: changedAgo } : raw));
 		// The resources a real hub invalidates for one row's state change
-		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
-		// Board sections, and the row's project. Search has no invalidation
-		// target; the next search simply answers from the changed fleet.
-		return commit(asked, (revision) => [
+		// (cmd/evener-hub/navigation_service.go's commitTargetsLocked): the
+		// manifest's counts, both Board sections, the row's own pin section when
+		// it sits in one (its rows' state is part of the section's fingerprint),
+		// and the row's project. Search has no invalidation target; the next
+		// search simply answers from the changed fleet.
+		return commit(changed, (revision) => [
 			{ kind: "manifest", revision },
 			{ kind: "section", section: "live", revision },
 			{ kind: "section", section: "needs_you", revision },
-			{ kind: "project", projectKey: ASKING_PROJECT, revision },
+			...(target.category ? [{ kind: "pin_section" as const, sectionId: target.category, revision }] : []),
+			{ kind: "project", projectKey: projectKeyOf(target), revision },
 		]);
+	}
+
+	function step(name: DemoStep): NavigationInvalidatedPayload {
+		if (name === "host-offline" || name === "host-online") {
+			offlineHost = name === "host-offline";
+			// The manifest carries the source's online flag, and every section
+			// its rows' offline marks.
+			return commit(sessionsList, (revision) => [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+			]);
+		}
+		const [id, state] = ROW_STEPS[name];
+		const target = sessionsList.find((raw) => raw.id === id);
+		// A fleet without the row (EVENER_DEMO_FLEET_EMPTY) has nothing to
+		// change, so the step changes nothing: no new sequence, no targets.
+		if (!target) return { generationId: DEMO_FLEET_GENERATION, sequence, targets: [] };
+		return commitRowState(target, state);
 	}
 
 	function archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload } {
@@ -1033,30 +1176,90 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 
 	return {
 		answerNavigationRead: (params) => answers.answerNavigationRead(params),
+		answerArchivedList: (params) => answers.answerArchivedList(params),
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
+		answerNoticesList: () => answers.answerNoticesList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
-		askQuestion,
+		step,
+		setSessionState: (ref, state) => {
+			const target = sessionsList.find((raw) => sessionRef(raw) === ref);
+			if (!target || target.state === state) return null;
+			return commitRowState(target, state);
+		},
 		archive,
-		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
+		answerPulseRead: (params) => {
+			const wanted = params.refs?.length ? new Set(params.refs) : null;
+			// The read grows a session's quiet gap with the clock, so a tree that
+			// has gone silent reads Quiet and then May be stuck as the hub runs.
+			const elapsed = Math.max(0, clock() - startupMs);
+			return {
+				// Only a live top-level session is read: an ended or archived one is
+				// absent, and a ref the fleet doesn't hold is simply not named. Sorted
+				// by ref, as the hub sorts its own answer (app_activity.go).
+				sessions: sessionsList
+					.filter(isLiveSession)
+					.map((raw): SessionActivity => {
+						const runningSubagents = subagentTally(rawChildren(raw)).running;
+						const level = runningSubagents + (runningCommand(raw) ? 1 : 0);
+						const latestIntent = latestIntentOf(raw);
+						const quietBase = raw.quietMinutes !== undefined ? raw.quietMinutes * 60_000 : raw.ago * 1000;
+						// An agent waiting on subagents is never quiet (Jesse's
+						// ruling for S5), and neither is a session that is not
+						// working: only a silently working session carries the gap.
+						// A row whose state changed after startup has a fractional, generally
+						// negative `ago` (commitRowState), so the sum must be rounded to a
+						// whole, non-negative millisecond or the decoder drops the entry.
+						const quietForMs =
+							raw.state === "working" && runningSubagents === 0
+								? Math.max(0, Math.round(quietBase + elapsed))
+								: undefined;
+						return {
+							ref: sessionRef(raw),
+							minutes: pulseMinutes(raw.state === "working", level, quietForMs),
+							runningSubagents,
+							...(quietForMs === undefined ? {} : { quietForMs }),
+							...(latestIntent === undefined ? {} : { latestIntent }),
+						};
+					})
+					.filter((session) => !wanted || wanted.has(session.ref))
+					.sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
+			};
+		},
+		answerActivityRead: activity.summary,
+		answerDelegatesList: activity.delegates,
+		answerSessionJobsList: activity.jobs,
+		answerWatchesList: activity.watches,
+		answerJobsOutput: (params) => {
+			// Read back as the phone reads the tree, so the job answered is the
+			// one the Activity list shows, and only for the session that owns
+			// it, as a hub answers.
+			for (const raw of sessionsList) {
+				const tree = parseActivityTree(demoActivityTree(coordinatorOf(raw), startupMs).data);
+				const job = tree ? flattenJobs(tree, tree.root.label).find((row) => row.id === params.jobId)?.job : undefined;
+				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
+			}
+			throw new Error(`job not found: ${params.jobId}`);
+		},
 	};
 }
 
-// The fleet session or subagent a ref names, as the coordinator of the
-// subagents it started (demoSubagents.ts); nobody's, an empty tree. A
-// subagent's are its children, named as the Board's child rows and the
-// sessions' delegates name them.
-function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoordinator {
-	for (const raw of sessions) {
-		const host = hostId(raw.host);
-		const subagentRef = (id: string) => hostSessionRef(host, id);
-		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref) return { ref, title: raw.title, model, subagents: rawChildren(raw), subagentRef };
-		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
-		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
-	}
-	return { ref, title: "", model: "", subagents: [], subagentRef: (id) => id };
+// A fleet session as the coordinator of the subagents it started
+// (demoSubagents.ts), named as the Board's child rows and the sessions'
+// delegates name them.
+function coordinatorOf(raw: RawSession): DemoCoordinator {
+	const host = hostId(raw.host);
+	const command = runningCommand(raw);
+	return {
+		ref: sessionRef(raw),
+		title: raw.title,
+		model: raw.model ?? "",
+		subagents: rawChildren(raw),
+		jobs: raw.jobs,
+		...(command ? { runningJob: { id: raw.id, command } } : {}),
+		subagentRef: (id) => hostSessionRef(host, id),
+	};
 }
 
 function findSubagent(
@@ -1072,6 +1275,31 @@ function findSubagent(
 	return undefined;
 }
 
+// An archived list's cursor names the list it continues (its catalog hint,
+// "" for none, and project) and where, so a cursor from another list is
+// refused. The hub's cursor (navigation_archived_list.go's
+// encodeArchivedCursor/decodeArchivedCursor) marks where by the last row's
+// order key and the demo's by an offset; the binding to its list and the
+// refusals' words are the hub's.
+function encodeArchivedCursor(hint: string, projectKey: string, offset: number): string {
+	return JSON.stringify({ catalog: hint, projectKey, offset });
+}
+
+function decodeArchivedCursorOffset(cursor: string, hint: string, projectKey: string): number {
+	let decoded: { catalog?: unknown; projectKey?: unknown; offset?: unknown };
+	try {
+		// A "null" cursor parses to null; it is as invalid as any other.
+		decoded = JSON.parse(cursor) ?? {};
+	} catch {
+		throw new Error("invalid cursor");
+	}
+	const { offset } = decoded;
+	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("invalid cursor");
+	if (decoded.catalog !== hint || decoded.projectKey !== projectKey)
+		throw new Error("cursor belongs to another archived list");
+	return offset;
+}
+
 // Every answer the fleet gives, for one fixed list of sessions at one
 // revision; each change swaps in a new one rather than mutating this.
 function fleetAnswers(
@@ -1080,12 +1308,14 @@ function fleetAnswers(
 	startupMs: number,
 	offlineHost: boolean,
 	clock: () => number,
+	modelProviders: Readonly<Record<string, string>>,
+	modelNames: Readonly<Record<string, string>>,
 ): FleetAnswers {
-	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
+	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost, modelNames)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
 	// An archived session leaves Live, whatever its state.
-	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown" && !raw.archived);
+	const liveRaw = sessionsList.filter(isLiveSession);
 	const liveSessions = liveRaw.map(rowOf);
 	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
@@ -1103,14 +1333,15 @@ function fleetAnswers(
 	// hub's PinCandidates keeps it (cmd/evener-hub/internal/hubcore/tree.go).
 	const pinSessions = (id: string) =>
 		sessionsList.filter((raw) => raw.state !== "shutdown" && raw.category === id).map(rowOf);
-	// A category with nothing pinned in it doesn't get a row, which is what
-	// empties the pin catalog for the empty fleet. The real hub keeps empty
-	// durable sections (navigation_projection.go buildPinSectionsContext);
-	// both demo categories hold rows in the full fleet, so only the empty
-	// fleet sees the difference.
-	const pinSections = pinCategoryIds
-		.map((id) => ({ id, name: id === "release" ? "Release" : "Research", count: pinSessions(id).length }))
-		.filter((section) => section.count > 0);
+	// Both categories are durable sections the hub always serves, even with no
+	// rows pinned in them (navigation_projection.go buildPinSectionsContext
+	// keeps every section it is given, memberCount aside), so an empty fleet
+	// still reports Release and Research with count 0 rather than no catalog.
+	const pinSections = pinCategoryIds.map((id) => ({
+		id,
+		name: id === "release" ? "Release" : "Research",
+		count: pinSessions(id).length,
+	}));
 
 	// PROJECT_META is static fixture metadata, not derived from sessionsList
 	// (the full fleet lists "home" with no sessions), so an empty fleet needs
@@ -1147,18 +1378,75 @@ function fleetAnswers(
 	}
 
 	// The tier a row is served under, in one place: the location branch reports
-	// this tier and a reveal then asks that exact project_page tier, so the two
-	// must come from one computation. An archived row's is "archived", a
-	// hub-test-env test-run row's is "current" (test runs are never split by
-	// age), every other row's current or recent by the same 24h boundary.
+	// this tier and a reveal then reads that tier's rows (an archived row's
+	// from the archived list), so the two must come from one computation. An
+	// archived row's is "archived", a hub-test-env test-run row's is "current"
+	// (test runs are never split by age), every other row's current or recent
+	// by the same 24h boundary.
 	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
 		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
 	}
 
-	// Every tier is a real, fully pageable list -- including archived, now
-	// that SESSIONS carries all 271 (5 named plus the generated filler) --
-	// so callers page it with the same page() every other resource uses
-	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
+	// A catalog's projects. An unrecognized catalog is a hard error, never a
+	// silent fallback to the projects catalog.
+	function catalogProjects(catalog: unknown): NavigationProjectSummary[] {
+		if (catalog === "projects") return projects;
+		if (catalog === "archived_projects") return archivedProjects;
+		if (catalog === "test_runs") return testRunProjects;
+		throw new Error(`Unknown demonstration catalog: ${String(catalog)}`);
+	}
+
+	// The catalog an archived list reads, as navigation_archived_list.go's
+	// archivedListCatalog finds it: the hinted catalog when it holds the
+	// project, the other of projects and archived projects when the project
+	// moved there (never test runs), and with no hint the first catalog
+	// holding it. Undefined when none of those holds it.
+	function archivedListCatalog(hint: string, projectKey: string): string | undefined {
+		return archivedListCandidates(hint).find((catalog) =>
+			catalogProjects(catalog).some((project) => project.key === projectKey),
+		);
+	}
+
+	// The catalogs archivedListCatalog tries, in order (the hub's
+	// archivedListCandidates).
+	function archivedListCandidates(hint: string): string[] {
+		switch (hint) {
+			case "":
+				return ["projects", "archived_projects", "test_runs"];
+			case "projects":
+				return ["projects", "archived_projects"];
+			case "archived_projects":
+				return ["archived_projects", "projects"];
+			default:
+				return [hint];
+		}
+	}
+
+	// Mirrors cmd/evener-hub/navigation_archived_list.go: a known catalog
+	// hint or none, a limit up to the section maximum (0 or absent means the
+	// maximum), a cursor bound to the hint and project it was read with, and
+	// an empty list, naming no catalog, for a project no catalog it may be
+	// read from holds.
+	function answerArchivedList(params: ArchivedListParams): ArchivedListResponse {
+		const hint = params.catalog ?? "";
+		const catalog = archivedListCatalog(hint, params.projectKey);
+		const limit = params.limit ?? 0;
+		if (!Number.isInteger(limit) || limit < 0 || limit > NAVIGATION_SECTION_LIMIT)
+			throw new Error(`limit must be between 0 and ${NAVIGATION_SECTION_LIMIT}`);
+		const offset = params.cursor ? decodeArchivedCursorOffset(params.cursor, hint, params.projectKey) : 0;
+		const rows = catalog ? tierRows(params.projectKey, "archived") : [];
+		const sessions = rows.slice(offset, offset + (limit || NAVIGATION_SECTION_LIMIT));
+		const next = offset + sessions.length;
+		return {
+			sessions,
+			total: rows.length,
+			...(next < rows.length ? { nextCursor: encodeArchivedCursor(hint, params.projectKey, next) } : {}),
+			...(catalog ? { catalog } : {}),
+		};
+	}
+
+	// A project's rows in one tier, as hubcore's TreeProject.TierRows lists
+	// them: the rows servedTier puts in that tier.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
 		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
 		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
@@ -1199,15 +1487,8 @@ function fleetAnswers(
 		return { page: items.slice(offset, offset + limit), remaining: Math.max(0, items.length - (offset + limit)) };
 	}
 
-	// cmd/evener-hub/navigation_projection.go sets a resource's Truncated
-	// whenever any row it projected (at any depth) had its own children
-	// capped (OmittedDescendants set) -- not only when the page itself was
-	// cut short. Mirrored here instead of a hardcoded false.
-	function anyTruncated(rows: NavigationSessionSummary[]): boolean {
-		return rows.some((row) => (row.omitted_descendants ?? 0) > 0 || anyTruncated(row.children));
-	}
-
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
+		if (params.representationVersion !== 3) throw new Error("Unsupported navigation representation");
 		switch (params.resource) {
 			case "manifest":
 				return respond(revision, params, {
@@ -1231,7 +1512,7 @@ function fleetAnswers(
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
 				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
-				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: false });
 			}
 			case "pin_catalog": {
 				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
@@ -1241,40 +1522,26 @@ function fleetAnswers(
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
 				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
-				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: false });
 			}
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
 				// a silent fallback to the projects catalog.
-				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
-					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
-				const source =
-					params.catalog === "archived_projects"
-						? archivedProjects
-						: params.catalog === "test_runs"
-							? testRunProjects
-							: projects;
-				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
+				const { page: rows, remaining } = page(catalogProjects(params.catalog), params, NAVIGATION_CATALOG_LIMIT);
 				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
 				const current = tierRows(projectKey, "current");
 				const recent = tierRows(projectKey, "recent");
-				// wireV2's "project" branch hardcodes every tier's own remaining to
-				// 0 regardless of input (a real project_page read reports the true
-				// count instead), so only the preview size shown here is ours to
-				// choose: the archived tier is now a real 271-row list, and an
-				// overview embedding all of it would defeat "overview". Preview the
-				// same 5 rows this call showed before archived became fully
-				// pageable; "See all" is what project_page is for.
-				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
+				// Archived rows are read through evener/archived/list; the hub's
+				// overview carries none (navigation_projection.go's Project).
 				return respond(revision, params, {
 					key: projectKey,
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
-					archived: { sessions: archived, remaining: 0 },
-					truncated: anyTruncated([...current, ...recent, ...archived]),
+					archived: { sessions: [], remaining: 0 },
+					truncated: false,
 				});
 			}
 			case "project_page": {
@@ -1284,13 +1551,19 @@ function fleetAnswers(
 				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
-				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
+				// The hub answers the archived tier empty: archived rows are read
+				// through evener/archived/list (answerArchivedList).
+				const { page: sessions, remaining } = page(
+					tier === "archived" ? [] : tierRows(projectKey, tier),
+					params,
+					NAVIGATION_SECTION_LIMIT,
+				);
 				return respond(revision, params, {
 					key: projectKey,
 					tier,
 					sessions,
 					remaining,
-					truncated: anyTruncated(sessions),
+					truncated: false,
 				});
 			}
 			case "location": {
@@ -1299,19 +1572,17 @@ function fleetAnswers(
 				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
-				// holds exactly one entity, and projectShallow sets no omitted_descendants
-				// (the child cap is a list-row fact, not the summary's), so the capped
-				// count is dropped with the children. servedTier is the one place this
-				// row's tier is decided, so the reveal that asks this exact tier's
-				// project_page cannot drift from what tierRows serves it under.
+				// holds exactly one entity. servedTier is the one place this
+				// row's tier is decided, so the reveal that reads this tier's rows
+				// cannot drift from what tierRows serves it under.
 				const tier = servedTier(raw);
-				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
+				const shallow = rowOf(raw);
 				const response = respond(revision, params, {
 					session: { ...shallow, children: [] },
 					top_level_ref: ref,
 					top_level: true,
 				});
-				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// The shared snapshot encoder (wireSnapshot) builds a location's metadata with only
 				// ref/top_level_ref/top_level; a real hub also names the row's project,
 				// tier and pin section, so they are stamped on here, the way the web's
 				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
@@ -1378,6 +1649,8 @@ function fleetAnswers(
 	}
 
 	function answerPluginList(): PluginListResponse {
+		// Unix seconds, as the hub sends them (app_plugins.go UnixSeconds).
+		const startupSeconds = Math.floor(startupMs / 1000);
 		return {
 			plugins: PLUGINS.map((plugin) => ({
 				plugin: plugin.id,
@@ -1387,11 +1660,46 @@ function fleetAnswers(
 				autoUpgrade: false,
 				broken: false,
 				installPath: `~/.claude/plugins/${plugin.mp}/${plugin.id}`,
-				installedAt: startupMs - 30 * D * 1000,
-				lastUpdated: startupMs - 1 * D * 1000,
+				installedAt: startupSeconds - 30 * D,
+				lastUpdated: startupSeconds - 1 * D,
 			})),
 		};
 	}
 
-	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList };
+	// The hub's notices: each expired sign-in with the live top-level sessions
+	// whose model runs on that provider instance, then each offline host with
+	// its sessions that were live when last reached. No demo plugin is broken.
+	function answerNoticesList(): NoticesListResponse {
+		const counted = (affected: number) => (affected > 0 ? { affectedSessions: affected } : {});
+		const signIns = answerAuthList()
+			.providers.filter((status) => status.needsLogin)
+			.map((status) => ({
+				id: `signInRequired:${status.provider}`,
+				kind: "signInRequired",
+				subject: status.provider,
+				// A session with no model of its own runs the default, which is
+				// lunaroute's (demoSessions.ts DEFAULT_MODEL), never an expired one.
+				...counted(
+					liveRaw.filter((raw) => raw.model !== undefined && modelProviders[raw.model] === status.provider).length,
+				),
+			}));
+		const hosts = sources
+			.filter((source) => !source.online)
+			.map((source) => ({
+				id: `hostOffline:${source.id}`,
+				kind: "hostOffline",
+				subject: source.id,
+				...counted(liveSessions.filter((row) => row.host_id === source.id).length),
+			}));
+		return { notices: [...signIns, ...hosts] };
+	}
+
+	return {
+		answerNavigationRead,
+		answerArchivedList,
+		answerSearch,
+		answerAuthList,
+		answerPluginList,
+		answerNoticesList,
+	};
 }

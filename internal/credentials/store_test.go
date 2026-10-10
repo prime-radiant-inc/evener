@@ -107,12 +107,48 @@ func TestStore_SetWritesMode0600AndLeavesNoTempFile(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("credentials.toml mode = %o, want 600", info.Mode().Perm())
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("the temp file survived the rename (stat err = %v)", err)
+	if left, _ := filepath.Glob(path + ".tmp-*"); len(left) != 0 {
+		t.Errorf("temp files survived the rename: %v", left)
 	}
 	// The store must be reloadable through its own mode gate.
 	if _, err := LoadStore(path); err != nil {
 		t.Fatalf("LoadStore after Set: %v", err)
+	}
+}
+
+// The temp file must be created under a name nothing else holds. A fixed
+// <path>.tmp opened without O_EXCL lets a planted symlink at that name redirect
+// the saved credentials into a file of the attacker's choosing. The temp name
+// is exclusive and random, so the planted link is left alone and the store
+// lands on the real path.
+func TestStore_SaveDoesNotFollowAPlantedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.toml")
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if b, err := os.ReadFile(victim); err != nil || string(b) != "keep me" {
+		t.Fatalf("the planted temp symlink redirected the save: %q %v", b, err)
+	}
+	reloaded, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore after Set: %v", err)
+	}
+	if v, ok := reloaded.Get("work"); v != "sk-work" || !ok {
+		t.Fatalf("the credential did not land on the path: %q/%v", v, ok)
 	}
 }
 

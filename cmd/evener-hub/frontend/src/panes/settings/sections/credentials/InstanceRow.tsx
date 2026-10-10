@@ -38,16 +38,23 @@ const CLASS = {
 // The one meta line: the unconfigured label is the more important signal and
 // leads; style info (a gateway's base URL is the interesting part of "No key
 // set · optional") follows it.
-function metaText(instance: InstanceEntry): string {
-  const unconfigured = unconfiguredLabel(instance);
+// A credential the hub found an error with leads the line the same way:
+// "Error" is the most important thing the row can say (#3539).
+function metaText(instance: InstanceEntry, authError: string | undefined): string {
+  const lead = authError ? "Error" : unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
-  return unconfigured === null ? styleInfo : `${unconfigured} · ${styleInfo}`;
+  return lead === null ? styleInfo : `${lead} · ${styleInfo}`;
 }
 
 /** The two variants, as a type rather than a comment: an interactive row MUST
  * carry onSelect (or its button renders with no handler), and a read-only row
  * has nothing to select. */
-export type InstanceRowProps = { instance: InstanceEntry } & (
+export type InstanceRowProps = {
+  instance: InstanceEntry;
+  /** The hub's error for this instance's credential (AuthStatusResponse.error):
+   * a credential the provider rejected, or one it could not read. */
+  authError?: string;
+} & (
   | {
       readOnly: true;
       /** Remote scope only: begins a device-code sign-in ON the host that owns
@@ -59,14 +66,19 @@ export type InstanceRowProps = { instance: InstanceEntry } & (
 );
 
 export function InstanceRow(props: InstanceRowProps) {
-  const { instance } = props;
-  const meta = metaText(instance);
+  const { instance, authError } = props;
+  const meta = metaText(instance, authError);
+  const dot = authError
+    ? "failed"
+    : credentialLayers(instance).length > 0 || keylessByDesign(instance)
+      ? "idle"
+      : "ended";
   // Both variants render this node, so a read-only row states exactly what the
   // tappable one does.
   const body = (
     <div className={CLASS.rowMain}>
       <div className={CLASS.heading}>
-        <StatusDot state={credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
+        <StatusDot state={dot} />
         <span className={CLASS.name}>{instance.name}</span>
         {instance.isDefault && <Chip>★ default</Chip>}
         {fromEnvironment(instance) && <Chip>from environment</Chip>}

@@ -101,8 +101,20 @@ Cross-session discovery, and nothing else. Composable filters, **one** response 
 - `children_of` — a `transcript_ref`; restrict results to the sessions that ref spawned
   (its subagents and forks). This is the "what did this session spawn" view — a filter,
   not a separate mode or a thing that gets read.
+- `kind` — `root`, `subagent`, `fork`, or `any` (default): keep only sessions of that
+  lineage kind.
+- `has_children` — boolean: keep sessions that spawned children (`true`) or that spawned
+  none (`false`).
+- `min_turns` / `max_turns` — keep sessions with at least / at most that many turns.
+- `updated_after` / `updated_before` — RFC3339 bounds on a session's updated time.
 - `scope` — `current_project` (default) or `all_projects`.
 - `limit` — max matches (default 10, hard max 50).
+
+The metadata filters are applied before any transcript is opened, so they never
+consume the content-scan budget, and they compose with `query` and `children_of`
+alike. An out-of-range pair (`min_turns` over `max_turns`, `updated_after` after
+`updated_before`), an unknown `kind`, or an unparsable timestamp returns
+`invalid_request` rather than being silently ignored.
 
 Registered `strict:false`, so the model omits the filters it isn't using. There is no
 session-selector parameter and no mode switch: catalog, content search, and
@@ -124,6 +136,12 @@ children-of-a-parent are just which filters you set, and all return the same rec
 - With a **`query`**, it matches metadata first, then opens transcripts for a **bounded**
   raw-text scan (200 newest). When the scan stops early, `scan_truncated:true` reports the
   partial coverage; `snippets` carries the matching excerpts (search results only).
+- A metadata-only match (a hit on the title or original prompt) carries one bounded
+  `snippet`: role `user` for the original prompt, or role `title` when only the title
+  matched. Its `seq` is `-1`, a display marker, not a turn address — a subagent or fork
+  can inherit context ahead of its own assignment, so the matching text need not live at
+  turn 0. Do not pass a metadata snippet's `seq` to `read_transcript`'s `range` or
+  `expand_turn`.
 - With **`children_of`**, results are restricted to sessions whose parent is that ref's
   session. A `local:` or `proj:` ref resolves the parent's bucket and ID from the ref
   alone — **no transcript is opened, not even the parent's** — and children are looked up
@@ -162,7 +180,9 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 | `output_match` | shell job, artifact | bounded RE2 line search (maximum 65,536 characters) |
 | `context_lines` | shell job, artifact search | 0–10 lines before and after each match; requires `output_match` |
 
-Registered `strict:false`, so every parameter is optional. The three formats are one
+Registered `strict:false`, so every parameter is optional. On a session ref, a
+`format`, `range`, `expand_turn`, `output_match`, or `context_lines` sent as
+`null` reads as absent. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
 and each session read returns the same envelope skeleton (`transcript_ref`?, `format`,
 `content`, format-specific `meta`); `transcript_ref` is omitted when the session lives in a
@@ -323,9 +343,10 @@ contiguous in-range window.
 evidence, while the `expansion` field returns byte-paged exact `transcript_v2_jsonl`: one
 entry for an ordinary user, steering, summary, checkpoint, model-switch, or orphan-result
 turn; or the minimal assistant/tool-result span needed to preserve call/result ownership.
-Use the returned `offset_bytes` continuation until all exact bytes are read. If the named
-turn falls outside the rendered range, bounded markdown also appends a labeled supplemental
-section naming its real Turn number.
+Use the returned `offset_bytes` continuation until all exact bytes are read. Without a
+`range`, the markdown shows only that turn (or its assistant/result span). With a `range`,
+it shows that window, and if the named turn falls outside it, appends a labeled
+supplemental section naming its real Turn number.
 
 ## The navigation loop
 
@@ -346,7 +367,9 @@ section naming its real Turn number.
 - **One ref per read.** `find` does corpus discovery and never reads a session;
   `read` consumes one session, shell-job, or artifact ref.
 - **One turn numbering.** What the outline and markdown show is what `range` and `expand_turn`
-  take. No second index is ever exposed.
+  take. No second index is ever exposed. `doctor_evener` / `evener doctor transcript` rows
+  carry the same turn numbers (`turn`), and its `range` takes them with the same grammar;
+  entries `read_transcript` omits appear there without a number.
 - **The registry never truncates.** Each format bounds its own output, always rune-safe and
   reported in `meta`.
 - **Honest counts and windows.** `turns_rendered + elided_turns == turns_total`; a default

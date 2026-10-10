@@ -19,6 +19,7 @@ const row = (over: Partial<Activity> = {}): Activity => ({
 });
 
 const delegate = (over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo => ({
+	runGeneration: 1,
 	delegateId: "d1",
 	ownerSessionId: "s0",
 	rootSessionId: "s0",
@@ -47,6 +48,8 @@ describe("a subagent's row (spec 8.2)", () => {
 			stateText: "running · 4m",
 			activity: "Working",
 			ref: "local:child-1",
+			delegateId: "d1",
+			runGeneration: 1,
 		});
 	});
 
@@ -69,11 +72,26 @@ describe("a subagent's row (spec 8.2)", () => {
 		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 }), ...children], NOW).activity).toBe(
 			"Waiting on 2 subagents",
 		);
+		expect(subagentLine(row(), [delegate(), children[0], children[2]], NOW).activity).toBe("Waiting on 1 subagent");
+	});
+
+	// The silence the row times to turn Quiet (useNowPastQuiet): only while
+	// it grows with the clock, and only when the row would say Quiet.
+	it("times its silence only while it grows and the row would say Quiet", () => {
+		const live = delegate({ runStartedAt: ago(60_000), latestActivityAt: ago(10_000) });
+		expect(subagentLine(row(), [live], NOW).quietForMs).toBe(10_000);
+		// A snapshot of its silence, with no time it can grow from.
+		expect(subagentLine(row(), [delegate()], NOW).quietForMs).toBeUndefined();
+		const child = delegate({ delegateId: "c1", parentDelegateId: "d1", originItemId: "other-1" });
+		expect(subagentLine(row(), [live, child], NOW).quietForMs).toBeUndefined();
+		const failed = delegate({ status: "failed", terminal: true, outcome: "failed", latestActivityAt: ago(10_000) });
+		expect(subagentLine(row(), [failed], NOW).quietForMs).toBeUndefined();
 	});
 
 	it("says how long ago a failed one failed, and why", () => {
 		const failed = delegate({
 			status: "failed",
+			outcome: "failed",
 			terminal: true,
 			runEndedAt: ago(360_000),
 			reason: "model refused the task",
@@ -85,11 +103,38 @@ describe("a subagent's row (spec 8.2)", () => {
 		});
 	});
 
-	it("has no activity line once done", () => {
+	// The roster carries no report (appwire.SlimDelegateForRoster); the row
+	// shows the report from the coordinator's tree when it has one (G13).
+	it("says Finished once done, from the roster alone", () => {
 		const done = delegate({ status: "completed", terminal: true, runEndedAt: ago(120_000) });
-		const line = subagentLine(row({ state: "completed" }), [done], NOW);
-		expect(line).toMatchObject({ state: "done", stateText: "done · 2m" });
-		expect(line.activity).toBeUndefined();
+		expect(subagentLine(row({ state: "completed" }), [done], NOW)).toMatchObject({
+			state: "done",
+			stateText: "done · 2m",
+			activity: "Finished",
+			delegateId: "d1",
+			runGeneration: 1,
+		});
+	});
+
+	it("says Stopped once a stop ended it, from the roster alone", () => {
+		const stopped = delegate({ status: "cancelled", outcome: "cancelled", terminal: true, runEndedAt: ago(120_000) });
+		expect(subagentLine(row({ state: "completed" }), [stopped], NOW)).toMatchObject({
+			state: "stopped",
+			activity: "Stopped",
+		});
+	});
+
+	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
+	it("says a failed one's cause, else its reason code in words", () => {
+		const failed = (over: Partial<EvenerDelegateInfo>) =>
+			delegate({ status: "failed", outcome: "failed", terminal: true, runEndedAt: ago(60_000), ...over });
+		expect(
+			subagentLine(row({ state: "failed" }), [failed({ reason: "failed", error: "provider returned 500" })], NOW)
+				.activity,
+		).toBe("provider returned 500");
+		expect(subagentLine(row({ state: "failed" }), [failed({ reason: "runtime_lost" })], NOW).activity).toBe(
+			"runtime lost",
+		);
 	});
 
 	it("finds its subagent by the call that started it", () => {

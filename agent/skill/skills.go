@@ -63,7 +63,8 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 		return
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		candidate, err := skillDirectory(dir, entry)
+		if err != nil || !candidate {
 			continue
 		}
 		skillFile := filepath.Join(dir, entry.Name(), "SKILL.md")

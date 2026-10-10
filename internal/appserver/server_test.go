@@ -180,6 +180,46 @@ func TestInitializeOmitsNavigationCapabilityWhenUnconfigured(t *testing.T) {
 	}
 }
 
+// TestInitializeReportsMachineFacts pins that a server configured with the
+// serving machine's system and roots reports them in ServerInfo, and that an
+// unconfigured server leaves them absent — a client showing the hub's own
+// machine (the phone's Hosts) reads these instead of leaving its system and
+// roots unknown.
+func TestInitializeReportsMachineFacts(t *testing.T) {
+	server := NewServer(ServerConfig{
+		ServerName: "evener-hub",
+		Version:    "test",
+		SourceID:   "local",
+		OS:         "darwin",
+		Arch:       "arm64",
+		Roots:      []string{"/Users/jesse/git"},
+	})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ServerInfo.OS != "darwin" || response.ServerInfo.Arch != "arm64" {
+		t.Fatalf("ServerInfo system = %q/%q, want darwin/arm64", response.ServerInfo.OS, response.ServerInfo.Arch)
+	}
+	if got, want := response.ServerInfo.Roots, []string{"/Users/jesse/git"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ServerInfo roots = %v, want %v", got, want)
+	}
+}
+
+// TestInitializeOmitsMachineFactsWhenUnconfigured pins that a server with no
+// machine facts (the daemon, and every test server) omits them: an absent
+// os/arch/roots is the documented "unknown", never a fabricated value.
+func TestInitializeOmitsMachineFactsWhenUnconfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ServerInfo.OS != "" || response.ServerInfo.Arch != "" || response.ServerInfo.Roots != nil {
+		t.Fatalf("ServerInfo machine facts = %q/%q/%v, want absent", response.ServerInfo.OS, response.ServerInfo.Arch, response.ServerInfo.Roots)
+	}
+}
+
 func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

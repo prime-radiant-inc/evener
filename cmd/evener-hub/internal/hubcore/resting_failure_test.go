@@ -129,16 +129,4 @@ func fuzzScenarioBuildTree_ACoordinatorsRowNeverShowsASubagentsFailure(t *testin
 	if !inLive || !inProject || liveRow.Failure != nil || projectRow.Failure != nil {
 		t.Fatalf("root rows = Live %+v (%v), project %+v (%v); want both found with no failure", liveRow.Failure, inLive, projectRow.Failure, inProject)
 	}
-	if len(liveRow.Children) != 1 || liveRow.Children[0].Failure != nil {
-		t.Fatalf("children = %+v, want the one subagent row with no failure", liveRow.Children)
-	}
-}
-
-// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsFailure: a row clamped to
-// ended under a dead parent is not Failed, so it names no failure.
-func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsFailure(t *testing.T) {
-	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusSystemError, Failure: testRestingFailure()})
-	if child.State != "ended" || child.Failure != nil {
-		t.Fatalf("stale subagent = state %q, failure %+v; want ended with no failure", child.State, child.Failure)
-	}
 }

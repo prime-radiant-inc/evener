@@ -15,6 +15,8 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v7 serves job output as lossless byte pages, with explicit retention bounds
+// and an optional exclusive end selector that preserves zero.
 // v6 serves history only as history/updated from recorded entries and live
 // unrecorded state only as overlay/* notifications: turn/started,
 // turn/completed, item/* and evener/steering/injected are gone, and a client
@@ -27,7 +29,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v6"
+const ProtocolVersion = "evener-appwire-v7"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.
@@ -67,12 +69,17 @@ const (
 	MethodEvenerTasksList                = "evener/tasks/list"
 	MethodEvenerJobsList                 = "evener/jobs/list"
 	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerJobsGet                  = "evener/jobs/get"
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
 	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
 	MethodEvenerPathsComplete            = "evener/paths/complete"
 	MethodEvenerDirsCreate               = "evener/dirs/create"
@@ -91,6 +98,7 @@ const (
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
 	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerArchivedList             = "evener/archived/list"
 	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerNoticesList              = "evener/notices/list"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
@@ -137,6 +145,7 @@ const (
 	MethodEvenerPluginEnable             = "evener/plugin/enable"
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 
@@ -277,6 +286,7 @@ const (
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerThreadActivityChanged = "evener/thread/activity/changed"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
@@ -367,17 +377,21 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion"`
-	Resource              string              `json:"resource"`
-	Section               string              `json:"section,omitempty"`
-	SectionID             string              `json:"sectionId,omitempty"`
-	Catalog               string              `json:"catalog,omitempty"`
-	ProjectKey            string              `json:"projectKey,omitempty"`
-	Tier                  string              `json:"tier,omitempty"`
-	Ref                   string              `json:"ref,omitempty"`
-	Offset                *uint32             `json:"offset,omitempty"`
-	Limit                 *uint32             `json:"limit,omitempty"`
-	Base                  *NavigationReadBase `json:"base,omitempty"`
+	RepresentationVersion uint8  `json:"representationVersion"`
+	Resource              string `json:"resource"`
+	Section               string `json:"section,omitempty"`
+	SectionID             string `json:"sectionId,omitempty"`
+	// Catalog names a catalog read's catalog. On a project or project_page
+	// read it narrows the read to that catalog's project, as a location's
+	// catalog names it; an older hub refuses it there, and sends no location
+	// catalog to take it from.
+	Catalog    string              `json:"catalog,omitempty"`
+	ProjectKey string              `json:"projectKey,omitempty"`
+	Tier       string              `json:"tier,omitempty"`
+	Ref        string              `json:"ref,omitempty"`
+	Offset     *uint32             `json:"offset,omitempty"`
+	Limit      *uint32             `json:"limit,omitempty"`
+	Base       *NavigationReadBase `json:"base,omitempty"`
 }
 
 func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
@@ -410,11 +424,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil
@@ -650,9 +664,11 @@ type SessionSeenSetParams struct {
 }
 
 // SessionSeenMark is one session's mark, addressed by the ref its row carries.
-// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
-// turn_ended_at in Unix milliseconds, the turn the client showed, never a
-// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
+// daemon timestamp the client showed, in Unix milliseconds: the row's
+// turn_ended_at, or the session's lastMovedAt from an activity read taken
+// while the session was on screen; never a client clock. The hub keeps the
+// newest it has been sent. Unread is "Mark as
 // unread", which lasts until the next SeenThrough mark.
 type SessionSeenMark struct {
 	Ref         string `json:"ref"`
@@ -667,6 +683,49 @@ type SessionSeenSetResponse struct {
 	OK         bool               `json:"ok"`
 	Changed    bool               `json:"changed"`
 	Navigation NavigationMutation `json:"navigation"`
+}
+
+// ArchivedListParams names the project whose archived sessions to list: its
+// key, and the catalog its row came from ("projects", "archived_projects" or
+// "test_runs") as a hint. The same key can exist in more than one catalog, so
+// the hub reads the hinted catalog when it holds the key; a project that moved
+// between Projects and Archived projects is read from the one holding it now
+// (a test-runs hint has no such fallback); with no hint, the first of
+// projects, archived_projects and test_runs holding the key. Cursor is the
+// previous page's NextCursor, bound to the same hint and key; Limit defaults
+// to 50.
+type ArchivedListParams struct {
+	Catalog    string `json:"catalog,omitempty"`
+	ProjectKey string `json:"projectKey"`
+	Cursor     string `json:"cursor,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	// Revision is the revision of the list the caller holds (a response's
+	// Revision). When it is still the list's, the response says Unchanged and
+	// carries no rows. An older hub ignores it and answers the page.
+	Revision string `json:"revision,omitempty"`
+}
+
+// ArchivedListResponse is one page of a project's archived sessions, newest
+// first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
+// cannot import hubapi, so the rows travel as raw JSON the way a navigation
+// read's data does. NextCursor is empty on the last page. Total counts every
+// archived session of the project. Catalog is the catalog the hub read; it is
+// absent when none of the catalogs the hint allows holds the key, and the page
+// is empty.
+type ArchivedListResponse struct {
+	Sessions   json.RawMessage `json:"sessions"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Total      int             `json:"total"`
+	Catalog    string          `json:"catalog,omitempty"`
+	// Revision fingerprints the whole list read, the same on every page of it;
+	// it changes when any row a page could show changes. An older hub sends
+	// none. It vouches for the rows a client holds only when every page it
+	// holds carried this same revision; a client whose pages carried
+	// different revisions holds none, and reads again.
+	Revision string `json:"revision,omitempty"`
+	// Unchanged is true when the request's Revision is still the list's: the
+	// response then carries no rows, and Total, Catalog and Revision stand.
+	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command
@@ -775,7 +834,7 @@ type SessionActivity struct {
 	// transcript items that finished and the tool output events in each.
 	Minutes []int `json:"minutes"`
 	// RunningSubagents counts the session's subagents, at every depth, whose
-	// own turn is running.
+	// run is open: SubagentTally.Running, the count its Live row shows.
 	RunningSubagents int `json:"runningSubagents"`
 	// QuietForMS is how long the session's whole tree has gone without
 	// transcript motion, as of this read. It is present only while the session
@@ -783,6 +842,18 @@ type SessionActivity struct {
 	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
 	// one long model call emits nothing for minutes.
 	QuietForMS *int64 `json:"quietForMs,omitempty"`
+	// LatestIntent is what the session's own root turn last set out to do
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the daemon's own tool-call intent, re-cut here. Absent when this turn has
+	// stated none, which is most of a session's life before its first tool
+	// call, and when the daemon predates the field.
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+	// motion (ThreadActivity.LastMovedAt). A client compares it with the
+	// session's seen_through to tell whether anything moved since the person
+	// last looked, mid-turn included. Absent until the tree has moved since
+	// its daemon began serving it, and from an older hub or daemon.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -825,9 +896,20 @@ type NoticesListResponse struct {
 	Notices []HubNotice `json:"notices"`
 }
 
+// ServerInfo names the serving hub and its machine: Name and Version identify
+// the build, while OS, Arch and Roots describe the hub's own machine — the same
+// system and project-root facts a HostRow carries for a host the hub reaches
+// over SSH. A client that already shows the hub's own machine (the phone's
+// Hosts) renders those fields instead of leaving the machine's system and roots
+// unknown. OS and Arch name the machine's system and are absent when a server
+// does not report them; Roots is the machine's project roots, absent when it
+// has none.
 type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	OS      string   `json:"os,omitempty"`
+	Arch    string   `json:"arch,omitempty"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
@@ -908,12 +990,22 @@ type TaskAggregate struct {
 type EvenerThread struct {
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
-	ResumeRequired bool   `json:"resumeRequired,omitempty"`
-	Ref            string `json:"ref"`
-	InstanceID     string `json:"instanceId,omitempty"`
-	ParentRef      string `json:"parentRef,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	Profile        string `json:"profile,omitempty"`
+	ResumeRequired bool `json:"resumeRequired,omitempty"`
+	// ResumeOnlyFoldable means a turn/start sent on this connection right now
+	// would be admitted under the resume-only carve-out: the session merely needs
+	// its resume, which the send folds into itself. The hub stamps it only when
+	// that admission would actually succeed, so a client can offer Send from the
+	// hub's own answer instead of inferring the shape from ResumeRequired plus a
+	// missing send capability, which this same overlay also sets for a Stop drain,
+	// an unconfirmed force-stop exit, the connection-recovery fence, and a daemon
+	// on an incompatible protocol - four shapes whose turn/start the hub still
+	// refuses.
+	ResumeOnlyFoldable bool   `json:"resumeOnlyFoldable,omitempty"`
+	Ref                string `json:"ref"`
+	InstanceID         string `json:"instanceId,omitempty"`
+	ParentRef          string `json:"parentRef,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	Profile            string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -943,13 +1035,13 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
-	// HumanNote carries the human's one-paragraph session whiteboard when set,
-	// else empty. It powers the shared-notes display without a bespoke
+	// HumanNote carries the human's session whiteboard, line breaks kept, when
+	// set, else empty. It powers the shared-notes display without a bespoke
 	// transport — like Goal, it is structured per-session state read from the
 	// already-fetched thread snapshot.
 	HumanNote string `json:"humanNote,omitempty"`
-	// AgentNote carries the agent's one-paragraph session whiteboard when set,
-	// else empty. It is read from the already-fetched thread snapshot like
+	// AgentNote carries the agent's session whiteboard, line breaks kept, when
+	// set, else empty. It is read from the already-fetched thread snapshot like
 	// HumanNote.
 	AgentNote string `json:"agentNote,omitempty"`
 	// SessionURLs carries the session's shared-notes URL list when set, else
@@ -1099,6 +1191,17 @@ type ThreadAccess struct {
 type ThreadActivity struct {
 	Minutes        []int `json:"minutes"`
 	LastActivityAt int64 `json:"lastActivityAt"`
+	// LatestIntent is the newest intent a tool call of the session's own root
+	// turn stated ("Reading the board's row tests."), one line of at most
+	// MaxIntentRunes. A Working row shows it in place of the job it is
+	// running, because it says what the job is for. Empty until this turn's
+	// first tool call that stated one, cleared when a turn begins, and absent
+	// from a daemon that predates it.
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is LastActivityAt counting only real motion: absent until
+	// the tree has moved since the daemon began serving the session, so a
+	// daemon restart is not news to a client comparing it with a seen mark.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how
@@ -1193,6 +1296,12 @@ type QueueState struct {
 	// missing SkillNames as "selections unavailable", never as "no
 	// selections".
 	SkillNames [][]string `json:"skillNames,omitempty"`
+	// CommandNames is FIFO-aligned with Preview and retains exact command
+	// identities independently from skill selections when editing or returning.
+	CommandNames [][]string `json:"commandNames,omitempty"`
+	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+	// and UTF-16 location. It is editing metadata, not activation authority.
+	Mentions [][]InputMention `json:"mentions,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -1397,12 +1506,22 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// CommandInput advertises canonical {type:"command", name} consumption
+	// on input-bearing mutations, with empty args and exact catalog identity.
+	CommandInput bool `json:"commandInput,omitempty"`
 	// StopSubagent advertises evener/delegate/stop on a root session (S6):
 	// true while its daemon wires the stop and the session is open. Absent
 	// from an older daemon, from a session with no daemon running (it runs no
 	// subagents), and from a subagent's own thread: the stop targets the root
 	// that owns the tree.
 	StopSubagent bool `json:"stopSubagent,omitempty"`
+	// PageBefore advertises that thread/turns/list pages this thread from a
+	// before position, with or without a cursor: a client that trimmed rows
+	// from the top of its window can page them back. The hub answers for its
+	// own local and saved threads. A thread on another host stays masked until
+	// the hub can join such a page to its remote paging window (#3176); an
+	// older hub never sends it.
+	PageBefore bool `json:"pageBefore,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -1414,6 +1533,9 @@ type EvenerHookEventStatus struct {
 }
 
 type EvenerDiagnostics struct {
+	// Commands is this owning session's loaded, path-free command inventory.
+	// Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+	Commands   []CommandDescriptor     `json:"commands,omitzero"`
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
@@ -1574,6 +1696,8 @@ type EvenerWatchInfo struct {
 // notifications and thread diagnostics. It contains no activation job fields
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
+	// RunGeneration identifies the current activation; zero means no run has started.
+	RunGeneration       uint64               `json:"runGeneration"`
 	DelegateID          string               `json:"delegateId"`
 	OwnerSessionID      string               `json:"ownerSessionId"`
 	RootSessionID       string               `json:"rootSessionId"`
@@ -1586,6 +1710,7 @@ type EvenerDelegateInfo struct {
 	Status              string               `json:"status"`
 	Outcome             string               `json:"outcome,omitempty"`
 	Reason              string               `json:"reason,omitempty"`
+	Error               string               `json:"error,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	NeedsAttention      bool                 `json:"needsAttention"`
@@ -1731,11 +1856,12 @@ type TurnError struct {
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a
-// warning/error notification. Today the only Kind is "provider" (an HTTP
-// failure from an LLM adapter); consumers can typed-branch on Kind
-// instead of substring-matching the message (kata cmfz). The agent's
-// events.ErrorCause projects to this shape; absence is signaled by an
-// omitted/nil pointer on the carrying envelope.
+// warning/error notification. Kinds today are "provider" (an HTTP failure
+// from an LLM adapter) and "signInRequired" (the user must sign in to a
+// provider instance again); consumers can typed-branch on Kind instead of
+// substring-matching the message (kata cmfz). The agent's events.ErrorCause
+// projects to this shape; absence is signaled by an omitted/nil pointer on
+// the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
@@ -1779,8 +1905,8 @@ const (
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
 	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
 	// transcript renders for a schema.TurnNotesContext turn: the harness's
-	// shared-notes snapshot block. Same visibility contract as environment —
-	// harness chrome, never hidden by a toggle.
+	// shared-notes snapshot block. Web and native hide it at Conversation;
+	// elsewhere System events controls visibility and it starts folded.
 	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
 	// ThreadItemEventKindWarning marks a live overlay notice for a session
 	// warning. Warnings are never recorded, so only the overlay shows them.
@@ -1789,6 +1915,20 @@ const (
 	// round collapses into when it ended with streamed content or running
 	// tools that were never recorded.
 	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
+	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
+	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
+	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
+	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
+	// ThreadItemEventKindMemoryContext marks each systemMessage item a
+	// schema.TurnMemoryContext turn projects: one per section of the
+	// boundary's memory notification (a scope's index, its index changes, or
+	// a notice of read pages another session changed). apptranscript owns the
+	// split, each item's exact recorded section text, and the Raw
+	// ({"memoryContext": {...}}) that only index sections carry; change and
+	// page sections, and a message that does not decode, carry no Raw and
+	// clients show their text. The web and native renderers own presenting
+	// each as a collapsed steering-style notification.
+	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1813,6 +1953,8 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindNotesContext),
 	string(ThreadItemEventKindWarning),
 	string(ThreadItemEventKindInterrupted),
+	string(ThreadItemEventKindApprovalDecision),
+	string(ThreadItemEventKindMemoryContext),
 }
 
 type ThreadItem struct {
@@ -1909,9 +2051,18 @@ type OutputImage struct {
 	Path      string `json:"path,omitempty"`
 }
 
+// InputMention records one visible selection's UTF-16 offset in a text item.
+// Canonical skill/command items remain the sole activation authority.
+type InputMention struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Offset int    `json:"offset"`
+}
+
 type InputItem struct {
 	Type      string            `json:"type"`
 	Text      string            `json:"text,omitempty"`
+	Mentions  []InputMention    `json:"mentions,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	MediaType string            `json:"mediaType,omitempty"`
 	Data      []byte            `json:"data,omitempty"`
@@ -2131,6 +2282,12 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	// Before, when set, ends the page just before this position. With a
+	// Cursor it moves the cursor's boundary, keeping the cursor's identity
+	// fence; with none the source mints a cursor there under the thread's
+	// current identity. A client that dropped rows from the top of its window
+	// names the oldest row it kept and pages the dropped rows back.
+	Before *ThreadItemPosition `json:"before,omitempty"`
 }
 
 // ThreadTurnsListResponse is one backfill page. It carries no request
@@ -2181,9 +2338,10 @@ type ThreadTurnItemsListResponse struct {
 //
 //   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
 //     bytes are re-scanned out of the session transcript;
-//   - Path is a session-relative file path for the file-backed form
-//     /doc/image?session=<session>&path=<rel>, resolved inside the session's
-//     working directory.
+//   - Path is a relative or current-root absolute file path for the file-backed
+//     form /doc/image?session=<session>&path=<path>, resolved inside the
+//     session's current working directory. Absolute paths outside that root are
+//     refused.
 //
 // Both set, or neither, is InvalidParams. SessionID names the session in the
 // recipient hub's own namespace; it is never a routing field for another source.
@@ -2465,14 +2623,16 @@ type TurnDrainAsSteerResponse struct {
 // turn/promoteQueuedAsSteer (issue #22 per-message promote). Index selects
 // one entry of the session's FIFO input queue (matching the position shown
 // in the queue preview); the daemon removes just that entry and injects it
-// as a user-sourced steering message into the in-flight turn, leaving the
+// as a user-sourced steering message into the in-flight turn — or, when no
+// turn is running, as pending steering the next turn delivers — leaving the
 // other queued messages in place. ExpectedEntryID, when non-empty, must
 // match the id the daemon minted for that entry (surfaced via
 // QueueState.IDs): the queue head can be consumed mid-turn, so a bare index
 // from an older snapshot may point at a different message — a mismatch is a
 // Conflict, not a wrong-message promote (review F1). The daemon returns
-// Conflict when no turn is in flight, the index is out of range, or the
-// expected id no longer matches.
+// Conflict when the index is out of range or the expected id no longer
+// matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
+// parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
 	Ref                string `json:"ref"`
 	Index              int    `json:"index"`
@@ -2616,7 +2776,10 @@ type TaskListParams struct {
 }
 
 type TaskListResponse struct {
-	Data any `json:"data"`
+	// Data is nil when task data is unavailable and non-nil (possibly empty)
+	// for an authoritative list. The nullable annotation preserves that
+	// distinction in the generated SDK without a pointer to the slice.
+	Data []Task `json:"data" appwire:"nullable"`
 }
 
 type JobsListParams struct {
@@ -2686,6 +2849,7 @@ type JobActivityDelegate struct {
 	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
+	Error               string                 `json:"error,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
 	Resumable           bool                   `json:"resumable,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
@@ -2780,32 +2944,45 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the evener/jobs/output payload: one window of a job's
-// durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes" and to page backwards through the log.
-type JobOutputTail struct {
-	Tail          string `json:"tail"`
-	TotalBytes    int64  `json:"totalBytes"`
-	RetainedStart int64  `json:"retainedStart"`
-	Truncated     bool   `json:"truncated"`
-	// HasEarlier is true when retained output exists before the window: a
-	// follow-up read with beforeBytes=RetainedStart returns the previous page.
-	HasEarlier bool `json:"hasEarlier,omitempty"`
+// JobOutputPage describes exact lifetime bytes [OffsetBytes,
+// OffsetBytes+BytesReturned). Data is lossless utf8 or standard base64.
+type JobOutputPage struct {
+	OffsetBytes        int64  `json:"offsetBytes"`
+	BytesReturned      int64  `json:"bytesReturned"`
+	TotalBytes         int64  `json:"totalBytes"`
+	RetainedStartBytes int64  `json:"retainedStartBytes"`
+	Encoding           string `json:"encoding"`
+	Data               string `json:"data"`
 }
 
-// JobsOutputParams reads a byte window of one job's durable output. MaxBytes
-// defaults server-side (4 KiB) and is capped (64 KiB). BeforeBytes > 0 pages
-// backwards: the window ends at that lifetime output offset (exclusive)
-// instead of at the end of the log.
+// JobsOutputParams reads up to MaxBytes ending at BeforeBytes, exclusively.
+// An omitted BeforeBytes selects the latest page. Explicit zero selects the
+// empty page at zero when zero is retained. MaxBytes defaults to 4 KiB and is
+// capped at 64 KiB; a calculated page start is clipped to the retention floor.
 type JobsOutputParams struct {
 	Ref         string `json:"ref,omitempty"`
 	JobID       string `json:"jobId"`
 	MaxBytes    int64  `json:"maxBytes,omitempty"`
-	BeforeBytes int64  `json:"beforeBytes,omitempty"`
+	BeforeBytes *int64 `json:"beforeBytes,omitempty"`
 }
 
 type JobsOutputResponse struct {
-	Data any `json:"data"`
+	Data JobOutputPage `json:"data"`
+}
+
+// JobsGetParams reads ONE job's metadata (the activity-tree job shape),
+// including its untruncated command. Ref names the owning session; JobID names
+// the job.
+type JobsGetParams struct {
+	Ref   string `json:"ref,omitempty"`
+	JobID string `json:"jobId"`
+}
+
+// JobsGetResponse carries an appwire.JobActivityJob in Data: the same job node
+// the activity tree renders, so a client can show the job's full command beside
+// its output.
+type JobsGetResponse struct {
+	Data JobActivityJob `json:"data"`
 }
 
 // PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
@@ -3006,7 +3183,14 @@ type AuthStatusResponse struct {
 	WorkspaceID    string `json:"workspaceId,omitempty"`
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// RefreshRejected is true when the issuer permanently refused this
+	// instance's stored refresh token (authopenai.RefreshRejected, #2479):
+	// the access token may still be valid, but the session needs a fresh
+	// sign-in before its next refresh. It is why NeedsLogin can be true for a
+	// record whose access token has not expired, so a client must not read
+	// NeedsLogin alone as "the access token expired".
+	RefreshRejected bool   `json:"refreshRejected,omitempty"`
+	Error           string `json:"error,omitempty"`
 	// ConfigRevision is this instance's effective credential-configuration
 	// revision: a stable, keyed MAC the host re-resolves from the same state a
 	// credential write lands in (cmd/evener-hub/app_auth.go +
@@ -3641,7 +3825,11 @@ type AuthDeviceStartResponse struct {
 	UserCode        string `json:"userCode"`
 	VerificationURL string `json:"verificationUrl"`
 	IntervalSeconds int    `json:"intervalSeconds"`
-	Fallback        bool   `json:"fallback,omitempty"`
+	// ExpiresInSeconds is how long the user code stays valid, so a client can
+	// say when it expires instead of repeating the hub's own TTL. Optional:
+	// zero (absent) leaves the client on its own wording.
+	ExpiresInSeconds int  `json:"expiresInSeconds,omitempty"`
+	Fallback         bool `json:"fallback,omitempty"`
 }
 
 // AuthDevicePollParams is the params for evener/auth/device/poll.
@@ -3744,9 +3932,9 @@ type InstanceEntry struct {
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
-	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids, alias rows included. Empty for an
-	// instance with no rows.
+	// disabled state, for the sheet's per-model toggles: live ids plus
+	// additive overlay/config rows when usable, otherwise static fallback
+	// rows, with aliases included. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
@@ -3909,7 +4097,7 @@ type InstanceSetDefaultParams struct {
 
 // InstanceRefreshModelsParams is the params for
 // evener/instance/refreshModels: fetch the instance's live listing, then
-// answer with the updated list (exact catalog rows plus cached live ids).
+// answer with its live-authoritative or static-fallback model list.
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
 	// OriginClientId is the client identity the hub echoes into the
@@ -4280,6 +4468,14 @@ type PluginEntry struct {
 	GitCommitSha string `json:"gitCommitSha,omitempty"`
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
+	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+	// newer version: a newer remote commit for a git-backed plugin, or new
+	// contents in its marketplace, which the check refreshes first, for one
+	// stored in its marketplace's own repo. Absent means no known update: no check has run,
+	// the check found the plugin current or could not read its source, or the
+	// plugin is used in place from a directory. Clients offer Upgrade only when
+	// it is true.
+	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 
 // PluginListResponse is the result of evener/plugin/list. Every plugin
@@ -4898,11 +5094,11 @@ const (
 	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
 )
 
-// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
-// crash-fencing §9): the controller boot id plus the per-host monotonic op
-// sequence. `evener/host/running` requires it — absent or malformed is a typed
-// `probe-failed` refusal, never an unfenced write — and the fencing spec's
-// remote-fencing boundary carries the same pair.
+// FencingEpoch is the epoch wire shape (deploy pipeline 08b §10): the controller
+// boot id plus the per-host monotonic op sequence. `evener/host/running` requires
+// it — absent or malformed is a typed `probe-failed` refusal, never an unfenced
+// write. The name is retained historical wire vocabulary; a `probeEpoch` rename
+// is a wire-compat follow-up.
 type FencingEpoch struct {
 	BootID string `json:"bootId"`
 	OpSeq  uint64 `json:"opSeq"`
@@ -5037,9 +5233,6 @@ type OperationResult struct {
 // `compacted: true` is present exactly on a replay the operation store
 // answered from a dedup tombstone — the terminal record itself was compacted
 // (§4) — and absent on every retained record.
-// The fencing-epoch and orphan-boundary details a later slice's wire carries
-// (the crash-fencing spec's shapes) stay off this shape until that slice
-// registers its filters.
 type OperationRecord struct {
 	ID                string                   `json:"id"`
 	ClientOperationID string                   `json:"clientOperationId"`
@@ -5110,12 +5303,15 @@ type HostNotificationParams struct {
 // The mutation-result union (registry spec 08 §11)
 // ---------------------------------------------------------------------------
 
+// HostMutationOutcome identifies a host mutation result arm.
+type HostMutationOutcome string
+
 // The four discriminator values the mutation-result union carries.
 const (
-	HostMutationOutcomeCommitted        = "committed"
-	HostMutationOutcomeTeardownFailure  = "committed-with-teardown-failure"
-	HostMutationOutcomeCollisionDropped = "collision-dropped"
-	HostMutationOutcomeAmbiguous        = "ambiguous"
+	HostMutationOutcomeCommitted        HostMutationOutcome = "committed"
+	HostMutationOutcomeTeardownFailure  HostMutationOutcome = "committed-with-teardown-failure"
+	HostMutationOutcomeCollisionDropped HostMutationOutcome = "collision-dropped"
+	HostMutationOutcomeAmbiguous        HostMutationOutcome = "ambiguous"
 )
 
 // RemovedRow is evener/host/remove's dedicated removed-row arm (registry spec
@@ -5160,15 +5356,15 @@ type RemovedRow struct {
 // planned teardown completed. `host` is a HostRow for add/update and a
 // RemovedRow for remove's clean path.
 type HostMutationCommitted struct {
-	Outcome string  `json:"outcome"`
-	Host    HostRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    HostRow             `json:"host"`
 }
 
 // HostMutationCommittedRemoved is remove's clean arm: the same outcome with the
 // dedicated removed-row shape.
 type HostMutationCommittedRemoved struct {
-	Outcome string     `json:"outcome"`
-	Host    RemovedRow `json:"host"`
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    RemovedRow          `json:"host"`
 }
 
 // HostMutationTeardownFailure is the union's failure arm: the mutation is
@@ -5177,19 +5373,19 @@ type HostMutationCommittedRemoved struct {
 // `evener/host/teardown-retry` resumes. The committed row is always present so
 // the UI renders it with a teardown-retry affordance.
 type HostMutationTeardownFailure struct {
-	Outcome   string  `json:"outcome"`
-	Seam      string  `json:"seam"`
-	RemnantID string  `json:"remnantId"`
-	Host      HostRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      HostRow             `json:"host"`
 }
 
 // HostMutationTeardownFailureRemoved is remove's teardown-failure arm, carrying
 // the removed-row shape for the same reason.
 type HostMutationTeardownFailureRemoved struct {
-	Outcome   string     `json:"outcome"`
-	Seam      string     `json:"seam"`
-	RemnantID string     `json:"remnantId"`
-	Host      RemovedRow `json:"host"`
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      RemovedRow          `json:"host"`
 }
 
 // HostMutationCollisionDropped is the union's dropped arm: the post-rename
@@ -5201,11 +5397,11 @@ type HostMutationTeardownFailureRemoved struct {
 // the re-read finds the name gone entirely (a hand-edit deletion) the arm
 // carries no `host` and sets `removed: true`.
 type HostMutationCollisionDropped struct {
-	Outcome            string   `json:"outcome"`
-	DroppedEntry       HostRow  `json:"droppedEntry"`
-	WinningFingerprint string   `json:"winningFingerprint"`
-	Host               *HostRow `json:"host,omitempty"`
-	Removed            bool     `json:"removed,omitempty"`
+	Outcome            HostMutationOutcome `json:"outcome"`
+	DroppedEntry       HostRow             `json:"droppedEntry"`
+	WinningFingerprint string              `json:"winningFingerprint"`
+	Host               *HostRow            `json:"host,omitempty"`
+	Removed            bool                `json:"removed,omitempty"`
 }
 
 // HostMutationAmbiguous is the union's keyless-ambiguous arm (registry spec 08
@@ -5214,8 +5410,8 @@ type HostMutationCollisionDropped struct {
 // or another client's remove/re-add, so the response claims no commit and
 // carries no receipt semantics".
 type HostMutationAmbiguous struct {
-	Outcome     string  `json:"outcome"`
-	ObservedRow HostRow `json:"observedRow"`
+	Outcome     HostMutationOutcome `json:"outcome"`
+	ObservedRow HostRow             `json:"observedRow"`
 }
 
 // HostMutationResult is the mutation-result union evener/host/add,
@@ -5271,8 +5467,8 @@ func isNilArm(arm any) bool {
 // zero-valued arm.
 func (u *HostMutationResult) UnmarshalJSON(raw []byte) error {
 	var probe struct {
-		Outcome string          `json:"outcome"`
-		Host    json.RawMessage `json:"host"`
+		Outcome HostMutationOutcome `json:"outcome"`
+		Host    json.RawMessage     `json:"host"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return err

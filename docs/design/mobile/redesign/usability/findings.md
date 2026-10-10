@@ -82,7 +82,7 @@ Five fresh participants with the same personas, so nobody had learned the app. T
 | 7 | 2 | Needs you rows were told apart only by their marks. | Newcomer, Editor. | Why lines lead with a word: "**Question** ·", "**Approval** ·", "**Failed** ·", "**Restart needed** ·", "**May be stuck** ·". Alert cards use the same words. |
 | 8 | 2 | The scoped approval was a small link under the buttons. | Newcomer. | Three stacked choices that state their consequence: "Allow all of ~/sites/docs · for the rest of this session", "Allow this file only · it will ask again for the next one", "Deny". |
 | 9 | 2 | The Projects chip renamed itself to "Hosts" when grouping changed. | Orchestrator. | The chip always says Projects; only the section heading changes. |
-| 10 | 2 | Editing a setting silently deselected the "Last used" recipe. | Orchestrator. | A "Custom" chip lights up when the settings match no recipe. |
+| 10 | 2 | Editing a setting silently deselected the "Last used" recipe. | Orchestrator. | A "Custom" chip lights up when the settings match no recipe (recipes were later removed, 2026-09-29). |
 | 11 | 2 | The plugin picker had no search. | Operator. | Search, and the footer lists what's on. |
 | 12 | 1 | "Ask coordinator to stop it" read oddly on a subagent that had already failed. | Orchestrator. | Failed or waiting subagents offer "Ask coordinator to stop retrying it". |
 | 13 | 1 | A question's last option could sit under the fold unnoticed. | Orchestrator. | The option list fades at its bottom edge when it overflows. |
@@ -107,7 +107,7 @@ Three fresh participants (Editor, Commuter, Operator) on the tasks round 2 chang
 | 3 | 2 | The review sheet pre-selected a verdict. | T2b. | Nothing is chosen for you; Send stays disabled until you choose. |
 | 4 | 2 | The "Changed" marker sat on a heading, reading as part of the title. | T2b. | The blue rule alone marks a change. |
 | 5 | 2 | Edge-swipe back inside the plugin picker (a sheet over the launch sheet) did nothing. | Operator, T4. | Edge-swipe back closes the top stacked sheet; one swipe can no longer go back twice. |
-| 6 | 2 | "Last used" didn't say what it would set; effort wasn't explained. | Operator, T4. | "Same as last time", a line saying what it sets (later removed in phase 2, when the rows beneath were found to say the same), and "How long it thinks before acting". |
+| 6 | 2 | "Last used" didn't say what it would set; effort wasn't explained. | Operator, T4. | "Same as last time" (recipes were later removed, 2026-09-29), a line saying what it sets (later removed in phase 2, when the rows beneath were found to say the same), and "How long it thinks before acting". |
 | 7 | 2 | Sign-in copy promised a page with the code filled in. | Operator, T7. | The hub's device flow sends only a page URL and a code, so the app copies the code on the way and says so. |
 | 8 | 2 | The host's "Update host" button had nothing real behind it. | Operator, T13, checked against the hub: a protocol-compatible host attaches on its own build (`cmd/evener-hub/internal/sshconn/manager.go`), and the web offers no update action. | Removed; a note says sessions keep working. |
 

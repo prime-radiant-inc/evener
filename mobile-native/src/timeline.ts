@@ -1,36 +1,19 @@
+import { ERROR_EVENT_KIND } from "@evener/appwire-client";
 import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
-// Task-control instructions stay available without crowding the conversation.
-export function steeringNoticeLabel(item: Notice): string | undefined {
-	if (item.origin !== "steering" || isCriticalNotice(item)) return undefined;
-	switch (item.steeringKind) {
-		case "interrupted":
-			return "Interrupted";
-		case "interrupted-salvage":
-			return "Interrupted draft";
-		case "tasks-done":
-			return "Tasks complete";
-		case "task-nudge":
-			return "Task reminder";
-		case "task-inactive":
-			return "Task list idle";
-		case "current-task":
-			return "Current task";
-		case "task-list":
-			return "Task list";
-		default:
-			return undefined;
-	}
+// A labelled notice folds to its label until opened: a daemon steer
+// (steeringNotice) or a compaction's summary (systemNotice).
+export function noticeLabel(item: Notice): string | undefined {
+	return isCriticalNotice(item) ? undefined : item.label;
 }
 
 export function isCriticalNotice(item: Notice): boolean {
 	return (
 		item.tone === "warning" ||
 		item.family === "warning" ||
-		item.eventKind === "error" ||
-		item.eventKind === "tool_repair" ||
+		item.eventKind === ERROR_EVENT_KIND ||
 		(item.eventKind === "hook_completed" && item.exitCode !== undefined && item.exitCode !== 0)
 	);
 }
@@ -82,7 +65,7 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		item.kind === "run" ||
 		item.kind === "time" ||
 		item.kind === "note" ||
-		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
+		(item.kind === "notice" && noticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }
 

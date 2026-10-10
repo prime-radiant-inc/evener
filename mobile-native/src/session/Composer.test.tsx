@@ -6,6 +6,7 @@ import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
 import { Composer, ModelChip } from "./Composer";
+import { ComposerFocus } from "./composerFocus";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
 
@@ -18,6 +19,11 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// Records what the composer holds: whether, and as what kind.
+const holds = vi.hoisted(() => ({ calls: [] as [boolean, string][] }));
+vi.mock("../alerts/alertsContext", () => ({
+	useHoldAlerts: (active: boolean, kind: string) => holds.calls.push([active, kind]),
+}));
 
 const light = palettes.light;
 
@@ -45,6 +51,21 @@ function fields(tree: ReactTestRenderer): ReactTestInstance[] {
 }
 
 describe("Composer", () => {
+	it("reports its field's focus, and lets go of it when it leaves the screen", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ focus });
+		const [field] = fields(tree);
+		act(() => field?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => field?.props.onBlur());
+		expect(focus.getSnapshot()).toBe(false);
+		act(() => field?.props.onFocus());
+		// A composer unmounted while focused (a dock takes its place) reports
+		// no blur of its own.
+		act(() => tree.unmount());
+		expect(focus.getSnapshot()).toBe(false);
+	});
+
 	it("shows the placeholder in a 17/24 field", () => {
 		const { tree } = composer();
 		const [field] = fields(tree);
@@ -160,6 +181,17 @@ describe("Composer", () => {
 		expect(renderedText(tree)).not.toContain("Done");
 	});
 
+	// The full-screen editor's own field takes the keyboard, so what folds
+	// while you type in the composer comes back behind it.
+	it("lets go of the composer's focus when the full-screen editor opens", () => {
+		const focus = new ComposerFocus();
+		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7", focus });
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(focus.getSnapshot()).toBe(true);
+		act(() => pressable(tree, "Expand editor")?.props.onPress());
+		expect(focus.getSnapshot()).toBe(false);
+	});
+
 	it("offers the editor when long lines wrap past six lines", () => {
 		const { tree } = composer({ value: "one long paragraph" });
 		expect(pressable(tree, "Expand editor")).toBeUndefined();
@@ -201,5 +233,27 @@ describe("the model chip (spec 8.5)", () => {
 		expect(tree.root.findAll((node) => String(node.type) === "Pressable")).toEqual([]);
 		expect(tree.root.findAll((node) => String(node.type) === "SymbolView")).toEqual([]);
 		expect(renderedText(tree)).toBe("muse-spark-1.3");
+	});
+});
+
+describe("holding banners while you type (spec 13.3)", () => {
+	// The composer's own hold; its expanded editor's HoldingModal holds as
+	// "covered" beside it.
+	const holding = () => holds.calls.filter(([, kind]) => kind === "quiet").at(-1);
+	it("holds while the field is focused with text in it, and lets go on a blank field or a blur", () => {
+		holds.calls.length = 0;
+		const { props, tree } = composer();
+		const field = () => fields(tree)[0];
+		act(() => field()?.props.onFocus());
+		expect(holding()).toEqual([false, "quiet"]);
+		act(() => tree.update(<Composer {...props} value="half a thought" />));
+		expect(holding()).toEqual([true, "quiet"]);
+		// Sending empties the field, and that lets banners go.
+		act(() => tree.update(<Composer {...props} value="  " />));
+		expect(holding()).toEqual([false, "quiet"]);
+		act(() => tree.update(<Composer {...props} value="more" />));
+		expect(holding()).toEqual([true, "quiet"]);
+		act(() => field()?.props.onBlur());
+		expect(holding()).toEqual([false, "quiet"]);
 	});
 });

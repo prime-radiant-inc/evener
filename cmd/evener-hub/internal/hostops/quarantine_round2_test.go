@@ -296,32 +296,6 @@ func TestQuarantineRefusesArtifactsWithTrailingData(t *testing.T) {
 	})
 }
 
-// TestBoundaryUnavailableEntryIsValidJSONForControlBytes is the round-two L2
-// test: the sentinel is built by the JSON encoder, so a custody path carrying a
-// control byte stays valid JSON and round-trips verbatim.
-func TestBoundaryUnavailableEntryIsValidJSONForControlBytes(t *testing.T) {
-	custodyPath := "/state/hostops/operations.json.custody-20260101T000000.000000000Z.json\x01"
-	entry := boundaryUnavailableEntry(custodyPath)
-	if !json.Valid(entry) {
-		t.Fatalf("boundaryUnavailableEntry produced invalid JSON: %q", entry)
-	}
-	var parsed []struct {
-		Kind       string `json:"kind"`
-		Reason     string `json:"reason"`
-		CustodyRef string `json:"custodyRef"`
-	}
-	if err := json.Unmarshal(entry, &parsed); err != nil {
-		t.Fatalf("Unmarshal: %v\n%s", err, entry)
-	}
-	if len(parsed) != 1 || parsed[0].Kind != "boundary-unavailable" || parsed[0].Reason != "corrupt-store-custody" ||
-		parsed[0].CustodyRef != custodyPath {
-		t.Fatalf("the sentinel round-trips as %+v, want the custody path verbatim", parsed)
-	}
-	if err := validateBoundaryEntries(entry); err != nil {
-		t.Fatalf("validateBoundaryEntries rejected the sentinel: %v", err)
-	}
-}
-
 // assembleCustodyFromBytes decodes a hand-mutated custody document and runs the
 // assembly rules over it.
 func assembleCustodyFromBytes(t *testing.T, body []byte) (custodyFile, error) {

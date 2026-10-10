@@ -2970,7 +2970,7 @@ func TestCompiledIgnoreRulesMatchesGoGitignoreSkips(t *testing.T) {
 }
 
 // TestLoadIgnoreSetSkipsADotDirectoryAncestor pins that the ancestor read
-// applies the dot-directory exclusion the subtree walk applies. isDotPath
+// applies the dot-directory exclusion the subtree walk applies. IsDotPath
 // drops every candidate underneath a dot-directory before a rule from one
 // could apply, so reading such a rules file cannot change an answer — it only
 // spends the rules budget, and it is the one asymmetry between the two halves
@@ -2999,7 +2999,7 @@ func TestLoadIgnoreSetSkipsADotDirectoryAncestor(t *testing.T) {
 // TestLoadIgnoreSetSkipsAScopeBeneathADotDirectory pins the mid-path half of
 // the dot-directory exclusion: a scope like a/.config/sub sits beneath a
 // dot-directory without naming one itself, so neither the basename ancestor
-// check nor the walk's own d.Name() check fires. isDotPath still drops every
+// check nor the walk's own d.Name() check fires. IsDotPath still drops every
 // candidate beneath .config before a rule from inside could apply, so walking
 // the scope and retaining its rules only spends the listing and rules budget
 // for nothing — and a large enough subtree under it can refuse a glob whose

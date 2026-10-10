@@ -192,7 +192,7 @@ func TestPaginatedReadOverlappingCrossProcessRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, _, err := hx.history.before("local:th_history", older, 1); !isTranscriptItemCursorStale(err) {
+	if _, _, _, err := hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: 1}); !isTranscriptItemCursorStale(err) {
 		t.Fatalf("before after the rollback = %v, want stale", err)
 	}
 
@@ -420,7 +420,7 @@ func hxReadWhole(t *testing.T, hx *historyHarness) []appwire.Turn {
 	}
 	for older != "" {
 		var page []appwire.Turn
-		page, older, _, err = hx.history.before("local:th_history", older, appwire.TranscriptItemPageLimit)
+		page, older, _, err = hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: older, ItemLimit: appwire.TranscriptItemPageLimit})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -321,6 +322,32 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	}
 }
 
+// TestRunProbeRecordsEnvMode pins that result.json names which environment
+// mode a run used (#3227): a caller reading results after the fact must be
+// able to tell a hermetic run from a debugging --inherit-operator-env run
+// without re-deriving it from flags or logs.
+func TestRunProbeRecordsEnvMode(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	mustWrite(t, bin, "#!/bin/sh\nprintf 'ok\\n'\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := probeFile{ID: "pass", Prompt: "hello"}
+
+	hermetic := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out-hermetic"), evenerBin: bin, timeout: 0, reasoningEffort: "low"}
+	if res := runProbe(hermetic, probe, 1, map[string]bool{}, nil); res.EnvMode != "hermetic" {
+		t.Fatalf("EnvMode = %q, want %q", res.EnvMode, "hermetic")
+	}
+
+	inherit := hermetic
+	inherit.outDir = filepath.Join(dir, "out-inherit")
+	inherit.inheritOperatorEnv = true
+	if res := runProbe(inherit, probe, 1, map[string]bool{}, nil); res.EnvMode != "inherit_operator_env" {
+		t.Fatalf("EnvMode = %q, want %q", res.EnvMode, "inherit_operator_env")
+	}
+}
+
 // TestSelectionSummaryReportsActualSelectedSet covers kata 73cb(a): a
 // scoped "--probe" request must never silently broaden without the caller
 // seeing exactly what was selected. "all" still means every probe under
@@ -390,10 +417,34 @@ func TestClassifyProbeErrorDistinguishesHarnessFromModel(t *testing.T) {
 
 func mustWrite(t *testing.T, path, body string) {
 	t.Helper()
+	if err := writeFixture(path, body, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeFixture writes body to path under the ForkLock read guard, returning the
+// error so a caller can drive it off the test goroutine. When onAcquire is
+// non-nil it is called with ForkLock held for reading, so a test can start
+// probing only after the guard is actually held. The hook is per call, not
+// package state, because sibling parallel tests write fixtures concurrently.
+//
+// A freshly written executable can fail execve with ETXTBSY ("text file busy"):
+// os.WriteFile holds the file open for writing, and if a sibling parallel test
+// forks for its own os/exec during that window, the forked child inherits the
+// still-open write fd, so execve of this file is refused until that child execs.
+// syscall.ForkLock is the standard guard (Go issue #22315): fork/exec takes it
+// for writing, so holding it for reading across the whole write excludes any
+// concurrent fork; once the fd is closed no child can inherit it. Every fixture
+// write lands here, so taking the lock on every write forecloses the hazard by
+// construction rather than leaning on test ordering.
+func writeFixture(path, body string, onAcquire func()) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if onAcquire != nil {
+		onAcquire()
 	}
+	return os.WriteFile(path, []byte(body), 0o644)
 }

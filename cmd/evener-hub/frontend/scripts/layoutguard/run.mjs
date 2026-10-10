@@ -70,7 +70,7 @@ import {
   applyViewport,
   assertGuardOrigin,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   evaluate,
   forcePseudoStates,
@@ -256,7 +256,7 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
-    const page = await connectPage(cdpEndpoint);
+    const page = await connectOnlyPage(cdpEndpoint);
     const emulation = { viewportApplied: false };
     if (process.env.LAYOUTGUARD_DEBUG) {
       page.ws.addEventListener("message", (event) => {

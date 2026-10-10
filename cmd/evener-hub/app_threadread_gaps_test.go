@@ -184,12 +184,16 @@ func TestOutputImageDescriptorKeyPriority(t *testing.T) {
 func TestAppwireDelegateFromAgentStatus(t *testing.T) {
 	delegate := agent.DelegateStatusInfo{
 		DelegateID:     "dlg-1",
+		RunGeneration:  2,
 		OwnerSessionID: "sess-1",
 		Status:         "running",
 		Terminal:       false,
 		Resumable:      true,
 	}
 	info := appwireDelegateFromAgentStatus(delegate)
+	if info.RunGeneration != 2 {
+		t.Fatalf("RunGeneration = %d, want 2", info.RunGeneration)
+	}
 	if info.DelegateID != "dlg-1" {
 		t.Fatalf("DelegateID = %q, want dlg-1", info.DelegateID)
 	}

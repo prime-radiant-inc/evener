@@ -1,11 +1,11 @@
 import type {
-	AuthStatusResponse,
+	HubNotice,
 	NavigationInvalidatedPayload,
 	NavigationManifest,
 	NavigationPinSectionDescriptor,
 	NavigationSessionSummary,
-	PluginEntry,
 } from "@evener/appwire-client";
+import { isMethodNotFound } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	isSequenceGap,
@@ -36,10 +36,20 @@ export interface BoardSnapshot {
 	 * a category or the manifest) is out. */
 	reading: boolean;
 	error: string | null;
-	/** The hub's providers, for the sign-in notices. */
-	auth: AuthStatusResponse[];
-	/** The hub's plugins, for the broken-plugin notices. */
-	plugins: PluginEntry[];
+	/** The hub's notices (S11): evener/notices/list, then each
+	 * evener/notices/changed. A hub without the method has none. */
+	notices: HubNotice[];
+	/** True once this controller's own first notice read has answered, even
+	 * with the list the snapshot already held: the in-app alerts' notice
+	 * baseline waits for it. */
+	noticesRead: boolean;
+}
+
+export interface BoardControllerOptions {
+	/** "board" (the default) reads everything the Board shows. "attention"
+	 * reads only what the in-app alerts need: Live, Needs you, the manifest
+	 * and the notices, and never the pin catalog or its categories. */
+	scope?: "board" | "attention";
 }
 export interface BoardController {
 	getSnapshot(): BoardSnapshot;
@@ -56,11 +66,8 @@ export interface BoardController {
 /** The hub caps a section page at 50 rows. */
 const PAGE_LIMIT = 50;
 const PIN_CATALOG_LIMIT = 100;
-const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 2 };
+const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 3 };
 const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
-/** evener/plugin/updated fires only on mutations, so a plugin that breaks on
- * its own shows up on this poll (ruling 8). */
-const PLUGIN_POLL = 5 * 60_000;
 
 interface ManifestState {
 	manifest: NavigationManifest | null;
@@ -200,10 +207,9 @@ interface Readers {
 	categories: Map<string, CategoryReader>;
 	client: ConversationClientLike;
 	stop: Array<() => void>;
-	/** The latest read of each notice list, so an older answer that lands
-	 * after a newer one is dropped. */
-	noticeReads: { auth: number; plugins: number };
-	pluginPoll: ReturnType<typeof setInterval> | null;
+	/** The latest notice read, so an older answer that lands after a newer
+	 * one is dropped. */
+	noticeRead: number;
 }
 /** What the Board showed when its last connection went away, per reader,
  * until the current connection's read of that reader lands. */
@@ -223,7 +229,6 @@ const nothingRetained: Retained = {
 };
 const emptyPage = {
 	loaded: false,
-	truncated: false,
 	rows: [],
 	remaining: 0,
 	loading: false,
@@ -249,17 +254,18 @@ function shown<T>(reader: NavigationPages<T> | undefined, kept: Page<T> | null):
 	return kept ?? fresh ?? emptyPage;
 }
 
-export function createBoardController(): BoardController {
+export function createBoardController({ scope = "board" }: BoardControllerOptions = {}): BoardController {
+	const attention = scope === "attention";
 	const listeners = new Set<() => void>();
 	let readers: Readers | null = null;
 	let retained: Retained = nothingRetained;
 	let loaded = false;
 	let paused = false;
 	let disposed = false;
-	// The notice lists outlive a connection: each keeps what it last read
-	// until the current connection's read of it lands.
-	let auth: AuthStatusResponse[] = [];
-	let plugins: PluginEntry[] = [];
+	// The notices outlive a connection: they keep what was last read until
+	// the current connection's read lands.
+	let notices: HubNotice[] = [];
+	let noticesRead = false;
 
 	const build = (): BoardSnapshot => {
 		const pins = shown(readers?.pins, retained.pins);
@@ -296,8 +302,8 @@ export function createBoardController(): BoardController {
 					categoryPages.map((page) => page.getSnapshot().error).find((error) => error !== null) ??
 					readers.manifest.state.error)
 				: null,
-			auth,
-			plugins,
+			notices,
+			noticesRead,
 		};
 	};
 	let snapshot = build();
@@ -360,7 +366,8 @@ export function createBoardController(): BoardController {
 
 	/** Every paged reader: Live, Needs you, the pin catalog and the
 	 * categories. */
-	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins, ...categoryPagesOf(bound)];
+	const pages = (bound: Readers) =>
+		attention ? [bound.live, bound.needsYou] : [bound.live, bound.needsYou, bound.pins, ...categoryPagesOf(bound)];
 
 	/** Keep one reader per category the catalog shown lists (the fresh
 	 * catalog once it loaded, the retained one until then), and forget the
@@ -401,62 +408,40 @@ export function createBoardController(): BoardController {
 			retained = { ...retained, categories: Object.fromEntries(kept) };
 	};
 
-	/** Reads one of the lists the notices come from. These reads stand apart
-	 * from the Board's navigation reads: a failure keeps the last list and
-	 * says nothing, so it never counts as the Board's error, holds up first
-	 * run or starts the rebind retry. The next focus, auth update or poll
-	 * tries it again. */
-	const readNoticeList = <T>(
-		bound: Readers,
-		list: keyof Readers["noticeReads"],
-		read: () => Promise<T>,
-		land: (value: T) => void,
-	) => {
+	/** The notice list a read or a notification carried, or the current one
+	 * when nothing in it changed: the snapshot keeps its identity, so a
+	 * notification that repeats the list re-renders nothing. Go sends an
+	 * empty (nil) slice as null. */
+	const takeNotices = (next: HubNotice[] | null | undefined) => {
+		const list = next ?? [];
+		if (JSON.stringify(list) === JSON.stringify(notices)) return false;
+		notices = list;
+		return true;
+	};
+	/** Reads the hub's notices. The read stands apart from the Board's
+	 * navigation reads: a failure keeps the last list and says nothing, so it
+	 * never counts as the Board's error, holds up first run or starts the
+	 * rebind retry; the next resume tries again. A hub without the method
+	 * (MethodNotFound) has no notices to show: there is no client-side
+	 * fallback (Jesse, 2026-09-29). */
+	const readNotices = (bound: Readers) => {
 		if (paused) return;
-		const request = ++bound.noticeReads[list];
-		read().then(
-			(value) => {
-				if (readers !== bound || request !== bound.noticeReads[list]) return;
-				land(value);
+		const request = ++bound.noticeRead;
+		bound.client.request("evener/notices/list", {}).then(
+			(result) => {
+				if (readers !== bound || request !== bound.noticeRead) return;
+				const changed = takeNotices(result.notices);
+				if (!changed && noticesRead) return;
+				noticesRead = true;
 				publish();
 			},
-			() => {},
-		);
-	};
-	/** The list a read returned, or the current one when nothing in it
-	 * changed: the snapshot keeps its identity, so a poll that finds the
-	 * same lists re-renders nothing. */
-	const unlessSame = <T>(current: T[], next: T[]) =>
-		JSON.stringify(current) === JSON.stringify(next) ? current : next;
-	const readAuth = (bound: Readers) =>
-		readNoticeList(
-			bound,
-			"auth",
-			() => bound.client.request("evener/auth/list", {}),
-			(result) => {
-				// Go sends an empty (nil) slice as null.
-				auth = unlessSame(auth, result.providers ?? []);
+			(error: unknown) => {
+				if (readers !== bound || request !== bound.noticeRead || !isMethodNotFound(error)) return;
+				takeNotices([]);
+				noticesRead = true;
+				publish();
 			},
 		);
-	const readPlugins = (bound: Readers) =>
-		readNoticeList(
-			bound,
-			"plugins",
-			() => bound.client.request("evener/plugin/list", {}),
-			(result) => {
-				plugins = unlessSame(plugins, result.plugins ?? []);
-			},
-		);
-	const stopPluginPoll = (bound: Readers) => {
-		if (bound.pluginPoll !== null) clearInterval(bound.pluginPoll);
-		bound.pluginPoll = null;
-	};
-	/** Reads both notice lists and polls the plugins from now on. */
-	const readNoticeLists = (bound: Readers) => {
-		readAuth(bound);
-		readPlugins(bound);
-		stopPluginPoll(bound);
-		bound.pluginPoll = setInterval(() => readPlugins(bound), PLUGIN_POLL);
 	};
 
 	const connect = (client: ConversationClientLike): Readers => {
@@ -482,15 +467,26 @@ export function createBoardController(): BoardController {
 			categories: new Map(),
 			client,
 			stop: [],
-			noticeReads: { auth: 0, plugins: 0 },
-			pluginPoll: null,
+			noticeRead: 0,
 		};
-		bound.stop.push(bound.live.subscribe(publish), followInFull(bound.needsYou), followInFull(bound.pins));
+		bound.stop.push(bound.live.subscribe(publish), followInFull(bound.needsYou));
+		if (!attention) bound.stop.push(followInFull(bound.pins));
 		for (const page of pages(bound)) bound.stop.push(page.watch());
 		bound.stop.push(
 			bound.manifest.watch(),
 			client.onNotification((event) => {
-				if (event.method === "evener/auth/updated") readAuth(bound);
+				if (event.method !== "evener/notices/changed" || readers !== bound) return;
+				// The hub orders a list response against a broadcast only while
+				// it derives, and never re-broadcasts a list it announced: a read
+				// still out is older than this list, so it is dropped.
+				bound.noticeRead += 1;
+				// A changed list is a baseline too, so the alerts stay live
+				// when the read was dropped or failed; a notice that first
+				// appears in this list counts as baseline and never alerts.
+				const changed = takeNotices(event.params.notices);
+				if (!changed && noticesRead) return;
+				noticesRead = true;
+				publish();
 			}),
 		);
 		if (paused) {
@@ -499,7 +495,7 @@ export function createBoardController(): BoardController {
 		} else {
 			for (const page of pages(bound)) void page.refresh();
 			bound.manifest.read();
-			readNoticeLists(bound);
+			readNotices(bound);
 		}
 		return bound;
 	};
@@ -512,7 +508,6 @@ export function createBoardController(): BoardController {
 		for (const category of bound.categories.values()) for (const stop of category.stop) stop();
 		for (const page of pages(bound)) page.cancel();
 		bound.manifest.dispose();
-		stopPluginPoll(bound);
 	};
 
 	return {
@@ -551,7 +546,6 @@ export function createBoardController(): BoardController {
 			if (!readers) return;
 			for (const page of pages(readers)) page.cancel();
 			readers.manifest.pause();
-			stopPluginPoll(readers);
 		},
 		resume() {
 			paused = false;
@@ -575,7 +569,7 @@ export function createBoardController(): BoardController {
 			fill(readers.needsYou);
 			fill(readers.pins);
 			for (const page of categoryPagesOf(readers)) fill(page);
-			readNoticeLists(readers);
+			readNotices(readers);
 		},
 		dispose() {
 			if (disposed) return;

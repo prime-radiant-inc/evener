@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -48,6 +51,21 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
+	// earlierCommits acknowledge, in order and before commit, the earlier
+	// results the reply carries (result.Earlier).
+	earlierCommits []*delegateToolResultCommit
+}
+
+// inlineOutcome is the send's reply for a resolved inline wait: result, which
+// already carries the newest result, plus the earlier results the wait
+// collected, oldest first, with their commits (#3906, #3951).
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
+	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	for _, earlier := range resolution.earlier {
+		outcome.result.Earlier = append(outcome.result.Earlier, earlier.packet)
+		outcome.earlierCommits = append(outcome.earlierCommits, earlier.commit)
+	}
+	return outcome
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -655,7 +673,19 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		}
 	}
 	if len(ids) == 0 {
+		// The transcript holds no unresolved attention, but the controller may
+		// still owe a wake whose resolution outran its run (a durable accept
+		// followed by a declined commit). Reconcile the projection so the last
+		// journal event is not left at needs_attention:true forever. This
+		// reconciliation launches no run, so it never claims the wake: return
+		// false and let the notification drive proceed as it did before.
+		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+		}
 		return false
+	}
+	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
+		observer(sub)
 	}
 	// Claim the child for the WHOLE start, not just for this check. Everything
 	// between here and launchAcceptedDelegateAttention is durable work
@@ -677,7 +707,13 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// rather than relying on each caller to remember (#940).
 	// drivePendingStableDelegateAttention reaches this primitive directly with no
 	// caller-side gate.
-	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id)
+	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
+	// through takeSendDriveGuard, so the two busy lists cannot drift. The
+	// attention-only extras are layered on top.
+	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
+	if blocked && sub.driving {
+		sub.attentionDriveRefused = true
+	}
 	if !blocked {
 		sub.driving = true
 	}
@@ -690,15 +726,40 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if launched {
 			return
 		}
-		sub.mu.Lock()
-		sub.driving = false
-		sub.mu.Unlock()
+		if observer := s.cfg.testOnly.delegateAttentionBeforeGuardRelease; observer != nil {
+			observer(sub)
+		}
+		// The re-drive re-drives again only if a drive is refused on its own
+		// guard, so one that keeps losing stops (#3723).
+		if releaseDriveGuard(sub) {
+			s.redriveLiveChild(sub.sess.id)
+		}
 	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
 	s.mu.Unlock()
 	if closed {
 		return true
+	}
+	// The first read precedes the child claim. Another drive may consume and
+	// finish that attention generation before this drive takes the claim, so
+	// select again while the claim fences every competing drive. A reservation
+	// already held for this runtime must still retry its exact accepted marker.
+	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
+		ids = []string{retryID}
+	} else {
+		pending, err := sub.sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
+			return true
+		}
+		if len(pending) == 0 {
+			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+				s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+			}
+			return false
+		}
+		ids = pending
 	}
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
@@ -1027,7 +1088,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 	owned := exact
 	conflict := live != nil && (live.binding != nil && live.binding.runtime == start.sub.sess || live.runtime == start.sub.sess) && !owned && live.binding != nil
 	if !owned && !conflict && live != nil && live.binding == nil && live.runtime == start.sub.sess {
-		live.runtime = nil
+		c.setResidentRuntimeLocked(live, nil)
 	}
 	c.mu.Unlock()
 	var persistErr error
@@ -1040,7 +1101,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 				live.binding.runtime = nil
 			}
 			if live.runtime == start.sub.sess {
-				live.runtime = nil
+				c.setResidentRuntimeLocked(live, nil)
 			}
 		}
 		c.mu.Unlock()
@@ -1064,31 +1125,57 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 	return errors.Join(err, s.executeDelegateMutationPlans(plans))
 }
 
+// errDelegateAttentionSourceMissing marks an escalation that failed because
+// the delegate's own transcript, the source of the attention it hands over,
+// does not exist.
+var errDelegateAttentionSourceMissing = errors.New("delegate attention source transcript missing")
+
+// parkedEscalationStandsDown reports whether a parked delegate's failed
+// escalation should wait with it (new attention or a restart) instead of
+// re-arming the retry: only when its transcript is gone, which no retry can
+// bring back. The delegate already said it is undeliverable. Any other
+// failure (appending the hand-over to the root, resolving the source) may
+// clear, so it keeps the retry.
+func parkedEscalationStandsDown(err error) bool {
+	return errors.Is(err, errDelegateAttentionSourceMissing)
+}
+
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
 func (s *Session) escalateUnreachableDelegateAttention() bool {
-	progressed := false
-	var failures []error
+	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan); err != nil {
-			failures = append(failures, fmt.Errorf("delegate %s: %w", plan.delegateID, err))
+		readFold := readDelegateAttentionFold
+		if plan.parked {
+			readFold = readExistingDelegateAttentionFold
+		}
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
+			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
+			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
 			continue
 		}
+		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
 		progressed = true
 	}
-	if len(failures) != 0 {
-		s.emit(events.EventWarning, warningDataFromError("escalate unreachable delegate attention", errors.Join(failures...)))
+	if failed {
 		s.scheduleStableDelegateAttentionRetry()
+	} else if progressed {
+		s.resetStableDelegateAttentionRetryDelay()
 	}
 	return progressed
 }
 
-func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation) error {
+// escalateOneUnreachableDelegateAttention transfers plan's attention to the
+// root, reading the source transcript's fold with readFold.
+func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation, readFold func(path, expectedSessionID string) (delegateAttentionFold, error)) error {
 	sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
 	if err != nil {
 		return err
 	}
-	fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
+	fold, err := readFold(sourcePath, sourceSessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -1106,7 +1193,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if err := s.armDelegateAttention(attentionID); err != nil {
 			return err
 		}
-		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {
+		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded, 0); err != nil {
 			return err
 		}
 		s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
@@ -1114,10 +1201,137 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 	return nil
 }
 
+// The failing delegate-attention actions the retry loop warns about.
+const (
+	delegateAttentionRestoreLabel  = "restore delegate attention"
+	delegateAttentionEscalateLabel = "escalate unreachable delegate attention"
+)
+
+// delegateAttentionWarning names one failure episode: an action failing for
+// one delegate.
+type delegateAttentionWarning struct {
+	action     string
+	delegateID string
+}
+
+// warnDelegateAttentionFailed reports that action failed for delegateID,
+// once per failure episode. The drive retries with backoff (up to every 5s)
+// for as long as the attention is owed, and one warning per attempt flooded
+// the transcript with the same line. It warns again when the error changes,
+// and after the episode ends (delegateAttentionWarningResolved, or
+// forgetSettledDelegateAttentionWarnings once the attention is no longer
+// owed). The message carries the error, bounded (warningDataFromError); the
+// warning has its own code, so clients show it only at their most detailed
+// level; and the daemon log gets the whole error, recoverable wherever the
+// transcript hides it.
+func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err error) {
+	cause := err.Error()
+	key := delegateAttentionWarning{action: action, delegateID: delegateID}
+	s.delegateAttentionWarnMu.Lock()
+	previous, warned := s.delegateAttentionWarned[key]
+	if s.delegateAttentionWarned == nil {
+		s.delegateAttentionWarned = make(map[delegateAttentionWarning]string)
+	}
+	s.delegateAttentionWarned[key] = cause
+	s.delegateAttentionWarnMu.Unlock()
+	if warned && previous == cause {
+		return
+	}
+	slog.Warn("delegate attention failed", "action", action, "session", s.ID(), "delegate", delegateID, "error", cause)
+	data := warningDataFromError(action, err)
+	data.Code = events.WarningCodeDelegateAttentionRestore
+	s.emit(events.EventWarning, data)
+}
+
+// delegateAttentionWarningResolved ends action's failure episode for
+// delegateID, so the next failure warns again.
+func (s *Session) delegateAttentionWarningResolved(action, delegateID string) {
+	s.delegateAttentionWarnMu.Lock()
+	delete(s.delegateAttentionWarned, delegateAttentionWarning{action: action, delegateID: delegateID})
+	s.delegateAttentionWarnMu.Unlock()
+}
+
+// forgetSettledDelegateAttentionWarnings ends the failure episode of every
+// delegate that no longer owes attention (delivered, retired, escalated or
+// fenced), so attention owed again later warns afresh.
+func (s *Session) forgetSettledDelegateAttentionWarnings() {
+	s.delegateAttentionWarnMu.Lock()
+	defer s.delegateAttentionWarnMu.Unlock()
+	for key := range s.delegateAttentionWarned {
+		if !s.delegateController.owesDelegateAttention(key.delegateID) {
+			delete(s.delegateAttentionWarned, key)
+		}
+	}
+}
+
+// maxDelegateAttentionRestoreFailures is how many consecutive restores of a
+// delegate's cold runtime may fail, for a reason that is not transient,
+// before the drive stops retrying. It counts attempts, not time: at the
+// retry's 5s cap it is about five minutes, but every pass counts, and a
+// busy root (deliveries, job events) drives passes sooner, so it can come
+// earlier.
+const maxDelegateAttentionRestoreFailures = 64
+
+// countDelegateAttentionRestoreFailure records a failed restore of
+// delegateID's cold runtime and gives up on it at the limit. A transient
+// failure (isTransientStartFailure) clears on its own and is not counted.
+func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err error) {
+	if err == nil || isTransientStartFailure(err) {
+		return
+	}
+	if s.delegateController.recordDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+		s.giveUpDelegateAttention(delegateID, err)
+	}
+}
+
+func (s *Session) delegateAttentionGiveUpAfter() int {
+	if n := s.cfg.testOnly.delegateAttentionGiveUpAfter; n > 0 {
+		return n
+	}
+	return maxDelegateAttentionRestoreFailures
+}
+
+// giveUpDelegateAttention stops retrying delegateID's restore and hands its
+// owed attention to the root, the way attention a closed ancestor fences off
+// is escalated: the root receives each message under its original identity
+// and the source is resolved, so nothing is dropped. When the hand-over
+// fails too, the delegate is parked, out of the drive's cold restores until
+// new attention arrives or the daemon restarts, and the session says so once
+// at every level and in the daemon log.
+func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
+	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
+	if !ok {
+		return
+	}
+	// The fenced escalation's lenient read treats a missing transcript as
+	// empty (attention never made durable) and forgets the ids, which here
+	// would drop owed attention as though delivered. A delegate whose
+	// transcript is gone has nothing to hand over, so the hand-over reads it
+	// strictly and a missing transcript fails it, in the same read the
+	// transfer uses.
+	escalateErr := s.escalateOneUnreachableDelegateAttention(plan, readExistingDelegateAttentionFold)
+	if escalateErr == nil {
+		s.delegateController.delegateAttentionRestored(delegateID)
+		s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
+		slog.Warn("delegate attention handed to the root after repeated restore failures", "session", s.ID(), "delegate", delegateID, "error", restoreErr.Error())
+		return
+	}
+	// Overlapping passes may both give up; only the one that parks says so.
+	if !s.delegateController.parkDelegateAttention(delegateID) {
+		return
+	}
+	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_cause", restoreErr.Error(), "handover_cause", escalateErr.Error())
+	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
+	data.Code = events.WarningCodeDelegateAttentionUndeliverable
+	data.DelegateID = delegateID
+	s.emit(events.EventWarning, data)
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
+	s.forgetSettledDelegateAttentionWarnings()
 	escalated := s.escalateUnreachableDelegateAttention()
 	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
 	if !pending {
@@ -1131,10 +1345,13 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("restore delegate attention", err))
+		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
+		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleStableDelegateAttentionRetry()
 		return true
 	}
+	s.delegateController.delegateAttentionRestored(delegateID)
+	s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)
 	}
@@ -1171,6 +1388,134 @@ func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) boo
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
 	return (delegateRuntime{owner: s}).create(ctx, args)
+}
+
+// takeSendDriveGuard takes sub's drive guard for a send's start: it sets
+// driving unless the child can't take a new generation now (a run, a drive
+// or a finalizer in flight, or worktree disposal holding it), and reports
+// whether it did. The sibling guard in driveStableDelegateAttention routes
+// through startBlockedLocked too, and also refuses a closed or fatally gated
+// child and a committed-send claim, which a send has already settled by this
+// point.
+// `running` goes false at the top of a run's finalize block, before
+// FinishGeneration moves the aggregate back to idle and before finalizing is
+// cleared, so the finalizer and dispose flags are read under the same sub.mu
+// hold as running and driving.
+func (s *Session) takeSendDriveGuard(sub *subagent) bool {
+	if observer := s.cfg.testOnly.delegateSendChildResolved; observer != nil {
+		observer(sub)
+	}
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.startBlockedLocked() {
+		return false
+	}
+	sub.driving = true
+	return true
+}
+
+// releaseDriveGuard gives back a child's drive guard (sub.driving) that no run
+// took over, and reports whether an attention drive was refused on the guard
+// while it was held. An attention drive or notification turn that gets true
+// re-drives the child (#3723). A send ignores the report: a send that fails
+// re-drives the child in its rollback, and one that succeeds hands the child
+// to a run that drains it.
+func releaseDriveGuard(sub *subagent) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	sub.driving = false
+	refused := sub.attentionDriveRefused
+	sub.attentionDriveRefused = false
+	return refused
+}
+
+// delegateFinalizationWaitCeiling bounds how long a send waits for a finished
+// generation's finalize tail to release the delegate.
+//
+// TRIPWIRE: a hang guard only. The release is the tail's last local step
+// (announce the result, then release), so it follows within milliseconds;
+// this fires only when a tail never releases, and the send then refuses
+// cleanly with target_busy.
+const delegateFinalizationWaitCeiling = 10 * time.Second
+
+// reserveStartAfterFinalization reserves a start for delegateID. A delegate
+// whose finished generation is still finalizing is announced idle only as
+// its finalize tail's last step, so while ReserveStart refuses for that
+// reason alone the send waits for the release and reserves again, until it
+// reserves, is refused for another reason, its context ends (the context's
+// error), or delegateFinalizationWaitCeiling passes over the whole attempt
+// (target_busy). A release that is ready wins over a context or ceiling that
+// is ready at the same moment. This waits for admission, not for the
+// delegate's reply, so max_wait_ms (which bounds the reply wait) doesn't
+// govern it: a finalize tail releases within milliseconds.
+func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor delegateActor, delegateID string) (*delegateStartReservation, error) {
+	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	finalizing, ok := errors.AsType[delegateFinalizingError](err)
+	if !ok {
+		return reservation, err
+	}
+	ceiling := delegateFinalizationWaitCeiling
+	if override := s.cfg.testOnly.delegateFinalizationWaitCeiling; override != nil {
+		ceiling = *override
+	}
+	timer := s.sclock().NewTimer(ceiling)
+	defer timer.Stop()
+	expired := false
+	for ok {
+		if !channelClosed(finalizing.released) {
+			if expired {
+				return nil, errDelegateTargetBusy
+			}
+			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
+				observe()
+			}
+			select {
+			case <-finalizing.released:
+			case <-ctx.Done():
+				if !channelClosed(finalizing.released) {
+					return nil, ctx.Err()
+				}
+			case <-timer.C():
+				// The ceiling covers the whole attempt: it fires once.
+				expired = true
+				if !channelClosed(finalizing.released) {
+					return nil, errDelegateTargetBusy
+				}
+			}
+		}
+		reservation, err = s.delegateController.ReserveStart(actor, delegateID)
+		finalizing, ok = errors.AsType[delegateFinalizingError](err)
+	}
+	return reservation, err
+}
+
+// channelClosed reports whether ch is closed, without blocking. A nil channel
+// is never closed.
+func channelClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// finishUnlaunchedGeneration fails a generation whose input was admitted but
+// whose run never launched (launch_failed). No run finalizes its runtime, so
+// the caller must release it (releaseFinishedGeneration) once the returned
+// plans (which carry the generation's idle snapshot and result) have been
+// executed, whether or not that failed, or the delegate stays refused as
+// still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
+	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+}
+
+// releaseFinishedGeneration releases runtime's finished generation so the
+// delegate takes its next start, warning if the report fails.
+func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
+	if err := s.delegateController.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", err))
+	}
 }
 
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
@@ -1226,7 +1571,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return failed(steerErr)
 		}
 	}
-	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	reservation, err := s.reserveStartAfterFinalization(ctx, actor, delegateID)
 	if err != nil {
 		return failed(err)
 	}
@@ -1268,11 +1613,32 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// This runs from the deferred rollback after every failure exit
 			// (aborted reservation, failed commit, failed restore, blocked
 			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveChildAfterSendStartRollback(committedChildID)
+			s.redriveLiveChild(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
 		observer(committedChildID)
+	}
+	// A resident child takes this generation only if it is free, so its
+	// drive guard is taken before the commit: a busy child refuses the send
+	// with nothing written. A cold child is restored from the committed start,
+	// which owns the restore, so its guard is taken after the commit below.
+	// guarded holds the guard until the run takes it over; every other exit
+	// releases it here, before the claim's rollback re-drives the child.
+	var guarded *subagent
+	defer func() {
+		if guarded != nil {
+			releaseDriveGuard(guarded)
+		}
+	}()
+	if committedChildID != "" {
+		if resident := s.subagents.get(committedChildID); resident != nil && resident.sess != nil {
+			if !s.takeSendDriveGuard(resident) {
+				_ = s.delegateController.AbortStart(reservation)
+				return failed(errDelegateTargetBusy)
+			}
+			guarded = resident
+		}
 	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
@@ -1325,7 +1691,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			})
 		}
 	}
-	// Take the drive claim for the committed-start window, exactly as
+	// Hold the drive guard for the committed-start window, exactly as
 	// driveStableDelegateAttention does (#932/#940). CommitStart has already
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
@@ -1338,44 +1704,26 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// with no owner check) lets the unleased turn steal the run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
-	// hold that sets running and released by the deferred rollback on every
-	// failure exit below.
+	// hold that sets running.
 	//
-	// The id-keyed childCommittedSendStart claim, taken in send immediately after
-	// ReserveStart and before CommitStart, already covers the pre-resolve stretch
-	// (the commit itself, restoreIdleForSend, and the
-	// admitReconstructed/AttachRuntime leg). This per-child flag only has to cover
-	// what follows: from the point restoreIdleForSend has produced the child
-	// through the hand-off to the run.
-	sub.mu.Lock()
-	// The sibling drive guard in driveStableDelegateAttention also refuses a
-	// child whose finalizer is still running or whose worktree disposal holds
-	// the dispose gate. `running` goes false at the top of the run's finalize
-	// block, before FinishGeneration moves the aggregate back to idle and
-	// before finalizing is cleared, so a send landing in that window would
-	// otherwise pass this guard, set driving, and start a run concurrently with
-	// the in-flight finalizer (or the disposer that owns disposeGated). Read
-	// both under the same sub.mu hold as running/driving.
-	blocked := sub.running || sub.driving || sub.finalizing || sub.disposeGated
-	if !blocked {
-		sub.driving = true
-	}
-	sub.mu.Unlock()
-	if blocked {
-		cause := errDelegateTargetBusy
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
-			finishRestore(sub, nil)
-		})
-	}
-	launched := false
-	defer func() {
-		if launched {
-			return
+	// A child the send didn't guard before the commit (restored cold, or a
+	// resident replaced since) takes its guard here; the id-keyed
+	// childCommittedSendStart claim covers it until then. Such a child is only
+	// found busy if another path installed it first, and that start is
+	// recorded as failed.
+	if sub != guarded {
+		if guarded != nil {
+			releaseDriveGuard(guarded)
+			guarded = nil
 		}
-		sub.mu.Lock()
-		sub.driving = false
-		sub.mu.Unlock()
-	}()
+		if !s.takeSendDriveGuard(sub) {
+			cause := errDelegateTargetBusy
+			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+				finishRestore(sub, nil)
+			})
+		}
+		guarded = sub
+	}
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -1413,11 +1761,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
-		if finishErr != nil {
-			finishErr = errors.Join(finishErr, s.delegateController.ReportFinalizationQuiesced(started.lease, sub.sess))
-		}
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
+		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
+		// The release runs once the failure is announced, whatever that did.
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
+			s.releaseFinishedGeneration(started.lease, sub.sess)
+		})
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
@@ -1429,6 +1777,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// reads idle between the committed start and the run that owns it.
 	sub.driving = false
 	sub.mu.Unlock()
+	guarded = nil
 	// running is now true under the same hold, so every drivability read refuses
 	// on the run itself; the id-keyed claim has done its job and is released. The
 	// deferred release sees committedClaimHeld false and does nothing.
@@ -1436,7 +1785,6 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.releaseChildCommittedSendStart(committedChildID)
 		committedClaimHeld = false
 	}
-	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{
@@ -1469,10 +1817,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
+	completeStableDelegateSendResult(&result, *resolution.packet)
+	return inlineOutcome(result, resolution)
+}
+
+// completeStableDelegateSendResult fills result as a send whose wait reached
+// packet, a terminal result of its delegate.
+func completeStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	populateStableDelegateSendResult(result, packet)
 }
 
 func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
@@ -1575,6 +1929,13 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	if waiter == nil || result.Action == "recovery_required" {
 		return stableDelegateSendOutcome{result: result}
 	}
+	if runtime.owner.delegateController.dropStoppedDelegateWaiter(started.lease) {
+		// The failed start already settled this generation durably, and a
+		// covering stop owns its delivery, so no inline delivery will answer
+		// the wait: answer with the stopped outcome instead of sitting out
+		// max_wait (#3502).
+		return stableDelegateSendOutcome{result: result}
+	}
 	waitCtx := ctx
 	if maxWaitMS > 0 {
 		var cancel context.CancelFunc
@@ -1601,7 +1962,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
@@ -1788,16 +2149,56 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
 	}
+	// Every delegation gets its own durable artifacts directory at creation,
+	// under its own session state (<stateDir>/sessions/<childSessionID>) rather
+	// than a /tmp scratch base, so a seat with write access has a private place
+	// for report artifacts that survives it and is named in the creation result.
+	// A failure here aborts the committed start through the same construction-
+	// failure path as any later failure.
+	var artifactsDir string
+	// removeArtifacts takes back the just-created artifacts directory on an exit
+	// that leaves no child session to dispose. A start that fails before a child
+	// run exists (ensure or construct failing) reaches failCommittedStart with a
+	// nil prepared run, so its disposeUnadopted arm never runs and nothing else
+	// would remove the directory. If the removal fails, keep advertising the
+	// path (so the residue stays discoverable) and surface the failure.
+	var artifactsCleanupWarning string
+	removeArtifacts := func() {
+		if artifactsDir == "" {
+			return
+		}
+		if err := removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID); err != nil {
+			artifactsCleanupWarning = "delegate artifacts directory cleanup failed: " + err.Error()
+			return
+		}
+		// The path is gone, so the failure result must not advertise it.
+		artifactsDir = ""
+	}
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
 			result.Warnings = []string{selection.warning.Message}
 		}
+		if artifactsCleanupWarning != "" {
+			result.Warnings = append(result.Warnings, artifactsCleanupWarning)
+		}
 		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
+		// Advertise the artifacts directory only when it still exists: a failure
+		// path that disposed the child removed it, and the result must not name a
+		// path that is gone. A retained candidate keeps its directory and so keeps
+		// advertising it.
+		result.ArtifactsDir = advertiseArtifactsDir(artifactsDir)
 		return result
+	}
+	// ReserveCreate always mints a child session id, so an empty one is a bug:
+	// fail closed rather than silently skip the per-delegation artifacts dir.
+	artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, started.descriptor.ChildSessionID)
+	if err != nil {
+		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
+		removeArtifacts()
 		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
@@ -2090,7 +2491,7 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return delegateIsolation{}, fmt.Errorf("delegate isolation path %q does not match reserved path %q", path, workingDir)
 		}
 	}
-	env, ownsFresh, err := s.prepareSubagentEnvironment(workingDir, requestedSandbox)
+	env, ownsFresh, err := s.prepareSubagentEnvironmentFor(workingDir, requestedSandbox, reservation.descriptor.ChildSessionID)
 	if err != nil {
 		rollback()
 		return delegateIsolation{}, err
@@ -2137,18 +2538,7 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// belongs to this isolation step), so this is the only rollback for the
 		// scratch the construction's git snapshot minted on an unsandboxed lane,
 		// as well as for a sandboxed lane's owned one.
-		//
-		// A construction that failed AFTER it pinned this allocation into the
-		// root's durable retention manifest leaves a reference that names the
-		// directory. Removing the directory would leave that reference (and its
-		// binding slot) dangling, since references are append-only and there is
-		// no unpin API, and the root's retirement preparation would then refuse
-		// forever. Such an allocation is retained — its lease released, its
-		// directory kept — exactly as the restore-path teardowns do; only a
-		// fresh mint the manifest does not reference is disposed. The verdict
-		// is per kind, so an adopted allocation never holds its sibling fresh
-		// mint open with it (round 83).
-		s.settleOwnedScratchByManifest(isolation.env)
+		endEnvironmentScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)
@@ -2168,14 +2558,6 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 		ctx = context.WithValue(ctx, ctxToolItemID, started.descriptor.OriginItemID)
 	}
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)
-	// Register the delegate child's own binding under the parent root's
-	// retention manifest before the child environment can expose or mint
-	// scratch, so its allocation is pinned rather than inert.
-	if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-		if err := s.installChildScratchRetention(local, started.descriptor.ChildSessionID); err != nil {
-			return nil, err
-		}
-	}
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
 	ctx = context.WithValue(ctx, delegatePreparedEnvironmentContextKey{}, delegatePreparedEnvironment{
@@ -2278,72 +2660,23 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
 		childEnv = shared
 	} else {
-		childEnv, ownsFresh, err = s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
+		childEnv, ownsFresh, err = s.prepareSubagentEnvironmentFor(descriptor.WorkingDir, policy, descriptor.ChildSessionID)
 		if err != nil {
 			return nil, false, err
 		}
 	}
 	discardEnv := true
-	// mintedScratch is the failure-path teardown condition, decoupled from
-	// ownsFresh: a fresh environment's scratch is always this restore's to drop,
-	// while a shared one is only dropped when the shared-branch check below
-	// proves the environment held no scratch this restore could have mistaken
-	// for its own mint.
-	mintedScratch := ownsFresh
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
 		// point has one to drop as surely as a sandboxed restore has its owned one.
-		if !discardEnv {
-			return
-		}
-		if mintedScratch {
-			// Settle by what the manifest names, whether adoption transferred
-			// a durable allocation or not: the settlement retains every
-			// referenced directory with its lease released — the handoff a
-			// retirement makes — and disposes only unreferenced fresh state,
-			// including scratch a later construction step left on the
-			// environment beside a transferred allocation (round 30). A
-			// blanket retain here would leak exactly that newcomer.
-			// createdEnv (ownsFresh) tells the settle whether the environment
-			// is this restore's own or the live parent's shared object.
-			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID, ownsFresh)
+		// A shared environment belongs to the live parent, which keeps its scratch.
+		if discardEnv && ownsFresh {
+			endEnvironmentScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
 		return nil, false, errors.New("committed delegate environment is unavailable")
-	}
-	// Install the committed child's retained scratch before construction runs the
-	// child's git snapshot, which is what mints a fresh unsandboxed scratch.
-	// Binding the exact consumer here is what restores the child's allocation at
-	// its original absolute path instead of minting a replacement.
-	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-		// Adoption reports whether a retained allocation actually transferred;
-		// the failure settlement no longer keys on that report — it classifies
-		// by the manifest, which names every durable allocation adoption moved
-		// (round 30). The error alone decides here.
-		if _, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh); err != nil {
-			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
-		}
-		// Ownership and failure-path disposal are separate concerns. A shared
-		// child must not own its parent's environment (ownsFresh stays false),
-		// but its construction still mints a scratch on that environment when
-		// none is there — and on base, where the same child got a fresh clone,
-		// that minted scratch was dropped on failure. On a shared parent the
-		// settle deliberately KEEPS the minted scratch instead (round 51: no
-		// post-hoc attribution can tell this construction's mint from a
-		// sibling's, and the parent environment holds the lease legitimately),
-		// so this branch only arms the settle's manifest-authoritative pass —
-		// the referenced-keep hand-back that releases and requeues what the
-		// manifest names — never a disposal. Do not read the base-clone
-		// wording above as this branch's contract: a fresh created
-		// environment (ownsFresh) is the only shape whose settle may dispose.
-		if !ownsFresh && local.SessionScratchDir() == "" {
-			mintedScratch = true
-		}
-		if hook := s.cfg.testOnly.scratchRestoreAfterAdoption; hook != nil {
-			hook(local)
-		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
 	if err != nil {
@@ -2357,6 +2690,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
+		MemoryStateRoot:         s.cfg.MemoryStateRoot,
+		DisableMemory:           s.cfg.DisableMemory || descriptor.Config.DisableMemory,
+		parentMemoryProjectID:   s.cfg.MemoryProjectID,
 		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
@@ -2398,6 +2734,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			activatedSkillBodies:          activatedSkillBodies,
 			frozenSkillMetadata:           append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...),
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
+			deniedToolNames:               s.unavailableMemoryToolNames(),
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
 			parentWatchGranted:            descriptor.ParentWatchGranted,
@@ -2453,102 +2790,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
-}
-
-// adoptRestoredConsumerScratch adopts sessionID's retained consumer allocation
-// onto env on a cold restore and reports whether it transferred a durable
-// allocation. Resume provisions a sandbox before adoption, and EnableSandbox
-// always mints a fresh session scratch; adoptRetainedScratchFor's same-kind
-// guard would then skip the persisted sandbox slot, leaving the restored
-// delegate in the empty fresh directory while its retained handle stays
-// orphaned in the pool and the kernel wrapper keeps pointing at the mint. This
-// mirrors adoptResumedRootScratch for the consumer/delegate path: when the
-// consumer's binding owns a sandbox allocation at a different directory, rebuild
-// env's kernel wrapper around it BEFORE disposing the mint (so a host that
-// cannot wrap refuses while the mint is intact), dispose the mint, then adopt;
-// a failure after the disposal — or an adoption that claims nothing because
-// the pool detached between the slot read and the claim — re-provisions the
-// environment's own scratch. A
-// shared environment (ownsFresh false) belongs to the live parent, so its
-// already-owned kinds are left alone and its scratch is never disposed here.
-// A contended sandbox slot — its lease held in this process by the racing
-// idle-release teardown — is never a replacement target: the adoption could
-// not take its lease, and a disposed fresh scratch would leave the restored
-// delegate running on the retained directory unowned. The fresh scratch stays
-// for that cycle, and the next restore re-probes the settled contention and
-// resumes in the retained directory.
-func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string, ownsFresh bool) (bool, error) {
-	if env == nil {
-		return false, nil
-	}
-	// The pool is an init-time snapshot; a delegate created after init, or one
-	// whose runtime an idle release retired, is not in it. Converge onto the
-	// live manifest first — the rows a fresh daemon would adopt from — so the
-	// adoption below restores the original scratch instead of silently leaving
-	// the fresh mint in place.
-	if err := s.refreshRetainedScratchConsumer(sessionID); err != nil {
-		return false, err
-	}
-	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
-	if ownsFresh && ok && !contended && canonicalScratchDir(dir) != canonicalScratchDir(env.SessionScratchDir()) {
-		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
-			return false, err
-		}
-		env.DisposeSandboxScratch()
-		_, transferred, err := s.adoptConsumerScratch(env, sessionID)
-		if err != nil {
-			return false, reprovisionAfterFailedAdoption(env, err)
-		}
-		// The heal keys on the transfer the environment actually owns, not on
-		// what adoption installed: the guard's slot read and the claim take
-		// separate pool.mu holds, and a refresh fold racing the two can flip
-		// the slot to contended in between — the adoption then marks the kind
-		// pending and installs NO handle, and with the fresh mint already
-		// disposed the wrapper would run the session on the retained
-		// directory it holds no lease on (round 21). A lease-less borrow of a
-		// distinct consumer's allocation is the other install that is no
-		// transfer: the environment renders through the shared directory
-		// while its adopter keeps the lease, so the failure path must treat
-		// what the environment holds as a plain borrowed ref, not a durable
-		// adoption (round 22).
-		owned := envScratchRefDir(env, sandbox.ScratchKindSandbox)
-		if owned == "" {
-			return false, reprovisionUnclaimedSandboxScratch(env)
-		}
-		// The claim reads the pool's CURRENT rows, so the same racing fold can
-		// do more than flip contention: a consumer whose binding moved between
-		// the snapshot above and the claim adopts the moved allocation while
-		// the wrapper still names the pre-move snapshot's directory, and every
-		// command would run on a directory this environment owns nothing of.
-		// Converge the wrapper on the allocation the environment actually
-		// holds — the durable row the claim adopted (round 51).
-		if canonicalScratchDir(owned) != canonicalScratchDir(dir) {
-			if err := s.rebuildSandboxWrapper(env, owned); err != nil {
-				return false, err
-			}
-		}
-		// The SANDBOX kind's own transfer is the one durable adoption the
-		// failure path retains: the manifest references the allocation and
-		// the environment owns its lease. The report is per kind — the
-		// unsandboxed slot's claim can succeed while the sandbox slot's
-		// went contended in the same adoption, and an aggregate would mask
-		// exactly that: a successful return with the mint already disposed
-		// and the wrapper already pointing at a directory this environment
-		// holds no lease on (round 26). A borrow reads false here for the
-		// round-22 reason above.
-		return transferred[sandbox.ScratchKindSandbox], nil
-	}
-	_, transferred, err := s.adoptConsumerScratch(env, sessionID)
-	if err != nil {
-		return false, err
-	}
-	// The shared-environment flavor of the same report: a borrow or a
-	// contended skip installs through the retained directory without
-	// transferring a lease, and only a transfer is the caller's
-	// retain-on-failure signal. The unsandboxed kind's transfer counts here —
-	// no disposal happened on this path, so any kind's real transfer is a
-	// lease the failure path must retain (round 26).
-	return len(transferred) > 0, nil
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child
@@ -2944,9 +3185,31 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	rootID := s.delegateController.rootSessionID
 	for _, row := range plan.rows {
 		ownerID := row.descriptor.OwnerSessionID
+		s.delegateController.mu.Lock()
+		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		var ancestry []string
+		if logicalOwner != "" {
+			ancestry = s.delegateController.sessionAncestryLocked(logicalOwner)
+		}
+		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
+		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
+		s.delegateController.mu.Unlock()
+		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
-		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
-			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+		data.AncestorSessionIDs = ancestors
+		// A subagent's own thread lists its subtree, so each live ancestor
+		// subagent's stream carries the update too. A released ancestor gets
+		// none: forwarding for it would reopen its closed thread's history, and
+		// its next thread read lists the row afresh. The owner is the root for
+		// every current row, so the guard only matters for a row a parent
+		// session owns, whose owner stream already carries it.
+		for _, runtime := range ancestorRuntimes {
+			if runtime != ownerRuntime {
+				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			}
+		}
+		if ownerRuntime != nil {
+			ownerRuntime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
 			continue
 		}
 		s.mu.Lock()
@@ -2963,12 +3226,28 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	}
 }
 
-func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {
+// ancestorSubagentRuntimesLocked lists the subagent sessions of ancestry (a
+// sessionAncestryLocked chain), nearest first and without the root, and the
+// live runtime of each one that has one.
+func (c *delegateTreeController) ancestorSubagentRuntimesLocked(ancestry []string) ([]string, []*Session) {
+	var ancestors []string
+	var runtimes []*Session
+	for _, sessionID := range ancestry {
+		if sessionID == c.rootSessionID {
+			break
+		}
+		ancestors = append(ancestors, sessionID)
+		if live := c.live[c.delegateOwnerOfSessionLocked(sessionID)]; live != nil && live.runtime != nil && live.runtime.ID() == sessionID {
+			runtimes = append(runtimes, live.runtime)
+		}
+	}
+	return ancestors, runtimes
+}
+
+func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnapshot) *Session {
 	if c == nil {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if row.descriptor.OwnerSessionID == c.rootSessionID {
 		return c.rootRuntime
 	}

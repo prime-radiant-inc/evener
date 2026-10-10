@@ -339,3 +339,31 @@ test("the props type requires onSelect whenever the row is not read-only", () =>
   // @ts-expect-error a row that is not readOnly must be given onSelect
   render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} />);
 });
+
+// A credential the provider rejected (#3539): the row says Error, with the
+// failed dot, so the list shows which provider needs its key replaced.
+describe("a provider whose credential the hub found an error with", () => {
+  test("reads Error with the failed dot", () => {
+    render(
+      <InstanceRow
+        instance={instance({ name: "lunaroute", providerId: "openai", hasStoredFile: true, activeSource: "store" })}
+        authError="The provider rejected this credential (HTTP 401). Replace the key or sign in again."
+        onSelect={() => {}}
+      />,
+    );
+    const row = screen.getByRole("button", { name: /lunaroute/ });
+    expect(row.textContent).toContain("Error");
+    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  });
+
+  test("a provider with no error reads as before", () => {
+    render(
+      <InstanceRow
+        instance={instance({ name: "lunaroute", providerId: "openai", hasStoredFile: true, activeSource: "store" })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /lunaroute/ }).textContent).not.toContain("Error");
+    expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
+  });
+});

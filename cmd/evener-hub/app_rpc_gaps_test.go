@@ -59,6 +59,19 @@ func TestHubLaunchConfigRootUnset(t *testing.T) {
 	}
 }
 
+// TestHubLaunchConfigRootRejectsRelative pins that a relative root never
+// reaches launchconfig. cmdutil.DefaultConfigRoot substitutes the relative
+// ./.config/evener when neither XDG_CONFIG_HOME nor a home directory resolves,
+// and launchconfig joins that root with launch.toml, so a relative root would
+// resolve against the process working directory: a repository-controlled
+// launch config. The root must be absolute or absent, never relative.
+func TestHubLaunchConfigRootRejectsRelative(t *testing.T) {
+	got := hubLaunchConfigRoot(hubcore.WebConfig{LaunchConfigRoot: "./.config/evener"})
+	if got != "" {
+		t.Fatalf("relative LaunchConfigRoot resolved to %q, want \"\"", got)
+	}
+}
+
 // TestAllowsPastFallbackAfterLiveReadFailureNonSubscribe covers the
 // non-subscribe path (returns true).
 func TestAllowsPastFallbackAfterLiveReadFailureNonSubscribe(t *testing.T) {

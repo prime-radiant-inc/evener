@@ -46,26 +46,6 @@ type FavoriteProjectAuthority struct {
 	Source string
 }
 
-// FavoriteNodeKind identifies the current, collision-checked kind of a
-// navigation node. Only a current cluster node can positively invalidate a
-// session decision; its spelling is not evidence.
-type FavoriteNodeKind string
-
-const (
-	FavoriteNodeSession  FavoriteNodeKind = "session"
-	FavoriteNodeSubagent FavoriteNodeKind = "subagent"
-	FavoriteNodeFork     FavoriteNodeKind = "fork"
-	FavoriteNodeCluster  FavoriteNodeKind = "cluster"
-)
-
-// FavoriteNodeAuthority is a current node classification collected after
-// tree construction has identified synthetic nodes and checked collisions.
-type FavoriteNodeAuthority struct {
-	ID      string
-	Kind    FavoriteNodeKind
-	Quality FavoriteAuthorityQuality
-}
-
 // FavoriteAuthority is the complete in-memory authority input for one
 // revalidation pass. It has no source, filesystem, network, persistence, or
 // generation dependencies: those boundaries collect these facts before this
@@ -73,7 +53,6 @@ type FavoriteNodeAuthority struct {
 type FavoriteAuthority struct {
 	Sessions []FavoriteSessionAuthority
 	Projects []FavoriteProjectAuthority
-	Nodes    []FavoriteNodeAuthority
 }
 
 // FavoriteDecisionState is the read-time presentation classification of one
@@ -121,12 +100,6 @@ type projectDecisionKey struct {
 	id     string
 }
 
-type favoriteNodeIndex struct {
-	byID         map[string][]FavoriteNodeAuthority
-	ambiguousIDs map[string]bool
-	clusterIDs   map[string]bool
-}
-
 // ClassifyFavoriteDecisions classifies stored decisions against already
 // collected canonical authority facts. It is pure: it neither reads nor
 // writes FavoriteStore, and it does not infer completeness from presentation
@@ -138,10 +111,9 @@ func ClassifyFavoriteDecisions(decisions map[ArchiveKey]bool, authority Favorite
 	}
 	sessions := indexFavoriteSessions(authority.Sessions)
 	projects := indexFavoriteProjects(authority.Projects)
-	nodes := indexFavoriteNodes(authority.Nodes, sessions)
 
 	for key, favorited := range decisions {
-		classification := classifyFavoriteDecision(key, sessions, projects, nodes)
+		classification := classifyFavoriteDecision(key, sessions, projects)
 		result.Classifications[key] = classification
 		if favorited && classification.State == FavoriteDecisionValid {
 			result.Presentation[classification.CanonicalKey] = true
@@ -236,51 +208,14 @@ func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProje
 	return index
 }
 
-func indexFavoriteNodes(authorities []FavoriteNodeAuthority, sessions favoriteSessionIndex) favoriteNodeIndex {
-	index := favoriteNodeIndex{
-		byID:         make(map[string][]FavoriteNodeAuthority, len(authorities)),
-		ambiguousIDs: make(map[string]bool),
-		clusterIDs:   make(map[string]bool),
-	}
-	for _, authority := range authorities {
-		if authority.ID == "" {
-			continue
-		}
-		index.byID[authority.ID] = append(index.byID[authority.ID], authority)
-	}
-	for id, authorities := range index.byID {
-		if len(authorities) != 1 || authorities[0].Quality != FavoriteAuthorityComplete {
-			index.ambiguousIDs[id] = true
-			continue
-		}
-		node := authorities[0]
-		switch node.Kind {
-		case FavoriteNodeSession, FavoriteNodeSubagent, FavoriteNodeFork:
-			// Known non-cluster node kinds do not change session validity.
-		case FavoriteNodeCluster:
-			if len(sessions.byID[id]) != 0 || len(sessions.byAlias[id]) != 0 {
-				// A real canonical session and a synthetic node share an
-				// identity or alias. Neither interpretation is safe to present.
-				index.ambiguousIDs[id] = true
-				continue
-			}
-			index.clusterIDs[id] = true
-		default:
-			index.ambiguousIDs[id] = true
-		}
-	}
-	return index
-}
-
 func classifyFavoriteDecision(
 	key ArchiveKey,
 	sessions favoriteSessionIndex,
 	projects favoriteProjectIndex,
-	nodes favoriteNodeIndex,
 ) FavoriteDecisionClassification {
 	switch key.Kind {
 	case "session":
-		return classifyFavoriteSession(key, sessions, nodes)
+		return classifyFavoriteSession(key, sessions)
 	case "project":
 		return classifyFavoriteProject(key, projects)
 	default:
@@ -288,17 +223,7 @@ func classifyFavoriteDecision(
 	}
 }
 
-func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, nodes favoriteNodeIndex) FavoriteDecisionClassification {
-	if nodes.ambiguousIDs[key.ID] {
-		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
-	}
-	if nodes.clusterIDs[key.ID] {
-		return FavoriteDecisionClassification{
-			State:        FavoriteDecisionConfirmedInvalid,
-			CanonicalKey: key,
-		}
-	}
-
+func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex) FavoriteDecisionClassification {
 	if sessions.ambiguousAlias[key.ID] {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
@@ -321,9 +246,6 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
 	authority := authorities[0]
-	if nodes.ambiguousIDs[authority.ID] {
-		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
-	}
 	canonicalKey := ArchiveKey{Kind: "session", ID: authority.ID}
 	if authority.Lineage != FavoriteAuthorityComplete || authority.Source != FavoriteAuthorityComplete {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: canonicalKey}

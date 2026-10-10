@@ -94,7 +94,7 @@ func configureSandbox(cfg *agent.SessionConfig, modeFlag, netFlag string) error 
 // caller returns to fail session start with the fail-closed floor's legible message.
 func provisionSandbox(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
 	if sandbox.ModeIsOff(cfg.Sandbox) {
-		return nil
+		return agent.PickFreshSessionID(env, cfg)
 	}
 	return provisionSandboxWithHost(env, cfg, cwd, probeSandboxHost())
 }
@@ -104,6 +104,11 @@ func provisionSandbox(env *execenv.LocalExecutionEnvironment, cfg *agent.Session
 // with a controlled home (the credential denylist anchors on host.Home) while still
 // building a real kernel wrapper from the resolved backend.
 func provisionSandboxWithHost(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string, host sandbox.HostFacts) error {
+	// The sandbox mints the session's scratch, so the session's ID has to
+	// exist first for the scratch to land in the session's own tree.
+	if err := agent.PickFreshSessionID(env, cfg); err != nil {
+		return err
+	}
 	// The session's hook and MCP-server paths join the policy's read/exec surface
 	// (ruled 2026-08-06: they are session infrastructure and must work in every
 	// mode). Derived only for a sandboxed session, so an off run does no extra

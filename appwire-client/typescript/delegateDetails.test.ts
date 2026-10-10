@@ -1,8 +1,25 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import delegateRuntimeGo from "../../agent/delegate_runtime.go?raw";
+import delegateTreeFinishGo from "../../agent/delegate_tree_finish.go?raw";
+import delegateTreeIntentsGo from "../../agent/delegate_tree_intents.go?raw";
+import delegateTreeRestoreGo from "../../agent/delegate_tree_restore.go?raw";
+import delegateTreeStartGo from "../../agent/delegate_tree_start.go?raw";
+import delegateStoreRecordGo from "../../agent/internal/delegatestore/record.go?raw";
+import sessionBudgetGo from "../../agent/session_budget.go?raw";
+import sessionToolsWorktreeDisposeGo from "../../agent/session_tools_worktree_dispose.go?raw";
+import subagentsGo from "../../agent/subagents.go?raw";
 import type { ActivityDelegate } from "./activityData";
-import { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+import { parseActivityTree } from "./activityData";
+import {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
+import { subagentOutcomesResponse } from "./testing/subagentWireFixtures";
 
 function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
   return {
@@ -195,4 +212,127 @@ test("omits packets that JSON cannot serialize", () => {
   const circular: Record<string, unknown> = {};
   circular.self = circular;
   expect(delegatePacket(circular)).toBeUndefined();
+});
+
+// How a subagent's run ended, in words (#3327): the hub's error when it sent
+// one, else the reason code said plainly. A snake_case code never shows.
+test("says a failed run's cause as the hub recorded it", () => {
+  const tree = parseActivityTree(subagentOutcomesResponse().data);
+  const failed = tree?.root.entries.find(
+    (entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_failed",
+  );
+  if (failed?.kind !== "delegate") throw new Error("no failed delegate in the corpus");
+  expect(failed.delegate.reason).toBe("run_error");
+  expect(delegateEndingText(failed.delegate)).toBe("provider returned 500");
+});
+
+test.each([
+  ["failed", "failed", "failed"],
+  ["failed", "run_error", "failed with an error"],
+  ["failed", "ended_without_report", "ended without reporting"],
+  ["failed", "terminal_error", "ended with an error"],
+  ["failed", "missing_terminal", "ended without reporting"],
+  ["failed", "runtime_lost", "runtime lost"],
+  ["failed", "input_persist_failed", "couldn't save its input"],
+  ["cancelled", "cancelled", "cancelled"],
+  ["stopped", "stopped_by_parent", "stopped by its coordinator"],
+  ["exhausted", "tool_round_budget_exhausted", "ran out of tool rounds"],
+  ["exhausted", "turn_budget_exhausted", "ran out of turns"],
+  ["failed", "launch_failed", "couldn't start"],
+  ["failed", "construction_failed", "couldn't be set up"],
+  ["failed", "artifacts_dir_failed", "couldn't create its artifacts folder"],
+  ["failed", "input_admission_failed", "couldn't take its input"],
+  ["completed", "attention_consumed_without_report", "finished without a new report"],
+])("says %s's reason %s as %j", (outcome, reason, words) => {
+  expect(delegateEndingText({ outcome, reason })).toBe(words);
+});
+
+test("never shows a code it doesn't know, but keeps a reason already in words", () => {
+  expect(delegateEndingText({ outcome: "failed", reason: "quota_window_closed" })).toBe("failed");
+  expect(delegateEndingText({ outcome: "stopped", reason: "parent_went_away" })).toBe("stopped");
+  expect(delegateEndingText({ outcome: "exhausted", reason: "memory_budget_exhausted" })).toBe("ran out of budget");
+  expect(delegateEndingText({ outcome: "failed", reason: "model refused the task" })).toBe("model refused the task");
+});
+
+test("says nothing for a run that ended well", () => {
+  expect(delegateEndingText({ outcome: "completed" })).toBeUndefined();
+  expect(delegateEndingText({})).toBeUndefined();
+});
+
+// A delegate's resumability closes with its own codes (#3362). The run-ending
+// vocabulary covers most of them; the closure-only codes and an unknown code
+// still say words rather than a raw snake_case code.
+test("says why a delegate isn't resumable in words", () => {
+  expect(delegateNotResumableText("turn_budget_exhausted")).toBe("ran out of turns");
+  expect(delegateNotResumableText("construction_failed")).toBe("couldn't be set up");
+  expect(delegateNotResumableText("missing_delegate_resume_metadata")).toBe("its resume metadata is missing");
+  expect(delegateNotResumableText("parent_linkage_unavailable")).toBe("its parent linkage is unavailable");
+  expect(delegateNotResumableText("missing_child_session_meta")).toBe("its session metadata is missing");
+  expect(delegateNotResumableText("corrupt_child_session_meta")).toBe("its session metadata is corrupt");
+  expect(delegateNotResumableText("missing_child_transcript")).toBe("its transcript is missing");
+  expect(delegateNotResumableText("corrupt_child_transcript")).toBe("its transcript is corrupt");
+  expect(delegateNotResumableText("transcript_session_mismatch")).toBe("its transcript belongs to another session");
+  expect(delegateNotResumableText("working_dir_missing")).toBe("its working directory is missing");
+  expect(delegateNotResumableText("isolation_disposed")).toBe("its isolation was disposed");
+  expect(delegateNotResumableText("some_new_code")).toBe("its resumability was closed");
+  expect(delegateNotResumableText("Delegate was disposed")).toBe("Delegate was disposed");
+  expect(delegateNotResumableText("  ")).toBeUndefined();
+  expect(delegateNotResumableText(undefined)).toBeUndefined();
+});
+
+// The daemon's closure codes, read from its own source: every code the Go side
+// can write to not_resumable_reason has words here, so a new closure code
+// without a mapping fails this test instead of degrading to the generic phrase.
+test("has words for every not-resumable closure code the daemon writes", () => {
+  const sources = [delegateRuntimeGo, sessionToolsWorktreeDisposeGo];
+  const codes = new Set(
+    sources.flatMap((source) =>
+      [...source.matchAll(/(?:notResumable\w*|stableWorktreeDisposalReason)\s*=\s*"([a-z_]+)"/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  );
+  expect(codes.size).toBeGreaterThan(5);
+  const generic = delegateNotResumableText("unknown_closure_code");
+  expect(generic).toBe("its resumability was closed");
+  const unmapped = [...codes].filter((code) => delegateNotResumableText(code) === generic);
+  expect(unmapped).toEqual([]);
+});
+
+// Every consumer shows one line: the helper clamps the cause itself.
+test("says only the first line of a cause, bounded", () => {
+  expect(delegateEndingText({ outcome: "failed", error: "\n provider returned 500\nretry-after: 30" })).toBe(
+    "provider returned 500",
+  );
+  const long = delegateEndingText({ outcome: "failed", error: "x".repeat(400) });
+  expect(long?.length).toBeLessThanOrEqual(121);
+  expect(long?.endsWith("…")).toBe(true);
+});
+
+// The daemon's delegate reason codes, read from its own source: each one the
+// Go side can write has words here, so a new code without a mapping fails
+// this test instead of reaching a screen as snake_case. The codes follow the
+// daemon's naming (…_failed, …_lost, …_exhausted, …_error, …_terminal,
+// …_report, …_parent); cancelled and failed are plain words.
+test("has words for every delegate reason code the daemon writes", () => {
+  const sources = [
+    delegateRuntimeGo,
+    delegateTreeFinishGo,
+    delegateTreeIntentsGo,
+    delegateTreeRestoreGo,
+    delegateTreeStartGo,
+    delegateStoreRecordGo,
+    sessionBudgetGo,
+    subagentsGo,
+  ];
+  const codes = new Set(
+    sources.flatMap((source) =>
+      [...source.matchAll(/"([a-z]+(?:_[a-z]+)*_(?:failed|lost|exhausted|error|terminal|report|parent))"/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  );
+  expect(codes.size).toBeGreaterThan(10);
+  const unmapped = [...codes].filter((code) => delegateEndingText({ outcome: "unknown", reason: code }) === undefined);
+  expect(unmapped).toEqual([]);
 });

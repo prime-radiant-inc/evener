@@ -142,83 +142,21 @@ type NavigationProjectPage struct {
 // NavigationSessionLocation is the top-level owner and current summary for a
 // session referenced by a deep link.
 type NavigationSessionLocation struct {
-	GenerationID string                    `json:"generation_id"`
-	Revision     uint64                    `json:"revision"`
-	Ref          string                    `json:"ref"`
-	TopLevelRef  string                    `json:"top_level_ref"`
+	GenerationID string `json:"generation_id"`
+	Revision     uint64 `json:"revision"`
+	Ref          string `json:"ref"`
+	TopLevelRef  string `json:"top_level_ref"`
+	// Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+	// whose project ProjectKey names: a key can be in several, and a project
+	// or project_page read naming this catalog returns the project holding
+	// the session. Absent outside a project, and from an older hub, which
+	// also refuses a catalog on those reads.
+	Catalog      string                    `json:"catalog,omitempty"`
 	ProjectKey   string                    `json:"project_key,omitempty"`
 	TopLevel     bool                      `json:"top_level"`
 	Tier         string                    `json:"tier,omitempty"`
 	PinSectionID string                    `json:"pin_section_id,omitempty"`
 	Session      *NavigationSessionSummary `json:"session,omitempty"`
-}
-
-// NavigationJobSummary is the compact non-delegate job row shown beneath its
-// owning session. Delegate jobs remain represented as session children.
-type NavigationJobSummary struct {
-	JobID   string `json:"job_id"`
-	JobType string `json:"job_type"`
-	Status  string `json:"status"`
-	Command string `json:"command,omitempty"`
-	Task    string `json:"task,omitempty"`
-	Reason  string `json:"reason,omitempty"`
-	// Intent is the tool call's `intent` argument: why the command is being
-	// run, in the model's own words. Surfaces in the rail row's tooltip.
-	Intent string `json:"intent,omitempty"`
-	// FullCommand carries the command when it exceeds the label bound
-	// (maxNavigationLabelRunes), so a tooltip can show more of what was
-	// actually executed. Still bounded by maxNavigationFullCommandRunes:
-	// a pathological command cannot dominate the response's byte budget.
-	// Absent when the command fits the label bound (no truncation).
-	FullCommand string `json:"full_command,omitempty"`
-}
-
-// NavigationWatchCadence is one cadence component of a live watch. Kind is
-// the cadence family ("every", "after", "progress", "output", "events") and
-// Seconds carries the interval for the time-based kinds.
-type NavigationWatchCadence struct {
-	Kind    string  `json:"kind"`
-	Seconds float64 `json:"seconds,omitempty"`
-	// DerivedNextFireAt is the next instant this clock-driven cadence is
-	// expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
-	// Approximate and able to slide later; consumers word it with a "~". Absent
-	// for output and event cadences, which have no schedule.
-	DerivedNextFireAt string `json:"derived_next_fire_at,omitempty"`
-	// Every is the fire-every-Nth-matching-event throttle on an "events"
-	// cadence; absent (zero) means fire on every matching event. Only the
-	// events kind carries it.
-	Every int `json:"every,omitempty"`
-	// Filter is the events-kind watch's event filter in the model-facing
-	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
-	// absent when the watch filters nothing. Only the events kind carries it.
-	Filter string `json:"filter,omitempty"`
-}
-
-// NavigationWatchSummary is the compact live-watch row shown beneath its
-// owning session. It is purely additive: an older daemon omits the source
-// diagnostics field entirely, so absence is an empty list, never an error.
-//
-// The rows are per session. A receiver watch is visible to two sessions in
-// the hub, but each summary carries only the rows from that session's own
-// diagnostics, so a subtree rollup can never count one watch twice.
-type NavigationWatchSummary struct {
-	ID             string                   `json:"id"`
-	Source         string                   `json:"source"`
-	Target         string                   `json:"target,omitempty"`
-	SendTo         string                   `json:"send_to,omitempty"`
-	Note           string                   `json:"note,omitempty"`
-	Cadence        []NavigationWatchCadence `json:"cadence,omitempty"`
-	OutputMatch    string                   `json:"output_match,omitempty"`
-	Events         []string                 `json:"events,omitempty"`
-	WildcardEvents bool                     `json:"wildcard_events,omitempty"`
-	Deliveries     int                      `json:"deliveries"`
-	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
-	// recent delivery instants, formatted like CreatedAt. Absent (and so
-	// absent-able, like Watches) when the watch has not delivered.
-	DeliveryTimes []string `json:"delivery_times,omitempty"`
-	CreatedAt     string   `json:"created_at"`
-	Active        bool     `json:"active"`
-	EndReason     string   `json:"end_reason,omitempty"`
 }
 
 // NavigationTaskProgress is a live session's task-list progress: how many of
@@ -250,11 +188,12 @@ type NavigationSubagentTally struct {
 const NavigationFailureCrashed = "crashed"
 
 // NavigationFailure says why a Failed row failed (S1c): the failure's headline
-// ("Provider error", "Usage limit reached") and its cause's kind ("provider",
-// "transcript_failed_closed", or the hub's own NavigationFailureCrashed), the
-// provider it came from and its HTTP status, from which a client composes the
-// row's why line ("codex-jesse-fsck.com sign-in expired (401)"). It never
-// carries the failure's message, which can quote a provider's error body.
+// ("Provider error", "Usage limit reached", "Sign-in required") and its cause's
+// kind ("provider", "signInRequired", "transcript_failed_closed", or the hub's
+// own NavigationFailureCrashed), the provider it came from and its HTTP status,
+// from which a client composes the row's why line ("codex-jesse-fsck.com
+// sign-in expired (401)"). It never carries the failure's message, which can
+// quote a provider's error body.
 type NavigationFailure struct {
 	Title     string `json:"title,omitempty"`
 	CauseKind string `json:"cause_kind,omitempty"`
@@ -273,21 +212,20 @@ type NavigationQuestion struct {
 	Count   int      `json:"count"`
 }
 
-// NavigationSessionSummary is the bounded recursive navigation row shape.
+// NavigationSessionSummary is a bounded session row with compact own-session activity facts.
 type NavigationSessionSummary struct {
-	Ref          string `json:"ref"`
-	HostID       string `json:"host_id"`
-	SessionID    string `json:"session_id"`
-	Title        string `json:"title"`
-	Project      string `json:"project"`
-	State        string `json:"state"`
-	Kind         string `json:"kind"`
-	Branch       string `json:"branch,omitempty"`
-	ClusterCount int    `json:"cluster_count,omitempty"`
-	Favorite     bool   `json:"favorite,omitempty"`
-	Rename       bool   `json:"rename,omitempty"`
-	Live         bool   `json:"live"`
-	AskPending   bool   `json:"ask_pending,omitempty"`
+	Ref        string `json:"ref"`
+	HostID     string `json:"host_id"`
+	SessionID  string `json:"session_id"`
+	Title      string `json:"title"`
+	Project    string `json:"project"`
+	State      string `json:"state"`
+	Kind       string `json:"kind"`
+	Branch     string `json:"branch,omitempty"`
+	Favorite   bool   `json:"favorite,omitempty"`
+	Rename     bool   `json:"rename,omitempty"`
+	Live       bool   `json:"live"`
+	AskPending bool   `json:"ask_pending,omitempty"`
 	// ApprovalPending is true while the session is blocked on a sandbox
 	// escalation a human must allow or deny (M7). The row keeps its real State
 	// ("active": the escalation blocks mid-turn); the flag says why the session
@@ -338,8 +276,7 @@ type NavigationSessionSummary struct {
 	MoreSubagents int        `json:"more_subagents,omitempty"`
 	// Subagents is a live root's whole-tree subagent tally, counted by its
 	// daemon (S3). Present only on a live root row whose tree has a subagent;
-	// it counts subagents the row's children never show (nested, or past the
-	// children cap).
+	// it counts descendants without embedding their detail rows.
 	Subagents          *NavigationSubagentTally `json:"subagents,omitempty"`
 	OmittedDescendants int                      `json:"omitted_descendants,omitempty"`
 	// TurnEndedAt is when a live session's last turn ended, stamped by its
@@ -351,23 +288,19 @@ type NavigationSessionSummary struct {
 	// the Board, and Idle when absent. It is only ever set on a row that
 	// carries TurnEndedAt.
 	Unseen bool `json:"unseen,omitempty"`
-	// OmittedWatches counts live-watch rows this session's summary does not
-	// carry: rows beyond the projector's per-session cap, rows it could not
-	// represent, and rows the byte-budget fitter shed. It mirrors
-	// OmittedDescendants so the rail and the activity panel can say "+N more"
-	// instead of silently undercounting a session's watches.
-	OmittedWatches int `json:"omitted_watches,omitempty"`
-	// OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
-	// this summary does not carry, how many were still armed. The retained rows
-	// alone cannot answer that once an armed watch falls past the per-session
-	// cap, so the rail and the activity panel read this to report the true
-	// armed total. It is never greater than OmittedWatches.
-	OmittedArmedWatches int                                   `json:"omitted_armed_watches,omitempty"`
-	RunningJobs         NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
-	CompletedJobs       NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
-	// Watches carries this session's own live watches. Absent on an older
-	// daemon (or a past-index entry) and therefore absent-able for consumers.
-	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
+	// SeenThrough is the hub's seen-through mark for a live row, floored at
+	// the seen store's start, so a client can tell output that moved after it
+	// (an activity read's lastMovedAt) from output already seen, even
+	// mid-turn. It does not reflect an explicit "Mark as unread", so a client
+	// also reads Unseen. Absent on a row that isn't live, and from a hub with
+	// no seen store or an older hub.
+	SeenThrough *time.Time `json:"seen_through,omitempty"`
+	// Own-session activity counts are captured before navigation fitting.
+	// RunningJobCommand is the first available command, bounded for display.
+	RunningJobCount   int    `json:"running_job_count,omitempty"`
+	RunningJobCommand string `json:"running_job_command,omitempty"`
+	WatchCount        int    `json:"watch_count,omitempty"`
+	ArmedWatchCount   int    `json:"armed_watch_count,omitempty"`
 	// Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
 	// race"). Absent for a session with no task list or an empty one, and for
 	// every session with no live daemon entry: ended sessions and in-process

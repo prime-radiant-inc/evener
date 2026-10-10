@@ -1,5 +1,11 @@
 // The Reader (spec 10.2): a document from a session's folder, with what
 // changed since you last read it, where you were, and its outline.
+import { once } from "node:events";
+import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ServerResponse } from "node:http";
 import type { NativeStackHeaderItem, NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -7,7 +13,7 @@ import { cloneElement, type ReactElement } from "react";
 import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	alertRequests,
 	flatListCalls,
@@ -15,14 +21,15 @@ import {
 	render,
 	render as renderElement,
 	renderedText,
+	settle,
+	settleMicrotasks,
+	unmountMountedTrees,
+	untilRendered,
 } from "../renderNative.testkit";
-import { takeQuote } from "../session/pendingQuote";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
 import { DocumentMemory } from "./documentMemory";
-import { CommentSheet } from "./CommentSheet";
-import { CommentsSheet } from "./CommentsSheet";
 import { ReaderScreen } from "./ReaderScreen";
 import { readerHosts } from "./readerHosts";
 
@@ -31,7 +38,11 @@ const harness = vi.hoisted(() => ({
 	memory: null as unknown,
 	clipboard: [] as string[],
 	appState: [] as ((state: string) => void)[],
+	focused: true,
+	markdowns: [] as string[],
 }));
+// What the Reader holds, whether and as what kind, and the count Back shows.
+const alerts = vi.hoisted(() => ({ holds: [] as [boolean, string][], held: 0 }));
 // The action sheets the Reader's blocks opened, newest last, with the
 // callback that picks from one; and the sheet routes' navigation.
 const menus = vi.hoisted(() => ({
@@ -64,7 +75,11 @@ vi.mock("react-native", async () => ({
 		currentState: "active",
 		addEventListener: (_event: string, listener: (state: string) => void) => {
 			harness.appState.push(listener);
-			return { remove: () => {} };
+			return {
+				remove: () => {
+					harness.appState = harness.appState.filter((entry) => entry !== listener);
+				},
+			};
 		},
 	},
 }));
@@ -72,7 +87,15 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-enriched-markdown", async () => {
+	const { createElement } = await import("react");
+	return {
+		EnrichedMarkdownText: (props: { markdown: string }) => {
+			harness.markdowns.push(props.markdown);
+			return createElement("EnrichedMarkdownText", props);
+		},
+	};
+});
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async (text: string) => {
 		harness.clipboard.push(text);
@@ -81,6 +104,7 @@ vi.mock("expo-clipboard", () => ({
 vi.mock("@react-navigation/native", () => ({
 	useNavigationState: <T,>(select: (state: typeof stack.state) => T) => select(stack.state),
 	useNavigation: () => sheetNavigation,
+	useIsFocused: () => harness.focused,
 	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
 		sheetNavigation.prevented.push(prevent);
 		sheetNavigation.onPrevent = onPrevent;
@@ -98,6 +122,10 @@ vi.mock("expo-secure-store", () => ({
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
+vi.mock("../alerts/alertsContext", () => ({
+	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
+	useHeldAlertCount: () => alerts.held,
+}));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 
@@ -129,6 +157,7 @@ const threadRead = (status: string): ThreadReadResponse =>
 	({
 		thread: {
 			id: "thread-fix",
+			cwd: "/work/a",
 			status: { type: status },
 			modelProvider: "glm",
 			evener: { ref: "local:fix", instanceId: "instance-fix", capabilities: {}, queue: { revision: 1 } },
@@ -136,6 +165,10 @@ const threadRead = (status: string): ThreadReadResponse =>
 	}) as ThreadReadResponse;
 
 beforeEach(() => {
+	harness.focused = true;
+	harness.markdowns = [];
+	alerts.holds = [];
+	alerts.held = 0;
 	flatListCalls.length = 0;
 	menus.shown = [];
 	alertRequests.length = 0;
@@ -148,7 +181,10 @@ beforeEach(() => {
 	served = { [PATH]: { body: PLAN } };
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
-		const answer = served[url.searchParams.get("path") ?? ""] ?? { status: 404, body: "not found" };
+		const answer = served[(url.searchParams.get("path") ?? "").replace(/^\/work\/a\//, "")] ?? {
+			status: 404,
+			body: "not found",
+		};
 		return new Response(answer.body, {
 			status: answer.status ?? 200,
 			headers: { "Content-Type": "text/plain; charset=utf-8", ...answer.headers },
@@ -158,6 +194,7 @@ beforeEach(() => {
 	client.on("thread/read", () => threadRead("idle"));
 	harness.connection = {
 		profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }],
+		activeProfile: { id: "studio" },
 		state: "ready",
 		client,
 	};
@@ -168,36 +205,26 @@ beforeEach(() => {
 		index: 2,
 		routes: [
 			{ key: "board", name: "Sessions" },
-			{ key: "coord", name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Coordinator" } },
+			{ key: "fix", name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ key: "reader-1", name: "Reader" },
 		],
 	};
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
+	trees.length = 0;
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
-
-/** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
-async function settleMicrotasks() {
-	await act(async () => {
-		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
-	});
-}
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function navigationDouble() {
 	const options: NativeStackNavigationOptions[] = [];
 	return {
 		options,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => options.push(next)),
+		setParams: vi.fn(),
 		navigate: vi.fn(),
+		goBack: vi.fn(),
 		pop: vi.fn(),
 		getState: () => stack.state,
 		latest: <Key extends keyof NativeStackNavigationOptions>(key: Key) =>
@@ -211,8 +238,8 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		reference: { path, cwd: "/work/a", readTarget: `/work/a/${path}`, provenance: "relative" },
+		sessionTitle: "Fix race",
 		...extra,
 	};
 	const element = (
@@ -225,9 +252,9 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 	const rerender = async () => {
 		// A fresh element: React skips an update given the identical one.
 		act(() => tree.update(cloneElement(element)));
-		await settle();
+		await flush();
 	};
-	return { tree, navigation, rerender };
+	return { tree, navigation, rerender, params };
 }
 
 function documentList(tree: ReactTestRenderer): ReactTestInstance {
@@ -254,6 +281,98 @@ function menuAction(navigation: ReturnType<typeof navigationDouble>, label: stri
 	return action;
 }
 
+it("Reload in the actual Document actions recovers missing remote text from useful file bytes", async () => {
+	fetchSpy.mockRestore();
+	const actualFetch = globalThis.fetch;
+	const errors = vi.spyOn(console, "error"); // Call through, never suppress diagnostics.
+	const reads = Array.from({ length: 2 }, () => {
+		let started!: (body: Promise<ArrayBuffer>) => void;
+		const body = new Promise<ArrayBuffer>((resolve) => {
+			started = resolve;
+		});
+		return { started, body };
+	});
+	let readIndex = 0;
+	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+		const response = actualFetch(input, init);
+		reads[readIndex++]?.started(response.then((value) => value.clone().arrayBuffer()));
+		return response;
+	});
+	const directory = await mkdtemp(join(tmpdir(), "reader-reload-"));
+	const file = join(directory, "recovered.md");
+	const requests: { path: string | null; session: string | null; auth: string | undefined }[] = [];
+	const server = createServer(async (request, response) => {
+		const url = new URL(request.url ?? "", "http://fixture.test");
+		requests.push({
+			path: url.searchParams.get("path"),
+			session: url.searchParams.get("session"),
+			auth: request.headers.authorization,
+		});
+		try {
+			const bytes = await readFile(file);
+			response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+			response.end(bytes);
+		} catch {
+			response.writeHead(404);
+			response.end("missing");
+		}
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		harness.connection.profiles = [{ id: "studio", name: "Studio", origin: `http://127.0.0.1:${address.port}` }];
+		harness.connection.activeProfile = { id: "studio" };
+		client.on("thread/read", () => ({ thread: { ...threadRead("idle").thread, cwd: "/work/owner" } }));
+		let mounted!: Awaited<ReturnType<typeof mount>>;
+		const mounting = mount(
+			"docs/recovered.md",
+			{
+				sessionRef: "h1:local:02wMz5Txv1C3Hut0M8GCeB",
+				reference: {
+					path: "docs/recovered.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/recovered.md",
+					provenance: "relative",
+				},
+			},
+			async () => {},
+		);
+		await act(async () => {
+			mounted = await mounting;
+			await reads[0]?.body;
+		});
+		const { tree, navigation } = mounted;
+		expect(renderedText(tree)).toContain("isn't in this session's folder");
+		await writeFile(file, "# Recovered bytes\n\nUseful file body.");
+		await act(async () => {
+			menuAction(navigation, "Reload").onPress?.();
+			await reads[1]?.body;
+		});
+		expect(
+			tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+		).toContain("Useful file body.");
+		expect(requests).toEqual([
+			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
+			{ path: "/work/owner/docs/recovered.md", session: "h1:local:02wMz5Txv1C3Hut0M8GCeB", auth: "Bearer secret" },
+		]);
+		expect(errors.mock.calls.filter((args) => args.some((arg) => String(arg).includes("not wrapped in act")))).toEqual(
+			[],
+		);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		await rm(file, { force: true });
+		await rmdir(directory);
+	}
+});
+
+it("offers a real Reload action even after a missing document", async () => {
+	const { navigation } = await mount("docs/missing.md");
+	expect(menuAction(navigation, "Reload").onPress).toBeTypeOf("function");
+});
+
 it("renders a plan's blocks under its caption", async () => {
 	const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
 	const { tree } = await mount(PATH, { updatedAt });
@@ -268,9 +387,19 @@ it("renders a plan's blocks under its caption", async () => {
 		"- Fix it.",
 	]);
 	expect(fetchSpy).toHaveBeenCalledWith(
-		"https://hub.test/doc/file?format=raw&session=local%3Afix&path=docs%2Fsuperpowers%2Fplans%2Fsettle.md",
+		"https://hub.test/doc/file?format=raw&session=local%3Afix&path=%2Fwork%2Fa%2Fdocs%2Fsuperpowers%2Fplans%2Fsettle.md",
 		{ headers: { Authorization: "Bearer secret" } },
 	);
+});
+
+// The same age as the document's chip: just now under a minute, even with a
+// hub clock ahead of the phone's.
+it.each([
+	["seconds ago", -10_000],
+	["ahead of the phone's clock", 5_000],
+])("says updated just now for a document written %s", async (_name, offset) => {
+	const { tree } = await mount(PATH, { updatedAt: new Date(Date.now() + offset).toISOString() });
+	expect(renderedText(tree)).toContain("Plan · updated just now");
 });
 
 it("keeps its update time current while it's open", async () => {
@@ -297,6 +426,19 @@ it("draws blocks in the document role with serif headings, spaced by the list al
 	expect(style.h3).toMatchObject({ fontSize: 18 });
 	for (const name of ["paragraph", "h1", "h2", "h3", "list", "blockquote", "table"])
 		expect(style[name]).toMatchObject({ marginTop: 0, marginBottom: 0 });
+});
+
+it("leaves a table to the markdown view, which scrolls a wide one itself", async () => {
+	// Wrapped in a horizontal ScrollView, the native view measured no width
+	// and the table drew nothing (seen on the simulator, phase 4 PR 9).
+	served[PATH] = { body: "| Work | Subagents |\n|---|---|\n| Fix the race | 1 |\n" };
+	const { tree } = await mount();
+	const table = tree.root.find(
+		(node) => String(node.type) === "EnrichedMarkdownText" && String(node.props.markdown).includes("| Work |"),
+	);
+	expect(table.props.flavor).toBe("github");
+	for (let node = table.parent; node; node = node.parent)
+		expect(String(node.type) === "ScrollView" && node.props.horizontal).not.toBe(true);
 });
 
 it("puts the title in the nav bar once the first heading scrolls out", async () => {
@@ -330,8 +472,7 @@ it("marks what changed since your last read, and steps through the changes", asy
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	clockOffset = 0;
 	const { tree } = await mount();
@@ -351,13 +492,48 @@ it("marks what changed since your last read, and steps through the changes", asy
 	expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
 });
 
+it("keeps Send review on one line beside the change stepper", async () => {
+	// Split into equal thirds, the bar left Send review about 81pt of the
+	// iPhone's width, and it wrapped (seen on the simulator, phase 4 PR 9).
+	// The stepper takes what the two ends leave instead.
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: documentBlocks(OLDER).map((block) => block.hash),
+		position: null,
+		sessionTitle: "Fix race",
+	});
+	const { tree, rerender } = await mount(PATH, { sessionTitle: "Fix race" });
+	act(() =>
+		client.emitNotification({
+			method: "thread/status/changed",
+			params: {
+				threadId: "thread-fix",
+				ref: "local:fix",
+				status: { type: "idle" },
+				capabilities: { send: true, queue: true } as never,
+			},
+		}),
+	);
+	await rerender();
+	expect(pressable(tree, "Next change")).toBeDefined();
+	const send = pressable(tree, "Send review");
+	expect(send?.find((node) => String(node.type) === "Text").props.numberOfLines).toBe(1);
+	// The View a control sits in.
+	const holder = (node: ReactTestInstance | undefined) => {
+		let parent = node?.parent;
+		while (parent && String(parent.type) !== "View") parent = parent.parent;
+		return (parent?.props.style ?? {}) as { flex?: number };
+	};
+	expect(holder(send).flex).toBeUndefined();
+	expect(holder(pressable(tree, "Next change")).flex).toBe(1);
+});
+
 it("starts the steps over when a re-read changes what changed", async () => {
 	memory.left(KEY, {
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	const { tree } = await mount();
 	act(() => pressable(tree, "Previous change")?.props.onPress());
@@ -376,8 +552,7 @@ it("keeps your step when a re-read finds the same changes", async () => {
 		title: "Settle the race",
 		blocks: documentBlocks(OLDER).map((block) => block.hash),
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	const { tree } = await mount();
 	act(() => pressable(tree, "Next change")?.props.onPress());
@@ -454,8 +629,7 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 		sessionRef: "local:fix",
 		path: PATH,
 		title: "Settle the race",
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 		progress: 0.5,
 	});
 });
@@ -479,8 +653,7 @@ it("keeps the version you last read when you leave a document that didn't load",
 		title: "Settle the race",
 		blocks: older,
 		position: null,
-		reviewRef: "local:coord",
-		reviewTitle: "Coordinator",
+		sessionTitle: "Fix race",
 	});
 	served[PATH] = { status: 500, body: "boom" };
 	await mount();
@@ -517,13 +690,14 @@ it("says a document was cut short", async () => {
 	expect(renderedText(tree)).toContain(`Showing the first ${PLAN.length} bytes of 3 MB`);
 });
 
-it("says why it can't show a binary, a missing file, or another host's document", async () => {
+it("says why it can't show a binary, a missing file, or an unsupported host's document", async () => {
 	served["out/data.bin"] = { body: "\u0000\u0001", headers: { "Content-Type": "application/octet-stream" } };
 	const binary = await mount("out/data.bin");
 	expect(renderedText(binary.tree)).toContain("data.bin isn't text, so it can't be shown here (2 bytes).");
 	const missing = await mount("docs/gone.md");
 	expect(renderedText(missing.tree)).toContain("gone.md isn't in this session's folder any more.");
 	fetchSpy.mockClear();
+	served[PATH] = { status: 501, body: "unsupported host" };
 	const navigation = navigationDouble();
 	const tree = render(
 		<ReaderScreen
@@ -535,8 +709,8 @@ it("says why it can't show a binary, a missing file, or another host's document"
 						hubId: "studio",
 						sessionRef: "laptop:fix",
 						path: PATH,
-						reviewRef: "laptop:fix",
-						reviewTitle: "Fix",
+						reference: { path: PATH, cwd: "/work/a", readTarget: `/work/a/${PATH}`, provenance: "relative" },
+						sessionTitle: "Fix",
 					},
 				} as never
 			}
@@ -545,8 +719,8 @@ it("says why it can't show a binary, a missing file, or another host's document"
 	);
 	trees.push(tree);
 	await settle();
-	expect(renderedText(tree)).toContain("This document is on laptop. Open it on the host to read it.");
-	expect(fetchSpy).not.toHaveBeenCalled();
+	expect(renderedText(tree)).toContain("does not support document reads");
+	expect(fetchSpy).toHaveBeenCalledOnce();
 });
 
 it("numbers a code file's lines", async () => {
@@ -561,10 +735,13 @@ it("shows an image through the hub with the bearer header", async () => {
 	const { tree } = await mount("out/chart.png");
 	await settle();
 	const image = tree.root.findByType("Image" as never);
-	expect(image.props.source).toEqual({
-		uri: "https://hub.test/doc/image?session=local%3Afix&path=out%2Fchart.png",
-		headers: { Authorization: "Bearer secret" },
-	});
+	const url = new URL(image.props.source.uri);
+	expect(url.origin).toBe("https://hub.test");
+	expect(url.pathname).toBe("/doc/image");
+	expect(url.searchParams.get("session")).toBe("local:fix");
+	expect(url.searchParams.get("path")).toBe("/work/a/out/chart.png");
+	expect(url.searchParams.get("read")).toBeTruthy();
+	expect(image.props.source.headers).toEqual({ Authorization: "Bearer secret" });
 	expect(fetchSpy).not.toHaveBeenCalled();
 });
 
@@ -600,6 +777,42 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+it("holds banners while it's in front, and counts them on Back", async () => {
+	alerts.held = 1;
+	const { navigation, rerender } = await mount();
+	expect(alerts.holds.at(-1)).toEqual([true, "quiet"]);
+	const back = navigation.latest("headerLeft") as (props: never) => ReactElement;
+	const button = renderElement(back({} as never));
+	pressable(button, "Back, 1 new while you read")?.props.onPress();
+	expect(navigation.goBack).toHaveBeenCalled();
+	expect(renderedText(button)).toContain("1");
+
+	// Leaving the stack ends the hold on its own, with no blur event: a fast
+	// swipe can miss the focus change, and what waited must still drop in.
+	stack.state = { index: 1, routes: stack.state.routes.slice(0, 2) };
+	await rerender();
+	expect(alerts.holds.at(-1)).toEqual([false, "quiet"]);
+});
+
+it("leaves Android its own back arrow", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	Platform.OS = "android";
+	try {
+		const { navigation } = await mount();
+		expect(navigation.latest("headerLeft")).toBeUndefined();
+	} finally {
+		Platform.OS = "ios";
+	}
+});
+
+it("reads plain Back when nothing waits", async () => {
+	const { navigation } = await mount();
+	const back = navigation.latest("headerLeft") as (props: never) => ReactElement;
+	const button = renderElement(back({} as never));
+	expect(pressable(button, "Back")).toBeTruthy();
+	expect(renderedText(button)).not.toContain("0");
 });
 
 it("reads again when its session's turn ends while it's in front", async () => {
@@ -655,272 +868,240 @@ it("never offers Retry, Refresh, Reconnect or a Next capsule", async () => {
 	expect(text).toContain("settle.md couldn't be loaded right now.");
 });
 
-describe("comments (Task 16)", () => {
-	const blocks = documentBlocks(PLAN);
-	const goal = blocks[1];
-	const secondItem = blocks[4];
-	if (!goal || !secondItem) throw new Error("the plan's blocks moved");
-
-	function block(tree: ReactTestRenderer, index: number): ReactTestInstance {
-		return tree.root.find((node) => String(node.type) === "Pressable" && node.props.testID === `block-${index}`);
-	}
-
-	function openMenu(tree: ReactTestRenderer, index: number) {
-		act(() => block(tree, index).props.onLongPress());
-		const menu = menus.shown.at(-1);
-		if (!menu) throw new Error("no menu");
-		return menu;
-	}
-
-	function choose(menu: (typeof menus.shown)[number], label: string) {
-		act(() => menu.pick(menu.options.options.indexOf(label)));
-	}
-
-	function marker(tree: ReactTestRenderer, index: number): string | null {
-		const pills = block(tree, index).findAll(
-			(node) => String(node.type) === "Pressable" && /^\d+ comments?$/.test(String(node.props.accessibilityLabel)),
-		);
-		return pills[0] ? String(pills[0].props.accessibilityLabel) : null;
-	}
-
-	const commentParams = (over: Record<string, unknown> = {}) => ({
-		hubId: "studio",
-		sessionRef: "local:fix",
-		path: PATH,
-		blockIndex: 1,
-		blockHash: goal.hash,
-		quote: goal.text,
-		...over,
-	});
-
-	function mountSheet(element: ReactElement) {
-		const tree = render(element);
-		trees.push(tree);
-		return tree;
-	}
-
-	function commentSheet(params = commentParams()) {
-		return mountSheet(
-			<CommentSheet
-				route={{ key: "comment", name: "CommentSheet", params } as never}
-				navigation={sheetNavigation as never}
-			/>,
-		);
-	}
-
-	function commentsSheet(over: Record<string, unknown> = {}) {
-		const params = {
-			hubId: "studio",
-			sessionRef: "local:fix",
-			path: PATH,
-			reviewRef: "local:coord",
-			reviewTitle: "Coordinator",
-			...over,
-		};
-		return mountSheet(
-			<CommentsSheet
-				route={{ key: "comments", name: "CommentsSheet", params } as never}
-				navigation={sheetNavigation as never}
-			/>,
-		);
-	}
-
-	function typeComment(tree: ReactTestRenderer, text: string) {
-		const field = tree.root.find((node) => String(node.type) === "TextInput");
-		act(() => field.props.onChangeText(text));
-	}
-
-	it("opens the block's four actions on a long press, and highlights that block while it's open", async () => {
-		const { tree } = await mount();
-		const menu = openMenu(tree, 1);
-		expect(menu.options.options).toEqual(["Comment", "Quote in reply", "Copy", "Select text", "Cancel"]);
-		const highlighted = () => (block(tree, 1).props.style as { backgroundColor?: string }).backgroundColor;
-		expect(highlighted()).toBeTruthy();
-		expect((block(tree, 0).props.style as { backgroundColor?: string }).backgroundColor).toBeUndefined();
-		act(() => menu.pick(menu.options.cancelButtonIndex));
-		expect(highlighted()).toBeUndefined();
-	});
-
-	it("adds a comment through the comment sheet, and marks its block", async () => {
-		const { tree, navigation, rerender } = await mount();
-		choose(openMenu(tree, 1), "Comment");
-		expect(navigation.navigate).toHaveBeenCalledWith("CommentSheet", commentParams());
-		const sheet = commentSheet();
-		expect(renderedText(sheet)).toContain(goal.text);
-		expect(renderedText(sheet)).toContain("Comments stay with this document until you send your review.");
-		expect(pressable(sheet, "Add")?.props.accessibilityState).toMatchObject({ disabled: true });
-		typeComment(sheet, "Say which run.");
-		act(() => pressable(sheet, "Add")?.props.onPress());
-		expect(memory.comments(KEY)).toMatchObject([
-			{ blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." },
-		]);
-		expect(sheetNavigation.goBack).toHaveBeenCalled();
-		await rerender();
-		expect(marker(tree, 1)).toBe("1 comment");
-	});
-
-	it("asks before losing a typed comment", async () => {
-		const sheet = commentSheet();
-		expect(sheetNavigation.prevented.at(-1)).toBe(false);
-		typeComment(sheet, "Half a thought");
-		expect(sheetNavigation.prevented.at(-1)).toBe(true);
-		act(() => sheetNavigation.onPrevent?.({ data: { action: { type: "GO_BACK" } } }));
-		expect(alertRequests.at(-1)?.title).toBe("Discard this comment?");
-	});
-
-	it("puts a list item's comments on that item alone", async () => {
-		for (const text of ["one", "two"])
-			memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text });
-		const { tree } = await mount();
-		expect(marker(tree, 4)).toBe("2 comments");
-		expect(marker(tree, 3)).toBeNull();
-	});
-
-	it("shows the tip until the first comment, then the Comments button", async () => {
-		const { tree, navigation, rerender } = await mount();
-		expect(renderedText(tree)).toContain("Touch and hold a paragraph to comment on it");
-		expect(pressable(tree, "Comments")).toBeUndefined();
-		act(() => {
-			memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "x" });
+it.each(["relative", "absolute"] as const)(
+	"replaces %s cwd through the same real SessionLink, clears on the first render and rejects retired bytes",
+	async (provenance) => {
+		fetchSpy.mockRestore();
+		let cwd = "/work/a";
+		client.on("thread/read", () => ({ thread: { ...threadRead("idle").thread, cwd } }));
+		const requests: string[] = [];
+		let retired: ServerResponse | undefined;
+		let refreshFails = false;
+		const server = createServer((request, response) => {
+			const target = new URL(request.url ?? "", "http://fixture.test").searchParams.get("path") ?? "";
+			requests.push(target);
+			if (requests.length === 2) {
+				retired = response;
+				return;
+			}
+			response.writeHead(requests.length === 3 || refreshFails ? 503 : 200, {
+				"Content-Type": "text/plain; charset=utf-8",
+			});
+			response.end(
+				requests.length === 1
+					? "# Healthy A\n\nUseful A."
+					: requests.length === 3 || refreshFails
+						? "B offline"
+						: "# Healthy B\n\nUseful B.",
+			);
 		});
-		await rerender();
-		expect(renderedText(tree)).not.toContain("Touch and hold a paragraph to comment on it");
-		act(() => pressable(tree, "Comments")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("CommentsSheet", {
-			hubId: "studio",
-			sessionRef: "local:fix",
-			path: PATH,
-			reviewRef: "local:coord",
-			reviewTitle: "Coordinator",
-		});
-	});
-
-	it("lists the comments, shows one in the Reader, and deletes one", async () => {
-		memory.addComment(KEY, {
-			blockIndex: 4,
-			blockHash: secondItem.hash,
-			quote: secondItem.text,
-			text: "Name the fix.",
-		});
-		await mount();
-		const sheet = commentsSheet();
-		expect(renderedText(sheet)).toContain("Comments · 1");
-		expect(renderedText(sheet)).toContain("Fix it.");
-		expect(renderedText(sheet)).toContain("Name the fix.");
-		flatListCalls.length = 0;
-		sheetNavigation.goBack.mockImplementation(() => flatListCalls.push({ method: "goBack" }));
-		act(() => pressable(sheet, "Show")?.props.onPress());
-		expect(flatListCalls).toEqual([
-			{ method: "goBack" },
-			{ method: "scrollToIndex", args: { index: 4, animated: true } },
-		]);
-		act(() => pressable(sheet, "Delete")?.props.onPress());
-		expect(memory.comments(KEY)).toEqual([]);
-		expect(renderedText(sheet)).toContain("No comments yet");
-	});
-
-	it("comments on the words you selected", async () => {
-		const { tree, navigation } = await mount();
-		choose(openMenu(tree, 1), "Select text");
-		const text = block(tree, 1).find((node) => String(node.type) === "EnrichedMarkdownText");
-		expect(text.props.selectable).toBe(true);
-		const comment = (text.props.contextMenuItems as { text: string; onPress: (event: object) => void }[]).find(
-			(item) => item.text === "Comment",
-		);
-		act(() => comment?.onPress({ text: "a clean run", selection: { start: 12, end: 23 } }));
-		expect(navigation.navigate).toHaveBeenCalledWith("CommentSheet", commentParams({ quote: "a clean run" }));
-		// Choosing Comment ends the selection; so does pressing another block.
-		const selectable = (index: number) =>
-			block(tree, index).find((node) => String(node.type) === "EnrichedMarkdownText").props.selectable;
-		expect(selectable(1)).toBe(false);
-		choose(openMenu(tree, 1), "Select text");
-		expect(selectable(1)).toBe(true);
-		openMenu(tree, 3);
-		expect(selectable(1)).toBe(false);
-	});
-
-	// The library says nothing when its selection menu closes, so a tap ends
-	// the selection: on another block, or on this one, where a tap is what
-	// dismisses a selection.
-	it("ends a selection when you tap a block", async () => {
-		const { tree } = await mount();
-		const selectable = (index: number) =>
-			block(tree, index).find((node) => String(node.type) === "EnrichedMarkdownText").props.selectable;
-		choose(openMenu(tree, 1), "Select text");
-		expect(selectable(1)).toBe(true);
-		act(() => block(tree, 3).props.onPress());
-		expect(selectable(1)).toBe(false);
-		choose(openMenu(tree, 1), "Select text");
-		act(() => block(tree, 1).props.onPress());
-		expect(selectable(1)).toBe(false);
-	});
-
-	it("keeps a comment whose paragraph changed, without a marker or a Show", async () => {
-		const older = documentBlocks(OLDER)[1];
-		if (!older) throw new Error("no block");
-		memory.addComment(KEY, { blockIndex: 1, blockHash: older.hash, quote: older.text, text: "Too vague." });
-		const { tree } = await mount();
-		expect(marker(tree, 1)).toBeNull();
-		const sheet = commentsSheet();
-		expect(renderedText(sheet)).toContain("Too vague.");
-		expect(pressable(sheet, "Show")).toBeUndefined();
-	});
-
-	it("quotes a block in a reply to its review session", async () => {
-		const { tree, navigation } = await mount();
-		choose(openMenu(tree, 1), "Quote in reply");
-		expect(takeQuote("studio", "local:coord")).toBe(goal.text);
-		expect(navigation.pop).toHaveBeenCalledWith(1);
-	});
-
-	it("copies a block's words", async () => {
-		const { tree } = await mount();
-		await act(async () => choose(openMenu(tree, 4), "Copy"));
-		expect(harness.clipboard).toEqual(["Fix it."]);
-	});
-
-	// A running subagent's session read carries no capabilities (ruling 30),
-	// so its document collects comments and offers Send review only once the
-	// session can take a message. The review goes to the session the document
-	// was opened in (ruling 16), so both refs name it.
-	const ownSession = { reviewRef: "local:fix", reviewTitle: "Fix race" };
-
-	it("offers Send review, in the bar and the Comments sheet, only while the review session can take a message", async () => {
-		memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." });
-		const { tree, navigation, rerender } = await mount(PATH, ownSession);
-		const sheet = commentsSheet(ownSession);
-		expect(pressable(tree, "Send review")).toBeUndefined();
-		expect(pressable(sheet, "Send review")).toBeUndefined();
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		harness.connection.profiles = [{ id: "studio", name: "Studio", origin: `http://127.0.0.1:${address.port}` }];
+		const reference = { path: "docs/cwd.md", cwd: "/work/a", readTarget: "/work/a/docs/cwd.md", provenance };
+		const { tree, navigation } = await mount(reference.path, { reference });
+		try {
+			await untilRendered(() => expect(harness.markdowns).toContain("Useful A."));
+			act(() => menuAction(navigation, "Reload").onPress());
+			await untilRendered(() => expect(retired).toBeDefined());
+			expect(harness.markdowns).toContain("Useful A.");
+			// Unrelated publication cannot replace this Reader or start another lease.
+			act(() =>
+				client.emitNotification({
+					method: "evener/thread/resync",
+					params: { threadId: "other", ref: "local:other" },
+				} as never),
+			);
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+			cwd = "/work/b";
+			harness.markdowns = [];
+			act(() =>
+				client.emitNotification({
+					method: "evener/thread/resync",
+					params: { threadId: "thread-fix", ref: "local:fix" },
+				} as never),
+			);
+			const expected = {
+				path: "docs/cwd.md",
+				cwd: "/work/b",
+				readTarget: provenance === "relative" ? "/work/b/docs/cwd.md" : "/work/a/docs/cwd.md",
+				provenance,
+			};
+			await untilRendered(() => expect(navigation.setParams).toHaveBeenLastCalledWith({ reference: expected }));
+			expect(harness.markdowns).not.toContain("Useful A.");
+			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+			retired?.writeHead(200, { "Content-Type": "text/plain" });
+			retired?.end("# Retired completion\n\nObsolete bytes.");
+			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			expect(harness.markdowns).not.toContain("Obsolete bytes.");
+			expect(requests).toEqual(["/work/a/docs/cwd.md", "/work/a/docs/cwd.md", expected.readTarget]);
+			act(() => menuAction(navigation, "Reload").onPress());
+			await untilRendered(() => expect(harness.markdowns).toContain("Useful B."));
+			expect(requests.at(-1)).toBe(expected.readTarget);
+			refreshFails = true;
+			act(() => menuAction(navigation, "Reload").onPress());
+			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			expect(
+				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+			).toContain("Useful B.");
+			expect(harness.connection.state).toBe("ready");
+		} finally {
+			act(() => tree.unmount());
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		}
+		const reads = client.calls.filter((call) => call.method === "thread/read").length;
 		act(() =>
 			client.emitNotification({
-				method: "thread/status/changed",
-				params: {
-					threadId: "thread-fix",
-					ref: "local:fix",
-					status: { type: "idle" },
-					capabilities: { send: true, queue: true } as never,
-				},
-			}),
+				method: "evener/thread/resync",
+				params: { threadId: "thread-fix", ref: "local:fix" },
+			} as never),
 		);
-		await rerender();
-		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, ...ownSession };
-		act(() => pressable(tree, "Send review")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("ReviewSheet", params);
-		act(() => pressable(sheet, "Send review")?.props.onPress());
-		expect(sheetNavigation.navigate).toHaveBeenCalledWith("ReviewSheet", params);
-		expect(sheetNavigation.goBack).not.toHaveBeenCalled();
-	});
+		expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+		expect(harness.appState).toEqual([]);
+	},
+);
 
-	it("offers no Send review from an empty Comments sheet", async () => {
-		client.on("thread/read", () => ({
-			...threadRead("idle"),
-			thread: {
-				...threadRead("idle").thread,
-				evener: { ...threadRead("idle").thread.evener, capabilities: { send: true } as never },
-			},
-		}));
-		const { tree } = await mount(PATH, ownSession);
-		expect(pressable(tree, "Send review")).toBeDefined();
-		expect(pressable(commentsSheet(ownSession), "Send review")).toBeUndefined();
+it("settles actual native Image attempts, retries untyped errors, retains healthy refreshes and ignores retired callbacks", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, navigation } = await mount("out/chart.png", {}, settleMicrotasks);
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	const first = tree.root.findByType("Image" as never).props;
+	act(() => first.onError({ nativeEvent: { error: "untyped native failure" } }));
+	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	expect(vi.getTimerCount()).toBe(1);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(999);
 	});
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(first.source.uri);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1);
+	});
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(first.source.uri));
+	const second = tree.root.findByType("Image" as never).props;
+	act(() => first.onLoad({ nativeEvent: { source: { width: 9, height: 1 } } }));
+	act(() => first.onError({ nativeEvent: { error: "late failure" } }));
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => second.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	act(() => second.onError({ nativeEvent: { error: "duplicate after success" } }));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	act(() => {
+		menuAction(navigation, "Reload").onPress();
+		menuAction(navigation, "Reload").onPress();
+	});
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(2));
+	const images = tree.root.findAllByType("Image" as never);
+	expect(images[0]?.props.source.uri).toBe(second.source.uri);
+	expect(images[0]?.props.style.aspectRatio).toBe(2);
+	const pending = images[1]?.props;
+	expect(pending.style.opacity).toBe(0);
+	act(() => pending.onError({ nativeEvent: { error: "refresh failed" } }));
+	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	expect(tree.root.findAllByType("Image" as never)[0]?.props.source.uri).toBe(second.source.uri);
+	act(() => tree.unmount());
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => pending.onError({ nativeEvent: { error: "after unmount" } }));
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(60000);
+	});
+	expect(fetchSpy).not.toHaveBeenCalled();
+	expect(harness.appState).toEqual([]);
+});
+
+it.each([
+	["hidden", "load"],
+	["hidden", "error"],
+	["background", "load"],
+	["background", "error"],
+] as const)("never promotes a pending retired image after %s, with late %s first", async (reason, firstEvent) => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, rerender } = await mount("out/chart.png", {}, async () => {});
+	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
+	const old = tree.root.findByType("Image" as never).props;
+	if (reason === "hidden") {
+		stack.state.index = 1;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("background");
+		});
+	}
+	const lateLoad = () => old.onLoad({ nativeEvent: { source: { width: 9, height: 1 } } });
+	const lateError = () => old.onError({ nativeEvent: { error: "retired pending image" } });
+	act(() => {
+		if (firstEvent === "load") {
+			lateLoad();
+			lateError();
+		} else {
+			lateError();
+			lateLoad();
+		}
+	});
+	const retired = tree.root.findByType("Image" as never).props;
+	expect(retired.style.aspectRatio).toBe(4 / 3);
+	expect(retired.onLoad).toBeTypeOf("function");
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(vi.getTimerCount()).toBe(0);
+	if (reason === "hidden") {
+		stack.state.index = 2;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("active");
+		});
+	}
+	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.source.uri).not.toBe(old.source.uri));
+	const fresh = tree.root.findByType("Image" as never).props;
+	expect(fresh.style.aspectRatio).toBe(4 / 3);
+	act(() => {
+		lateLoad();
+		lateError();
+	});
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	act(() => fresh.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2);
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	act(() => fresh.onError({ nativeEvent: { error: "duplicate after success" } }));
+	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	if (reason === "hidden") {
+		stack.state.index = 1;
+		await rerender();
+	} else {
+		act(() => {
+			for (const listener of [...harness.appState]) listener("background");
+		});
+	}
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2);
+	act(() => tree.unmount());
+	expect(harness.appState).toEqual([]);
+	expect(vi.getTimerCount()).toBe(0);
+});
+
+it("clears a healthy native image on origin replacement and ignores its retired load/error callbacks", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const { tree, rerender } = await mount("out/chart.png", {}, settleMicrotasks);
+	const old = tree.root.findByType("Image" as never).props;
+	act(() => old.onLoad({ nativeEvent: { source: { width: 4, height: 1 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(4);
+	harness.connection.profiles = [{ id: "studio", name: "Studio", origin: "https://replacement.test" }];
+	await rerender();
+	const next = tree.root.findByType("Image" as never).props;
+	expect(next.source.uri).toContain("https://replacement.test/doc/image?");
+	expect(next.source.uri).not.toBe(old.source.uri);
+	expect(next.style.aspectRatio).toBe(4 / 3);
+	act(() => old.onLoad({ nativeEvent: { source: { width: 99, height: 1 } } }));
+	act(() => old.onError({ nativeEvent: { error: "old origin" } }));
+	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(next.source.uri);
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(4 / 3);
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => next.onLoad({ nativeEvent: { source: { width: 3, height: 1 } } }));
+	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(3);
+	act(() => tree.unmount());
+	expect(harness.appState).toEqual([]);
 });

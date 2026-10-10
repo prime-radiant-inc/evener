@@ -1141,7 +1141,7 @@ func TestCovHubModelInit(t *testing.T) {
 // TestCovReconnectHub exercises reconnect.
 func TestCovReconnectHub(t *testing.T) {
 	// Zero delay: immediate.
-	cmd := reconnectHub(func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
+	cmd := reconnectHub(context.Background(), func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
 		return nil, nil, nil
 	}, 1, 0)
 	if cmd == nil {

@@ -7,12 +7,15 @@ import styles from "./panescaffold.module.css";
 export interface PaneScaffoldProps {
   title: string;
   paneId?: string;
+  publishTabTitle?: boolean;
   focused?: boolean;
+  focusSelector?: string;
   scaffoldMarker?: string;
   mobileTitle?: string;
   cadence?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
+  edgeFooter?: ReactNode;
   children: ReactNode;
 }
 
@@ -26,30 +29,32 @@ const CLASS = {
   actions: requireClass(styles.actions, "panescaffold.module.css", "actions"),
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
   footer: requireClass(styles.footer, "panescaffold.module.css", "footer"),
+  edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
 };
 
 /**
  * The standard pane chrome every pane type in the app uses: a header row
  * (truncating title + optional cadence slot + optional actions cluster), a
- * scrollable body, and an optional footer. Deliberately boring - this is
- * the most-copied layout primitive in the app, so every pane looks and
- * behaves the same way.
+ * scrollable body, an optional padded footer, and an optional flush edge
+ * footer. Deliberately boring - this is the most-copied layout primitive in
+ * the app, so every pane looks and behaves the same way.
  */
 export function PaneScaffold({
   title,
   paneId,
+  publishTabTitle = true,
   focused = true,
+  focusSelector,
   scaffoldMarker,
   mobileTitle,
   cadence,
   actions,
   footer,
+  edgeFooter,
   children,
 }: PaneScaffoldProps) {
-  // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
-  // decision 2): publish the title ALWAYS, host-agnostically - StackHost
-  // renders it in the mobile top bar, DockHost never reads it, so this widget
-  // never asks which host is showing it. mobileTitle wins where both are
+  // The focused-title channel supplies StackHost's mobile top bar without
+  // asking which host is showing this pane. mobileTitle wins where both are
   // given: the top bar is exactly the cramped slot mobileTitle exists for.
   // The cleanup clears on unmount so a closed pane never leaves a stale
   // title behind (breakpoint crossings unmount every pane - StackHost.tsx's
@@ -60,6 +65,16 @@ export function PaneScaffold({
     return () => chromeStore.getState().setPaneTitle(null);
   }, [publishedTitle]);
 
+  // A hydrated pane owns its display title. Desktop tabs consume that same
+  // title without fetching another copy of the pane's underlying resource.
+  // A different registered tab label keeps its own title owner.
+  useEffect(() => {
+    if (paneId === undefined || !publishTabTitle) return;
+    chromeStore.getState().setPaneTitleFor(paneId, title);
+    return () => chromeStore.getState().setPaneTitleFor(paneId, null);
+  }, [paneId, title, publishTabTitle]);
+
+  const paneRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (paneId === undefined) return;
@@ -67,11 +82,14 @@ export function PaneScaffold({
       cancelPaneFocus(paneId);
       return;
     }
-    if (consumePaneFocus(paneId)) bodyRef.current?.focus();
-  }, [focused, paneId]);
+    if (!consumePaneFocus(paneId)) return;
+    const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
+    if (target) target.focus({ preventScroll: true });
+    else bodyRef.current?.focus();
+  }, [focused, paneId, focusSelector]);
 
   return (
-    <div className={CLASS.pane}>
+    <div ref={paneRef} className={CLASS.pane}>
       <div className={CLASS.header}>
         <h2 className={CLASS.title}>
           {mobileTitle === undefined ? (
@@ -104,6 +122,11 @@ export function PaneScaffold({
       {footer !== undefined && (
         <div className={CLASS.footer} data-testid="pane-footer">
           {footer}
+        </div>
+      )}
+      {edgeFooter !== undefined && (
+        <div className={CLASS.edgeFooter} data-testid="pane-edge-footer">
+          {edgeFooter}
         </div>
       )}
     </div>

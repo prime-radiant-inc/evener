@@ -4,21 +4,42 @@
 // marketplaces, models and folders that Appendix A's frames 20-24 show. Every
 // answer is typed as its method's result, so npm run check holds this fixture
 // to the wire. Dev support only: nothing in the app imports it.
+import { isDeepStrictEqual } from "node:util";
+import { WireError } from "@evener/appwire-client";
 import type {
 	AuthStatusResponse,
+	ContentLevel,
 	HostRow,
 	InstanceEntry,
+	InstanceModelEntry,
 	LaunchConfigLayer,
 	MarketplaceEntry,
 	MethodTypes,
 	ModelDescriptor,
 	ModelListResponse,
 	PluginLaunchCandidate,
+	TranscriptDisplayConfig,
+	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
-import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "@evener/appwire-client";
 import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
 
 const HUB_VERSION = "0.9.412";
+
+/** Every demo hub, fleet or not, is up to date, so the Hub's About reads as
+ * it does on a real hub. */
+export function demoUpdateCheck(): MethodTypes["evener/update/check"]["result"] {
+	return {
+		channel: "release",
+		buildChannel: "release",
+		currentVersion: HUB_VERSION,
+		currentCommit: "demo",
+		updateAvailable: false,
+		applicable: true,
+	};
+}
+// appwire/errors.go CodeConflict.
+const CODE_CONFLICT = -32013;
 const HOST = "paradise-park";
 const HOST_VERSION = "0.9.409";
 const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation timed out";
@@ -27,7 +48,8 @@ const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation tim
 // it (llm/registry/types.go): a key (bearer), a Codex account, Google's
 // application default credentials, or nothing (ollama).
 type AuthScheme = "bearer" | "oauth-openai-codex" | "gcp-adc" | "none";
-const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[] }[] = [
+// `email`: the account an account sign-in uses, as evener/auth/list names it.
+const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[]; email?: string }[] = [
 	{
 		id: "lunaroute",
 		base: "openai-compatible",
@@ -40,7 +62,13 @@ const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[] 
 		auth: "oauth-openai-codex",
 		models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"],
 	},
-	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth-openai-codex", models: ["gpt-5.6"] },
+	{
+		id: "codex-jesse-at-pr",
+		base: "codex",
+		auth: "oauth-openai-codex",
+		models: ["gpt-5.6"],
+		email: "jesse@example.com",
+	},
 	{ id: "oai-jrv", base: "openai", auth: "bearer", models: ["gpt-5.5", "codex-auto-review"] },
 	{ id: "meta", base: "meta", auth: "bearer", models: ["muse-spark-1.3"] },
 	{ id: "kimi-code", base: "moonshot", auth: "bearer", models: ["k3"] },
@@ -72,6 +100,18 @@ const MODELS: [string, string, string, number, number, number, boolean, string[]
 	["qwen3-coder:30b", "Qwen3 Coder 30B (local)", "ollama", 128, 0, 0, false, ["low", "medium", "high"]],
 ];
 const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
+/** The provider instance each catalog model runs on, for the fleet's sign-in
+ * notice count (DemoFleetOptions.modelProviders). */
+export const DEMO_MODEL_PROVIDERS: Readonly<Record<string, string>> = Object.fromEntries(
+	MODELS.map(([model, , provider]) => [model, provider]),
+);
+/** Each catalog model's display name, which a fleet row carries as its
+ * model_name (S17, DemoFleetOptions.modelNames). */
+export const DEMO_MODEL_NAMES: Readonly<Record<string, string>> = Object.fromEntries(
+	MODELS.map(([model, displayName]) => [model, displayName]),
+);
+// What a provider's "Check for new models" finds that its listing lacks.
+const FOUND_ON_CHECK: Record<string, string[]> = { lunaroute: ["glm-5.4"] };
 
 function modelById(id: string): (typeof MODELS)[number] {
 	const found = MODELS.find(([model]) => model === id);
@@ -188,7 +228,12 @@ const SETUP_METHODS = [
 	"evener/host/request",
 	"evener/update/check",
 	"evener/instance/list",
+	"evener/instance/setModelDisabled",
+	"evener/instance/refreshModels",
 	"evener/auth/list",
+	"evener/notices/list",
+	"evener/auth/device/start",
+	"evener/auth/device/poll",
 	"evener/marketplace/list",
 	"evener/marketplace/browse",
 	"evener/plugin/preview",
@@ -200,6 +245,8 @@ const SETUP_METHODS = [
 	"evener/dirs/create",
 	"evener/git/head",
 	"evener/launch/resolve",
+	"evener/settings/transcriptDisplay/get",
+	"evener/settings/transcriptDisplay/patch",
 ] as const;
 export type DemoSetupMethod = (typeof SETUP_METHODS)[number];
 
@@ -292,7 +339,33 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		} satisfies Partial<Answers>;
 	}
 	const localLaunch = launchAnswers(local);
-	const instanceList = () => ({ instances: PROVIDERS.map(instanceEntry), availableProviders: [] });
+	// The hub's transcript display defaults per layout, from its shipped ones
+	// (appwire/transcript_display.go TranscriptDisplayShippedDefaults).
+	const transcriptDisplay: TranscriptDisplayDefaults = {
+		desktop: { revision: 0, config: shippedTranscriptDisplay("tools") },
+		mobile: { revision: 0, config: shippedTranscriptDisplay("intent") },
+	};
+	// The models each provider has turned off, and the providers whose models
+	// were checked; the hub keeps both in its own config.
+	const disabledModels = new Set<string>();
+	const checked = new Set<string>();
+	const providerModels = (provider: (typeof PROVIDERS)[number]): InstanceModelEntry[] =>
+		[...provider.models, ...(checked.has(provider.id) ? (FOUND_ON_CHECK[provider.id] ?? []) : [])].map((id) =>
+			disabledModels.has(`${provider.id}/${id}`) ? { id, disabled: true } : { id },
+		);
+	const instanceList = () => ({
+		instances: PROVIDERS.map((provider, index) => instanceEntry(provider, index, providerModels(provider))),
+		availableProviders: [],
+	});
+	const deviceFlows = new Set<string>();
+	const requireCodex = (name: string) => {
+		if (!PROVIDERS.some((provider) => provider.id === name && provider.auth === "oauth-openai-codex"))
+			throw new Error(`OAuth is not supported for instance "${name}"`);
+	};
+	// app_instances.go's refusal for a name it doesn't have.
+	const requireInstance = (name: string) => {
+		if (!PROVIDERS.some((provider) => provider.id === name)) throw new Error(`instance "${name}" not found`);
+	};
 	// What paradise-park answers through the hub: its own folders, and the
 	// hub's providers.
 	const paradiseForwards = { ...launchAnswers(paradise), "evener/instance/list": instanceList };
@@ -319,15 +392,55 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			if (!forward) throw new Error("Method not implemented by demonstration server");
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
-		"evener/update/check": () => ({
-			channel: "release",
-			buildChannel: "release",
-			currentVersion: HUB_VERSION,
-			currentCommit: "demo",
-			updateAvailable: false,
-			applicable: true,
-		}),
+		"evener/update/check": demoUpdateCheck,
+		// app_auth.go's DeviceStart and DevicePoll, for a Codex provider only
+		// (requiresCodex). The demo's code never gets authorized: a flow it
+		// started stays pending, and one it didn't is expired.
+		"evener/auth/device/start": ({ provider }) => {
+			requireCodex(provider);
+			const flowId = `demo-flow-${deviceFlows.size + 1}`;
+			deviceFlows.add(flowId);
+			return {
+				provider,
+				flowId,
+				userCode: "WDJB-MJHT",
+				verificationUrl: "https://example.com/device",
+				intervalSeconds: 5,
+			};
+		},
+		"evener/auth/device/poll": ({ provider, flowId }) => {
+			requireCodex(provider);
+			return { state: deviceFlows.has(flowId) ? "pending" : "expired" };
+		},
+		"evener/settings/transcriptDisplay/get": () => structuredClone(transcriptDisplay),
+		// hubcore's TranscriptDisplayStore.Patch: a patch must name the layout's
+		// current revision (transcriptDisplayConflict otherwise), keeps the
+		// revision when it changes nothing, and moves it on by one when it does.
+		"evener/settings/transcriptDisplay/patch": ({ layout, expectedRevision, config }) => {
+			if (layout !== "desktop" && layout !== "mobile") throw new Error(`invalid transcript display layout "${layout}"`);
+			const current = transcriptDisplay[layout];
+			if (current.revision !== expectedRevision)
+				throw new WireError(
+					`transcript display ${layout} revision conflict: expected ${expectedRevision}, current ${current.revision}`,
+					CODE_CONFLICT,
+					{ evenerErrorInfo: "conflict", layout, current: structuredClone(current) },
+				);
+			if (!isDeepStrictEqual(current.config, config))
+				transcriptDisplay[layout] = { revision: current.revision + 1, config: structuredClone(config) };
+			return { layout, ...structuredClone(transcriptDisplay[layout]) };
+		},
 		"evener/instance/list": instanceList,
+		"evener/instance/setModelDisabled": ({ name, model, disabled }) => {
+			requireInstance(name);
+			if (disabled) disabledModels.add(`${name}/${model}`);
+			else disabledModels.delete(`${name}/${model}`);
+			return instanceList();
+		},
+		"evener/instance/refreshModels": ({ name }) => {
+			requireInstance(name);
+			checked.add(name);
+			return instanceList();
+		},
 		// Extends the fleet's answer (the Board's expired sign-in) with the
 		// other providers that sign in with an account.
 		"evener/auth/list": () => {
@@ -343,9 +456,11 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 				authModes: ["oauth"],
 				hasStoredOAuth: true,
 				needsLogin: false,
+				email: provider.email,
 			}));
 			return { providers: [...fleetStatuses, ...signedIn] };
 		},
+		"evener/notices/list": () => fleet.answerNoticesList(),
 		"evener/marketplace/list": () => ({
 			marketplaces: MARKETPLACES.map((marketplace) => ({
 				name: marketplace.id,
@@ -427,7 +542,26 @@ const SIGN_IN: Record<
 	none: { authModes: ["none"], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
 };
 
-function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): InstanceEntry {
+function shippedTranscriptDisplay(level: ContentLevel): TranscriptDisplayConfig {
+	return {
+		version: 1,
+		content: { kind: "preset", level },
+		advanced: {
+			roundTimings: false,
+			tokenCounts: false,
+			estimatedCost: false,
+			systemEvents: false,
+			promptEvents: false,
+			hookExits: "none",
+		},
+	};
+}
+
+function instanceEntry(
+	provider: (typeof PROVIDERS)[number],
+	index: number,
+	models: InstanceModelEntry[],
+): InstanceEntry {
 	return {
 		name: provider.id,
 		providerId: provider.base,
@@ -435,7 +569,8 @@ function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): Ins
 		auth: provider.auth,
 		implicit: false,
 		isDefault: index === 0,
-		models: provider.models.map((id) => ({ id })),
+		models,
 		...SIGN_IN[provider.auth],
+		...(provider.email ? { storedEmail: provider.email } : {}),
 	};
 }

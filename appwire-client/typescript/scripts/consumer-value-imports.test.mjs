@@ -97,13 +97,13 @@ test("keeps the value half when a consumer splits its type imports off", () => {
 test("a re-export is a consumer taking a value", () => {
   const found = valuesIn(
     [
-      'export { graftContinuationTree } from "@evener/appwire-client";',
+      'export { activityNodeID } from "@evener/appwire-client";',
       'export type { ActivityTree } from "@evener/appwire-client";',
       'export * from "@evener/appwire-client";',
       "",
     ].join("\n"),
   );
-  expect([...found.get(ROOT)]).toEqual(["graftContinuationTree"]);
+  expect([...found.get(ROOT)]).toEqual(["activityNodeID"]);
 });
 
 test("an alias reports the name the package exports, not the local one", () => {

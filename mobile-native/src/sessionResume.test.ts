@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -43,7 +44,7 @@ const thread: Thread = {
 
 const initialize = {
 	serverInfo: { name: "scripted", version: "1" },
-	protocolVersion: "evener-appwire-v6" as const,
+	protocolVersion: APPWIRE_PROTOCOL_VERSION,
 	sourceId: "local",
 	features: Object.fromEntries(
 		[
@@ -88,7 +89,7 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 		this.methods.push(request.method);
 		const result = async () => {
 			if (request.method === "initialize") return initialize;
-			if (request.method === "initialized") return {};
+			if (request.method === "initialized" || request.method === "thread/unsubscribe") return {};
 			if (request.method === "thread/read") {
 				this.state.readCount += 1;
 				if (this.state.readBarrier && this.state.readCount === 2) await this.state.readBarrier;

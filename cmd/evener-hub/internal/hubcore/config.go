@@ -44,6 +44,7 @@ type WebConfig struct {
 	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
 	LaunchConfigRoot          string                   // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
+	MachineRoots              []string                 // the hub's own machine's project roots (hub.toml's top-level roots), reported in ServerInfo so a client can show them beside a host's; nil means none
 	TranscriptDisplayStore    *TranscriptDisplayStore  // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
 	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
@@ -233,9 +234,9 @@ type WebConfig struct {
 	// answers "no remnant".
 	HostRemnantFence func(name string) (string, bool)
 	// HubBootID identifies this controller process incarnation for the durable
-	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
-	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan
-	// refuses `probe-failed` rather than probing without a fencible epoch.
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2).
+	// Empty disables probe-epoch persistence, and a plan refuses `probe-failed`
+	// rather than probing without a durable epoch.
 	HubBootID string
 	// HubProcessStart is when this hub process started, reported as
 	// evener/host/running's processStartTime when non-zero (deploy pipeline 08b
@@ -248,6 +249,11 @@ type WebConfig struct {
 	// instead of waiting for its next tick. Nil when the watcher isn't wired
 	// (e.g. in tests that construct a WebServer directly).
 	PokeAttention func()
+
+	// ScratchReconcile asks for a pass that removes the scratch of every
+	// archived session whose daemon is not running, off the caller's path.
+	// Nil when not wired (e.g. in tests that construct a WebServer directly).
+	ScratchReconcile func()
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
@@ -264,7 +270,12 @@ type WebConfig struct {
 	ResolveGitHead   func(ctx context.Context, dir string) (string, error) // nil → real `git`
 	ResolveGitOrigin func(ctx context.Context, dir string) (string, error) // nil → real `git`
 	LiveModels       func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
-	MkdirAll         func(path string, perm os.FileMode) error             // nil → os.MkdirAll
+	// LaunchModels serves the evener launch model list for a working directory
+	// ("" = unscoped). nil → the configured spawner is asked directly, which
+	// spawns `evener launch-check --models` on every call. The hub wires its
+	// cached loader so a model picker open does not re-run that live listing.
+	LaunchModels func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error)
+	MkdirAll     func(path string, perm os.FileMode) error // nil → os.MkdirAll
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

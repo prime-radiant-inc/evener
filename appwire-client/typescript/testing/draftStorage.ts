@@ -10,6 +10,17 @@
 
 import { canonicalJson, type DraftPort } from "../draftCheckpointPort";
 
+/** A fresh copy the way a JSON-backed port hands one back. The port's own
+ * compare is JSON bytes (canonicalJson) and its real implementations
+ * (browserDraftStorage, the native rawStringDraftBackend) decode stored JSON
+ * with JSON.parse, so the value is same-realm and JSON-shaped.
+ * structuredClone is not that: under jsdom it builds the copy in Node's realm,
+ * so the clone's prototype is a foreign Object.prototype, which the shared
+ * isPlainObject guard (rightly) rejects. */
+function cloneAsStored<T>(value: T): T {
+  return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
+}
+
 export interface MemoryDraftStorage<Checkpoint> {
   storage: DraftPort<Checkpoint>;
   /** What the port holds right now, exactly as load() would return it -
@@ -43,11 +54,11 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     createId: () => `draft-${++id}`,
     load: () => {
       if (loadFails) throw new Error("disk unavailable");
-      return structuredClone(stored);
+      return cloneAsStored(stored);
     },
     save: (checkpoint: Checkpoint) => {
       if (saveFails) throw new Error("disk unavailable");
-      stored = structuredClone(checkpoint);
+      stored = cloneAsStored(checkpoint);
     },
     insertIfAbsent: (checkpoint: Checkpoint) => {
       if (saveFails) throw new Error("disk unavailable");
@@ -56,11 +67,11 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
       // undefined sentinel is empty too, not a record to refuse a first
       // insert over.
       if (stored != null) return false;
-      stored = structuredClone(checkpoint);
+      stored = cloneAsStored(checkpoint);
       return true;
     },
     removeIf: (identity: unknown) => {
-      lastRemoveIf = structuredClone(identity);
+      lastRemoveIf = cloneAsStored(identity);
       // Nothing stored is never a match, whatever identity is named - a null
       // or undefined `stored` would otherwise collide with a null/undefined
       // identity's own canonical encoding. Compared canonically (key order
@@ -74,13 +85,13 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     replaceIf: (expected: unknown, next: Checkpoint) => {
       if (replaceFails) throw new Error("disk unavailable");
       if (stored == null || canonicalJson(expected) !== canonicalJson(stored)) return false;
-      stored = structuredClone(next);
+      stored = cloneAsStored(next);
       return true;
     },
   };
   return {
     storage,
-    stored: () => structuredClone(stored),
+    stored: () => cloneAsStored(stored),
     failSave(fail = true) {
       saveFails = fail;
     },

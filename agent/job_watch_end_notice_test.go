@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -149,11 +150,11 @@ func TestDescendantReceiverWatchSurvivesJobManagerClose(t *testing.T) {
 		install(t, jm, &receiverQueue)
 
 		// Simulate the watch's own job manager closing as part of a dispose
-		// cascade: Session.close() calls jobManager.closeRuntimeState() on
+		// cascade: Session.close() calls jobManager.closeRuntimeState(budgetCtx) on
 		// every subagent it drains, including a descendant whose job manager
 		// holds a watch keyed to some other (possibly disposed) session as
 		// receiver.
-		if err := jm.closeRuntimeState(); err != nil {
+		if err := jm.closeRuntimeState(context.Background()); err != nil {
 			t.Fatalf("closeRuntimeState: %v", err)
 		}
 

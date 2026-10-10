@@ -4,7 +4,7 @@
 // make you act in the next minute; everything exact lives one click away in
 // DetailsPanel (the same session's cwd, branch, project, token counts and
 // precise figures), which is why this row carries a 64px gauge where that
-// panel carries "42% used · 42k / 100k · 58k left".
+// panel carries "42% used · 42K / 100K · 58K left".
 //
 // What deliberately is NOT here:
 //   - a state dot. The pane header already renders Cadence for this session

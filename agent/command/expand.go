@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // maxInlineBytes bounds how much text a single !`cmd` or @file substitution
@@ -203,7 +204,7 @@ func boundText(s string) string {
 	if len(s) <= maxInlineBytes {
 		return s
 	}
-	return s[:maxInlineBytes] + fmt.Sprintf("\n...[truncated, %d bytes total]", len(s))
+	return runetrim.Cut(s, maxInlineBytes) + fmt.Sprintf("\n...[truncated, %d bytes total]", len(s))
 }
 
 // shellSplit splits s into words using simplified POSIX shell quoting:

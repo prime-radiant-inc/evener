@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -8,7 +9,7 @@ vi.mock("./ConnectionProvider", () => ({ useConnection: () => ({}) }));
 
 const rows: InstanceListResponse = { instances: [], availableProviders: [], diagnostics: ["from the hub"] };
 function client(requests: string[], subscriptions: number[] = []): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: async (method: string) => {
 			requests.push(method);
 			return rows;
@@ -17,7 +18,7 @@ function client(requests: string[], subscriptions: number[] = []): ConversationC
 			subscriptions.push(1);
 			return () => {};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 }
 
 it("constructing a store subscribes to nothing; binding it once is what listens and reads", async () => {

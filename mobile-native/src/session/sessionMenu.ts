@@ -1,6 +1,6 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside and Shut down
+// Files, Activity, Tasks, Notes & links, Ask aside and Shut down
 // appear only when they can act. Delete lives in the Session sheet.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
@@ -12,12 +12,24 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "find" | "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
+	| {
+			kind:
+				| "find"
+				| "files"
+				| "activity"
+				| "tasks"
+				| "notes"
+				| "info"
+				| "aside"
+				| "like"
+				| "pin"
+				| "archive"
+				| "shutDown";
+	  };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
-	hasSubagents: boolean;
-	/** The session wrote or linked documents (Files & artifacts, spec 10.1). */
+	/** The session wrote or linked documents (Files, spec 10.1). */
 	hasDocuments: boolean;
 	connected: boolean;
 	/** The session keeps shared notes (`capabilities.sharedNotes`). They read
@@ -58,14 +70,17 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	const entries: Entry[] = [
 		levels,
 		item("Find in session", "find"),
-		...(input.hasDocuments ? [item("Files & artifacts", "files")] : []),
-		...(input.hasSubagents ? [item("Subagents", "subagents")] : []),
-		...(input.connected ? [item("Tasks", "tasks")] : []),
+		...(input.hasDocuments ? [item("Files", "files")] : []),
+		// Activity lists shell jobs as well as subagents, and a session's read
+		// can't say whether it has jobs, so like Tasks it needs only a
+		// connection.
+		...(input.connected ? [item("Activity", "activity"), item("Tasks", "tasks")] : []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),
 		...(input.canAside
 			? [item("Ask aside…", "aside", { description: "A side question in its own session; this one keeps working" })]
 			: []),
+		item("New session like this", "like"),
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),

@@ -122,3 +122,29 @@ func TestMCPWarningFlush_Restore(t *testing.T) {
 
 	mcpWarningFlushAssert(t, mcpWarningFlushDrainAll(t, sess))
 }
+
+func TestMCPReconnectNoticeIsInformational(t *testing.T) {
+	t.Parallel()
+	sess, err := NewSession(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MCPInline: []string{"deadsvc:" + mcpWarningFlushTruePath(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.mcpMgr.OnReconnect("deadsvc")
+	var recoveryCount, failureCount int
+	for _, ev := range mcpWarningFlushDrainAll(t, sess) {
+		warning, ok := ev.Data.(events.WarningData)
+		if !ok || warning.Source != "mcp" {
+			continue
+		}
+		if warning.Code == events.WarningCodeMCPReconnected {
+			recoveryCount++
+		} else {
+			failureCount++
+		}
+	}
+	if recoveryCount != 1 || failureCount != 1 {
+		t.Fatalf("MCP notices: recovery=%d failure=%d, want one informational recovery and one actionable startup failure", recoveryCount, failureCount)
+	}
+}

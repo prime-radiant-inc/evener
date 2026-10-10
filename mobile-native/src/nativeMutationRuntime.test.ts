@@ -38,7 +38,7 @@ afterEach(() => {
 	database = undefined;
 });
 
-function request(kind: NativeMutationRequest["kind"]): NativeMutationRequest {
+function request(kind: Exclude<NativeMutationRequest["kind"], "promote">): NativeMutationRequest {
 	return {
 		hubId: "hub-1",
 		targetRef: "ref-1",
@@ -815,6 +815,65 @@ test("submit durably records while disconnected and dispatches after readiness",
 	expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
 });
 
+test("Discard on a message whose delivery couldn't be confirmed lets the next one send", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	await runtime.submit(request("send"));
+	await runtime.storage.markAttempted("mutation-1");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }));
+	expect((await runtime.storage.getOutbox("mutation-1"))?.state).toBe("blockedUnknown");
+	await runtime.submit(request("send"));
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({ state: "submitting", attempted: false });
+
+	const changes: string[][] = [];
+	runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await expect(runtime.discardUndelivered("mutation-1", targetKey)).resolves.toBe(true);
+	expect(changes[0]).toEqual([targetKey]);
+	await vi.waitFor(() =>
+		expect(client.calls.map((call) => (call.params as { clientMutationId: string }).clientMutationId)).toEqual([
+			"mutation-2",
+		]),
+	);
+	await runtime.stop();
+});
+
+test("Send now on a message a Stop held sends it after that Stop", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	client.on("turn/start", appliedReceipt);
+	client.on("turn/interrupt", appliedReceipt);
+	await registerAndStart(runtime, client);
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	await runtime.submit(request("send"));
+	await runtime.submit(request("interrupt"));
+	expect((await runtime.storage.getOutbox("mutation-1"))?.state).toBe("canceled");
+
+	await expect(runtime.releaseCanceled("mutation-1", targetKey)).resolves.toBe(true);
+	client.emitStateChange("ready");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+
+	await vi.waitFor(() =>
+		expect(
+			client.calls.map((call) => [call.method, (call.params as { clientMutationId: string }).clientMutationId]),
+		).toEqual([
+			["turn/interrupt", "mutation-2"],
+			["turn/start", "mutation-1"],
+		]),
+	);
+	await runtime.stop();
+});
+
 test("cleanup of an old registration cannot remove a replacement for the same target", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => "mutation-1",
@@ -1279,6 +1338,33 @@ test("steer with a queue revision uses the drain route and preserves its fence",
 			expectedQueueRevision: 7,
 		},
 	});
+});
+
+// A promote names its queued message and sends no input: the hub already
+// holds it. Its ghost shows the queued text.
+test("a promote can't be built without naming its queued entry", () => {
+	// @ts-expect-error: a promote must name its queued entry, which the hub requires
+	const promote: NativeMutationRequest = { ...request("steer"), kind: "promote" };
+	expect(promote.kind).toBe("promote");
+});
+
+test("a promote names its queued entry and shows the queued text", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const display = [{ type: "text" as const, text: "check the logs" }];
+	await runtime.submit({ ...request("steer"), kind: "promote", queueEntry: { index: 2, id: "queue_3" }, display });
+
+	const queued = await runtime.storage.getOutbox("mutation-1");
+	expect(queued?.method).toBe("turn/promoteQueuedAsSteer");
+	expect(queued?.payload).toEqual({
+		ref: "ref-1",
+		expectedInstanceId: "instance-1",
+		index: 2,
+		expectedEntryId: "queue_3",
+		clientMutationId: "mutation-1",
+	});
+	expect(queued?.optimisticDisplay).toEqual({ method: "turn/promoteQueuedAsSteer", input: display });
 });
 
 test("the process getter reuses one runtime and database handle across provider lifetimes", async () => {

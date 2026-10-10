@@ -237,6 +237,26 @@ func TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel(t *testing.T) {
 	}
 }
 
+func TestSetModel_UnusableListing_AcceptsUnlistedModel(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(newFakeEnumerableAdapter("anthropic", "text-embedding-3-small")),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	if err := sess.SetModel("anthropic/whatever-unlisted-model"); err != nil {
+		t.Fatalf("SetModel with unusable listing: %v", err)
+	}
+	if got := sess.currentProfile().ID(); got != "anthropic" {
+		t.Fatalf("ID() = %q, want anthropic", got)
+	}
+}
+
 // TestSetModel_EnumerationFailure_FailsOpenUnconditionally verifies (b): a
 // listing failure of any error class fails open and accepts the switch. This
 // keeps the dead-credentials failure mode from blocking a switch.

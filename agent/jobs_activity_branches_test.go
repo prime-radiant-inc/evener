@@ -1253,7 +1253,7 @@ func bumpFoldGeneration(t *testing.T, path string, observe func()) {
 // against journals nobody touched, and the branch becomes unreachable.
 func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *testing.T) {
 	t.Parallel()
-	stateDir := t.TempDir()
+	stateDir := realTempDirForTest(t)
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),

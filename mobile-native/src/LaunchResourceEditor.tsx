@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption, MCPServerSpec } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchResourceRow } from "./LaunchResourceRow";
 import { assertLaunchListCurrent } from "./launchLists";
 import { addLaunchMcp, resourceKey } from "./launchMcp";
 import { addLaunchPath } from "./launchPaths";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchResourceEditor({
 	option,
@@ -51,7 +53,7 @@ export function LaunchResourceEditor({
 		setBusy(true);
 		setError(null);
 		try {
-			if (raw.trim() && !client) throw Error("Reconnect to validate this entry.");
+			if (raw.trim() && !client) throw Error("This entry can be checked once the hub is back.");
 			const next =
 				raw.trim() && client
 					? isMcp
@@ -79,18 +81,18 @@ export function LaunchResourceEditor({
 	}
 	const rows = resourceRows(items);
 	return (
-		<Modal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
+		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Action onPress={close}>Cancel</Action>
-					<Action
+					<Button text label="Cancel" onPress={close} />
+					<Button
+						text
+						label="Done"
 						disabled={busy}
 						onPress={() => {
 							void submit(true);
 						}}
-					>
-						Done
-					</Action>
+					/>
 				</View>
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -100,6 +102,7 @@ export function LaunchResourceEditor({
 					<ScrollView
 						automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 						keyboardShouldPersistTaps="handled"
+						keyboardDismissMode="on-drag"
 						contentContainerStyle={{ padding: 20, gap: 12 }}
 					>
 						<Copy>{option.label}</Copy>
@@ -114,10 +117,12 @@ export function LaunchResourceEditor({
 								setError(null);
 							}}
 						/>
-						<Action
+						<Button
+							text
+							label={`Effective values (${effective?.length ?? 0})`}
 							expanded={showEffective}
 							onPress={() => setShowEffective(!showEffective)}
-						>{`Effective values (${effective?.length ?? 0})`}</Action>
+						/>
 						{showEffective && (
 							<View>
 								{effective?.length ? (
@@ -162,20 +167,22 @@ export function LaunchResourceEditor({
 								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
 							/>
 						)}
-						<Action
+						<Button
+							text
+							label={isMcp ? "Add server" : "Add path"}
 							disabled={busy || !raw.trim() || !client}
 							onPress={() => {
 								void submit(false);
 							}}
-						>
-							{isMcp ? "Add server" : "Add path"}
-						</Action>
+						/>
 						{busy && <ActivityIndicator accessibilityLabel="Validating entry" />}
-						{!client && <Copy muted>Reconnect to browse and validate entries. Your draft is kept here.</Copy>}
+						{!client && (
+							<Copy muted>You can browse and check entries once the hub is back. Your draft is kept here.</Copy>
+						)}
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
 

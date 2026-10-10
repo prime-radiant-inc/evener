@@ -1,40 +1,39 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
+import { firstLine, formatCharCount, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
 
 // --- formatTokenCount -----------------------------------------------------
-// Parity: renderer-format.js:582-587. Below 1000 is a plain rounded
-// integer; at/above 1000 it's round(n/1000)+"k" with no further scaling -
-// 1,000,000 reads "1000k", never "1M".
+// The one token count formatter both clients use (spec 5's compact numbers):
+// 1.2K, 39.8K, 412K, 46M, 1.5B.
 
-test("formatTokenCount: renders small counts as plain integers", () => {
-  expect(formatTokenCount(0)).toBe("0");
-  expect(formatTokenCount(1)).toBe("1");
-  expect(formatTokenCount(999)).toBe("999");
-});
-
-test("formatTokenCount: rounds a fractional count under 1000", () => {
-  expect(formatTokenCount(12.6)).toBe("13");
-});
-
-test("formatTokenCount: 1000 and above uses the k suffix, rounded, no decimal", () => {
-  expect(formatTokenCount(1000)).toBe("1k");
-  expect(formatTokenCount(1499)).toBe("1k");
-  expect(formatTokenCount(1500)).toBe("2k");
-  expect(formatTokenCount(12345)).toBe("12k");
-});
-
-test("formatTokenCount: never scales past k, even for very large counts", () => {
-  expect(formatTokenCount(1_000_000)).toBe("1000k");
-});
-
-test("formatTokenCount: a negative count clamps to 0", () => {
-  expect(formatTokenCount(-5)).toBe("0");
-});
-
-test("formatTokenCount: a non-finite count clamps to 0", () => {
-  expect(formatTokenCount(NaN)).toBe("0");
-  expect(formatTokenCount(Infinity)).toBe("0");
+test.each([
+  [0, "0"],
+  [1, "1"],
+  [12.6, "13"],
+  [999, "999"],
+  [1_000, "1K"],
+  [1_234, "1.2K"],
+  [39_800, "39.8K"],
+  [99_950, "100K"],
+  [412_000, "412K"],
+  [999_499, "999K"],
+  // From here it would round to 1000K, which reads better as the next unit.
+  [999_500, "1M"],
+  [1_000_000, "1M"],
+  [1_200_000, "1.2M"],
+  [46_000_000, "46M"],
+  [99_950_000, "100M"],
+  [412_000_000, "412M"],
+  [999_500_000, "1B"],
+  [1_500_000_000, "1.5B"],
+  [46_000_000_000, "46B"],
+  // B is the last unit: past a thousand billions it keeps counting in B.
+  [1_500_000_000_000, "1500B"],
+  [-5, "0"],
+  [Number.NaN, "0"],
+  [Number.POSITIVE_INFINITY, "0"],
+])("formatTokenCount(%d) reads %s", (n, text) => {
+  expect(formatTokenCount(n)).toBe(text);
 });
 
 // --- formatDurationMs -------------------------------------------------------
@@ -141,4 +140,17 @@ test("formatClockTime: undefined input yields undefined, so a header with no tim
 test("formatClockTime: an unparseable string yields undefined rather than a guess", () => {
   expect(formatClockTime("not a timestamp")).toBeUndefined();
   expect(formatClockTime("")).toBeUndefined();
+});
+
+// --- formatCharCount ----------------------------------------------------------
+// Counts characters with the same uppercase K the token counts use.
+
+test.each([
+  [0, "0 chars"],
+  [999, "999 chars"],
+  [1_000, "1K chars"],
+  [2_500, "2.5K chars"],
+  [8_234, "8.2K chars"],
+])("formatCharCount(%d) reads %s", (n, text) => {
+  expect(formatCharCount(n)).toBe(text);
 });

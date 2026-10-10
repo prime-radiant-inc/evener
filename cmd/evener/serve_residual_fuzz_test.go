@@ -40,7 +40,6 @@ type residualServeServer struct {
 	urlsRemove     func(outerID, id string) (bool, error)
 	drain          func() error
 	drainInput     func(string, []server.ImageAttachment) error
-	promote        func(int, string) error
 	cancel         func(int, string) (string, int, error)
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
@@ -48,9 +47,10 @@ type residualServeServer struct {
 	visionModel    func(string) error
 	name           func(string) error
 	effort         func(string) error
-	tasks          func() any
+	tasks          func() []appwire.Task
 	jobs           func(appwire.JobsListParams) (any, error)
-	jobOutput      func(string, int64, int64) (any, bool, error)
+	jobOutput      func(string, *int64, int64) (appwire.JobOutputPage, bool, error)
+	jobGet         func(string) (appwire.JobActivityJob, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
@@ -83,9 +83,6 @@ func (s *residualServeServer) SetDrainAsSteerFunc(f func() error) { s.drain = f 
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f
 }
-func (s *residualServeServer) SetPromoteQueuedAsSteerFunc(f func(int, string) error) {
-	s.promote = f
-}
 func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, int, error)) {
 	s.cancel = f
 }
@@ -97,12 +94,15 @@ func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.m
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)                   { s.tasks = f }
+func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
-func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
+func (s *residualServeServer) SetJobOutputFunc(f func(string, *int64, int64) (appwire.JobOutputPage, bool, error)) {
 	s.jobOutput = f
+}
+func (s *residualServeServer) SetJobGetFunc(f func(string) (appwire.JobActivityJob, bool, error)) {
+	s.jobGet = f
 }
 func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {
 	s.clear = f
@@ -130,7 +130,6 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _ = s.urlsRemove("outer-1", "u1")
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
-	_ = s.promote(0, "q_1_x")
 	// Every envelope facet now enters the daemon through one seam. Exercising
 	// each method keeps the residual sweep's coverage of the live producers.
 	_ = s.envelopeSource.ContextPressure()
@@ -156,7 +155,8 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
-	_, _, _ = s.jobOutput("job_1", 0, 1024)
+	_, _, _ = s.jobOutput("job_1", nil, 1024)
+	_, _, _ = s.jobGet("job_1")
 }
 
 type residualTaskEnvelopeSampling struct {

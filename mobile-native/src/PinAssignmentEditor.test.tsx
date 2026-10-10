@@ -38,11 +38,11 @@ function props(overrides: Partial<PinAssignmentEditorProps> = {}): PinAssignment
 it("blames the failed load, not a previous change, when there is no checkpoint", () => {
 	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: false })));
 	const text = renderedText(tree);
-	expect(text).toContain("Refresh to reload this session's pins before editing.");
+	expect(text).toContain("Check this session's pins before editing.");
 	expect(text).not.toContain("previous pin change");
 });
 
 it("keeps the previous-change wording when a checkpoint is present", () => {
 	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: true })));
-	expect(renderedText(tree)).toContain("Refresh to confirm the previous pin change before editing it.");
+	expect(renderedText(tree)).toContain("Check the previous pin change before editing it.");
 });

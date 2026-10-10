@@ -1,5 +1,5 @@
 import {
-	presetContent,
+	contentVectorForConfig,
 	sessionTokens,
 	tokenUnitLabel,
 	type EvenerUsage,
@@ -7,6 +7,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
+import { isStep } from "./session/transcriptRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -44,7 +45,7 @@ export interface UsageRow {
 	unit: string;
 }
 
-// usageRows picks the footer's visible rows and labels each with what it
+// usageRows picks the usage lines' visible rows and labels each with what it
 // actually counts. Input/Output take the derived pair's own scope (a
 // truncated turn window says so); Cached/Total are always the thread's whole
 // -session cumulative figures, so they are labelled with the explicit session
@@ -65,36 +66,30 @@ export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumul
 	return rows;
 }
 
+/** Whether the usage lines have anything to show: a token count, or the
+ * estimated cost. With both settings off the accounting is all null. */
+export function hasUsageLines(accounting: SessionAccounting): boolean {
+	return usageRows(accounting).length > 0 || accounting.cost !== null;
+}
+
 export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The live run shows its steps: at the levels that show tool calls. At
+	 * Chat and Intent the tray shows the live step, so the run keeps to its
+	 * line (S7). */
+	liveRunsOpen: boolean;
 	usage: SessionAccounting | null;
 	showDuration: boolean;
 }
 
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
-const MAX_ACTION_DETAIL_LENGTH = 256;
-
-function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string | undefined {
-	if (item.family !== "tool" || item.label !== "write_file") return undefined;
-	if (!item.detail.arguments) return undefined;
-	try {
-		const args: unknown = JSON.parse(item.detail.arguments);
-		if (typeof args !== "object" || args === null) return undefined;
-		const record = args as Record<string, unknown>;
-		const path = typeof record.file_path === "string" ? record.file_path.trim() : "";
-		if (!path) return undefined;
-		const boundedPath =
-			path.length > MAX_ACTION_DETAIL_LENGTH ? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...` : path;
-		return `Write ${boundedPath}`;
-	} catch {
-		return undefined;
-	}
-}
 
 function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
-	return item.detail.description?.trim() || writeFileActionSummary(item) || ACTION_SUMMARY_UNAVAILABLE;
+	// The step's own words when it has no rationale: the one path to them
+	// (projectedRows builds them with the package's toolStepSummary).
+	return item.detail.description?.trim() || item.detail.summary || ACTION_SUMMARY_UNAVAILABLE;
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality
@@ -178,25 +173,63 @@ function accountingFor(
 	return { derived, cumulative, cost };
 }
 
+// Chat is just the conversation and its subagents (spec 8.2; the transcript
+// rows rulings, 2026-09-29). A settled step goes, and so does a running one,
+// which the tray already shows. A failed step stays, with its images, since a
+// failure is something the reader should see at every level. A subagent and a
+// question are rows of their own, never steps, so they stay. No dropped step
+// leaves images behind: a settled step at Intent is summary-only, which drops
+// them, and the hub attaches a step's images only when it settles.
+//
+// A daemon steer is instructions to the agent, never the conversation, so its
+// notice goes too, the notification cards a steer carries included: the
+// subagent's own row, which Chat keeps, already says its state. What stays is
+// the conversation's own: a steered-in message is the human's words (a user
+// row), and a saved note is spec 8.8's every-level row (a note row) — neither
+// is a steering notice (Jesse, 2026-10-03). Internal shared-notes snapshots
+// also stay out of the conversation, independently of saved-note rows.
+function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
+	return items.filter(
+		(item) =>
+			!isDroppedStep(item) &&
+			!isDaemonSteering(item) &&
+			!(item.kind === "notice" && item.eventKind === "notes-context"),
+	);
+}
+
+// A settled or running step; a failed one is not dropped (see above).
+function isDroppedStep(item: MobileTimelineItem): boolean {
+	return isStep(item) && item.state !== "failed";
+}
+
+function isDaemonSteering(item: MobileTimelineItem): boolean {
+	return item.kind === "notice" && item.origin === "steering";
+}
+
 export function projectNativeTranscript(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1 | null | undefined,
+	{ justTheConversation = false }: { justTheConversation?: boolean } = {},
 ): NativeTranscriptPresentation {
 	const source = conversation?.items ?? [];
-	const { items, activityPresentation } = projectTimeline(source, config);
+	const projected = projectTimeline(source, config);
+	const { activityPresentation } = projected;
+	const items = justTheConversation ? conversationOnly(projected.items) : projected.items;
 	if (!config)
 		return {
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
 		};
+	const content = contentVectorForConfig(config);
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
-			.expandByDefault,
+		expandByDefault: content.expandByDefault,
+		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};

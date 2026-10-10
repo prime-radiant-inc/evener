@@ -99,6 +99,30 @@ func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 	}
 }
 
+// TestTerminalDrainKeepsFinalizingDelegateLive pins the finalize window the
+// #3531 drain flakes fall through. A delegate's run clears its own
+// running/finalizing flags (subagents.go, before announceFinishedGeneration)
+// while the controller still holds the generation finalizing until its tail
+// has announced the result. In that window the child is live work — its
+// completion is about to be delivered — so the terminal-residue verdict must
+// not read it as undeliverable residue and let the drain exit before the
+// result is announced. holdDelegateTail pins exactly that window with no
+// timing; the old inline predicate (running||finalizing||driving) reported the
+// child dead and the drain abandoned the still-owed completion, printing the
+// pre-drain "waiting" turn instead of the delegate's result.
+func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
+	held := holdDelegateTail(t, holdBeforeAnnouncement)
+	held.s.acceptTerminalCommunicate()
+
+	live, err := held.s.subtreeHasLiveTerminalDrainWork()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveTerminalDrainWork: %v", err)
+	}
+	if !live {
+		t.Fatal("a delegate whose run ended but whose generation is still finalizing must keep the terminal drain live: its result has not been announced yet, so reading it as residue abandons the completion and exits before it is drained (issue #3531)")
+	}
+}
+
 // TestPostTerminalNotificationTurnEmptyResponseFinishesIdle is the other half
 // of the #329 sanitize-git-repo regression. A notification turn that
 // legitimately runs after the terminal communicate (a live job finished during

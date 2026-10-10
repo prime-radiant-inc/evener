@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,7 +116,6 @@ type serveServer interface {
 	SetUrlsRemoveFunc(func(outerID, id string) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
-	SetPromoteQueuedAsSteerFunc(func(int, string) error)
 	SetCancelQueuedFunc(func(int, string) (string, int, error))
 	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
@@ -130,9 +130,15 @@ type serveServer interface {
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
-	SetTasksFunc(func() any)
+	SetTasksFunc(func() []appwire.Task)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
-	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
+	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
+	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
+	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
+	SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error))
+
+	SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error))
+	SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error))
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -380,6 +386,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
+	disableMemory := fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
 	resume := fs.String("resume", "", "resume a previous session by ID")
 	resumeLast := fs.Bool("resume-last", false, "resume the most recent session")
@@ -623,7 +630,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
 		return err
 	}
+	memoryProjectID := ""
+	if !resuming {
+		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
+	}
 	sessionCfg := agent.SessionConfig{
+		MemoryStateRoot: cmdutil.DefaultStateRoot(),
+		MemoryProjectID: memoryProjectID,
+		DisableMemory:   *disableMemory,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -686,7 +700,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// out between here and that hand-off has to dispose of them, or an
 		// interrupted startup leaks a directory and a lease per attempt.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}
@@ -694,6 +708,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
+			DisableMemory:               *disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -706,13 +722,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own what it took. An
-			// allocation the resume adopted from the root's durable retention
-			// manifest is retained rather than removed; only a fresh mint is
-			// disposed.
-			agent.DisposeResumeScratchAfterFailure(sd, resumedMeta.ID, env)
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -726,11 +739,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the cleanup must retain an allocation the manifest references
-			// rather than remove it out from under a later resume.
-			agent.DisposeRootScratchAfterFailure(sd, env)
+			// provisioned was never built, so its scratch goes here.
+			_ = env.DisposeSessionScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -990,8 +1000,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// identity-fenced daemon control RPCs: the current rendezvous entry must
 	// exist and the caller's generation fingerprint must match it, where an
 	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryClaim and the claim's prepare so a thread/clear that
-	// swapped ownership under an uncommitted claim cannot be retired by its
+	// it again between TryManualClaim and the claim's prepare so a thread/clear
+	// that swapped ownership under an uncommitted claim cannot be retired by its
 	// predecessor's stale row.
 	requireExactOwnership := func(generation string) error {
 		entry, ok := rvRegistration.Entry()
@@ -1013,18 +1023,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
-		// TryClaim has not run. It is an observability beat outside every lock
-		// (retirementObserve is nil in production) so a test can interleave a
-		// thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim has not run. It is an observability beat outside every
+		// lock (retirementObserve is nil in production) so a test can interleave
+		// a thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim widens that window: it first waits, up to the namer's
+		// timeout, for a session namer to settle (#3921). The ownership re-check
+		// after the claim covers the wider window the same way.
 		retirementObserve("claim_attempted", getSession().ID())
-		claim, snap, err := retirement.TryClaim(true)
+		claim, snap, err := retirement.TryManualClaim(ctx)
 		if err != nil {
 			return appwire.DaemonRetireResponse{}, err
 		}
 		if claim == nil {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
 		}
-		// The pre-claim check above and TryClaim are not atomic: a thread/clear
+		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
 		// can run to completion between them. It holds its own admission lease
 		// (so TryClaim declines while it is in flight), rewrites rendezvous
 		// ownership to the replacement, swaps the session and re-roots the
@@ -1455,9 +1468,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)
 	})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		return getSession().PromoteQueuedAsSteer(ctx, index, expectedID)
-	})
 	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
 		return getSession().CancelQueued(ctx, index, expectedID)
 	})
@@ -1517,7 +1527,36 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolved per call like the model hook above: the replacement session a
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
-	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
+	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ActivitySummary(ctx, params)
+	})
+	srv.SetThreadDelegatesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityDelegates(ctx, params)
+	})
+	srv.SetThreadJobsListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityJobs(ctx, params)
+	})
+	srv.SetThreadWatchesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+		sess := getSession()
+		if params.Ref == workspaceRef {
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+		}
+		return sess.ListActivityWatches(ctx, params)
+	})
+
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
 		sess := getSession()
 		if strings.TrimSpace(params.Ref) != "" {
@@ -1535,8 +1574,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
-		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
+		return getSession().JobOutputPage(jobID, beforeBytes, maxBytes)
+	})
+	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
+		return getSession().JobGet(jobID)
 	})
 	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
 		oldSess := getSession()
@@ -1554,6 +1596,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		oldEnv := currentEnv
 		currentMu.RUnlock()
 		clearCfg := sessionCfg
+		// The launch picked the first session's ID into sessionCfg; the cleared
+		// session is a new session and picks its own.
+		clearCfg.SessionID = ""
 		clearCfg.SessionStartKind = plugin.SessionStartKindClear
 		// The cleared session inherits the CURRENT session's ACTUAL sandbox (on resume
 		// the persisted mode, not the launch flag), so its persisted config matches what
@@ -1571,16 +1616,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
-			// Cleanup stops whatever the failed construction left running and
-			// retains the session scratch. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the scratch is settled the way the fresh-session path settles
-			// it: an allocation the manifest references is kept (references are
-			// append-only, so removing it would refuse the root's retirement
-			// forever and break a cold resume the same way), and only this
-			// clear's own fresh mint is disposed, with its flock lease.
+			// Cleanup stops whatever the failed construction left running; the
+			// scratch it provisioned then goes, as on the fresh-session path.
 			clearEnv.Cleanup()
-			agent.DisposeRootScratchAfterFailure(sd, clearEnv)
+			_ = clearEnv.DisposeSessionScratch()
 			return fmt.Errorf("new session: %w", err)
 		}
 		// Everything that can fail happens before anything shared moves, so the
@@ -1731,7 +1770,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				srv.SetCancelFunc(cancelDrain)
 				setMutationRunner(cancelDrain, runnerDone)
 				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
 				return drainCtx, cancelDrain
 			}
 			turnCtx, cancelTurn := context.WithCancel(ctx)
@@ -1751,7 +1789,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
-					srv.SetState(string(agent.SessionProcessing))
 				}
 			}
 			var result string
@@ -1776,7 +1813,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// through SetProcessingTurn (WireTranscriptHistory) before
 					// its first entry is recorded.
 					if phase == agent.ClientMutationStartClaimed {
-						srv.SetState(string(agent.SessionProcessing))
+						srv.SetProcessing(true)
 					}
 				})
 				if !processed {
@@ -1798,7 +1835,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
-					srv.SetState(string(agent.SessionProcessing))
+					srv.SetProcessing(true)
 				})
 				if !processed {
 					// The claim refused: nothing is running, so drop the runner
@@ -1810,14 +1847,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
+			// The stored state changes only through the session's own events
+			// (SESSION_START, SESSION_END, STATUS_SETTLED): ending processing
+			// publishes what they stated.
 			srv.SetProcessing(false)
 			srv.SetCancelFunc(nil)
-			srv.SetState(sess.WireState())
 			currentCancel()
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
 			if processErr != nil {
-				serveLogf(os.Stderr, sess.ID(), "error: %v", processErr)
+				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			_ = result
 			return processed
@@ -2011,17 +2050,17 @@ func printServeSandboxLine(w io.Writer, line string) {
 }
 
 // holdServeStateForAwaitingWake reports whether the input loop should skip
-// its Processing shadow-write for this message: the session-level entry gate
+// marking processing for this message: the session-level entry gate
 // (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
 // refuses autonomous wakes while a question is pending, before any state
-// transition — so the AppWire status shadow must not flip to active around a wake
+// transition — so the AppWire status must not flip to active around a wake
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
-// predicate exactly — hasPendingAsk, not raw state (attention-status-model
-// v5 reconciliation: SessionAwaiting alone no longer implies a pending
-// question, so a general inbox-semantics re-arm with no ask pending must NOT
-// be held; async wakes re-arm by design there). EntryUserInput is always let
-// through since it is how the reply resolves a pending ask (spec §5.2).
+// predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
+// does not imply a pending question: a needs_response rest with no ask
+// pending must NOT be held; async wakes may move it on). EntryUserInput is
+// always let through since it is how the reply resolves a pending ask (spec
+// §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
 	return kind != agent.EntryUserInput && hasPendingAsk
 }
@@ -2124,6 +2163,7 @@ func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
 	var out server.DetailedStatus
+	out.Commands = slices.Clone(ds.Commands)
 	if ds.Plugins != nil {
 		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
 	}
@@ -2205,10 +2245,10 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
-			DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+			DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-			Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
+			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
 			NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
 			Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
 			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,

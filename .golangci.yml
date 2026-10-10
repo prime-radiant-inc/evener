@@ -110,13 +110,6 @@ linters:
           - pkg: cmd/evener-hub/internal/hostops
             rules:
               json: camel
-          # The crash-fencing helper protocol pins its shapes in lowerCamel
-          # field-for-field (08c §4, §9: bootId, opSeq, guardEpoch, registeredAt,
-          # pidStartTime, cgroupId), and the guard/lease state files and helper
-          # responses are decoded against exactly those spellings.
-          - pkg: cmd/evener-hub/internal/hostfence
-            rules:
-              json: camel
           # Google's REST API wire format is camelCase; these structs mirror
           # its ListModels response verbatim.
           - pkg: providers/google

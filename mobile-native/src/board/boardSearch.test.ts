@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
 	AnyNotification,
 	NavigationProjectSummary,
@@ -17,13 +18,13 @@ function boundary() {
 		resolve: (value: SearchResponse) => void;
 		reject: (error: Error) => void;
 	}> = [];
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({ method, params: params as SearchParams, resolve: resolve as never, reject });
 			}),
 		onNotification: (_listener: (event: AnyNotification) => void) => () => {},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return { client, requests };
 }
 const result = (id: string, over: Partial<SearchResult> = {}): SearchResult => ({
@@ -264,9 +265,12 @@ describe("a search result's mark", () => {
 		expect(mark({ state: "active" })).toBe("working");
 	});
 
-	it("leaves everything else unmarked, never Finished: a result has no seen state", () => {
+	it("marks an awaiting session with no question Needs you, as the Board does", () => {
+		expect(mark({ state: "awaiting" })).toBe("needsYou");
+	});
+
+	it("leaves everything else unmarked, with no unread dot: a result has no seen state", () => {
 		expect(mark({ state: "idle" })).toBe("idle");
-		expect(mark({ state: "awaiting" })).toBe("idle");
 		expect(mark({ state: "somethingNew" })).toBe("idle");
 	});
 });

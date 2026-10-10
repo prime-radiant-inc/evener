@@ -1,4 +1,5 @@
-import type { InputItem } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -10,6 +11,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "./mutationOutbox";
+import { acceptedRecord, carriesOptimisticInput } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -24,7 +26,17 @@ type MutationOutboxOperation =
   | "transferToRecovery"
   | "updateRecoveryInput"
   | "discardRecovery"
-  | "resendRecovery";
+  | "resendRecovery"
+  | "retargetOutbox";
+
+// What retargetOutbox moved to the resumed ref, by store: the caller drives its
+// per-ref bookkeeping when ANY of them moved (an optimistic-only or
+// recovery-only identity change still needs the new ref pinned and armed).
+export interface RetargetedMutations {
+  outbox: MutationOutboxRecord[];
+  optimistic: MutationOptimisticRecord[];
+  recovery: MutationRecoveryRecord[];
+}
 
 export interface MutationOutboxIndexedDBOptions {
   indexedDB?: IDBFactory;
@@ -35,6 +47,10 @@ export interface MutationOutboxIndexedDBOptions {
   onWriteStalled?: (waiting: boolean) => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
+  // Diagnostic sink for the outbox database's open/watchdog/upgrade/retire
+  // failure paths. Purely observational: a throwing reporter cannot change the
+  // storage outcome. Defaults to one console.warn line with a stable prefix.
+  onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
@@ -58,12 +74,67 @@ const STORAGE_WAIT_MS = 10_000;
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
-export class MutationStorageTimeoutError extends Error {
+// The outbox's own storage failures: an open the database refused or that
+// another tab's older schema blocked, or a connection superseded mid-open.
+// Callers tell storage failing from a rejected record by this brand (and by
+// IndexedDB's own DOMException names), never by message.
+export class MutationStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MutationStorageError";
+  }
+}
+
+// The one neutral message for a transaction that timed out. The same error
+// covers reads, Stop, cancel, and enqueue writes, so the sentence must read
+// after any action headline ("Send failed: ...", "Stop failed: ...") and name
+// neither a draft nor a cause. It is a bare retryable detail, never a gate - a
+// stuck open is not remembered, so every later operation still attempts the
+// open and a send after the open recovers succeeds.
+export class MutationStorageTimeoutError extends MutationStorageError {
   constructor() {
-    super("Browser message storage is not responding. Your draft has been kept. Try again when storage recovers.");
+    super("It didn't go through. Try again.");
     this.name = "MutationStorageTimeoutError";
   }
 }
+
+// The four failure-prone paths on the outbox database. These are the open
+// failures that can precede the wedged Chromium connection coordinator
+// (crbug 40278488), where open() fires neither success, error, nor blocked, so
+// a later recurrence is only visible through what was recorded on the way in.
+// Observation only: nothing here changes the storage outcome.
+export type MutationOutboxOpenDiagnosticPath =
+  | "open-timeout"
+  | "open-blocked"
+  | "upgrade-abandoned"
+  | "versionchange-retire";
+
+export interface MutationOutboxOpenDiagnostic {
+  // The database the path ran against, and its schema version fence.
+  database: string;
+  version: number;
+  path: MutationOutboxOpenDiagnosticPath;
+  // True when an open's schema-upgrade (versionchange) transaction was live at
+  // the moment the record was made: always true for an upgradeneeded handler,
+  // true for a timeout that lands while the upgrade is still open, false once
+  // the upgrade has committed or for the blocked and retire paths.
+  versionchangeTransaction: boolean;
+}
+
+// The default sink: one console line with a stable prefix, greppable from a
+// device log. It is the only place that knows about the console, so tests
+// inject their own reporter and assert on records, not console text.
+export function warnOpenDiagnostic(diagnostic: MutationOutboxOpenDiagnostic): void {
+  console.warn("evener mutation outbox:", diagnostic);
+}
+
+// A real run - the dev server or a built bundle - gets the console line; the
+// unit-test process does not, because tests install their own reporter and the
+// shared console guard treats any unspied output as a failure. This is the same
+// test-aware branch AppShell and ConnectionBanner already use, and it changes
+// no storage behavior.
+export const DEFAULT_OPEN_DIAGNOSTIC: (diagnostic: MutationOutboxOpenDiagnostic) => void =
+  import.meta.env.MODE === "test" ? () => {} : warnOpenDiagnostic;
 
 interface TargetSequence {
   targetRef: string;
@@ -85,63 +156,50 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
   return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted === false;
 }
 
-function requestResult<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error ?? new Error("IndexedDB request failed")), {
-      once: true,
-    });
-  });
-}
-
-function transactionCompletion(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener(
-      "abort",
-      () => reject(transaction.error ?? new Error("IndexedDB transaction aborted")),
-      { once: true },
-    );
-    transaction.addEventListener(
-      "error",
-      () => reject(transaction.error ?? new Error("IndexedDB transaction failed")),
-      { once: true },
-    );
-  });
-}
-
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
 export class MutationOutboxIndexedDB {
-  readonly #indexedDB: IDBFactory;
+  readonly #connection: IDBConnection;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
   readonly #createPresentationId: () => string;
   readonly #now: () => number;
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
+  readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
+  #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
-  #databasePromise: Promise<IDBDatabase> | undefined;
-  #database: IDBDatabase | undefined;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (!factory) throw new Error("IndexedDB is unavailable");
-    this.#indexedDB = factory;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
     this.#createMutationId = options.createMutationId ?? createSecureUUID;
     this.#createPresentationId = options.createPresentationId ?? createSecureUUID;
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
+    this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
+    this.#connection = new IDBConnection({
+      indexedDB: factory,
+      databaseName: this.#databaseName,
+      databaseVersion: DATABASE_VERSION,
+      waitMs: STORAGE_WAIT_MS,
+      upgrade: (database) => this.#upgrade(database),
+      errors: {
+        open: () => new MutationStorageError("Unable to open mutation outbox"),
+        superseded: () => new MutationStorageError("Mutation outbox connection was closed"),
+        timeout: () => new MutationStorageTimeoutError(),
+        blocked: () => new MutationStorageError("Mutation outbox upgrade is blocked"),
+      },
+      reportDiagnostic: (path, active) => this.#reportOpenDiagnostic(path, active),
+    });
   }
 
   close(): void {
-    this.#database?.close();
-    this.#database = undefined;
-    this.#databasePromise = undefined;
+    this.#connection.close();
   }
 
   // §6's note-row supersede discard (below) is the one write this class
@@ -156,6 +214,13 @@ export class MutationOutboxIndexedDB {
   // or delete, the discard's own best-effort boundary.
   setSupersededDiscardListener(listener: ((targetRef: string) => void) | undefined): void {
     this.#supersededDiscardListener = listener;
+  }
+
+  // Every successful settle, with the settled record's own targetRef: the
+  // record that proved delivery is the one authority on which ref's state
+  // changed, so callers do not have to derive it from the row id.
+  setSettledListener(listener: ((targetRef: string) => void) | undefined): void {
+    this.#settledListener = listener;
   }
 
   async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
@@ -191,6 +256,12 @@ export class MutationOutboxIndexedDB {
   // its user's click, before its durable write issues. Fresh from the
   // ref's sequence row, never cached - another tab's Stop is invisible to
   // this tab's memory.
+  //
+  // This read is the click's first storage observation, and it is never
+  // retried: a retry could answer later with an epoch a Stop had since bumped,
+  // which is exactly the fence this capture exists to hold. A timeout rejects
+  // it - a composer send then proceeds through threads.ts's direct fallback
+  // with no click-time epoch, while every other durable write fails closed.
   async readStopEpoch(targetRef: string): Promise<number> {
     return this.#read(SEQUENCE_STORE, (transaction) => this.#stopEpochOf(transaction, targetRef));
   }
@@ -375,6 +446,103 @@ export class MutationOutboxIndexedDB {
     return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
   }
 
+  // R09: a store-driven resume can return a different identity, and the rows
+  // parked under the superseded ref can never dispatch again (nothing names that
+  // ref), so they follow the pane to the resumed ref. targetRef and payload.ref
+  // are rewritten, the identity fields (threadId, instanceId, and the payload's
+  // expectedInstanceId) are rewritten to the resumed identity so the daemon's
+  // instance fence accepts the row, and a fresh sequence is allocated under the
+  // new ref (keeping the relative order). The clientMutationId is PRESERVED: the
+  // resumed hydration's reconciliation and every settle lookup key on it. The
+  // matching optimistic copies and the recovery rows (a rejected turn awaiting
+  // Retry) move too, so the new ref's queue strip and recovery list show them
+  // and Retry's fused-identity check (retryBlockedMutation) matches the resumed
+  // model. Canceled rows stay behind - a Stop canceled them, and only an
+  // explicit Retry on the identity that owns them revives one. Callers
+  // re-target only while the old ref's dispatch is held closed by the recovery
+  // obligation, so no row here is mid-dispatch.
+  async retargetOutbox(
+    fromRef: string,
+    toRef: string,
+    identity: { threadId?: string; instanceId?: string },
+  ): Promise<RetargetedMutations> {
+    if (fromRef === toRef) return { outbox: [], optimistic: [], recovery: [] };
+    return this.#write(
+      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE],
+      "retargetOutbox",
+      async (transaction) => {
+        const outboxStore = transaction.objectStore(OUTBOX_STORE);
+        const optimisticStore = transaction.objectStore(OPTIMISTIC_STORE);
+        const recoveryStore = transaction.objectStore(RECOVERY_STORE);
+        const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
+        // One read of the new ref's sequence row, then consecutive numbering for
+        // the whole batch, then one put - the lists are sorted, so order is kept.
+        const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
+        let lastSequence = sequence?.lastSequence ?? 0;
+        // The identity token the daemon's instance fence compares: the same
+        // fused reading a fresh send takes (instanceId ?? threadId).
+        const instanceToken = identity.instanceId ?? identity.threadId;
+        // The single rewrite every loop shares: a fresh sequence, the new target
+        // ref, payload.ref, and the resumed identity's threadId/instanceId and
+        // expectedInstanceId. The clientMutationId is deliberately untouched.
+        const move = async (store: IDBObjectStore, record: MutationRecord): Promise<MutationRecord> => {
+          lastSequence += 1;
+          const retargeted: MutationRecord = {
+            ...record,
+            targetRef: toRef,
+            threadId: identity.threadId,
+            instanceId: identity.instanceId,
+            payload: {
+              ...record.payload,
+              ref: toRef,
+              ...("expectedInstanceId" in record.payload ? { expectedInstanceId: instanceToken } : {}),
+            },
+            intentSequence: lastSequence,
+          };
+          await requestResult(store.put(retargeted));
+          return retargeted;
+        };
+        const bySequence = <T extends { intentSequence: number }>(records: T[]) =>
+          records.sort((left, right) => left.intentSequence - right.intentSequence);
+        const eligibleOutbox = bySequence(
+          (await requestResult<MutationOutboxRecord[]>(outboxStore.getAll())).filter(
+            (record) => record.targetRef === fromRef && record.state !== "canceled",
+          ),
+        );
+        // The accepted-but-unreflected copies follow whether or not their outbox
+        // row is still present: the resumed ref's reconciliation settles them by
+        // clientMutationId, and the new ref's strip renders them.
+        const eligibleOptimistic = bySequence(
+          (await requestResult<MutationOptimisticRecord[]>(optimisticStore.getAll())).filter(
+            (record) => record.targetRef === fromRef,
+          ),
+        );
+        // A recovery row is a rejected turn awaiting Retry; Retry's own
+        // fused-identity check compares the row's instanceId ?? threadId against
+        // the press model's, so under the superseded ref it can never be retried
+        // and the identity rewrite below is what makes it reachable under the
+        // resumed one.
+        const eligibleRecovery = bySequence(
+          (await requestResult<MutationRecoveryRecord[]>(recoveryStore.getAll())).filter(
+            (record) => record.targetRef === fromRef,
+          ),
+        );
+        const outbox: MutationOutboxRecord[] = [];
+        const optimistic: MutationOptimisticRecord[] = [];
+        const recovery: MutationRecoveryRecord[] = [];
+        for (const record of eligibleOutbox) outbox.push((await move(outboxStore, record)) as MutationOutboxRecord);
+        for (const record of eligibleOptimistic)
+          optimistic.push((await move(optimisticStore, record)) as MutationOptimisticRecord);
+        for (const record of eligibleRecovery)
+          recovery.push((await move(recoveryStore, record)) as MutationRecoveryRecord);
+        if (lastSequence !== (sequence?.lastSequence ?? 0)) {
+          await requestResult(sequenceStore.put({ ...sequence, targetRef: toRef, lastSequence }));
+        }
+        return { outbox, optimistic, recovery };
+      },
+    );
+  }
+
   async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord | undefined> {
     return this.#read(OPTIMISTIC_STORE, async (transaction) => {
       return requestResult<MutationOptimisticRecord | undefined>(
@@ -413,7 +581,6 @@ export class MutationOutboxIndexedDB {
         await this.#discardSupersededNoteRecovery(transaction, source);
         settledSource = source;
 
-        const display = source.optimisticDisplay;
         // A "pending" receipt means accepted but not yet described by
         // authoritative state. The daemon reports pending for exactly the
         // mutations whose acceptance a read cannot yet prove - every
@@ -429,29 +596,11 @@ export class MutationOutboxIndexedDB {
         // already readable in the session's own state, so its pending receipts
         // drop the row exactly as before.
         const retainsAcceptedCopy =
-          projectionState === "pending" &&
-          ((display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input)) ||
-            source.method === "notes/human/set");
+          projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
         if (retainsAcceptedCopy) {
-          const accepted: MutationOptimisticRecord = {
-            version: source.version,
-            clientMutationId: source.clientMutationId,
-            // Provenance survives the outbox -> optimistic transition: dropping
-            // it here would make the accepted-but-unreflected mutation
-            // unattributed, and every tab would claim it as its own send.
-            originClientId: source.originClientId,
-            intentSequence: source.intentSequence,
-            createdAt: source.createdAt,
-            targetRef: source.targetRef,
-            threadId: source.threadId,
-            instanceId: source.instanceId,
-            method: source.method,
-            payload: source.payload,
-            attachments: source.attachments,
-            optimisticDisplay: source.optimisticDisplay,
-            state: "accepted",
-          };
-          await requestResult(optimistic.put(accepted));
+          // The accepted whitelist lives in the package's acceptedRecord so
+          // this adapter and native's build the same row.
+          await requestResult(optimistic.put(acceptedRecord(source)));
         } else if (optimisticRecord) {
           await requestResult(optimistic.delete(clientMutationId));
         }
@@ -461,6 +610,8 @@ export class MutationOutboxIndexedDB {
       },
     );
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    const settledRef = settledSource?.targetRef;
+    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
   }
 
@@ -489,6 +640,8 @@ export class MutationOutboxIndexedDB {
       },
     );
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    const settledRef = settledSource?.targetRef;
+    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
   }
 
@@ -544,11 +697,7 @@ export class MutationOutboxIndexedDB {
         // runtime's projections and pins last saw this ref before the
         // removal, and this fire-and-forget write is the only thing that can
         // tell them.
-        try {
-          this.#supersededDiscardListener?.(source.targetRef);
-        } catch {
-          // A listener cannot change the durable transaction's outcome.
-        }
+        this.#notifyQuietly(() => this.#supersededDiscardListener?.(source.targetRef));
       })
       .catch(() => {
         // Left for the next settle, clear, or delete.
@@ -651,6 +800,7 @@ export class MutationOutboxIndexedDB {
     input: InputItem[],
     attachments?: MutationAttachment[],
     composerText?: string,
+    composerMentions?: readonly ComposerMention[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -665,6 +815,9 @@ export class MutationOutboxIndexedDB {
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
+        // Locations belong to composerText. A full replacement can omit them
+        // to clear old atoms, while a partial update preserves the pair.
+        composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
       };
       await requestResult(store.put(next));
       return next;
@@ -732,90 +885,37 @@ export class MutationOutboxIndexedDB {
     return undefined;
   }
 
-  async #open(): Promise<IDBDatabase> {
-    if (this.#database) return this.#database;
-    if (this.#databasePromise) return this.#databasePromise;
-    const opening = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
-      let abandoned = false;
-      let upgradeTransaction: IDBTransaction | null = null;
-      const fail = (error: unknown) => {
-        abandoned = true;
-        clearTimeout(timer);
-        try {
-          // Release the database open lock if its schema upgrade is still active.
-          upgradeTransaction?.abort();
-        } catch {
-          // A completed upgrade cannot be aborted; late success closes its connection.
-        }
-        reject(error);
-      };
-      const timer = setTimeout(() => fail(new MutationStorageTimeoutError()), STORAGE_WAIT_MS);
-      request.addEventListener(
-        "upgradeneeded",
-        () => {
-          upgradeTransaction = request.transaction;
-          if (abandoned || this.#databasePromise !== opening) {
-            upgradeTransaction?.abort();
-            return;
-          }
-          const database = request.result;
-          if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
-            const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
-            outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-          }
-          if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
-            const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
-            optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-          }
-          if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
-            const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
-            recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
-          }
-          if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
-            database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
-          }
-        },
-        { once: true },
-      );
-      request.addEventListener(
-        "success",
-        () => {
-          clearTimeout(timer);
-          const database = request.result;
-          if (abandoned || this.#databasePromise !== opening) {
-            database.close();
-            reject(new Error("Mutation outbox connection was closed"));
-            return;
-          }
-          this.#database = database;
-          database.addEventListener("versionchange", () => this.#retire(database));
-          database.addEventListener("close", () => this.#retire(database));
-          resolve(database);
-        },
-        { once: true },
-      );
-      request.addEventListener("error", () => fail(request.error ?? new Error("Unable to open mutation outbox")), {
-        once: true,
-      });
-      request.addEventListener("blocked", () => fail(new Error("Mutation outbox upgrade is blocked")), {
-        once: true,
-      });
-    });
-    this.#databasePromise = opening;
-    try {
-      return await opening;
-    } catch (error) {
-      if (this.#databasePromise === opening) this.#databasePromise = undefined;
-      throw error;
+  #upgrade(database: IDBDatabase): void {
+    if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
+      const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
+      outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+    }
+    if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
+      const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
+      optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+    }
+    if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
+      const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
+      recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
+    }
+    if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
+      database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
     }
   }
 
-  #retire(database: IDBDatabase): void {
-    database.close();
-    if (this.#database !== database) return;
-    this.#database = undefined;
-    this.#databasePromise = undefined;
+  // Record one open failure path. The try/catch is the whole contract: a
+  // throwing reporter cannot change the durable open or upgrade outcome.
+  #reportOpenDiagnostic(path: MutationOutboxOpenDiagnosticPath, versionchangeTransaction: boolean): void {
+    try {
+      this.#onOpenDiagnostic({
+        database: this.#databaseName,
+        version: DATABASE_VERSION,
+        path,
+        versionchangeTransaction,
+      });
+    } catch {
+      // A diagnostic sink cannot change the storage outcome.
+    }
   }
 
   async #read<T>(stores: string | string[], body: (transaction: IDBTransaction) => Promise<T>): Promise<T> {
@@ -850,26 +950,24 @@ export class MutationOutboxIndexedDB {
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
-    const database = await this.#open();
+    // One attempt: a timeout fails this call (the caller retries by acting
+    // again), and every later call attempts the open afresh.
+    const database = await this.#connection.open();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stalledWrite = false;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        this.#retire(database);
-        try {
-          transaction.abort();
-        } catch {
-          if (mode === "readwrite") {
-            // abort() refuses a committing/finished transaction. A deadline
-            // cannot prove rollback: keep the original submission pending
-            // until its complete/abort event establishes its outcome.
-            stalledWrite = true;
-            this.#stalledWrites += 1;
-            if (this.#stalledWrites === 1) this.#notifyWriteStalled(true);
-            return;
-          }
+        this.#connection.retire(database);
+        if (!tryAbortTransaction(transaction) && mode === "readwrite") {
+          // abort() refuses a committing/finished transaction. A deadline
+          // cannot prove rollback: keep the original submission pending
+          // until its complete/abort event establishes its outcome.
+          stalledWrite = true;
+          this.#stalledWrites += 1;
+          if (this.#stalledWrites === 1) this.#notifyWriteStalled(true);
+          return;
         }
         reject(new MutationStorageTimeoutError());
       }, STORAGE_WAIT_MS);
@@ -888,11 +986,7 @@ export class MutationOutboxIndexedDB {
       const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
       return result;
     } catch (error) {
-      try {
-        transaction.abort();
-      } catch {
-        // The transaction already completed; preserve the original failure.
-      }
+      tryAbortTransaction(transaction);
       throw error;
     } finally {
       clearTimeout(timer);
@@ -904,8 +998,12 @@ export class MutationOutboxIndexedDB {
   }
 
   #notifyWriteStalled(waiting: boolean): void {
+    this.#notifyQuietly(() => this.#onWriteStalled?.(waiting));
+  }
+
+  #notifyQuietly(notify: () => void): void {
     try {
-      this.#onWriteStalled?.(waiting);
+      notify();
     } catch {
       // Status subscribers cannot change the durable transaction outcome.
     }

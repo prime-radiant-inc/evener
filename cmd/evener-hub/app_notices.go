@@ -23,11 +23,12 @@ const noticeInterval = 5 * time.Second
 // notice and the screen its action opens agree: the evener/auth/list rows, the
 // navigation manifest's sources, and the evener/plugin/list rows.
 type hubNotices struct {
-	auth    func() (appwire.AuthListResponse, error)
-	plugins func(context.Context) (appwire.PluginListResponse, error)
-	sources *appsource.Registry
-	roster  *hubcore.Roster
-	remote  *hubcore.RemoteThreadCache
+	refreshProviders func() bool
+	auth             func() (appwire.AuthListResponse, error)
+	plugins          func(context.Context) (appwire.PluginListResponse, error)
+	sources          *appsource.Registry
+	roster           *hubcore.Roster
+	remote           *hubcore.RemoteThreadCache
 
 	// mu guards last, the notices read last answered with.
 	mu   sync.Mutex
@@ -250,4 +251,13 @@ func signInSubjects(notices []appwire.HubNotice) []string {
 		}
 	}
 	return subjects
+}
+
+// watchRead observes user provider edits on the existing server-lifetime notice
+// watcher, including while no browser is subscribed or the file cannot load.
+func (n *hubNotices) watchRead(ctx context.Context, broadcaster hostNotificationBroadcaster) []appwire.HubNotice {
+	if n.refreshProviders != nil && n.refreshProviders() {
+		broadcaster.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
+	}
+	return n.read(ctx)
 }

@@ -30,12 +30,14 @@ describe("the parser port", () => {
   });
 });
 
-// jsdom's navigator.platform is "" on every host, so tinykeys resolves the
-// "$mod" alias to "Control" here regardless of the machine running the suite.
-// Tests that want the Meta spelling parse "Meta+..." explicitly.
+// These tests spell the modifier explicitly ("Control+..."/"Meta+...") instead
+// of the "$mod" alias: tinykeys resolves "$mod" from navigator.platform when it
+// loads, so under a bare Node vitest on macOS it becomes "Meta" and an
+// assertion against "Control" would depend on the host running the suite.
+// Spelling the modifier pins the expected value on every host.
 describe("parseChord", () => {
   test("parses a single press with a modifier", () => {
-    expect(parseChord(parseKeybinding, "$mod+K")).toEqual([
+    expect(parseChord(parseKeybinding, "Control+K")).toEqual([
       { modifiers: ["Control"], optionalModifiers: [], key: "K" },
     ]);
   });
@@ -52,7 +54,7 @@ describe("parseChord", () => {
   });
 
   test("parses optional modifiers", () => {
-    expect(parseChord(parseKeybinding, "$mod+[Alt]+K")).toEqual([
+    expect(parseChord(parseKeybinding, "Control+[Alt]+K")).toEqual([
       { modifiers: ["Control"], optionalModifiers: ["Alt"], key: "K" },
     ]);
   });
@@ -97,7 +99,7 @@ describe("serializeChord round-trips", () => {
   });
 
   test("serializes optional modifiers with bracket syntax", () => {
-    expect(serializeChord(parseChord(parseKeybinding, "$mod+[Alt]+K"))).toBe("Control+[Alt]+K");
+    expect(serializeChord(parseChord(parseKeybinding, "Control+[Alt]+K"))).toBe("Control+[Alt]+K");
   });
 
   test("serializes a sequence as space-separated presses", () => {

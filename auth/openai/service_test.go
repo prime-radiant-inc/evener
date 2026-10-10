@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -534,6 +536,259 @@ func TestRuntimeCredentialsTransientRefreshFailureDoesNotRequireRelogin(t *testi
 	}
 	if errors.Is(err, ErrLoginRequired) {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v, should not require re-login", err)
+	}
+}
+
+// TestResolveRuntimeCredentialsRefreshGuardReappliedToRereadRecord pins the
+// other #2370 review finding: the blank-refresh-token guard must hold for the
+// record re-read under the lock, not only for the record loaded before it. The
+// first now lookup happens after the outer load and before the re-read, so it
+// is where the test simulates a concurrent writer replacing the record with one
+// that is still near expiry but carries no usable refresh token.
+func TestResolveRuntimeCredentialsRefreshGuardReappliedToRereadRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	stale := sampleAuthRecord()
+	stale.Expiry = now.Add(time.Minute)
+	if err := SaveAuth(stateDir, "openai", stale); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	svc := newTestService(now)
+	var rewrite sync.Once
+	svc.now = func() time.Time {
+		rewrite.Do(func() {
+			replaced := sampleAuthRecord()
+			replaced.Expiry = now.Add(time.Minute)
+			replaced.RefreshToken = "   "
+			if err := SaveAuth(stateDir, "openai", replaced); err != nil {
+				t.Fatalf("SaveAuth(replaced) error = %v", err)
+			}
+		})
+		return now
+	}
+	var redemptions atomic.Int32
+	svc.refreshToken = func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error) {
+		redemptions.Add(1)
+		return TokenSet{}, nil
+	}
+
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
+	if !errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want ErrLoginRequired", err)
+	}
+	if got := redemptions.Load(); got != 0 {
+		t.Fatalf("refresh redemptions = %d, want 0: an unusable re-read refresh token must not be redeemed", got)
+	}
+}
+
+// TestResolveRuntimeCredentialsRefreshLockHonorsCancellation pins the review
+// finding on #2370's per-record lock: a caller canceled while another refresh
+// holds the record must return promptly with its context error instead of
+// blocking behind the in-flight refresh and later handing back credentials it
+// no longer wants. The owner holds the lock open until the test releases it, so
+// the canceled caller's outcome cannot be confused with a completed refresh.
+func TestResolveRuntimeCredentialsRefreshLockHonorsCancellation(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	stale := sampleAuthRecord()
+	stale.AccessToken = "stale-access-token"
+	stale.RefreshToken = "refresh-token"
+	stale.Expiry = now.Add(time.Minute)
+	if err := SaveAuth(stateDir, "openai", stale); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	ownerStarted := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	secondLoaded := make(chan struct{})
+	var redemptions atomic.Int32
+
+	transport := func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error) {
+		if redemptions.Add(1) == 1 {
+			close(ownerStarted)
+			<-releaseOwner
+		}
+		return TokenSet{
+			AccessToken:  "fresh-access-token",
+			RefreshToken: "refresh-token-2",
+			TokenType:    "Bearer",
+			Scope:        "openid profile email offline_access",
+			Expiry:       now.Add(time.Hour),
+		}, nil
+	}
+
+	owner := newTestService(now)
+	owner.refreshToken = transport
+
+	second := newTestService(now)
+	second.refreshToken = transport
+	second.now = func() time.Time {
+		select {
+		case <-secondLoaded:
+		default:
+			close(secondLoaded)
+		}
+		return now
+	}
+
+	type result struct {
+		creds RuntimeCredentials
+		err   error
+	}
+	ownerResult := make(chan result, 1)
+	secondResult := make(chan result, 1)
+
+	go func() {
+		creds, err := owner.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
+		ownerResult <- result{creds, err}
+	}()
+	select {
+	case <-ownerStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("owner never reached the refresh transport")
+	}
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	go func() {
+		creds, err := second.ResolveRuntimeCredentials(secondCtx, stateDir, "openai")
+		secondResult <- result{creds, err}
+	}()
+	select {
+	case <-secondLoaded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("second caller never loaded the stale record")
+	}
+	cancelSecond()
+
+	select {
+	case r := <-secondResult:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("canceled caller error = %v, want context.Canceled", r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceled caller did not return after its context was canceled")
+	}
+
+	close(releaseOwner)
+	select {
+	case r := <-ownerResult:
+		if r.err != nil {
+			t.Fatalf("owner ResolveRuntimeCredentials() error = %v", r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the owner result")
+	}
+
+	if got := redemptions.Load(); got != 1 {
+		t.Fatalf("refresh redemptions = %d, want 1: the canceled caller must not redeem", got)
+	}
+}
+
+// TestResolveRuntimeCredentialsCoalescesConcurrentRefresh pins issue #2370:
+// when two callers observe the same near-expiry record, only one redemption of
+// the rotating refresh token may happen, and both must observe the persisted
+// rotation. The owner's refresh transport is held open until the test knows the
+// second caller has loaded the stale record, so the two calls overlap
+// deterministically without a wall-clock sleep. The second caller's first now
+// lookup happens only after its load, so closing secondLoaded proves it read
+// the pre-rotation record while the owner is still redeeming.
+func TestResolveRuntimeCredentialsCoalescesConcurrentRefresh(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	stale := sampleAuthRecord()
+	stale.AccessToken = "stale-access-token"
+	stale.RefreshToken = "refresh-token"
+	stale.Expiry = now.Add(time.Minute)
+	if err := SaveAuth(stateDir, "openai", stale); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	ownerStarted := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	secondLoaded := make(chan struct{})
+	var redemptions atomic.Int32
+
+	transport := func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error) {
+		if redemptions.Add(1) == 1 {
+			close(ownerStarted)
+			<-releaseOwner
+		}
+		return TokenSet{
+			AccessToken:  "fresh-access-token",
+			RefreshToken: "refresh-token-2",
+			TokenType:    "Bearer",
+			Scope:        "openid profile email offline_access",
+			Expiry:       now.Add(time.Hour),
+		}, nil
+	}
+
+	owner := newTestService(now)
+	owner.refreshToken = transport
+
+	second := newTestService(now)
+	second.refreshToken = transport
+	second.now = func() time.Time {
+		select {
+		case <-secondLoaded:
+		default:
+			close(secondLoaded)
+		}
+		return now
+	}
+
+	type result struct {
+		creds RuntimeCredentials
+		err   error
+	}
+	results := make(chan result, 2)
+	ctx := context.Background()
+
+	go func() {
+		creds, err := owner.ResolveRuntimeCredentials(ctx, stateDir, "openai")
+		results <- result{creds, err}
+	}()
+	select {
+	case <-ownerStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("owner never reached the refresh transport")
+	}
+
+	go func() {
+		creds, err := second.ResolveRuntimeCredentials(ctx, stateDir, "openai")
+		results <- result{creds, err}
+	}()
+	select {
+	case <-secondLoaded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("second caller never loaded the stale record")
+	}
+	close(releaseOwner)
+
+	for range 2 {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				t.Fatalf("ResolveRuntimeCredentials() error = %v", r.err)
+			}
+			if r.creds.BearerToken != "fresh-access-token" {
+				t.Fatalf("BearerToken = %q, want %q", r.creds.BearerToken, "fresh-access-token")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for a ResolveRuntimeCredentials result")
+		}
+	}
+
+	if got := redemptions.Load(); got != 1 {
+		t.Fatalf("refresh redemptions = %d, want 1: concurrent callers must not each redeem the rotating refresh token", got)
+	}
+	persisted, err := LoadAuth(stateDir, "openai")
+	if err != nil {
+		t.Fatalf("LoadAuth() error = %v", err)
+	}
+	if persisted.RefreshToken != "refresh-token-2" {
+		t.Fatalf("persisted RefreshToken = %q, want the newest rotation %q", persisted.RefreshToken, "refresh-token-2")
 	}
 }
 

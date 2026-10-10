@@ -2,13 +2,13 @@ package agent
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/fuzz/reflectfill"
 )
 
 // evener-doctor's mutations reader cannot import clientMutationSnapshot — it is
@@ -28,7 +28,7 @@ func TestClientMutationSnapshotStaysReadableByTheDoctor(t *testing.T) {
 		`{"kind":"header","session_id":"`+sid+`"}`+"\n")
 
 	var snapshot clientMutationSnapshot
-	fillEveryField(t, reflect.ValueOf(&snapshot).Elem(), "clientMutationSnapshot")
+	reflectfill.Fill(t, reflect.ValueOf(&snapshot).Elem(), "clientMutationSnapshot")
 	// The two fields the doctor checks against its caller, not against itself.
 	snapshot.Version = clientMutationSnapshotVersion
 	snapshot.SessionID = sid
@@ -48,73 +48,6 @@ func TestClientMutationSnapshotStaysReadableByTheDoctor(t *testing.T) {
 	if !report.Present || len(report.Journal) != 1 {
 		t.Fatalf("doctor read the store but reported %d journal records (present=%t), want 1",
 			len(report.Journal), report.Present)
-	}
-}
-
-var doctorDriftRawMessageType = reflect.TypeFor[json.RawMessage]()
-
-// fillEveryField sets every field reachable from v to a non-zero value, so that
-// omitempty cannot drop it from the marshaled snapshot. An unhandled kind fails
-// the test: a populator that silently skips a kind is a drift test that silently
-// stops covering it.
-func fillEveryField(t *testing.T, v reflect.Value, path string) {
-	t.Helper()
-	switch v.Kind() {
-	case reflect.String:
-		v.SetString(path)
-	case reflect.Bool:
-		v.SetBool(true)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		v.SetInt(7)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		v.SetUint(7)
-	case reflect.Float32, reflect.Float64:
-		v.SetFloat(7)
-	case reflect.Pointer:
-		pointer := reflect.New(v.Type().Elem())
-		fillEveryField(t, pointer.Elem(), path)
-		v.Set(pointer)
-	case reflect.Interface:
-		if v.Type() == reflect.TypeFor[error]() {
-			v.Set(reflect.ValueOf(errors.New(path)))
-			return
-		}
-		// A generic `any` field (e.g. a json:"...,omitempty" structured payload)
-		// holds a JSON-serializable value.
-		v.Set(reflect.ValueOf(map[string]any{"populated": true}))
-	case reflect.Slice:
-		// A raw message must hold valid JSON; any other byte slice marshals as
-		// base64 and can hold anything.
-		if v.Type() == doctorDriftRawMessageType {
-			v.SetBytes([]byte(`{"populated":true}`))
-			return
-		}
-		if v.Type().Elem().Kind() == reflect.Uint8 {
-			v.SetBytes([]byte{7})
-			return
-		}
-		element := reflect.New(v.Type().Elem())
-		fillEveryField(t, element.Elem(), path+"[0]")
-		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), element.Elem()))
-	case reflect.Map:
-		key := reflect.New(v.Type().Key())
-		fillEveryField(t, key.Elem(), path+".key")
-		value := reflect.New(v.Type().Elem())
-		fillEveryField(t, value.Elem(), path+".value")
-		entries := reflect.MakeMap(v.Type())
-		entries.SetMapIndex(key.Elem(), value.Elem())
-		v.Set(entries)
-	case reflect.Struct:
-		for i := range v.NumField() {
-			// Unexported fields are unsettable and invisible to encoding/json,
-			// so skipping them cannot hide a field from the marshaled shape.
-			if !v.Type().Field(i).IsExported() {
-				continue
-			}
-			fillEveryField(t, v.Field(i), path+"."+v.Type().Field(i).Name)
-		}
-	default:
-		t.Fatalf("%s: unhandled kind %s — teach the populator this kind instead of skipping it", path, v.Kind())
 	}
 }
 

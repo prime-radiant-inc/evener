@@ -238,28 +238,22 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedInstanceId":"instance_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedInstanceID: "instance_1"})
 		}},
-		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
-			"id": 5, "type": "implement", "description": "Wire up the status row",
-			"prompt": "Follow the existing disclosure idiom.", "status": "in_progress",
+		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []Task{{
+			ID: 5, Type: TaskTypeImplement, Description: "Wire up the status row",
+			Prompt: "Follow the existing disclosure idiom.", Status: TaskInProgress,
 		}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.TasksList(ctx, TaskListParams{Ref: "local:th"})
 			if err != nil {
 				return err
 			}
-			// Data is `any` in the catalog and no appwire type describes a task
-			// row (the daemon puts agent/task.Task values here), so what this
-			// pins is the passthrough: rows arrive decoded, unwrapped, under
-			// the same snake_case keys and JSON types the web client's
-			// parseTaskListData requires of every row it accepts.
-			rows, ok := out.Data.([]any)
-			if !ok || len(rows) != 1 {
+			if len(out.Data) != 1 {
 				return fmt.Errorf("TasksList data = %#v, want one row", out.Data)
 			}
-			row, ok := rows[0].(map[string]any)
-			if !ok || row["id"] != float64(5) || row["type"] != "implement" ||
-				row["description"] != "Wire up the status row" ||
-				row["prompt"] != "Follow the existing disclosure idiom." || row["status"] != "in_progress" {
-				return fmt.Errorf("TasksList row = %#v", rows[0])
+			row := out.Data[0]
+			if row.ID != 5 || row.Type != TaskTypeImplement ||
+				row.Description != "Wire up the status row" ||
+				row.Prompt != "Follow the existing disclosure idiom." || row.Status != TaskInProgress {
+				return fmt.Errorf("TasksList row = %#v", row)
 			}
 			return nil
 		}},
@@ -337,17 +331,41 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobOutput", MethodEvenerJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputTail{
-			Tail: "tail-bytes", TotalBytes: 4096, RetainedStart: 3968, Truncated: true,
+		{"JobOutput", MethodEvenerJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputPage{
+			OffsetBytes: 4086, BytesReturned: 10, TotalBytes: 4096, RetainedStartBytes: 128, Encoding: "utf8", Data: "tail-bytes",
 		}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
 			if err != nil {
 				return err
 			}
-			tail, ok := out.Data.(map[string]any)
-			if !ok || tail["tail"] != "tail-bytes" || tail["totalBytes"] != float64(4096) ||
-				tail["retainedStart"] != float64(3968) || tail["truncated"] != true {
+			tail := out.Data
+			if tail.Data != "tail-bytes" || tail.TotalBytes != 4096 || tail.BytesReturned != 10 ||
+				tail.OffsetBytes != 4086 || tail.RetainedStartBytes != 128 || tail.Encoding != "utf8" {
 				return fmt.Errorf("JobOutput data = %#v", out.Data)
+			}
+			return nil
+		}},
+		{"JobsGet", MethodEvenerJobsGet, `{"ref":"local:th","jobId":"j1"}`, JobsGetResponse{Data: JobActivityJob{
+			JobID:          "job_a",
+			OwnerSessionID: "th",
+			OwnerRef:       "local:th",
+			Type:           "shell",
+			Status:         "running",
+			HasOutput:      true,
+			Description:    "go test ./...",
+			Command:        "go test ./... -count=1 -run TestAll",
+			StartedAt:      "2026-08-03T00:00:00Z",
+			OutputBytes:    128,
+		}}, func(ctx context.Context, c *Client) error {
+			out, err := c.JobsGet(ctx, JobsGetParams{Ref: "local:th", JobID: "j1"})
+			if err != nil {
+				return err
+			}
+			// The typed result retains the full command across the wire.
+			job := out.Data
+			if job.JobID != "job_a" || job.OwnerRef != "local:th" || job.Type != "shell" ||
+				job.Status != "running" || job.Command != "go test ./... -count=1 -run TestAll" {
+				return fmt.Errorf("JobsGet data = %#v", out.Data)
 			}
 			return nil
 		}},

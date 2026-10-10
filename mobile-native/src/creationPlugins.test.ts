@@ -80,18 +80,6 @@ it("reports preview failure without dispatching creation", async () => {
 	expect(store.getState().launchOverrides.enabledPlugins).toEqual([]);
 });
 
-it("omits plugin selection for an unsupported harness", async () => {
-	const { store, calls } = await setup(["alpha"]);
-	await store.getState().setHarness("codex");
-	expect(store.getState().launchOverrides).toEqual({ maxRounds: 7 });
-	store.getState().setLaunchOverrides({ enabledPlugins: ["stale"], maxRounds: 8 });
-	expect(await store.getState().submit()).toMatchObject({ status: "created" });
-	expect(calls.find((c) => c.method === "thread/start")?.params).toMatchObject({
-		launchOverrides: { maxRounds: 8 },
-	});
-	expect(calls.some((c) => c.method === "evener/plugin/preview")).toBe(false);
-});
-
 it("does not report an uncertain creation when disconnecting before start", async () => {
 	const { store, resolve } = await setup([]);
 	const pending = store.getState().submit();

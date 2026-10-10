@@ -45,7 +45,7 @@ export function isActivityFailure(outcome: string | undefined, status: string | 
 // command-outcome statuses, whose 23-char snake_case form ellipsizes
 // mid-word in the rail's narrow column and disagrees with the words the
 // notification card already ruled for them ("Command failed" /
-// "Command killed", steeringClassify's terminalJobTitle). Those two, and
+// "Command killed", steeringNotifications's terminalJobTitle). Those two, and
 // only those, render under the card's display words. A legacy pre-split
 // "failed" record joins them when its reason names the command's own
 // outcome, so durable history reads the same across every surface.
@@ -102,7 +102,7 @@ export interface ActivityShellEntry {
 
 export interface ActivitySessionNode {
   kind: "session";
-  sessionId: string;
+  sessionId?: string;
   ref: string;
   label: string;
   aggregate: string;
@@ -118,10 +118,16 @@ export interface ActivitySessionNode {
 }
 
 export interface ActivityDelegate {
+  name?: string;
+  runGeneration?: number;
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   delegateId: string;
+  ownerRef?: string;
+  rootRef?: string;
   ownerSessionId?: string;
   rootSessionId?: string;
-  childSessionId: string;
+  childSessionId?: string;
   childRef: string;
   transcriptRef?: string;
   parentDelegateId?: string;
@@ -132,6 +138,7 @@ export interface ActivityDelegate {
   projectionRevision?: number;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable?: boolean;
   notResumableReason?: string;
@@ -199,8 +206,8 @@ export interface ActivityWorktree {
 }
 
 export interface ActivityUsage {
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
   cacheReadTokens?: number;
   totalTokens?: number;
 }
@@ -234,9 +241,9 @@ type ParseResult<T> = {
 };
 
 type ActivityIdentity =
-  | { kind: "session"; sessionId: string }
-  | { kind: "delegate"; delegateId: string }
-  | { kind: "shell"; jobId: string };
+  | { kind: "session"; ref: string }
+  | { kind: "delegate"; delegateId: string; childRef: string }
+  | { kind: "shell"; jobId: string; ownerRef: string };
 
 export type ActivityNodeLike = ActivityIdentity | ActivitySessionNode | ActivityShellEntry | ActivityDelegateEntry;
 
@@ -366,7 +373,19 @@ function copyOptionalInteger(
   return true;
 }
 
-function parseJob(raw: unknown): ActivityJob | null {
+// jobCommandLabel is the one wording of what a job ran, for every surface that
+// shows it: the command, else the task, else the description. The command is
+// the record's own, untruncated; a blank or absent one falls through, so a job
+// that carries only a task still reads as something.
+export function jobCommandLabel(job: Pick<ActivityJob, "command" | "task" | "description">): string | undefined {
+  return job.command?.trim() || job.task?.trim() || job.description?.trim() || undefined;
+}
+
+// parseActivityJob validates one job payload against the ActivityJob wire
+// shape. The tree parser uses it per shell entry; the job log pane uses it for
+// the single-job read (evener/jobs/get), whose Data field crosses the wire
+// untyped like the tree's.
+export function parseActivityJob(raw: unknown): ActivityJob | null {
   if (!isPlainObject(raw)) return null;
   const jobId = readString(raw, "jobId");
   const ownerSessionId = readString(raw, "ownerSessionId");
@@ -453,7 +472,7 @@ function parseEntry(raw: unknown, depth: number): ParseResult<ActivityEntry> {
   if (!isPlainObject(raw)) return { value: null, incomplete: true };
   const kind = readString(raw, "kind");
   if (kind === "shell") {
-    const job = parseJob(raw.job);
+    const job = parseActivityJob(raw.job);
     return { value: job ? { kind: "shell", job } : null, incomplete: job === null };
   }
   if (kind === "delegate") {
@@ -487,12 +506,14 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "rootSessionId",
     "transcriptRef",
     "parentDelegateId",
+    "name",
     "type",
     "lifecycle",
     "phase",
     "status",
     "outcome",
     "reason",
+    "error",
     "notResumableReason",
     "task",
     "description",
@@ -509,23 +530,31 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "runEndedAt",
     "latestActivityAt",
     "packetKind",
+    "reportPreview",
     "structuredResultReason",
     "exhaustionBudget",
   ];
   for (const field of stringFields) {
     if (!copyOptionalString(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["terminal", "resumable", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"]) {
+  for (const field of [
+    "reportPreviewTruncated",
+    "terminal",
+    "resumable",
+    "structuredResultValid",
+    "exhaustionResumable",
+    "parentWatchGranted",
+  ]) {
     if (!copyOptionalBoolean(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
+  for (const field of ["runGeneration", "projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
     if (!copyOptionalInteger(raw, target, field)) return { value: null, incomplete: true };
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
   }
   if (Array.isArray(raw.turns)) {
-    const turns = raw.turns.map(parseJob);
+    const turns = raw.turns.map(parseActivityJob);
     if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
     delegate.turns = turns as ActivityJob[];
   } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {
@@ -618,60 +647,25 @@ export function parseActivityTree(data: unknown): ActivityTree | null {
   return { revision, root: root.value };
 }
 
-/** What a delegate row's branch says, once both of its branches are read. */
-export interface ActivityDelegateBranch extends ActivityBranchState {
-  // openSessionRef is set when the branch stopped with nothing to page: the
-  // depth or continuation-path bound was reached, so the daemon truncated it
-  // and deliberately minted no token, because a token there would name this
-  // child as a fresh root at position 0 -- the page a direct request already
-  // returns. The child is still addressable as its own session, and this is
-  // the ref that reaches it.
-  openSessionRef?: string;
-}
-
-// activityDelegateBranch reads the two branch states a delegate row has. Its
-// own is truncated by the depth bound, which stops before the child is
-// loaded at all; the child's is where a continuation-path truncation and any
-// size trim inside that child land. A reader that looks at one of them
-// answers correctly for half the cases and silently wrongly for the rest,
-// which is why this is one function rather than a rule each surface
-// remembers: the child's token wins where it has one, and either branch
-// being truncated truncates the row.
-export function activityDelegateBranch(delegate: ActivityDelegate): ActivityDelegateBranch {
-  const own = delegate.branch;
-  const child = delegate.child?.branch;
-  const continuation = child?.continuation ?? own.continuation;
-  const truncated = Boolean(child?.truncated || own.truncated);
-  const error = child?.error ?? own.error;
-  const childRef = delegate.childRef.trim();
-  const merged: ActivityDelegateBranch = {};
-  if (continuation !== undefined) merged.continuation = continuation;
-  if (truncated) merged.truncated = true;
-  if (error !== undefined) merged.error = error;
-  if (!continuation && truncated && childRef) merged.openSessionRef = childRef;
-  return merged;
-}
-
 // activityDelegateDiagnostics reads the two places a delegate row's
-// diagnostics land, for the same reason activityDelegateBranch reads two
-// branches: the depth bound is stamped on the delegate before its child is
-// loaded, while the continuation-path bound and the journal conditions are
-// stamped on the child session itself, and that session has no row of its
-// own to say so. The delegate's own sentences come first, then the child's,
-// each said once.
+// diagnostics land: the depth bound is stamped on the delegate before its
+// child is loaded, while the continuation-path bound and the journal
+// conditions are stamped on the child session itself, and that session has
+// no row of its own to say so. The delegate's own sentences come first, then
+// the child's, each said once.
 export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[] {
   return [...new Set([...(delegate.diagnostics ?? []), ...(delegate.child?.diagnostics ?? [])])];
 }
 
 export function activityNodeID(node: ActivityNodeLike): string {
-  if (node.kind === "session" && "sessionId" in node) return `session:${node.sessionId}`;
+  if (node.kind === "session") return `session:${node.ref}`;
   if (node.kind === "delegate") {
-    if ("delegate" in node) return `delegate:${node.delegate.delegateId}`;
-    return `delegate:${node.delegateId}`;
+    const delegate = "delegate" in node ? node.delegate : node;
+    return `delegate:${JSON.stringify([delegate.childRef, delegate.delegateId])}`;
   }
   if (node.kind === "shell") {
-    if ("job" in node) return `job:${node.job.jobId}`;
-    return `job:${node.jobId}`;
+    const job = "job" in node ? node.job : node;
+    return `job:${JSON.stringify([job.ownerRef, job.jobId])}`;
   }
   throw new Error("unsupported activity node identity");
 }

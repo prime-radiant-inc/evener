@@ -203,6 +203,8 @@ function answer(host: string, method: string, params: unknown): unknown {
     }
     case "evener/spawn/slashCatalog":
       return { commands: [], skills: [] };
+    case "evener/command/list":
+      return { commands: [] };
     case "evener/git/head":
       return { head: world?.branch ?? "" };
     case "evener/plugin/preview":
@@ -359,6 +361,7 @@ for (const method of [
   "evener/instance/list",
   "evener/projects/recent",
   "evener/spawn/slashCatalog",
+  "evener/command/list",
   "evener/plugin/preview",
   "evener/git/head",
 ] as const satisfies readonly MethodName[]) {
@@ -719,7 +722,7 @@ function withExpansion<T extends TreeNode>(nodes: T[], expanded: ReadonlySet<str
 // ---------------------------------------------------------------------------
 
 const MOCK_ACTIONS: RailRowActions = {
-  onOpenSessionPane: () => {},
+  onOpenOverview: () => {},
   onRenameSession: () => Promise.resolve(),
   onShutdownSession: () => Promise.resolve(),
   onForceStopSession: () => Promise.resolve(),
@@ -1164,7 +1167,7 @@ function MockupsPage(): JSX.Element {
     // host list and RailRow's host-label lookups read the manifest through
     // it. The capability matches shellguard's scripted shape (v1 capability,
     // v2 reads).
-    initNavigation(fake, { version: 1, readVersions: [2], generationId: GENERATION, sequence: 0 });
+    initNavigation(fake, { version: 1, readVersions: [3], generationId: GENERATION, sequence: 0 });
     void navigationStore
       .getState()
       .loadManifest()

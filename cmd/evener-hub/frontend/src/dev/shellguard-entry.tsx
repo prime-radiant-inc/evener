@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //
 // The bug it exists to find: the rail (sidebar) tree's FULL expanded height
@@ -15,6 +16,7 @@
 // answer the fix has to be aimed at.
 
 import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { buildWatchRows, hydrateThread } from "@evener/appwire-client";
 import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -24,10 +26,29 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
+import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
+import { RepoLocation } from "../panes/session/composer/RepoLocation";
+import activityStyles from "../shell/activitybar/activitybar.module.css";
+import { AgentRow, JobRow, WatchRow } from "../shell/activitybar/activityRows";
+import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
+import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
+import { StatusBar } from "../shell/statusbar/StatusBar";
+import { workspaceStore } from "../shell/workspace";
+import { prefsStore, type ThemePref } from "../stores/prefs";
+import {
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activityJob,
+  activitySummary,
+  activityThread,
+  activityWatch,
+} from "../stores/sessionActivityTestUtils";
 import "../styles/tokens.css";
 import "../styles/global.css";
+import { PaneScaffold } from "../widgets/panescaffold";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -61,6 +82,32 @@ const NAVIGATION_MANIFEST = {
   sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
   catalogs: { projects: { count: PROJECT_COUNT }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
+const PANE_FOOTER_FIXTURES = [
+  {
+    key: "one",
+    ref: "local:p0-s0",
+    cwd: "/home/user/project-one/worktrees/feature-one",
+  },
+  {
+    key: "two",
+    ref: "local:p1-s0",
+    cwd: "/home/user/project-two/worktrees/feature-two",
+  },
+];
+const EXPECTED_PANE_ACTIVITY_TABS = ["agents", "jobs", "watches", "tasks"] as const;
+const EXPECTED_PANE_ACTIVITY_CONTROLS = EXPECTED_PANE_ACTIVITY_TABS.length;
+const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
+const OVERVIEW_CHILD = "local:overview-child";
+const ROW_PADDING_REF = "local:row-padding";
+
+function overviewActivityContext(ref: string) {
+  return {
+    ...activityContext(ref),
+    ...(ref === OVERVIEW_CHILD
+      ? { rootRef: "local:p0-s0", ancestors: [{ ref: "local:p0-s0", sessionId: "p0-s0", title: "Overview parent" }] }
+      : {}),
+  };
+}
 
 let changedTitle = "project-0 session 0";
 let mutationRevision = 1;
@@ -79,6 +126,7 @@ function sessionValue(projectKey: string, projectName: string, index: number) {
     state: "idle",
     kind: "session",
     live: false,
+    tasks: { total: 100, done: 100 },
     children: [],
   };
 }
@@ -296,9 +344,9 @@ async function projectDelta(key: Extract<ResourceKey, { kind: "project" }>) {
   };
 }
 async function navigationRead(params: NavigationReadParams): Promise<NavigationReadResponse> {
-  if (params.representationVersion !== 2) throw new Error("shellguard expected v2 navigation reads");
+  if (params.representationVersion !== 3) throw new Error("shellguard expected v3 navigation reads");
   const key = resourceKey(params);
-  const v2 = (
+  const wireResponse = (
     data: unknown,
     representation: "snapshot" | "delta" = "snapshot",
     base?: NavigationReadBase,
@@ -313,7 +361,7 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   });
   switch (key.kind) {
     case "manifest":
-      return v2(
+      return wireResponse(
         snapshot(
           { ...NAVIGATION_MANIFEST, revision: mutationRevision },
           [],
@@ -327,23 +375,23 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
         ),
       );
     case "section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_catalog":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "catalog":
-      return v2(await catalogSnapshot(key));
+      return wireResponse(await catalogSnapshot(key));
     case "project": {
       if (mutationRevision > 1 && params.base?.revision === 1 && key.projectKey === "p0")
-        return v2(await projectDelta(key), "delta", params.base);
+        return wireResponse(await projectDelta(key), "delta", params.base);
       const summary = projectSummaries.find((project) => project.key === key.projectKey);
-      return v2(await sessionSnapshot(key, summary?.name ?? key.projectKey));
+      return wireResponse(await sessionSnapshot(key, summary?.name ?? key.projectKey));
     }
     case "project_page":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "location":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
   }
 }
 
@@ -360,10 +408,59 @@ async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
+  fake.on("thread/read", ({ ref }) => {
+    const response = activityDetailsThread(ref, {
+      id: "sessionidentifier".repeat(12),
+      modelProvider: `anthropic/${"modelidentifier".repeat(12)}`,
+      cwd: `/work/${"directorysegment".repeat(12)}/session`,
+      projectPath: "/work",
+      gitInfo: { branch: `feature/${"branchidentifier".repeat(12)}` },
+    });
+    return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
+  });
+  fake.on("thread/unsubscribe", () => ({}));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: overviewActivityContext(ref),
+    delegates: { ...CROWDED_ACTIVITY_COUNTS },
+    jobs: { ...CROWDED_ACTIVITY_COUNTS },
+    watches: { ...CROWDED_ACTIVITY_COUNTS },
+  }));
+  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: overviewActivityContext(ref),
+    scope: scope ?? "session",
+    delegates:
+      ref === "local:p0-s0"
+        ? [activityDelegate({ ownerRef: ref, childRef: OVERVIEW_CHILD, description: "Open Overview child" })]
+        : [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/tasks/list", ({ ref }) => ({
+    data:
+      ref === ROW_PADDING_REF
+        ? [{ id: 1, type: "verify", description: "Measure task row", prompt: "", status: "open" }]
+        : [],
+  }));
+  fake.on("evener/git/head", () => ({
+    head: "this-is-a-long-feature-branch",
+    originUrl: "https://github.com/prime-radiant-inc/evener.git",
+  }));
   shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {
       threadList: true,
@@ -379,13 +476,56 @@ async function boot(): Promise<void> {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [2], generationId: "shellguard-generation", sequence: 0 },
+    navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
   }));
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />
     </RailRenderObserver>,
   );
+
+  // A fixed, transparent geometry fixture keeps shellguard's production
+  // AppShell scenario intact while exercising the real PaneScaffold and
+  // StatusBar components in two adjacent narrow pane allocations. Fixed
+  // positioning keeps it out of the page-height contract this guard measures.
+  if (window.matchMedia("(min-width: 900px)").matches) {
+    const fixtureRoot = document.createElement("div");
+    fixtureRoot.dataset.paneFooterFixtures = "";
+    Object.assign(fixtureRoot.style, {
+      position: "fixed",
+      left: "320px",
+      top: "120px",
+      width: "452px",
+      height: "500px",
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "12px",
+      opacity: "0",
+      pointerEvents: "none",
+    });
+    document.body.append(fixtureRoot);
+    createRoot(fixtureRoot).render(
+      <ClientProvider client={fake}>
+        {PANE_FOOTER_FIXTURES.map((fixture) => (
+          <div key={fixture.key} data-pane-footer-fixture>
+            <PaneScaffold
+              title={`Footer fixture ${fixture.key}`}
+              footer={`Composer ${fixture.key}`}
+              edgeFooter={
+                <StatusBar
+                  sessionRef={fixture.ref}
+                  paneId={`fixture-${fixture.key}`}
+                  leading={<RepoLocation cwd={fixture.cwd} local />}
+                />
+              }
+            >
+              Pane {fixture.key}
+            </PaneScaffold>
+          </div>
+        ))}
+      </ClientProvider>,
+    );
+  }
 }
 
 interface Box {
@@ -540,6 +680,43 @@ function measureShell() {
   };
 }
 
+function paneActivityTabs(statusbar: Element | null) {
+  return statusbar === null
+    ? []
+    : Array.from(statusbar.querySelectorAll<HTMLButtonElement>("button"), (button) => button.dataset.activityTab);
+}
+
+function hasExpectedPaneActivityTabs(statusbar: Element | null) {
+  const tabs = paneActivityTabs(statusbar);
+  return (
+    tabs.length === EXPECTED_PANE_ACTIVITY_CONTROLS &&
+    EXPECTED_PANE_ACTIVITY_TABS.every((tab, index) => tabs[index] === tab)
+  );
+}
+
+function measurePaneFooters() {
+  const panes = [...document.querySelectorAll("[data-pane-footer-fixture]")].map((fixture) => {
+    const pane = fixture.firstElementChild;
+    const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]') ?? null;
+    const statusbar = pane?.querySelector('[data-testid="statusbar"]') ?? null;
+    if (!hasExpectedPaneActivityTabs(statusbar)) {
+      throw new Error(`Unexpected pane footer categories: ${JSON.stringify(paneActivityTabs(statusbar))}`);
+    }
+    const controls = statusbar === null ? [] : [...statusbar.querySelectorAll("button")].map(rect);
+    return {
+      box: pane === null ? null : rect(pane),
+      edgeFooter: edgeFooter === null ? null : rect(edgeFooter),
+      statusbar: statusbar === null ? null : rect(statusbar),
+      statusbarClientWidth: statusbar instanceof HTMLElement ? statusbar.clientWidth : null,
+      statusbarScrollWidth: statusbar instanceof HTMLElement ? statusbar.scrollWidth : null,
+      activityTabs: paneActivityTabs(statusbar),
+      controls,
+      containsStatusbar: edgeFooter !== null && statusbar !== null && edgeFooter.contains(statusbar),
+    };
+  });
+  return { expectedControlsPerPane: EXPECTED_PANE_ACTIVITY_CONTROLS, panes };
+}
+
 function scrollMetrics(el: Element | null) {
   if (el === null) return null;
   const htmlEl = el as HTMLElement;
@@ -617,10 +794,15 @@ function measureTapTargets() {
 
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
+  activityRowFixture: (open: boolean) => void;
+  configureOverview: (theme: ThemePref) => void;
+  overviewGuardState: () => unknown;
+  overviewPane: (action: "duplicate" | "other" | "focus" | "close", id?: string) => string | undefined;
   measureShell: typeof measureShell;
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
-  applyShellNavigationDelta: () => Promise<unknown>;
+  measurePaneFooters: typeof measurePaneFooters;
+  applyShellNavigationDelta: (title?: string) => Promise<unknown>;
   measureRailRenderCounts: () => {
     counts: Record<string, number>;
     changedRowID: string | null;
@@ -628,16 +810,95 @@ const target = window as typeof window & {
     document: { scrollHeight: number; viewportHeight: number };
   };
 };
+let stopActivityRowFixture: (() => void) | null = null;
+target.activityRowFixture = (open) => {
+  stopActivityRowFixture?.();
+  stopActivityRowFixture = null;
+  if (!open) return;
+  const fixture = document.createElement("div");
+  fixture.dataset.activityRowFixture = "";
+  fixture.className = activityStyles.body ?? "";
+  Object.assign(fixture.style, {
+    position: "fixed",
+    left: "0",
+    top: "120px",
+    width: "320px",
+    maxWidth: "100vw",
+    maxHeight: "calc(100vh - 120px)",
+    zIndex: "10000",
+    background: "var(--surface-canvas)",
+  });
+  document.body.append(fixture);
+  const fixtureRoot = createRoot(fixture);
+  const activate = (kind: string) => {
+    fixture.dataset.activated = kind;
+  };
+  fixtureRoot.render(
+    <div className={activityStyles.stack}>
+      <div data-row-case="agent-passive">
+        <AgentRow sub={activityDelegate()} />
+      </div>
+      <div data-row-case="agent-clickable">
+        <AgentRow sub={activityDelegate()} onDrill={() => activate("agent")} />
+      </div>
+      <div data-row-case="job-passive">
+        <JobRow job={activityJob()} />
+      </div>
+      <div data-row-case="job-clickable">
+        <JobRow job={activityJob()} onOpen={() => activate("job")} />
+      </div>
+      <div data-row-case="watch">
+        {buildWatchRows([activityWatch()]).map((row) => (
+          <WatchRow key={row.id} row={row} now={Date.parse("2026-10-05T00:00:00Z")} />
+        ))}
+      </div>
+      <div data-row-case="task">
+        <TasksPanelBody
+          sessionRef={ROW_PADDING_REF}
+          model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}
+        />
+      </div>
+    </div>,
+  );
+  stopActivityRowFixture = () => {
+    fixtureRoot.unmount();
+    fixture.remove();
+  };
+};
+target.configureOverview = (theme) => {
+  prefsStore.getState().setFontSize("xl");
+  prefsStore.getState().setTheme(theme);
+};
+target.overviewGuardState = () => ({
+  panes: workspaceStore.getState().panes,
+  focusedPaneId: workspaceStore.getState().focusedPaneId,
+  overview: {
+    open: activitySidebarStore.getState().open,
+    tab: activitySidebarStore.getState().tab,
+    ref: activitySidebarStore.getState().ref,
+  },
+  calls: shellClient?.calls.map(({ method, params }) => ({ method, params })) ?? [],
+});
+target.overviewPane = (action, id) => {
+  const workspace = workspaceStore.getState();
+  if (action === "duplicate") {
+    return workspace.openPane("session", { ref: "local:p0-s0", browserInstance: "second" });
+  }
+  if (action === "other") return workspace.openPane("session", { ref: "local:p0-s1" });
+  if (action === "focus" && id) workspace.focusPane(id);
+  if (action === "close" && id) workspace.closePane(id);
+};
 target.measureShell = measureShell;
 target.measureMobileSidebar = measureMobileSidebar;
 target.measureTapTargets = measureTapTargets;
+target.measurePaneFooters = measurePaneFooters;
 target.measureRailRenderCounts = () => ({
   counts: Object.fromEntries(renderCounts),
   changedRowID: changedObserverRowID,
   visibleRowIDs,
   document: { scrollHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight },
 });
-target.applyShellNavigationDelta = async () => {
+target.applyShellNavigationDelta = async (title = "project-0 session 0 changed") => {
   if (!shellClient) throw new Error("shellguard client is not ready");
   visibleRowIDs = [...renderCounts.keys()];
   const expectedChangedRowID = await navigationEntityKey(
@@ -649,7 +910,7 @@ target.applyShellNavigationDelta = async () => {
   if (changedObserverRowID === null) {
     throw new Error(`shellguard changed row was not observed before delta: ${expectedChangedRowID}`);
   }
-  changedTitle = "project-0 session 0 changed";
+  changedTitle = title;
   mutationRevision = 2;
   // Preserve the visible observer IDs above; clear only invocation counts and
   // do it immediately before publishing the one-entity delta.
@@ -675,13 +936,35 @@ target.settledShell = (async () => {
   for (;;) {
     // Every project row plus every session row is in the accessibility tree
     // only once the rail has rendered the full expanded tree.
-    if (document.querySelectorAll('[role="treeitem"]').length >= expectedRows) return true;
+    const treeRowCount = document.querySelectorAll('[role="treeitem"]').length;
+    const edgeFooterCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='pane-edge-footer']",
+    ).length;
+    const activityControlCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='statusbar'] button",
+    ).length;
+    const repositoryLinkCount = document.querySelectorAll(
+      "[data-pane-footer-fixture] [data-testid='composer-repo-link']",
+    ).length;
+    const expectedActivityControlCount = PANE_FOOTER_FIXTURES.length * EXPECTED_PANE_ACTIVITY_CONTROLS;
+    const paneFooterFixturesReady =
+      !window.matchMedia("(min-width: 900px)").matches ||
+      (edgeFooterCount === PANE_FOOTER_FIXTURES.length &&
+        activityControlCount === expectedActivityControlCount &&
+        [...document.querySelectorAll("[data-pane-footer-fixture] [data-testid='statusbar']")].every(
+          hasExpectedPaneActivityTabs,
+        ) &&
+        repositoryLinkCount === PANE_FOOTER_FIXTURES.length);
+    if (treeRowCount >= expectedRows && paneFooterFixturesReady) return true;
     const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors;
     if (errors && errors.length > 0) throw new Error(`shell harness page errors: ${errors.join("\n")}`);
     if (performance.now() > deadline) {
       throw new Error(
-        `shell harness: expected at least ${expectedRows} tree rows, found ${document.querySelectorAll('[role="treeitem"]').length} ` +
+        `shell harness: expected at least ${expectedRows} tree rows, found ${treeRowCount} ` +
           `(rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
+          `pane edge footers: ${edgeFooterCount}, ` +
+          `pane activity controls: ${activityControlCount}, ` +
+          `pane repository links: ${repositoryLinkCount}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
           `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
       );

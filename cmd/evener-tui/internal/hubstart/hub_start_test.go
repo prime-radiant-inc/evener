@@ -185,6 +185,67 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 	}
 }
 
+// A canceled parent context means the caller (the TUI on exit) no longer wants
+// a connection. StartHubClient must not read it as "hub unavailable" and fall
+// through to autostart, which would launch a detached hub nobody will use.
+func TestStartHubClientDoesNotAutoStartWhenContextCanceled(t *testing.T) {
+	started := false
+	hubBin := filepath.Join(t.TempDir(), "evener")
+	writeExecutable(t, hubBin)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := StartHubClient(ctx, HubStartConfig{
+		RawAddr:       "127.0.0.1:9180",
+		HubBin:        hubBin,
+		AutoStart:     true,
+		HealthTimeout: 5 * time.Second,
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
+			return nil, errors.New("connection refused")
+		},
+		StartLocalHub: func(HubStartRequest) error {
+			started = true
+			return nil
+		},
+	})
+	if started {
+		t.Fatal("a canceled context still auto-started a hub after the caller gave up")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
+// The autostart guard runs before the binary is resolved, but resolving walks
+// the filesystem. A quit that lands during the resolve must still stop the
+// handoff to the detached launcher, not just the earlier check.
+func TestStartHubClientDoesNotAutoStartWhenCanceledDuringResolve(t *testing.T) {
+	started := false
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := StartHubClient(ctx, HubStartConfig{
+		RawAddr:       "127.0.0.1:9180",
+		AutoStart:     true,
+		HealthTimeout: time.Millisecond,
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
+			return nil, errors.New("connection refused")
+		},
+		LookPath: func(string) (string, error) {
+			// The TUI quits while the binary is being resolved.
+			cancel()
+			return "/some/evener", nil
+		},
+		StartLocalHub: func(HubStartRequest) error {
+			started = true
+			return nil
+		},
+	})
+	if started {
+		t.Fatal("a cancel during resolve still handed off to the detached launcher")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
 func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

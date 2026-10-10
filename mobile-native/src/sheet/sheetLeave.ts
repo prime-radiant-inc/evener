@@ -1,6 +1,7 @@
 // What a sheet does when something tries to close it (spec 6: sheets with
 // unsaved input ask before discarding). A swipe down, Cancel and Android's
 // back each reach the sheet's guard as a removal of its route.
+import { destructiveButton } from "../haptics";
 
 export type SheetLeave = "leave" | "ask";
 
@@ -21,10 +22,7 @@ export interface SheetAlertButton {
 export function discardAlert(title: string, discard: () => void): { title: string; buttons: SheetAlertButton[] } {
 	return {
 		title,
-		buttons: [
-			{ text: "Keep editing", style: "cancel" },
-			{ text: "Discard", style: "destructive", onPress: discard },
-		],
+		buttons: [{ text: "Keep editing", style: "cancel" }, destructiveButton("Discard", () => discard())],
 	};
 }
 

@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { Sheet } from "./index";
 import sheetStyles from "./sheet.module.css";
 
@@ -214,11 +212,39 @@ test("side=right, side=bottom, and side=left each render a distinct, non-empty p
 // media queries, so the slide-in animation and its reduced-motion opt-out
 // are verified by reading the CSS module's own source.
 test("all side variants' slide-in animations honor prefers-reduced-motion, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "sheet.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "sheet.module.css");
   expect(css).toContain("animation:");
   expect(css).toContain("var(--motion-duration-overlay)");
   expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+});
+
+// The mobile sessions drawer is a full-height side="left" Sheet. jsdom has no
+// dynamic viewport and computes no cascade, so - the same comment-stripped
+// source-read idiom as AppShell.test.tsx's own dvh check - this pins the
+// declaration that makes the drawer follow the VISIBLE viewport. The order
+// check matters: the override wins only by coming after the base rules (equal
+// specificity), so reordering it would silently restore the unreachable
+// Archived sessions row.
+test("full-height edge sheets follow the visible viewport, keeping a vh fallback", () => {
+  const variants = ["left", "right"];
+  const css = readModuleCss(import.meta.url, "sheet.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  const baseIndexes: number[] = [];
+  for (const variant of variants) {
+    const baseIndex = css.search(new RegExp(`^\\.${variant} \\{`, "m"));
+    expect(baseIndex, `.${variant} base rule`).toBeGreaterThanOrEqual(0);
+    baseIndexes.push(baseIndex);
+    const base = topRuleBlock(css, `.${variant}`);
+    expect(base).toContain("height: 100vh");
+    expect(base).not.toContain("100dvh");
+  }
+
+  const supports = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
+  expect(supports, "@supports (height: 100dvh) block").not.toBeNull();
+  for (const baseIndex of baseIndexes) expect(supports!.index).toBeGreaterThan(baseIndex);
+  for (const variant of variants) expect(supports![1]).toContain(`.${variant}`);
+  expect(supports![1]).toContain("height: 100dvh");
+  expect(supports![1]).not.toContain("100vh");
 });
 
 // --- expandable mode (Task 2) --------------------------------------------

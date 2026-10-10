@@ -809,7 +809,7 @@ describe("AddInstanceDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
     // ...the dialog names the change instead of the store's internals, and
     // reports no create failure...
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection changed"));
     expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
     expect(screen.queryByText(/Create failed/)).toBeNull();
     expect(onSuccess).not.toHaveBeenCalled();
@@ -1055,7 +1055,9 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("can't check where this provider points"),
+    );
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("sk-secret");
   });
 
@@ -1083,7 +1085,9 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("can't check where this provider points"),
+    );
   });
 
   // The control: a row with no destination (baseUrl empty) and no fingerprint
@@ -1407,7 +1411,7 @@ describe("ApiKeyDialog", () => {
     // the row the re-anchor adopts.
     await waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
     await act(async () => finishRestore({ instances: [MOVED], availableProviders: [] }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection changed"));
     expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
     expect(screen.queryByText(/Save failed/)).toBeNull();
     // The value was typed for the listing that is gone.

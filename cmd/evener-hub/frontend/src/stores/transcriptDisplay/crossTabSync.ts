@@ -4,6 +4,9 @@ import {
   type TranscriptDisplayConfigV1,
   type ViewportClass,
 } from "@evener/appwire-client";
+import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "../versionedChannel";
+
+export { makeSourceId } from "../versionedChannel";
 
 type LocalConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
 
@@ -11,9 +14,7 @@ interface SyncState {
   local: LocalConfigByLayout;
 }
 
-interface LocalMessage {
-  version: 1;
-  sourceId: string;
+interface LocalMessage extends VersionedChannelMessage {
   layout: ViewportClass;
   config: string | null;
   fingerprint: string | null;
@@ -33,21 +34,14 @@ export interface BrowserSync {
   broadcastLocal(layout: ViewportClass, encoded: string | null): void;
 }
 
-/** A random id from the browser's own randomness source, with a fallback for
- * the privacy modes that expose crypto but deny randomUUID - shared by the
- * cross-tab source id and the draft checkpoint port's record ids. */
-export function makeSourceId(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  } catch {
-    // Some privacy modes expose crypto but deny randomUUID.
-  }
-  return `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-}
-
 export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
-  let channel: BroadcastChannel | null = null;
   let sourceId = "";
+  const channel = createVersionedChannel<LocalMessage>({
+    name: options.channelName,
+    getSourceId: () => sourceId,
+    isMessage: isLocalMessage,
+    onMessage: applyIncomingLocal,
+  });
 
   function isLayout(value: unknown): value is ViewportClass {
     return value === "desktop" || value === "mobile";
@@ -57,14 +51,12 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
     return key === options.localKeys.desktop || key === options.localKeys.mobile;
   }
 
-  function isLocalMessage(value: unknown): value is LocalMessage {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-    const candidate = value as Record<string, unknown>;
+  function isLocalMessage(value: VersionedChannelMessage): value is LocalMessage {
+    if (Array.isArray(value)) return false;
+    const candidate = value as Partial<LocalMessage>;
     if (
       Object.keys(candidate).length !== 5 ||
-      candidate.version !== 1 ||
       typeof candidate.sourceId !== "string" ||
-      candidate.sourceId === "" ||
       !isLayout(candidate.layout) ||
       !(candidate.config === null || typeof candidate.config === "string") ||
       !(candidate.fingerprint === null || typeof candidate.fingerprint === "string")
@@ -76,7 +68,6 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
   }
 
   function applyIncomingLocal(message: LocalMessage): void {
-    if (message.sourceId === sourceId) return;
     const current = options.getState().local[message.layout];
     if (message.config === null) {
       if (current === undefined) return;
@@ -86,11 +77,6 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
     const config = decodeLocalConfig(message.config);
     if (config === undefined || (current !== undefined && configFingerprint(current) === message.fingerprint)) return;
     options.applyLocal(message.layout, config);
-  }
-
-  function onChannelMessage(event: MessageEvent<unknown>): void {
-    if (!isLocalMessage(event.data)) return;
-    applyIncomingLocal(event.data);
   }
 
   function onStorage(event: StorageEvent): void {
@@ -111,42 +97,22 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
   return {
     attach() {
       sourceId = makeSourceId();
-      if (typeof BroadcastChannel !== "undefined") {
-        try {
-          channel = new BroadcastChannel(options.channelName);
-          channel.addEventListener("message", onChannelMessage);
-        } catch {
-          channel = null;
-        }
-      }
+      channel.connect();
       if (typeof window !== "undefined") window.addEventListener("storage", onStorage);
     },
     detach() {
-      if (channel !== null) {
-        channel.removeEventListener("message", onChannelMessage);
-        channel.close();
-        channel = null;
-      }
+      channel.close();
       if (typeof window !== "undefined") window.removeEventListener("storage", onStorage);
       options.onDetach();
     },
     broadcastLocal(layout, encoded) {
-      if (channel === null) return;
       const decoded = encoded === null ? undefined : decodeLocalConfig(encoded);
       if (encoded !== null && decoded === undefined) return;
-      const message: LocalMessage = {
-        version: 1,
-        sourceId,
+      channel.postMessage({
         layout,
         config: encoded,
         fingerprint: decoded === undefined ? null : configFingerprint(decoded),
-      };
-      try {
-        channel.postMessage(message);
-      } catch {
-        // BroadcastChannel is an enhancement; storage and the origin tab remain
-        // authoritative when a browser closes it or refuses a message.
-      }
+      });
     },
   };
 }

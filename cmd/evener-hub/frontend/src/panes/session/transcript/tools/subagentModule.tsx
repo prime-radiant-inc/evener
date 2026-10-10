@@ -3,8 +3,9 @@
 // spawn materializes a frozen pre-hydration row in the shared store; once the
 // owning stable delegate projection exists, it supplies the hydrated state.
 
-import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import {
+  delegateEndingText,
+  delegateSummary,
   delegateTiming,
   formatElapsed,
   type ItemModel,
@@ -16,6 +17,7 @@ import {
 } from "@evener/appwire-client";
 import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, IconButton, Timestamp } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -25,6 +27,8 @@ import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
+  currentDelegate,
+  type DelegatePresentation,
   delegateStableState,
   effectiveRowKind,
   resolveRowKey,
@@ -68,16 +72,6 @@ const CLASS = {
 // Keep stable projections and frozen tool output on the same classification.
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
 
-const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
-
-// Footer fields are optional, so status cannot be read by position.
-export function statusWordFromText(text: string): string | undefined {
-  for (const status of KNOWN_JOB_STATUSES) {
-    if (new RegExp(`\\b${status}\\b`).test(text)) return status;
-  }
-  return undefined;
-}
-
 // A Quote is one child-authored line. Folded hero quotes are always italic;
 // `msg` preserves source-specific italics only in the expanded activity list.
 interface Quote {
@@ -116,7 +110,7 @@ const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
 // deliberately absent from every surface a delegate renders on: it is
 // wake-delivery plumbing the owner driver consumes on its own, never a
 // reader-facing status.
-function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+function delegateLifecycleLabel(kind: SubagentRowKind, stable: DelegatePresentation | undefined): string {
   const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
   return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
 }
@@ -125,7 +119,7 @@ function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInf
 // identity (one testid plus kind state) so consumers find it with one
 // selector wherever it renders: the standalone DelegateStatusLine, collapsed
 // rows, and the card's merged first line, expanded rows.
-function DelegateStatusWord({ kind, stable }: { kind: SubagentRowKind; stable: EvenerDelegateInfo | undefined }) {
+function DelegateStatusWord({ kind, stable }: { kind: SubagentRowKind; stable: DelegatePresentation | undefined }) {
   return (
     <span className={CLASS.statusWord} data-testid="delegate-status-word" data-kind={kind}>
       {delegateLifecycleLabel(kind, stable)}
@@ -172,7 +166,7 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
 }
 
 // Stable exhaustion evidence belongs in the expanded region.
-function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDelegateInfo | undefined }) {
+function JobDetailSection({ row, stable }: { row: SubagentRow; stable: DelegatePresentation | undefined }) {
   const exhaustionBudget = stable ? stable.exhaustionBudget : row.exhaustionBudget;
   const exhaustionLimit = stable ? stable.exhaustionLimit : row.exhaustionLimit;
   if (exhaustionBudget === undefined && exhaustionLimit === undefined) {
@@ -201,6 +195,7 @@ function SubagentCard({
 }) {
   const scopeKey = turnScopeKey(sessionRef, turnId);
   const context = useTranscriptRenderContext();
+  const entities = useEntityViews();
   // Captured once so the effect closures below reference this narrowed local,
   // not row.transcriptRef re-read through a closure TS can't narrow.
   const transcriptRef = row.transcriptRef;
@@ -218,18 +213,18 @@ function SubagentCard({
   const storedStable = useThreadsStore((s) => {
     if (sessionRef === undefined || row.delegateId === undefined) return undefined;
     const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
-    return owner?.delegates?.find((delegate) => delegate.delegateId === row.delegateId);
+    return currentDelegate(row.delegateId, sessionRef, owner, undefined, transcriptRef);
   });
   const stable =
-    context.thread !== undefined
-      ? context.thread.delegates?.find((delegate) => delegate.delegateId === row.delegateId)
-      : storedStable;
+    currentDelegate(row.delegateId, sessionRef ?? context.thread?.ref, context.thread, entities, transcriptRef) ??
+    (entities === undefined && context.thread === undefined ? storedStable : undefined);
   const displayKind = effectiveRowKind(row, stable);
   const childRunning = displayKind === "running";
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
-  const reason = stable ? stable.reason : row.resultPreview;
+  // A stable delegate's reason is a code; its ending in words (#3327).
+  const reason = stable ? delegateEndingText(stable) : row.resultPreview;
   // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
@@ -378,7 +373,11 @@ export function rowFromDelegateItem(
   // never turn job_id into a delegate row.
   if (!delegateOutputHasCard(parsed)) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
-  const reason = parsed ? str(parsed, "reason") : undefined;
+  // The tool output's reason is a code; the card and its receipt say it in
+  // words (#3327).
+  const ending = parsed
+    ? delegateEndingText({ outcome: status, reason: str(parsed, "reason"), error: str(parsed, "error") })
+    : undefined;
   const exhaustionBudget = parsed ? str(parsed, "exhaustion_budget") : undefined;
   const exhaustionLimit = parsed && typeof parsed.exhaustion_limit === "number" ? parsed.exhaustion_limit : undefined;
   const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
@@ -393,7 +392,7 @@ export function rowFromDelegateItem(
       transcriptRef,
       startedAt: item.startedAt,
       completedAt: item.completedAt,
-      resultPreview: reason ?? "",
+      resultPreview: ending ?? "",
       exhaustionBudget,
       exhaustionLimit,
     },
@@ -421,7 +420,8 @@ function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
 // first line: same word component, same state attributes, same
 // data-status-line identity.
 function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
-  const { parsed, stable, kind } = delegateStableState(item, live, sessionRef, thread);
+  const entities = useEntityViews();
+  const { parsed, stable, kind } = delegateStableState(item, live, sessionRef, thread, entities);
   // While the expanded card renders, its own first line carries the lifecycle
   // word; a standalone div here would duplicate it on back-to-back lines.
   // Collapsed - or for an activation-only receipt whose card renders nothing -
@@ -438,9 +438,7 @@ registerToolRenderer({
   match: "delegate",
   fold: "never", // a delegate card is never folded away into a run
   icon: "delegate",
-  summary(item: ItemModel) {
-    return item.description ?? "";
-  },
+  summary: delegateSummary,
   // open ⤢ rides the delegate row's trailing slot (visible folded or not) -
   // ToolCallItem owns the control; the descriptor declares WHAT it targets.
   openTranscriptRef(item: ItemModel) {

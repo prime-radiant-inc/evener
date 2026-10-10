@@ -79,7 +79,7 @@ function navClient(): FakeClient {
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   return client;
 }
@@ -117,7 +117,7 @@ function installLocationForRoute(ref: string): void {
     error: null,
     generationID: location.generation_id,
   });
-  navigationStore.setState({ mode: "v2", clientGenerationID: location.generation_id, resources });
+  navigationStore.setState({ mode: "v3", clientGenerationID: location.generation_id, resources });
 }
 
 function installNeedsYouRows(): void {
@@ -139,7 +139,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v2", resources });
+  navigationStore.setState({ mode: "v3", resources });
 }
 
 // A focused plain <input> appended beside the shell: the editable target the
@@ -207,7 +207,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   resetPrefsStoreForTests();
   installLocalStorage(new MemoryStorage());
   localStorage.clear();

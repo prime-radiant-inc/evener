@@ -1230,6 +1230,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
 		delegate.Reason = truncateActivityText(row.lastOutcome.Reason, activityMaxDelegateProseRunes)
+		delegate.Error = truncateActivityText(row.lastOutcome.Error, activityMaxDelegateProseRunes)
 		delegate.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			delegate.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
@@ -1661,6 +1662,7 @@ func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bo
 		delegate.Task = shrinkText(delegate.Task)
 		delegate.Description = shrinkText(delegate.Description)
 		delegate.Reason = shrinkText(delegate.Reason)
+		delegate.Error = shrinkText(delegate.Error)
 		delegate.NotResumableReason = shrinkText(delegate.NotResumableReason)
 		delegate.StructuredReason = shrinkText(delegate.StructuredReason)
 		if delegate.Message != nil {

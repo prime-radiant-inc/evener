@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -45,10 +48,11 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // For a local session the guard chain below (session/path presence, cwd
 // containment) runs before the format check, so a raw and a non-raw request
 // reject the same out-of-cwd or unknown-session input identically — only a
-// fully valid request reaches the format gate, where a raw request is served
-// (writeDocFileRaw) and anything else is refused. A host-qualified session
-// checks the format first, so the host is never asked for a request this route
-// would refuse.
+// contained path reaches the format gate, where a raw request is served
+// (writeDocFileRaw) and anything else is refused. The format gate runs before
+// the file is read and hashed, so a request the route would refuse never pays
+// for the read. A host-qualified session checks the format first, so the host
+// is never asked for a request this route would refuse.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -78,13 +82,15 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, ok := s.localSessionCWD(session)
-	if !ok {
-		http.NotFound(w, r)
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
 		return
 	}
 
-	doc, err := readSessionDocument(cwd, rel)
+	// Resolve before the format gate so raw and non-raw reject the same
+	// out-of-cwd or missing path identically; the gate precedes the read.
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
 	if err != nil {
 		// A path that escapes the cwd, or that doesn't resolve, is refused.
 		// 403 for an escape attempt; 404 for a missing file.
@@ -100,6 +106,12 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "format=raw required", http.StatusBadRequest)
 		return
 	}
+
+	doc, err := readDocFile(cwd, abs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	writeDocFileRaw(w, r, doc)
 }
 
@@ -109,13 +121,13 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 // resolves the path by the same rule (sessionCWD, which refuses a session id
 // naming another source, then fspaths.ResolveInRoot), so a remote read is
 // confined to the session's folder exactly as a local one is.
-func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
 	if params.SessionID == "" || params.Path == "" {
 		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
 	}
-	cwd, ok := sessionCWD(cfg, canonicalRouteID(params.SessionID))
-	if !ok {
-		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("session not found")
+	cwd, err := sessionCWD(ctx, cfg, sources, canonicalRouteID(params.SessionID))
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, err
 	}
 	doc, err := readSessionDocument(cwd, params.Path)
 	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
@@ -133,7 +145,7 @@ func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumen
 }
 
 // readSessionDocument reads the document rel names inside a session's working
-// directory cwd, for both /doc/file and evener/session/document. It fails with
+// directory cwd, for evener/session/document. It fails with
 // fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
 // any other failure means the document cannot be read.
 func readSessionDocument(cwd, rel string) (docFileRead, error) {
@@ -166,9 +178,9 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, ok := s.localSessionCWD(session)
-	if !ok {
-		http.NotFound(w, r)
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
 		return
 	}
 
@@ -182,7 +194,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, _, ok := readOutputImageFile(abs)
+	data, _, ok := readOutputImageInRoot(cwd, abs)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -199,40 +211,90 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// localSessionCWD resolves a local session's working directory from the past
-// index or live roster. /doc/image is local-session-only; non-local refs return
-// false.
-func (s *WebServer) localSessionCWD(session string) (string, bool) {
-	return sessionCWD(s.cfg, session)
+// localSessionCWD resolves a local session's current working directory from its
+// owning live source or freshly loaded archived metadata. /doc/image is
+// local-session-only; non-local refs are not found.
+func (s *WebServer) localSessionCWD(ctx context.Context, session string) (string, error) {
+	return sessionCWD(ctx, s.cfg, s.sources, session)
 }
 
-// sessionCWD resolves a session's working directory from the past index or live
-// roster. A non-local route id — the "<sourceID>:<threadID>" form a remote
-// session is addressed by — returns false, so a caller that reads files under
-// this directory can never be aimed at another host's session.
-func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
+// sessionCWD resolves a session's current working directory. A roster-owned
+// session is read through its owning Source; failure is transient and never
+// authorizes a cached launch root. An archived session uses the PastIndex only
+// for trusted ID and StateDir locators, then reloads its metadata from disk.
+// A non-local route id is not found, so a caller can never aim this local read
+// at another host's session.
+func sessionCWD(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, session string) (string, error) {
+	session = canonicalRouteID(session)
 	if !isLocalRouteID(session) {
-		return "", false
+		return "", appwire.ResourceNotFound("session not found")
 	}
-	if cfg.Past != nil {
-		pe, ok := cfg.Past.Find(session)
-		if ok {
-			cwd := strings.TrimSpace(pe.Meta.EnvInfo.WorkingDir)
-			if cwd != "" {
-				return cwd, true
-			}
+	ref := appRefFromRouteID(session)
+	if rosterOwnsLiveSession(cfg.Roster, session) {
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, session)
+		if err != nil {
+			return "", liveSessionRootError(ctx, err)
 		}
-	}
-	if cfg.Roster != nil {
-		live, ok := cfg.Roster.Find(session)
-		if ok {
-			cwd := strings.TrimSpace(live.WorkingDir)
-			if cwd != "" {
-				return cwd, true
-			}
+		response, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+		if err != nil {
+			return "", liveSessionRootError(ctx, err)
 		}
+		cwd := strings.TrimSpace(response.Thread.CWD)
+		if cwd == "" {
+			return "", appwire.SessionUnavailable("live session working directory unavailable")
+		}
+		return cwd, nil
 	}
-	return "", false
+	if cfg.Past == nil {
+		return "", appwire.ResourceNotFound("session not found")
+	}
+	entry, ok := cfg.Past.Find(session)
+	if !ok {
+		return "", appwire.ResourceNotFound("session not found")
+	}
+	return withDeletionTargetOwnership(ctx, cfg, ref, session, "", func() (string, error) {
+		meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", appwire.ResourceNotFound("session not found")
+		}
+		if err != nil {
+			return "", appwire.SessionUnavailable("archived session metadata unavailable")
+		}
+		cwd := strings.TrimSpace(meta.EnvInfo.WorkingDir)
+		if cwd == "" {
+			return "", appwire.ResourceNotFound("session working directory unavailable")
+		}
+		return cwd, nil
+	})
+}
+
+func rosterOwnsLiveSession(roster *hubcore.Roster, session string) bool {
+	if roster == nil {
+		return false
+	}
+	if live, ok := roster.Find(session); ok && !live.Crashed {
+		return true
+	}
+	_, ok := roster.SubagentState(session)
+	return ok
+}
+
+func liveSessionRootError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if isTargetDeletedError(err) || isSessionUnavailableError(err) {
+		return err
+	}
+	return appwire.SessionUnavailable("live session unavailable: " + err.Error())
+}
+
+func serveSessionRootError(w http.ResponseWriter, r *http.Request, err error) {
+	if sessionDocumentProxyStatus(err) == http.StatusNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	http.Error(w, "session unavailable", http.StatusServiceUnavailable)
 }
 
 // docFileRead is one read of a document: the head a pane shows and what the
@@ -294,15 +356,21 @@ func readDocFile(root, abs string) (docFileRead, error) {
 
 // openDocInRoot opens abs for reading through an os.Root at root, which
 // refuses any path, symlinks included, that resolves outside root at the
-// moment of the open. abs is the symlink-resolved path ResolveInRoot returned,
-// so it is expressed relative to the symlink-resolved root. docOpenNonblock
-// keeps the open from waiting on a FIFO; a regular file reads the same.
+// moment of the open. Both root and abs are symlink-resolved before the
+// relative path is taken, so an abs expressed in terms of an unresolved root
+// (on macOS t.TempDir sits under /var, a symlink to /private/var) is still
+// expressed relative to the resolved root. docOpenNonblock keeps the open from
+// waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(realRoot, abs)
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(realRoot, realAbs)
 	if err != nil {
 		return nil, err
 	}

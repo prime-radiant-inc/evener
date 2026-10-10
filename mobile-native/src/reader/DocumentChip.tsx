@@ -6,9 +6,10 @@ import { filenameOf } from "@evener/appwire-client/docContent";
 import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
-import { compactDuration, spokenDuration } from "../session/format";
+import { spokenDuration, timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { documentKind } from "./documentSource";
 import { FreshDot } from "./FreshDot";
 import { messageDocuments } from "./documentReferences";
@@ -41,8 +42,8 @@ export function useDocumentFacts(hubId: string, sessionRef: string, path: string
 		title: summary?.title || name,
 		name,
 		lines: summary?.lines === undefined ? null : `${summary.lines} ${summary.lines === 1 ? "line" : "lines"}`,
-		age: age === null ? null : `${compactDuration(age)} ago`,
-		spokenAge: age === null ? null : `${spokenDuration(age)} ago`,
+		age: age === null ? null : timeAgo(age),
+		spokenAge: age === null ? null : timeAgo(age, spokenDuration),
 		freshness: documentFreshness(memory.lastRead({ sessionRef, path }), updatedAt),
 	};
 }
@@ -50,11 +51,19 @@ export function useDocumentFacts(hubId: string, sessionRef: string, path: string
 export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: DocumentChipProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
-	// A chip marks only a change (8.2); Files and its chip mark what's new.
-	const changed = freshness === "changed" ? "changed since you last read" : null;
-	const facts = [lines, age, changed].filter((fact) => fact !== null);
-	const label = [kind, title, name, lines, spokenAge, changed].filter((part) => part !== null).join(", ");
+	// A chip marks only a change (8.2); Files and its chip mark what's new. On
+	// screen the change is the blue dot alone; VoiceOver, which can't see the
+	// dot, says it in words.
+	const changed = freshness === "changed";
+	const facts = [lines, age].filter((fact) => fact !== null);
+	// Until its summary lands the title is the file name, so a second copy
+	// would name it twice on screen and in VoiceOver.
+	const secondary = title === name ? null : name;
+	const spokenChange = changed ? "changed since you last read" : null;
+	const label = [kind, title, secondary, lines, spokenAge, spokenChange].filter((part) => part !== null).join(", ");
+	const details = secondary === null ? facts.join(" · ") : facts.map((fact) => ` · ${fact}`).join("");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
 		<Pressable
@@ -86,7 +95,7 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					ellipsizeMode="tail"
 					style={{
 						flexShrink: 1,
-						fontFamily: fonts.serifSemibold,
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,
@@ -95,9 +104,12 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					{title}
 				</Text>
 			</View>
+			{/* The second line is always there, held by a no-break space until its
+			    summary or age lands, so the chip never grows and moves the rows
+			    below it. */}
 			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, fontVariant: ["tabular-nums"] }}>
-				<Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{name}</Text>
-				{facts.map((fact) => ` · ${fact}`).join("")}
+				{secondary === null ? null : <Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{secondary}</Text>}
+				{secondary === null && facts.length === 0 ? "\u00a0" : details}
 			</Text>
 		</Pressable>
 	);
@@ -105,13 +117,15 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 
 /** The chips under one agent's message: the documents it names inside the
  * session's folder, each once, in reading order. `writes` is when the session
- * last wrote each file (fileWrites), which gives a chip its age. */
+ * last wrote each file (fileWrites), which gives a chip its age; `written` is
+ * the paths the session wrote, which lets a bare name become a chip. */
 export function MessageDocuments({
 	hubId,
 	sessionRef,
 	markdown,
 	cwd,
 	writes,
+	written,
 	open,
 }: {
 	hubId: string;
@@ -119,9 +133,11 @@ export function MessageDocuments({
 	markdown: string;
 	cwd: string;
 	writes: ReadonlyMap<string, string>;
+	/** The paths the session wrote, whatever their write time. */
+	written: ReadonlySet<string>;
 	open(path: string, updatedAt: string | undefined): void;
 }) {
-	const paths = useMemo(() => messageDocuments(markdown, cwd, writes), [markdown, cwd, writes]);
+	const paths = useMemo(() => messageDocuments(markdown, cwd, written), [markdown, cwd, written]);
 	return paths.map((path) => {
 		const updatedAt = writes.get(path);
 		return (

@@ -1,19 +1,21 @@
 // A run of steps on the transcript (spec 8.2): one line that folds the steps
 // ("▸ 12 steps · 8m · read 6 files, ran go test (2 failed)"), and, expanded,
 // one line per step with its intent, its target and a status mark. A step
-// with evidence opens it under its line (StepEvidence). A live run (the last
-// run of the turn in progress) never folds.
-import { scopedDisclosureId } from "@evener/appwire-client";
+// with evidence opens it under its line (StepEvidence). A run held open while
+// it is live (the last run of the turn in progress, at the levels that show
+// tool calls) has no fold control until it finishes.
+import { composeStepWords } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Fragment, useMemo } from "react";
+import { Fragment } from "react";
 import { Pressable, Text, View } from "react-native";
-import { typeRoles } from "../design/tokens";
+import { scaledType, typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { rowDisclosureIds } from "./disclosureKeys";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
-import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
+import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepWords } from "./transcriptRows";
 
 type Run = Extract<TimelineRow, { kind: "run" }>;
 
@@ -27,15 +29,17 @@ interface StepPlace {
 function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: RunStep } & StepPlace) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const intent = step.detail.description || step.label;
-	// Rows re-render on every publish; keyed on the arguments text, a settled
-	// step parses its arguments (up to 64 KiB) once rather than every time.
-	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
+	// The model's own intent for the step, or else the step's words (the
+	// package's toolStepWords), which name what it acted on. Either way the
+	// thing it acted on is its words' target, set in Menlo (spec § Activity
+	// run): on its own line under an intent, or inside the words' sentence.
+	const ownIntent = step.detail.description;
+	const { words } = step.detail;
+	const target = words?.target;
+	const machine = { ...scaledType(typeRoles.machine, scale), color: palette.inkMid };
 	const evidence = useStepEvidence(step);
 	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
-	// The same key a standalone activity row uses, so a step keeps its open
-	// state when a level change unfolds it from its run.
-	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(["activity", step.id]));
+	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
 	const open = useDisclosureOpen(disclosureId, evidenceOpenByDefault) && hasEvidence;
 	const failed = step.state === "failed";
 	const line = (
@@ -54,19 +58,25 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkHi }}
 				>
-					{intent}
+					{ownIntent ||
+						(words ? (
+							<>
+								{words.verb}
+								{target ? (
+									<>
+										{" "}
+										<Text style={machine}>{target}</Text>
+									</>
+								) : null}
+								{words.after ? ` ${words.after}` : null}
+								{words.detail ? ` · ${words.detail}` : null}
+							</>
+						) : (
+							stepWords(step)
+						))}
 				</Text>
-				{target ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						numberOfLines={2}
-						style={{
-							fontFamily: typeRoles.machine.fontFamily,
-							fontSize: typeRoles.machine.fontSize * scale,
-							lineHeight: typeRoles.machine.lineHeight * scale,
-							color: palette.inkMid,
-						}}
-					>
+				{ownIntent && target ? (
+					<Text allowFontScaling={allowFontScaling} numberOfLines={2} style={machine}>
 						{target}
 					</Text>
 				) : null}
@@ -78,7 +88,12 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 			) : null}
 		</>
 	);
-	const label = [intent, target, failed ? "failed" : "done"].filter(Boolean).join(", ");
+	// The label reads what the line draws: the same bounded words, composed.
+	const sentence = words ? composeStepWords(words) : stepWords(step);
+	const label = [ownIntent ? [ownIntent, target] : [sentence], failed ? "failed" : "done"]
+		.flat()
+		.filter(Boolean)
+		.join(", ");
 	const lineStyle = { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 4 } as const;
 	return (
 		<View>
@@ -135,7 +150,7 @@ export function RunRow({
 			{live ? null : open ? "▾ " : "▸ "}
 			{`${runHeadText(summary)} · `}
 			{summary.parts.map((part, index) => (
-				<Fragment key={part.family}>
+				<Fragment key={part.key}>
 					{index > 0 ? ", " : null}
 					{part.text}
 					{part.failed > 0 ? <Text style={{ color: palette.dangerInk }}>{runPartFailedText(part)}</Text> : null}

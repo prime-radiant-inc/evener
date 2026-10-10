@@ -1,10 +1,15 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { DisplayProvider } from "../display/displayContext";
+import { DisplayPreferences } from "../display/displayPreferences";
 import { render } from "../renderNative.testkit";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
-import { BoardRow, type BoardRowProps } from "./BoardRow";
+import { boardState } from "./attention";
+import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
+import { FreshDot } from "../reader/FreshDot";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
 
@@ -35,7 +40,9 @@ const item = (state: BoardState, over: Partial<NavigationSessionSummary> = {}): 
 	state,
 });
 
-function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
+/** Mounts a row; `prefs` provides this phone's display choices, as the app's
+ * root does. */
+function mount(over: Partial<BoardRowProps> = {}, prefs?: DisplayPreferences): ReactTestRenderer {
 	const props: BoardRowProps = {
 		item: item("failed"),
 		variant: "signal",
@@ -49,7 +56,8 @@ function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
 		onOpen: () => {},
 		...over,
 	};
-	return render(<BoardRow {...props} />);
+	const row = <BoardRow {...props} />;
+	return render(prefs ? <DisplayProvider value={prefs}>{row}</DisplayProvider> : row);
 }
 
 type Style = Record<string, unknown>;
@@ -64,6 +72,23 @@ const symbols = (tree: ReactTestRenderer) =>
 const pressable = (tree: ReactTestRenderer) => tree.root.findByType("Pressable" as never);
 
 describe("a Board row (spec 7.2)", () => {
+	it("shows the blue dot and says unread for a row with updates you haven't opened, in any state", () => {
+		for (const state of ["working", "question", "idle"] as const) {
+			const tree = mount({ item: { ...item(state, { state: "active" }), unseen: true } });
+			expect(tree.root.findAllByType(FreshDot)).toHaveLength(1);
+			expect(pressable(tree).props.accessibilityLabel.split(", ")[2]).toBe("unread");
+		}
+		// A quiet row, and one with no age to sit after, show it too.
+		const quiet = mount({
+			variant: "quiet",
+			item: { ...item("idle", { state: "idle", updated_at: undefined }), unseen: true },
+		});
+		expect(quiet.root.findAllByType(FreshDot)).toHaveLength(1);
+		const seen = mount({ item: item("working", { state: "active" }) });
+		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
+		expect(pressable(seen).props.accessibilityLabel).not.toContain("unread");
+	});
+
 	it("shows a Failed row's title, the word in danger ink, the reason in ink, and its age", () => {
 		const tree = mount();
 		const title = textWith(tree, "Fix Endless Provider Retry Loop")[0];
@@ -101,7 +126,7 @@ describe("a Board row (spec 7.2)", () => {
 		const needsYou = textWith(mount(), "open the session to see what went wrong")[0];
 		expect(needsYou.props.numberOfLines).toBe(2);
 		const tree = mount({
-			item: item("working", { state: "active", running_jobs: [{ command: "go test ./agent/..." } as never] }),
+			item: item("working", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." }),
 		});
 		const activity = textWith(tree, "Running go test ./agent/...")[0];
 		expect(activity.props.numberOfLines).toBe(1);
@@ -190,6 +215,20 @@ describe("a Board row (spec 7.2)", () => {
 		expect(symbols(tree).slice(-3)).toEqual(["checklist", "folder", "server.rack"]);
 	});
 
+	// "Show model on Board rows" (spec 7.2, 12): the model's name ends the
+	// last line, in the line's ink, only while the setting is on.
+	it("ends the last line with the model's name when Show model on Board rows is on", () => {
+		const prefs = new DisplayPreferences(memoryStorage());
+		const tree = mount({ item: item("failed", { host_id: "studio", model_name: "GLM 5.3 Vision" }) }, prefs);
+		expect(textWith(tree, "GLM 5.3 Vision")).toHaveLength(0);
+		act(() => prefs.set({ showModel: true }));
+		const model = textWith(tree, "GLM 5.3 Vision")[0];
+		expect(styleOf(model)).toMatchObject({ fontSize: 13, color: palette.inkLow });
+		// Last on the line: after the host.
+		const lastLine = tree.root.findAll((node) => node.type === ("Text" as never) && node.props.numberOfLines === 1);
+		expect(lastLine.map((node) => node.props.children).slice(-2)).toEqual(["Studio Mac", "GLM 5.3 Vision"]);
+	});
+
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {
 		const live = mount({ item: item("working", { state: "active" }), moving: true });
 		expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
@@ -197,6 +236,28 @@ describe("a Board row (spec 7.2)", () => {
 		expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
 		expect(symbols(pinned)).toContain("circle.fill");
 	});
+
+	it.each(["idle", "warning"])(
+		"a %s parent with mixed children keeps Working visuals and quiet failure history",
+		(state) => {
+			const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
+			const classified = { row: parent, state: boardState(parent, false) };
+			const live = mount({ item: classified, moving: true });
+			expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
+			expect(pressable(live).props.accessibilityLabel).toContain("Waiting on 1 subagent");
+			expect(pressable(live).props.accessibilityLabel).not.toContain("1 failed");
+			expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);
+			expect(textWith(live, "1 failed")).toHaveLength(0);
+			expect(styleOf(textWith(live, "1 running")[0])).toMatchObject({ color: palette.inkMid });
+			const pinned = mount({ item: classified, moving: false, variant: "quiet" });
+			expect(pressable(pinned).props.accessibilityLabel).toContain("Working, 1 running");
+			expect(pressable(pinned).props.accessibilityLabel).not.toContain("1 failed");
+			expect(textWith(pinned, "1 failed")).toHaveLength(0);
+			expect(pinned.root.findAllByType(PulseMeter)).toEqual([]);
+			expect(pinned.root.findByType(StateMark).props.state).toBe("working");
+			expect(symbols(pinned)).toContain("circle.fill");
+		},
+	);
 
 	it("draws a working row's meter from its activity read, and flat without one", () => {
 		const minutes = [0, 0, 1, 4, 9, 2, 5];
@@ -210,17 +271,93 @@ describe("a Board row (spec 7.2)", () => {
 		expect(unread.root.findByType(PulseMeter).props.perMinute).toBeUndefined();
 	});
 
-	it("says what a working row's activity read says in place of the children guess", () => {
+	it("says what a working row's activity read says in place of the row's own tally", () => {
 		const busy = item("working", {
 			state: "active",
-			children: [row({ ref: "local:child", state: "active" })],
-			more_subagents: 4,
+			subagents: { running: 1, failed: 0, done: 0 },
 		});
-		const guessed = mount({ item: busy });
-		expect(textWith(guessed, "Waiting on 1 subagent (+4 more)")).toHaveLength(1);
+		const tallied = mount({ item: busy });
+		expect(textWith(tallied, "Waiting on 1 subagent")).toHaveLength(1);
 		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
 		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
-		expect(textWith(read, "Waiting on 1 subagent (+4 more)")).toEqual([]);
+		expect(textWith(read, "Waiting on 1 subagent")).toEqual([]);
+	});
+
+	it.each(["signal", "quiet"] as const)("hides failure-only delegate chips on a %s working row", (variant) => {
+		const tree = mount({
+			variant,
+			item: item("working", { state: "active", subagents: { running: 0, failed: 3, done: 0 } }),
+		});
+		expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+		expect(textWith(tree, "3 failed")).toHaveLength(0);
+		expect(pressable(tree).props.accessibilityLabel).not.toContain("3 failed");
+	});
+
+	it("speaks only the active count on a quiet mixed-tally row", () => {
+		const tree = mount({
+			variant: "quiet",
+			item: item("working", { state: "active", subagents: { running: 2, failed: 3, done: 0 } }),
+		});
+		expect(textWith(tree, "2 running")).toHaveLength(1);
+		expect(textWith(tree, "3 failed")).toHaveLength(0);
+		expect(pressable(tree).props.accessibilityLabel).toContain("2 running");
+		expect(pressable(tree).props.accessibilityLabel).not.toContain("3 failed");
+	});
+
+	it("chips a live root's running subagents without calling out settled failures", () => {
+		const running = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }),
+		});
+		expect(textWith(running, "2 running")).toHaveLength(1);
+		const chip = running.root.findAll((node) => node.props.testID === "subagent-chip");
+		expect(chip).toHaveLength(1);
+		// The row is one accessibility element; it speaks the tally once. The why
+		// line already names the running count, so the chip adds nothing here.
+		expect(pressable(running).props.accessibilityLabel).toContain("Waiting on 2 subagents");
+		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
+		// A quiet row has no why line to name the count, so the chip speaks it.
+		const quiet = mount({
+			variant: "quiet",
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 0 } }),
+		});
+		expect(pressable(quiet).props.accessibilityLabel).toContain("2 running");
+
+		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
+		expect(failed.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+		expect(textWith(failed, "3 failed")).toHaveLength(0);
+		expect(pressable(failed).props.accessibilityLabel).not.toContain("3 failed");
+		expect(styleOf(textWith(failed, "Failed")[0])).toMatchObject({ color: palette.dangerInk });
+
+		// A mixed tally shows only live work, still in neutral ink.
+		const mixed = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 3, done: 1 } }),
+		});
+		expect(styleOf(textWith(mixed, "2 running")[0])).toMatchObject({ color: palette.inkMid });
+		expect(textWith(mixed, "3 failed")).toHaveLength(0);
+		expect(pressable(mixed).props.accessibilityLabel).toContain("Waiting on 2 subagents");
+		expect(pressable(mixed).props.accessibilityLabel).not.toMatch(/2 running|3 failed/);
+
+		// A done-only tally is history (as the web rail's chip reads it), and a
+		// past row carries no tally at all (D6): neither shows a chip.
+		for (const settled of [
+			item("working", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }),
+			item("working", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } }),
+			item("working", { state: "active", kind: "fork", subagents: { running: 2, failed: 0, done: 0 } }),
+		]) {
+			expect(mount({ item: settled }).root.findAll((node) => node.props.testID === "subagent-chip")).toEqual([]);
+		}
+	});
+
+	it("the shared chip renderer answers null when a row has nothing to show", () => {
+		// The lists gate their title row on this, so a row with no tally (or a
+		// done-only history) must not look like it has a chip.
+		expect(sessionSubagentChip(row())).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 0, failed: 0, done: 3 } }))).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 0, failed: 3, done: 0 } }))).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 1, failed: 0, done: 0 } }))).not.toBeNull();
+		// Only a live root: a nested fork original shows no chip even with a tally,
+		// as the web rail's chip gates on isTopLevelSession.
+		expect(sessionSubagentChip(row({ kind: "fork", subagents: { running: 1, failed: 0, done: 0 } }))).toBeNull();
 	});
 
 	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
@@ -277,7 +414,7 @@ describe("a Board row (spec 7.2)", () => {
 			item: item("working", {
 				state: "active",
 				updated_at: minutesAgo(60),
-				children: [row({ ref: "local:child", state: "active" })],
+				subagents: { running: 1, failed: 0, done: 0 },
 			}),
 		});
 		expect(pressable(working).props.accessibilityLabel).toBe(

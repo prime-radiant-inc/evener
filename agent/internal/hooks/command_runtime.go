@@ -15,12 +15,18 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // commandHookWaitDelay bounds how long a hook's output pipes may stay open
 // after the hook exits or its timeout ends. A hook that backgrounds a job hands
 // the job those pipes, and killing the hook on timeout does not kill the job,
 // so without this bound the timeout would not bound the hook (see orphanpipe).
+//
+// The hook's whole process tree is owned, not just its direct command: the hook
+// runs in its own process group and that group is reaped when the invocation
+// ends, so a descendant the hook backgrounded cannot outlive the hook (see
+// procgroup.KillGroupAfterReap).
 const commandHookWaitDelay = time.Second
 
 // commandHookInvocation is the fully prepared external command boundary. Its
@@ -110,11 +116,33 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = commandHookWaitDelay
 
+	// Own the hook's whole process tree, not just the direct command. A hook is a
+	// user's shell command, so one that backgrounds a job leaves a descendant that
+	// CommandContext's default single-process kill would not reach; placing the
+	// hook in its own process group lets cancellation signal the whole group.
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	// os/exec calls Cancel at the context deadline from the goroutine Start
+	// spawns, so Process is set then; the nil check keeps the kill safe without
+	// depending on that stdlib contract.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
+
 	run := r.run
 	if run == nil {
 		run = runSystemCommandHookProcess
 	}
 	err := orphanpipe.ChildErr(cmd, run(ctx, invocation, cmd))
+	// Reap the hook's process group after the invocation ends. os/exec runs
+	// Cancel only when the context ends, so a hook that exited 0 while a
+	// backgrounded descendant held its pipes is reaped here. On platforms without
+	// process groups this is a no-op, matching the command-runtime fallback.
+	if cmd.Process != nil {
+		procgroup.KillGroupAfterReap(cmd.Process.Pid)
+	}
 	result := hookResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),

@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# xcodebuild -derivedDataPath output (a simulator build leaves it here)
+/build

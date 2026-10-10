@@ -73,3 +73,42 @@ func TestPlainRateLimitIsNotAUsageLimit(t *testing.T) {
 		t.Errorf("Source = %q, want %q", info.Source, SourceProvider)
 	}
 }
+
+// A provider body that echoes a "resets … )" fragment in its own message must
+// not donate that fragment to the Hint. The reset window comes only from the
+// instant the llm layer parsed out of the body, never from the provider text.
+func TestFromErrorUsageLimitIgnoresResetFragmentInProviderBody(t *testing.T) {
+	const canary = "CANARY_9c1f"
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "body fragment precedes the appended window",
+			body: `{"error":{"type":"usage_limit_reached","message":"prompt echoed: resets ` + canary + `)","plan_type":"pro","resets_at":1785258150}}`,
+		},
+		{
+			name: "body fragment with no reset instant to append",
+			body: `{"error":{"type":"usage_limit_reached","message":"you asked about resets ` + canary + `)","plan_type":"pro"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw map[string]any
+			dec := json.NewDecoder(strings.NewReader(tc.body))
+			dec.UseNumber()
+			if err := dec.Decode(&raw); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			err := llm.ErrorFromHTTPStatus("openai", 429, llm.ProviderFailureMessage("responses.create(stream)", []byte(tc.body)), raw, nil)
+
+			info := FromError(err)
+			if info.Title != usageLimitTitle {
+				t.Fatalf("Title = %q, want %q", info.Title, usageLimitTitle)
+			}
+			if strings.Contains(info.Title, canary) || strings.Contains(info.Hint, canary) {
+				t.Fatalf("provider body fragment leaked into diagnostic: Title=%q Hint=%q", info.Title, info.Hint)
+			}
+		})
+	}
+}

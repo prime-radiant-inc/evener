@@ -2,6 +2,8 @@
 
 These tasks measure how a system prompt shapes the way agents write and behave. Each task is a manifest with a fixture, a prompt written the way a colleague would ask, and checks that judge the outcome of the work. No check reads the system prompt; the prose tools count what the agents wrote, and the blind read judges it.
 
+Memory and whiteboard behavior need several sessions sharing one checkout and memory root, which this runner doesn't do; measure those with the [memory lab](memory-lab/README.md).
+
 The tasks run on the tool-fluency runner, `tools/tool-fluency/cmd/evener-fluency`. This guide walks through one experiment end to end: write or pick tasks, declare versions, run the matrix, count the prose, pack it for a blind read, build ranking sets, hand them to reviewers, score the result, and read what it tells you.
 
 Build the runner once:
@@ -28,6 +30,11 @@ Every command below assumes `/tmp/lab/evener-fluency` is that binary and that yo
 | `prose.research-conflicting` | Notes that disagree; the answer must match the one that actually applies to this codebase. |
 | `prose.edit-audience` | Rewriting an internal incident writeup for a non-technical customer audience. |
 | `prose.ops-logs` | A cleanup request with a retention rule that is easy to miss. |
+| `prose.changelog-skill` | A changelog entry, where a project skill sets the format. |
+| `prose.release-skill` | Cutting a release, where a project skill sets the steps. |
+| `prose.staging-config` | A new environment whose values only the person knows (`person:`); copying production fails. |
+| `prose.customer-rename` | A rename whose scope only the person knows (`person:`); invoices must keep the old name. |
+| `prose.git-greeting-asked`, `prose.bugfix-tally-asked`, `prose.research-proposals-asked` | Controls with a `person:` who has nothing to add: the agent should not need to ask. |
 
 ### Adding a task
 
@@ -65,6 +72,18 @@ reference: |
   ...
   EOF
 ```
+
+A task that should be answerable by asking someone adds a `person:` block. The CLI harness then runs `evener run --ask-responder`, pointed at `evener-fluency respond`. It plays the person from the brief, answering each question the agent asks with `ask_user`:
+
+```yaml
+person:
+  brief: |
+    You are Alex, head of ops. Northwind is being renamed to Acme Robotics Ltd.
+    Only new records carry the new name; issued invoices keep the old one.
+  model: lunarouter/glm-5.3   # optional; defaults to --fast-cheap-model, then --model
+```
+
+A bare `model` or `--fast-cheap-model` runs on the main model's provider. The questions and answers land in each probe's result as `asks`, with the call count as `ask_user_calls`. The live harness refuses a task with a `person:` block.
 
 After adding or changing a task, run:
 

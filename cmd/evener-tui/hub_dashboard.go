@@ -143,7 +143,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		contribution := rollupContribution(n.State, n.IsSubagent)
 		group := ensureGroup(groupKey, projectKey, project, contribution)
 		group.sessions = append(group.sessions, row)
-		if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
+		if rollupRankLabel(contribution) > rollupRankLabel(group.state) {
 			group.state = stateLabel(contribution)
 		}
 		if recency := rowRecency(row); recency > group.updatedAt {
@@ -192,8 +192,8 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 		ordered = append(ordered, group)
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
-		left := hubRow{state: ordered[i].state, updatedAt: ordered[i].updatedAt}
-		right := hubRow{state: ordered[j].state, updatedAt: ordered[j].updatedAt}
+		left := hubRow{kind: hubRowProject, state: ordered[i].state, updatedAt: ordered[i].updatedAt}
+		right := hubRow{kind: hubRowProject, state: ordered[j].state, updatedAt: ordered[j].updatedAt}
 		if dashboardRowLess(left, right) {
 			return true
 		}
@@ -232,7 +232,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 }
 
 func dashboardRowLess(a, b hubRow) bool {
-	ar, br := attentionRankLabel(a.state), attentionRankLabel(b.state)
+	ar, br := dashboardRankLabel(a), dashboardRankLabel(b)
 	if ar != br {
 		return ar > br
 	}
@@ -250,6 +250,18 @@ func dashboardRowLess(a, b hubRow) bool {
 		return strings.ToLower(a.project) < strings.ToLower(b.project)
 	}
 	return strings.ToLower(a.title) < strings.ToLower(b.title)
+}
+
+// dashboardRankLabel picks the rank table a row is ordered by. A project row
+// is a rollup decision, so it ranks with hubapi.RollupRank (warning above
+// active), matching the dot and summary that share its state. A session row is
+// a live-row sort decision, so it ranks with hubapi.AttentionRank (active above
+// warning). dashboardRowLess's other keys are shared by both.
+func dashboardRankLabel(row hubRow) int {
+	if row.kind == hubRowProject {
+		return rollupRankLabel(row.state)
+	}
+	return attentionRankLabel(row.state)
 }
 
 func rowRecency(row hubRow) int64 {

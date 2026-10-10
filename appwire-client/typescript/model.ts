@@ -4,6 +4,7 @@
 // directly.
 
 import type {
+  CommandDescriptor,
   EvenerDelegateInfo,
   EvenerSkillInfo,
   EvenerTurnSlots,
@@ -227,6 +228,8 @@ export interface ModelRetryState {
 export type CapabilitySource = "read" | "statusFrame" | "none";
 
 export interface ThreadDiagnostics {
+  // Owning session's loaded inventory for live completion, never controller discovery.
+  commands?: CommandDescriptor[];
   // Snapshot-only plugin inventory. An absent diagnostics object, or an
   // object without plugins, means the daemon could not provide the inventory;
   // an empty array is an authoritative empty inventory.
@@ -308,6 +311,17 @@ export interface ThreadModel {
   // separating a fenced live+idle session from an editable one. Snapshot-only:
   // an explicit resume re-hydrates the model with the flag cleared.
   resumeRequired?: boolean;
+  // ResumeOnlyFoldable is the hub's own admission answer, carried straight from
+  // appwire.EvenerThread.ResumeOnlyFoldable on the snapshot: a turn/start sent
+  // right now would be admitted under the resume-only carve-out, so the send
+  // folds the pending resume into itself. The hub stamps it only when that
+  // admission would actually succeed, which is why the client keys its Send
+  // offer on this bit rather than inferring the shape from resumeRequired plus
+  // a missing send capability - that same overlay also clears send for a Stop
+  // drain, an unconfirmed force-stop exit, the connection-recovery fence, and
+  // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
+  // the fence re-hydrates the model without it.
+  resumeOnlyFoldable?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
@@ -338,8 +352,8 @@ export interface ThreadModel {
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
   tasks: TaskAggregate | null;
-  // Snapshot-only plugin diagnostics from thread/read. The palette uses this
-  // inventory to scope the global command catalog to the active session.
+  // Snapshot-only catalogs from the owning thread/read. Live completion uses
+  // commands directly, the separate palette still scopes its global plugins.
   diagnostics?: ThreadDiagnostics;
   // Stable delegates are controller-fold snapshots, never activation jobs.
   // Live updates are fenced by projectionRevision; latestActivityAt is
@@ -399,13 +413,13 @@ export interface ThreadModel {
   // are authoritative. goal/set's response-derived value is only an immediate
   // fallback until either authoritative path is accepted.
   goal: GoalState | null;
-  // HumanNote is the human's one-paragraph session whiteboard (wire:
+  // HumanNote is the human's session whiteboard, line breaks kept (wire:
   // EvenerThread.HumanNote, omitempty). Empty means unset. Hydration and
   // accepted evener/notes/updated pushes are authoritative. notes/human/set's
   // response-derived value is only an immediate fallback until either
   // authoritative path is accepted.
   humanNote: string;
-  // AgentNote is the agent's one-paragraph session whiteboard (wire:
+  // AgentNote is the agent's session whiteboard, line breaks kept (wire:
   // EvenerThread.AgentNote, omitempty). Empty means unset. Read-only in the
   // UI; updated by the same evener/notes/updated push as humanNote.
   agentNote: string;

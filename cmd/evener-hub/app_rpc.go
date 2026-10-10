@@ -8,6 +8,8 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +21,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -86,7 +90,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// subscribers to re-read.
 		// The roster's resolved session id is passed along: a legacy entry names
 		// no session of its own, and its relay session is keyed by the resolved one.
-		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		// An archived session's scratch outlives a daemon still running at
+		// archive time, so a daemon's exit kicks the reconcile that removes it.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
+			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
+			if cfg.ScratchReconcile != nil {
+				cfg.ScratchReconcile()
+			}
+		})
 		registry.Add(local)
 	}
 	if len(cfg.RemoteHosts) > 0 {
@@ -179,7 +190,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 
 var (
 	resolveTurnStartSource = sourceForThread
-	resumeTurnStartThread  = hubThreadAutoResume
+	resumeTurnStartThread  = resumeTurnStartThreadResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
 	}
@@ -190,6 +201,20 @@ var (
 		return c.TrustRepo(ctx, p)
 	}
 )
+
+// resumeTurnStartThreadResume is the resume a failed turn/start runs before its
+// one retry (the two call sites in the turn/start handler below). A turn/start
+// the resume-only carve-out admitted IS the request whose send folds and owns
+// the resume, so its resume runs explicit (non-automatic), which clears the
+// ResumeRequired fence; every other turn/start keeps the automatic resume, and
+// a session without a resume obligation is unchanged. See
+// turnStartResumeExplicit and sessionAdmitsResumeRequired (app_sources.go).
+func resumeTurnStartThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	if turnStartResumeExplicit(ctx, cfg, params.Ref, params.Session) {
+		return hubThreadResume(ctx, cfg, sources, params)
+	}
+	return hubThreadAutoResume(ctx, cfg, sources, params)
+}
 
 type threadReadRelayPolicy interface {
 	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
@@ -718,74 +743,16 @@ func adoptFailureClientMutationID(err error, clientMutationID string) error {
 	return adoptCallerMutationID(err, clientMutationID)
 }
 
-// adoptResponseClientMutationID adopts the caller's own clientMutationId onto
-// BOTH halves of a hub mutation result: the error with
-// adoptFailureClientMutationID (which also stamps an id-less target deletion, see
-// there) and the response's mutation receipt with adoptCallerMutationReceipt.
-// Everything else passes through untouched.
-//
-// Both halves need it for the same reason. The daemon trims the caller's id at
-// its own boundary before it mints a receipt OR a refusal
-// (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear,
-// agent/session_notes_rpc.go), while the hub holds and echoes the caller's
-// verbatim id, and every client correlates its outbox record byte-for-byte
-// (appwire-client/typescript/state/mutation/dispatcher.ts). A failure named with
-// the daemon's normalized id would leave the record submitting exactly as a
-// mismatched receipt would. adoptCallerMutationID is not widened for this: it
-// already returns unchanged anything that is not a WireError, names no id, or
-// names a different mutation canonically, and it never rewrites an id to a
-// trimmed form.
-//
-// It is the single place that knows which responses carry the receipt field,
-// wired where each caller-id-bearing mutation path returns: turn/start's first
-// attempt and its post-resume retry (both through attemptStart), the direct turn
-// mutations (steer, interrupt, queue, drainAsSteer, promoteQueuedAsSteer,
-// cancelQueued), the resume relays (thread/clear, notes/human/set), and
-// urls/remove -- which has no receipt to adopt but can still return a
-// daemon-minted refusal naming the id. Goal-set and the EmptyResponse paths
-// carry no caller id in their response and no id-naming error of their own, so
-// they are not wired. Nothing here touches the id the daemon stored, only the id
-// this caller's result carries back.
-func adoptResponseClientMutationID[R any](resp R, err error, clientMutationID string) (R, error) {
-	if clientMutationID == "" {
-		return resp, err
-	}
+// adoptCallerMutationResult adopts the caller's ID onto a successful receipt
+// or a failed result. receipt points to the handler's local response field.
+// Failed results leave that field unchanged. The daemon's durable ID and the
+// result's other fields retain their original meaning.
+func adoptCallerMutationResult(receipt *appwire.MutationReceipt, err error, clientMutationID string) error {
 	if err != nil {
-		return resp, adoptFailureClientMutationID(err, clientMutationID)
+		return adoptFailureClientMutationID(err, clientMutationID)
 	}
-	adopt := func(receipt appwire.MutationReceipt) appwire.MutationReceipt {
-		return adoptCallerMutationReceipt(receipt, clientMutationID)
-	}
-	switch typed := any(resp).(type) {
-	case appwire.TurnStartResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnSteerResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnInterruptResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnQueueResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnDrainAsSteerResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnPromoteQueuedAsSteerResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.TurnCancelQueuedResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.ThreadClearResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	case appwire.NotesHumanSetResponse:
-		typed.Receipt = adopt(typed.Receipt)
-		return any(typed).(R), nil
-	}
-	return resp, nil
+	*receipt = adoptCallerMutationReceipt(*receipt, clientMutationID)
+	return nil
 }
 
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
@@ -957,13 +924,24 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 }
 
 // hubLaunchConfigRoot resolves cfg.LaunchConfigRoot, falling back to
-// cmdutil.DefaultConfigRoot() when unset (a zero-value WebConfig built
-// directly, as some tests do).
+// userdirs.DefaultConfigRoot() when unset (a zero-value WebConfig built
+// directly, as some tests do), and returns "" when no absolute root resolves.
+// The root has to be absolute: a relative one - what cmdutil.DefaultConfigRoot
+// substitutes when neither XDG_CONFIG_HOME nor a home directory resolves -
+// would resolve launch.toml against the process working directory, letting a
+// repository control the hub's launch config. An empty result means "no user
+// config root": launchconfig then applies no user-level layers.
 func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
-	if cfg.LaunchConfigRoot != "" {
-		return cfg.LaunchConfigRoot
+	root := cfg.LaunchConfigRoot
+	if root == "" {
+		// userdirs, not cmdutil: this one reports an unresolvable root as
+		// empty instead of substituting a relative path.
+		root = userdirs.DefaultConfigRoot()
 	}
-	return cmdutil.DefaultConfigRoot()
+	if root == "" || !filepath.IsAbs(root) {
+		return ""
+	}
+	return root
 }
 
 // hubAuthStateRoot is where the auth controller keeps OAuth records: the
@@ -988,17 +966,28 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 	if cfg.Logf != nil {
 		return cfg.Logf
 	}
+	// Resolve the sink once, when the logger is built, not per call. A server
+	// goroutine outlives the test that started it, so reading the mutable
+	// os.Stderr global from it races any test that redirects os.Stderr
+	// (captureHubStderr, issue #2783). The startup path sets the sink before
+	// any server runs, so this captures the same destination it always wanted.
+	stderr := os.Stderr
 	return func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
 	}
 }
+
+// navigationStatsLogfFor is where navigation build stats lines go. Tests that
+// build a hub web server replace it so a slow build cannot write to stderr
+// outside a test that asserts the line (which passes cfg.Logf).
+var navigationStatsLogfFor = hubLogfFor
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -1010,7 +999,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1031,9 +1020,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	}
 	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName:           "evener-hub",
-		Version:              Version,
-		SourceID:             "local",
+		ServerName: "evener-hub",
+		Version:    Version,
+		SourceID:   "local",
+		// The hub's own machine: its system and architecture from the running
+		// binary, and its project roots from hub.toml's top-level `roots`, so a
+		// client showing the hub's own machine beside its SSH hosts has the
+		// same facts a HostRow carries.
+		OS:                   runtime.GOOS,
+		Arch:                 runtime.GOARCH,
+		Roots:                cfg.MachineRoots,
 		WebSocketTrace:       appwireTrace,
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
@@ -1044,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -1186,8 +1183,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
+	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
+	registerSessionActivityHandlers(server, cfg, sources)
 	// The notices read the same answers evener/auth/list and evener/plugin/list
 	// give, through the controllers those methods use (S11).
 	notices := &hubNotices{
@@ -1196,6 +1195,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		sources: sources,
 		roster:  cfg.Roster,
 		remote:  cfg.RemoteThreadCache,
+	}
+	if instancesController != nil {
+		notices.refreshProviders = instancesController.refreshProviderFile
 	}
 	registerNoticesHandler(server, notices)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
@@ -1261,7 +1263,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage, notices
+	return server, hostAdmin, hostManage, notices, authController
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -1289,13 +1291,13 @@ func registerThreadHandlers(
 	// the controller's host-qualified image routes proxy through it to the hub
 	// that owns the session (multi-host component 05). It resolves only against
 	// this hub's own local session state.
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
-		return sessionImageFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(ctx, cfg, sources, params)
 	})
 	// evener/session/document is the AppWire counterpart of the raw /doc/file
 	// read, for the controller's /doc/file proxy (S7).
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
-		return sessionDocumentFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -1407,7 +1409,7 @@ func registerThreadHandlers(
 		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -1455,7 +1457,7 @@ func registerThreadHandlers(
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
@@ -1518,6 +1520,10 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		params, err := appitempaging.ApplyBefore(params)
+		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
 		// Live source first; fall back to the saved transcript (paged on the
@@ -1651,7 +1657,8 @@ func registerThreadHandlers(
 			}
 			resolved = true
 			resp, err := relays.startTurn(ctx, source, params)
-			return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+			err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+			return resp, err
 		}
 		// retryAfterResume runs the attempt a resume this request performed made
 		// possible. A failure there that gives the caller no way to judge its own
@@ -1764,7 +1771,8 @@ func registerThreadHandlers(
 			}
 			return source.SteerTurn(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -1777,7 +1785,8 @@ func registerThreadHandlers(
 			}
 			return source.InterruptTurn(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.EmptyResponse, error) {
@@ -1835,7 +1844,8 @@ func registerThreadHandlers(
 			}
 			return source.QueueTurn(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -1854,7 +1864,8 @@ func registerThreadHandlers(
 			}
 			return source.DrainAsSteer(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
@@ -1873,7 +1884,8 @@ func registerThreadHandlers(
 			}
 			return source.PromoteQueuedAsSteer(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -1892,7 +1904,8 @@ func registerThreadHandlers(
 			}
 			return source.CancelQueued(ctx, params)
 		})
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -1902,7 +1915,8 @@ func registerThreadHandlers(
 			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
 		}
 		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
@@ -1939,17 +1953,30 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
 		resp, err := setNotesHumanWithResume(ctx, cfg, sources, params)
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
 		resp, err := removeURLWithResume(ctx, cfg, sources, params)
-		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		return resp, adoptFailureClientMutationID(err, params.ClientMutationID)
 	})
 }
 
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
 // auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
+	// A credential rejection appearing or clearing changes the instance's
+	// status (its Error) with no write behind it, so it is announced the way a
+	// write is: clients re-read statuses on evener/auth/updated. It is set here,
+	// before the server serves, and never again: probes read it unlocked.
+	authController.credentialRejectionChanged = func(name string) {
+		status, err := authController.Status(appwire.AuthStatusParams{Provider: name})
+		if err != nil {
+			notifyInstanceUpdated(server, "")
+			return
+		}
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, "")
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
@@ -2218,6 +2245,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
+	})
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
@@ -2280,6 +2310,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return hubJobsOutput(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsGet, func(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		return hubJobsGet(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)

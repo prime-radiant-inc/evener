@@ -8,7 +8,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 function resourceFor(target: NavigationInvalidationTarget): NavigationReadParams | null {
-	const base = { representationVersion: 2, resource: target.kind };
+	const base = { representationVersion: 3, resource: target.kind };
 	switch (target.kind) {
 		case "manifest":
 			return base;
@@ -41,23 +41,23 @@ export async function navigationReadback(
 	};
 	let generationId: string | undefined;
 	const read = async (input: Omit<NavigationReadParams, "representationVersion">) => {
-		const params = { ...input, representationVersion: 2 };
+		const params = { ...input, representationVersion: 3 };
 		check();
 		const key = navigationParamsToResourceKey(params);
 		const wire = await client.request("evener/navigation/read", {
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 		check();
 		const decoded = decodeNavigationResponse(key, undefined, wire);
 		if (decoded.status !== "snapshot" && decoded.status !== "gone") throw Error("Navigation could not be refreshed.");
 		if (generationId && decoded.version.generationId !== generationId)
-			throw Error("The hub restarted during the check. Refresh to try again.");
+			throw Error("The hub restarted during the check. Try again.");
 		if (
 			receipt?.generation_id === decoded.version.generationId &&
 			decoded.version.revision < requiredRevision(key, receipt.targets)
 		)
-			throw Error("Navigation is older than the acknowledged change. Refresh to try again.");
+			throw Error("Navigation is older than the acknowledged change. Try again.");
 		return {
 			...decoded,
 			data: decoded.status === "snapshot" ? materializeSnapshot(key, decoded) : null,
@@ -68,14 +68,14 @@ export async function navigationReadback(
 	if (manifest.status !== "snapshot") throw Error("Hub navigation is unavailable.");
 	generationId = manifest.version.generationId;
 	if (confirmReceipt && receipt && receipt.generation_id !== generationId)
-		throw Error("The hub restarted before the change could be confirmed. Refresh to check its current state.");
+		throw Error("The hub restarted before the change could be confirmed. Check its current state.");
 	if (receipt?.generation_id === generationId) {
 		for (const target of receipt.targets) {
 			const params = resourceFor(target);
 			if (!params) continue;
 			const result = await read(params);
 			if (result.version.revision < (target.revision ?? 0))
-				throw Error("Navigation is older than the acknowledged change. Refresh to try again.");
+				throw Error("Navigation is older than the acknowledged change. Try again.");
 		}
 	}
 	return {

@@ -52,6 +52,32 @@ func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
 	}
 }
 
+// TestCaptureLaunchesNoFetchWhenTheBudgetIsAlreadySpent pins the callable
+// boundary's cancellation contract: once the budget is spent, Capture starts no
+// provider fetch, because a fetch launched into an exhausted context can only
+// begin work that Capture, having already given up, can never join.
+func TestCaptureLaunchesNoFetchWhenTheBudgetIsAlreadySpent(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	snapshot := Capture(parent, []string{"first", "second"}, "", func(context.Context, string) ([]string, error) {
+		calls.Add(1)
+		return []string{"model"}, nil
+	}, time.Hour)
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("fetch calls = %d, want none after the budget was spent", got)
+	}
+	if snapshot.Complete || len(snapshot.Choices) != 0 {
+		t.Fatalf("snapshot = %#v, want an incomplete empty snapshot", snapshot)
+	}
+	for _, provider := range []string{"first", "second"} {
+		if snapshot.Status[provider].Kind != StatusTimeout {
+			t.Fatalf("status[%s] = %#v, want timeout", provider, snapshot.Status[provider])
+		}
+	}
+}
+
 func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 	models := []string{
 		"safe",
@@ -262,11 +288,28 @@ func TestCursorRejectsChangedPageBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Page(page.Next, 2, 1024); err == nil {
-		t.Fatal("cursor accepted a changed count bound")
+	const want = "cursor was issued for max_count=1 and max_bytes=1024; omit max_count and max_bytes or repeat those values with this cursor, or omit the cursor to start a new listing"
+	if _, err := s.Page(page.Next, 2, 1024); err == nil || err.Error() != want {
+		t.Fatalf("changed count bound error = %v, want %q", err, want)
 	}
-	if _, err := s.Page(page.Next, 1, 512); err == nil {
-		t.Fatal("cursor accepted a changed byte bound")
+	if _, err := s.Page(page.Next, 1, 512); err == nil || err.Error() != want {
+		t.Fatalf("changed byte bound error = %v, want %q", err, want)
+	}
+}
+
+func TestPageFillsUnspecifiedBoundsFromCursorOrDefaults(t *testing.T) {
+	s := testSnapshot("v1", true, "p/a", "p/b", "p/c")
+	page, err := s.Page("", 1, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Page(page.Next, 0, 0)
+	if err != nil || len(next.Choices) != 1 || next.Choices[0] != "p/b" {
+		t.Fatalf("continuation with unspecified bounds = %#v, %v; want the cursor's one-choice page", next, err)
+	}
+	whole, err := s.Page("", 0, 0)
+	if err != nil || len(whole.Choices) != 3 || !whole.Terminal {
+		t.Fatalf("first page with unspecified bounds = %#v, %v; want every choice under the defaults", whole, err)
 	}
 }
 

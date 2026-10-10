@@ -42,9 +42,6 @@ func fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow(t *testing.T) {
 			t.Fatalf("%s row tasks = %+v, want %+v", name, row.Tasks, want)
 		}
 	}
-	if len(projectRow.Children) != 1 || projectRow.Children[0].ID != "01HELPER" || projectRow.Children[0].Tasks != nil {
-		t.Errorf("subagent rows = %+v, want 01HELPER without its parent's task progress", projectRow.Children)
-	}
 	unindexed, found, _, _ := liveAndProjectRowsFor(tree, "01UNINDEXED")
 	if !found || !reflect.DeepEqual(unindexed.Tasks, progress("Land the fix")) {
 		t.Errorf("Live leaf of the unindexed session = %+v (found %v), want its own task progress", unindexed, found)

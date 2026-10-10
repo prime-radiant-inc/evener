@@ -74,7 +74,51 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
+	var entry hubcore.PastEntry
+	var hasPast bool
+	if params.Subscribe {
+		knownTarget := false
+		captured, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, "", func() (bool, error) {
+			delivery := ""
+			// Use one retained candidate for delivery identity and disk projection.
+			entry, hasPast = pastEntryForRead(cfg, params)
+			if hasPast && entry.ID != "" {
+				delivery = "local:" + entry.ID
+			} else if cfg.Roster != nil {
+				if _, ok := cfg.Roster.RestartRequiredRootRef(normalizedAdmissionRef(params)); ok {
+					delivery = normalizedAdmissionRef(params)
+				}
+			}
+			if delivery == "" {
+				return true, nil
+			}
+			knownTarget = true
+			// Saved history has no live sequence cut. Buffer future relay frames
+			// before reading disk, then release them after the successful response.
+			// The ingress admission retains its lifecycle owner, which can differ
+			// from a child's delivery identity. Failed hydration restores membership.
+			return appserver.CaptureSubscriptionWithHandoff(
+				ctx, params.ReplaceSubscription,
+				func() string { return delivery },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				appserver.CaptureSubscriptionHandoff{},
+			), nil
+		})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, false, err
+		}
+		if !captured {
+			return appwire.ThreadReadResponse{}, false, appwire.SessionUnavailable("thread subscription is unavailable")
+		}
+		if !knownTarget {
+			return appwire.ThreadReadResponse{}, false, nil
+		}
+	} else {
+		entry, hasPast = pastEntryForRead(cfg, params)
+	}
+	if hasPast {
+		response, ok, err := pastEntryItemReadResponse(ctx, cfg, params, entry)
 		return response, ok, daemonlessReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -94,7 +138,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
-			thread = applyHubForkCapability(cfg, thread)
+			thread = applyHubCapabilities(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -125,7 +169,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
-	page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
+	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -146,6 +190,10 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
+	return pastEntryItemReadResponse(ctx, cfg, params, entry)
+}
+
+func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
 	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
@@ -273,11 +321,12 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 	return page, err
 }
 
-// pastEntryPageItems reads the page before cursor, or the latest window when
-// there is no cursor. A cursor from another incarnation is stale: the client
-// re-reads the latest window.
-func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
-	if cursor == "" {
+// pastEntryPageItems reads the page before the request's cursor, or before
+// its Before boundary with no cursor (appitempaging.Boundary), or the latest
+// window when it names neither. A cursor from another incarnation is stale:
+// the client re-reads the latest window.
+func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params appwire.ThreadTurnsListParams, limit int) (pastItemPage, error) {
+	if params.Cursor == "" && params.Before == nil {
 		return pastEntryLatestItems(ctx, entry, limit, nil)
 	}
 	var page pastItemPage
@@ -286,7 +335,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor str
 		if err != nil {
 			return err
 		}
-		before, err := appitempaging.DecodeCursor(cursor, pastCursorIdentity(entry, incarnation))
+		before, err := appitempaging.Boundary(params, pastCursorIdentity(entry, incarnation))
 		if err != nil {
 			return err
 		}
@@ -499,7 +548,7 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 	}
 	catalog := skill.Discover(env, skill.DiscoverOptions{
 		HomeDir:       home,
-		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		UserSkillsDir: userdirs.UserSkills(userdirs.DefaultConfigRoot()),
 		ExtraDirs:     entry.Meta.Config.SkillsDirs,
 		Plugins:       sources,
 	})
@@ -644,6 +693,29 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 	}
 	state := cfg.ResumeLocks.RecoveryState(threadID)
 	return state.ResumeRequired || state.Stopping > 0
+}
+
+// applyHubCapabilities stamps the capability bits the hub owns, not the
+// daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
+// (hubPagesBefore). Every path that serves a thread applies it, so a session
+// reads the same from thread/list and thread/read (#1840).
+func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	thread = applyHubForkCapability(cfg, thread)
+	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	return thread
+}
+
+// hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
+// thread/turns/list pages a thread from a before position, with or without a
+// cursor. This hub mints such pages for its local and saved threads. A thread
+// on another host stays masked: the controller can now join such a page to its
+// remote paging window (#3176), but this hub cannot yet tell a remote that
+// answers for a before from one that predates the field, so it does not
+// advertise one. A live delegate is a read-only alias its parent daemon owns
+// (the same signal fork is fenced on).
+func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
+	parsed, err := appwire.ParseRef(ref)
+	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
 }
 
 // applyHubForkCapability projects the hub's fork authority after the common
@@ -816,7 +888,11 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		// against the live daemon (ensureSkillInputSupported, the relay's
 		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
 		// that genuinely lacks the support still refuses each selection.
-		SkillInput: true,
+		SkillInput:   true,
+		CommandInput: true,
+		// The hub pages a saved transcript from a before position itself
+		// (pastEntryPageItems), so the answer is its own (hubPagesBefore).
+		PageBefore: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
@@ -824,11 +900,11 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 
 // readablePastCapabilities advertises what a session whose daemon is not
 // answering can still do: nothing mutating, but its saved shared notes stay
-// readable. The web derives editability from the store's write gate and the
-// daemon fences writes by admission, so advertising the read capability cannot
-// enable an edit.
+// readable, and its saved transcript pages from a before position. The web
+// derives editability from the store's write gate and the daemon fences writes
+// by admission, so advertising the read capabilities cannot enable an edit.
 func readablePastCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{SharedNotes: true}
+	return appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}
 }
 
 func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
@@ -944,7 +1020,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
-		thread = applyHubForkCapability(cfg, thread)
+		thread = applyHubCapabilities(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
@@ -966,7 +1042,7 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 		}
 		for _, delegate := range delegates {
-			projected := appwireDelegateFromAgentStatus(delegate)
+			projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
 			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 		}
@@ -1016,10 +1092,10 @@ func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]ag
 
 func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {
 	out := appwire.EvenerDelegateInfo{
-		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+		DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-		Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
+		Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
 		NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
 		Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
 		ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,
@@ -1434,6 +1510,28 @@ func applyThreadResumeRequirement(ctx context.Context, cfg hubcore.WebConfig, re
 	if recovery.ResumeRequired || recovery.Stopping > 0 || sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
 		thread.Evener.ResumeRequired = true
 		thread.Evener.Capabilities.Send = false
+		thread.Evener.ResumeOnlyFoldable = resumeOnlyFoldable(ctx, cfg, ref, threadID)
 	}
 	return thread
+}
+
+// resumeOnlyFoldable reports whether a turn/start on this connection would be
+// admitted under the resume-only carve-out - the shape
+// sessionAdmitsResumeRequired admits for a request, read without one: the
+// requirement is set, no Stop is draining, the exit is confirmed, the
+// connection fence does not apply, and no incompatible-protocol daemon refuses
+// the turn/start outright.
+func resumeOnlyFoldable(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	state := sessionRecoveryState(cfg, ref, threadID)
+	if !state.ResumeRequired || state.Stopping > 0 || !state.ExitConfirmed {
+		return false
+	}
+	// A daemon on an incompatible protocol refuses every turn/start
+	// (daemonRestartRequiredError), so the bit must not claim otherwise. The
+	// caller's restart-required override runs after this overlay, so the
+	// question is asked here rather than read off the status stamped later.
+	if _, required, err := restartRequiredDaemon(ctx, cfg, ref, threadID); err != nil || required {
+		return false
+	}
+	return sessionConnectionRecoveryError(ctx, cfg, ref, threadID) == nil
 }

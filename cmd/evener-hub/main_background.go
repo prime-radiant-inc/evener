@@ -49,7 +49,7 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 	}
 }
 
-func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, past *hubcore.PastIndex, roster *hubcore.Roster, web *WebServer) {
+func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -60,7 +60,12 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	defer stop()
 	run := func() {
 		decisions, _ := archive.Decisions()
-		m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+		// Derive from the same remote-inclusive metas/live the navigation tree
+		// uses: sessions on other hosts reach the hub only through the
+		// remote-thread cache, so reading the roster alone left their
+		// question/approval out of the broadcast (#2529).
+		snapshot := web.navigationSnapshot(ctx)
+		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 		w.Tick(m, sum)
 	}
 	run()
@@ -123,7 +128,9 @@ func watchHubNotices(ctx context.Context, web *WebServer) {
 	}
 	ticks, stop := hubTicker(noticeInterval)
 	defer stop()
-	runNoticeWatcher(ctx, ticks, web.notices.read, web.appRPC)
+	runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
+		return web.notices.watchRead(ctx, web.appRPC)
+	}, web.appRPC)
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go

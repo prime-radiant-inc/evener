@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ModelListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -531,4 +531,22 @@ test("a setModel that fails because the session would not start names the start,
 
   await screen.findByText("Couldn't start this session: evener launch-check timed out");
   expect(screen.queryByText(/couldn't change model/i)).toBeNull();
+});
+
+// The hub announces a refreshed model list on evener/auth/updated (#3539): an
+// open picker re-reads it and shows the new list without being reopened.
+test("an open picker shows the hub's refreshed model list when it is announced", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let response = modelListResponse();
+  fake.on("model/list", () => response);
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  await user.click(trigger());
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+
+  response = { data: [...(modelListResponse().data ?? []), { provider: "openai", model: "gpt-6" }] };
+  act(() => {
+    fake.emitNotification({ method: "evener/auth/updated", params: {} });
+  });
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(4));
 });

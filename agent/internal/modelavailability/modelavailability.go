@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -63,6 +64,15 @@ const (
 	captureMaxModelIDLen  = 256
 )
 
+// Capture enumerates each provider's model ids on a bounded budget and freezes
+// the result into a Snapshot. One fetch runs per provider, in parallel, and
+// Capture stops waiting once the budget expires, recording providers that have
+// not answered by then as StatusTimeout.
+//
+// The callable boundary requires fetch to honor its context: Capture bounds
+// only its own wait, and Go cannot reclaim a fetch that blocks past
+// cancellation, so fetch must return promptly once ctx is canceled. A budget
+// that is already spent starts no fetch at all.
 func Capture(parent context.Context, providers []string, requiredProvider string, fetch func(context.Context, string) ([]string, error), budget time.Duration) Snapshot {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
@@ -75,6 +85,12 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 	}
 	out := make(chan result, len(providers))
 	for _, name := range providers {
+		if ctx.Err() != nil {
+			// The budget is already spent: launching fetch could only start
+			// work that Capture, having already given up, could never join.
+			// Leave the provider to the timeout accounting below.
+			continue
+		}
 		go func(name string) {
 			models, err := fetch(ctx, name)
 			r := result{name: name, err: err}
@@ -309,8 +325,12 @@ func (s *Snapshot) decode(token string) (cursor, error) {
 	}
 	return c, nil
 }
+
+// Page returns the page of choices token continues (the first page when token
+// is empty). A zero maxCount or maxBytes is unspecified: a continuation reuses
+// the bound its cursor was issued for, and a first page uses the default.
 func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
-	if s == nil || len(s.key) == 0 || maxCount <= 0 || maxCount > DefaultPageMaxCount || maxBytes <= 0 || maxBytes > DefaultPageMaxBytes {
+	if s == nil || len(s.key) == 0 {
 		return Page{}, errors.New("invalid page bounds")
 	}
 	off := 0
@@ -319,10 +339,25 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		if e != nil {
 			return Page{}, e
 		}
+		if maxCount == 0 {
+			maxCount = c.Count
+		}
+		if maxBytes == 0 {
+			maxBytes = c.Bytes
+		}
 		if c.Count != maxCount || c.Bytes != maxBytes {
-			return Page{}, errors.New("stale cursor")
+			return Page{}, fmt.Errorf("cursor was issued for max_count=%d and max_bytes=%d; omit max_count and max_bytes or repeat those values with this cursor, or omit the cursor to start a new listing", c.Count, c.Bytes)
 		}
 		off = c.Offset
+	}
+	if maxCount == 0 {
+		maxCount = DefaultPageMaxCount
+	}
+	if maxBytes == 0 {
+		maxBytes = DefaultPageMaxBytes
+	}
+	if maxCount < 0 || maxCount > DefaultPageMaxCount || maxBytes < 0 || maxBytes > DefaultPageMaxBytes {
+		return Page{}, errors.New("invalid page bounds")
 	}
 	status := s.Status
 	if status == nil {

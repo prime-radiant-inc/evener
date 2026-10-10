@@ -32,6 +32,7 @@
 // USAGE:
 //   npm run overflowguard              # the default width sweep
 //   node scripts/overflowguard/run.mjs 390 1400
+//   node scripts/overflowguard/run.mjs --footer-only 390 1400
 //
 // STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
 // not wired into `make lint`, because it costs a Vite boot and a Chrome
@@ -40,9 +41,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyViewport,
+  assertGuardOrigin,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
+  devtoolsHttpURL,
   evaluate,
   navigateTo,
   realizedViewport,
@@ -50,6 +53,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -58,9 +62,11 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
-// Pane widths that bracket the composer card's 399px container threshold (the
-// three-verb wrap, promptcard.module.css): the container is the pane minus its
-// footer padding. Swept only by the verb-cluster check.
+// Pane widths that bracket the composer card's phone-width container
+// threshold - COMPOSER_PHONE_MAX_WIDTH, 399, exported by
+// src/panes/session/composer/narrowComposer.ts, where the narrow layout
+// relocates the verbs into the session menu: the container is the pane
+// minus its footer padding. Swept only by the verb-cluster check.
 const VERB_WRAP_WIDTHS = [399, 400, 420, 480, 600, 699];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
@@ -89,7 +95,7 @@ const BOOT = {
 // settled page (the verb cluster) and needs none of the disclosure exception
 // probe, the Verbosity detail inspection or the trusted-focus pass.
 async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -136,7 +142,13 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
 
     if (lite) {
       const measurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
-      return { ...measurement, viewport: { ...viewport, mobile: realizedLayout.mobile } };
+      // The relocated-verb probe opens the real session menu, and the menu's
+      // open lands on the next animation frame (measured live; the harness's
+      // measureMenuVerbs awaits it) - so it is awaited here, on the lite
+      // pass the verb-cluster sweep runs, not folded into the synchronous
+      // window.measure() the full pass shares with every other check.
+      const menuVerbs = await evaluate(send, "window.measureMenuVerbs()\n");
+      return { ...measurement, menuVerbs, viewport: { ...viewport, mobile: realizedLayout.mobile } };
     }
 
     const exceptionSafety = await evaluate(
@@ -209,7 +221,7 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
 }
 
 async function measureComposerSend(cdpEndpoint, url, width) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -224,7 +236,11 @@ async function measureComposerSend(cdpEndpoint, url, width) {
     await waitForFonts(send);
 
     const measurements = [];
-    for (const state of COMPOSER_SEND_STATES) {
+    const states =
+      width <= 390
+        ? ["dark", "light"].flatMap((theme) => ["s", "m", "l", "xl"].map((fontSize) => ({ theme, fontSize })))
+        : COMPOSER_SEND_STATES;
+    for (const state of states) {
       measurements.push(
         await evaluate(
           send,
@@ -238,6 +254,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               ? [...button.querySelectorAll('span')].find((candidate) => candidate.textContent?.trim() === 'Send')
               : null;
             const box = button?.getBoundingClientRect();
+            const activity = document.querySelector('[data-testid="composer-activity"]');
             return {
               theme: ${JSON.stringify(state.theme)},
               fontSize: ${JSON.stringify(state.fontSize)},
@@ -247,6 +264,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               width: box?.width ?? null,
               height: box?.height ?? null,
               labelDisplay: label ? getComputedStyle(label).display : null,
+              activityPresent: activity !== null,
             };
           })()`,
         ),
@@ -260,8 +278,103 @@ async function measureComposerSend(cdpEndpoint, url, width) {
   }
 }
 
+// Keep the oracle outside window.measure(): read production DOM boxes and the
+// browser's actual env() value, not the footer's own padding formula. Only the
+// keyboard custom property is simulated, not an iOS Safari keyboard/viewport.
+async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  const mobile = width < 900;
+  try {
+    await applyViewport(send, { width, height: 900, mobile });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    const viewportDiagnostic = diagnoseRealizedViewport({ width, height: 900 }, await realizedViewport(send));
+    if (viewportDiagnostic) throw new Error(viewportDiagnostic);
+    const measurements = [];
+    for (const safeArea of mobile && safeAreaSupported ? [0, 34] : [0]) {
+      // Verified against this Chrome's /json/protocol: the required `insets`
+      // parameter references SafeAreaInsets, whose optional bottom is integer.
+      if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
+      for (const keyboard of mobile ? [0, 12, 300] : [0]) {
+        measurements.push(await evaluate(send, `(async () => {
+          document.documentElement.style.setProperty('--keyboard-inset', '${keyboard}px');
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const pane = document.getElementById('oh-pane');
+          const footer = pane?.querySelector('[data-testid="pane-footer"]');
+          const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
+            .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+          const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
+          const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
+          const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+          const probe = document.createElement('div');
+          probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom, 0px)';
+          document.body.append(probe);
+          const actualSafeArea = probe.getBoundingClientRect().height;
+          probe.remove();
+          const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+          return {
+            safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea,
+            mobile: matchMedia('(max-width: 899px)').matches,
+            paneBottom: pane?.getBoundingClientRect().bottom ?? null,
+            cards: cards.length, footerBottom,
+            lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+            paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+            metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
+            metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+            pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+            path: path?.getAttribute('title') ?? null,
+            metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+          };
+        })()`));
+      }
+    }
+    return measurements;
+  } finally {
+    if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertComposerFooter(measurement, width) {
+  const failures = [];
+  const mobile = width < 900;
+  const requiredClearance = Math.max(0, measurement.safeArea - measurement.keyboard);
+  if (measurement.mobile !== mobile) {
+    failures.push("realized footer viewport mismatch");
+  }
+  if (measurement.actualSafeArea !== measurement.safeArea) {
+    failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
+  }
+  if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
+  if (mobile) {
+    if (measurement.paneBottom === null || measurement.footerBottom === null || !nearlyEqual(measurement.footerBottom, measurement.paneBottom)) {
+      failures.push(`footer bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
+    }
+    if (measurement.metadataCount !== 0) failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
+    if (measurement.gap === null || !nearlyEqual(measurement.gap, requiredClearance)) {
+      failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
+    }
+  } else {
+    // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
+    if (
+      measurement.metadataCount !== 1 || !measurement.metadataVisible || !measurement.pathVisible ||
+      !measurement.metadataInEdgeFooter || measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+    ) {
+      failures.push("desktop working-path metadata missing from the visible edge footer");
+    }
+    if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
+      failures.push(`desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`);
+    }
+  }
+  return failures;
+}
+
 async function verifyItemPaging(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
@@ -401,20 +514,14 @@ async function measureTrustedFocus(send) {
   return { baseline, states: [first, middle, last] };
 }
 
-// Unified session menu (2026-08-05-unified-session-context-menu): the chrome
-// no longer has inline Details/Tasks/Activity triggers or a narrow-collapse -
-// the shared SessionMenu ("Session actions") lists the panes at EVERY width
-// with a check adornment for open ones. This fixture therefore drives the
-// menu directly: open Tasks, wait for the dock split to squeeze the main
-// composer's inline session chrome below 640px, then re-open the menu and
-// confirm its label gains the checkmark. The menu entry is a plain "Tasks"
-// (counts live inline and in the panel, never in the menu), whatever
-// aggregate the harness seeds.
+// Opening the actual Tasks activity sidebar constrains the main composer.
+// The guard measures the narrower chrome, selected activity-tab state, and the same
+// production Verbosity editor's containment and fieldset geometry.
 async function verifyPanelCollapse(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
-    await applyViewport(send, { width: 1024, height: 900 });
+    await applyViewport(send, { width: 900, height: 900 });
     await navigateTo(page, url, BOOT);
     await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
@@ -423,7 +530,6 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     });
     const out = await send("Runtime.evaluate", {
       expression: `(async () => {
-        const taskLabel = 'Tasks';
         const until = async (read, label) => {
           for (let i = 0; i < 180; i++) {
             const value = read();
@@ -432,16 +538,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           }
           throw new Error('panel collapse fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 500));
         };
-        const actionsTrigger = () =>
-          [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
-        const actions = await until(actionsTrigger, 'session actions trigger');
-        actions.click();
-        const tasksItem = await until(
-          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel),
-          'tasks menu item',
-        );
-        tasksItem.click();
-        const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
+        const panel = await until(() => document.querySelector('[data-testid="activity-sidebar"]'), 'Tasks activity sidebar');
         const chrome = await until(
           () => document.querySelector('[data-testid="session-chrome-inline"]'),
           'inline session chrome',
@@ -456,12 +553,12 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         if (!closeVerbosity) throw new Error('Verbosity close button missing after dock-collapse measurement');
         closeVerbosity.click();
         await until(() => !document.querySelector('[role="dialog"][aria-modal="true"]'), 'Verbosity dialog close');
-        const actionsAgain = actionsTrigger();
-        if (!actionsAgain) throw new Error('session actions trigger missing');
-        actionsAgain.click();
         const checked = await until(
-          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel + ' ✓'),
-          'checked tasks menu item',
+          () =>
+            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="radio"]')].find(
+              (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('Tasks'),
+            ),
+          'selected Tasks activity tab',
         );
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
@@ -493,7 +590,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
 }
 
 async function verifyShortSessionMenu(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 844, height: 390, mobile: true });
@@ -524,6 +621,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
         const box = menu.getBoundingClientRect();
         return {
           itemCount: menu.querySelectorAll('[role="menuitem"]').length,
+          itemLabels: [...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent.trim()),
           top: box.top,
           bottom: box.bottom,
           clientHeight: menu.clientHeight,
@@ -575,7 +673,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
 // boot the fixture, wait out the harness's own settled promise and fonts,
 // then run the inspection expression and return its result.
 async function inspectOnSettledPage(cdpEndpoint, url, expression) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900, mobile: false });
@@ -644,7 +742,8 @@ function assertFieldsets(detail, label) {
 
 // measureVerbCluster reads the harness's compose-controls measurement (the
 // verb cluster's geometry plus each control's containment) for one width and
-// one fixture (steer advertised or not) off a lite measurement.
+// one fixture (steer advertised or not) off a lite measurement, plus the
+// awaited menu-verb probe (measureMenuVerbs) the lite path runs.
 async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
   const result = await measureAt(
     cdpEndpoint,
@@ -652,36 +751,55 @@ async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
     width,
     { lite: true },
   );
-  return result.currentWork;
+  return { ...result.currentWork, menuVerbs: result.menuVerbs };
 }
 
 function verbClusterWrapped(cluster) {
   return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
 }
 
-// assertVerbCluster: the wrap rule itself, plus the containment the main pass
-// asserts for the no-steer fixture. At a card container of 399px or less a
-// three-verb cluster sits below the status row; two verbs stay beside it
-// there, and three stay beside it above. The threshold is the container's,
-// measured by the harness, and the verb count is the fixture's own
-// (expectedVerbs, from its capabilities). Every expected control is present,
-// inside the card and the pane, no two overlap, and the current-work strip
-// and the card share the pane without horizontal overflow.
+// assertVerbCluster: the narrow verb layout, plus the containment the main pass
+// asserts for the no-steer fixture. The row NEVER wraps: at the phone-width
+// boundary or below the narrow layout holds Send alone beside the status row
+// and relocates Stop and Steer into the session menu (Jesse's 2026-09-28
+// ruling, which replaced issue #1339's provisional wrap rule); above that
+// boundary the verbs sit in the row beside the status row and the menu
+// carries none. The narrow verdict is the harness's own gate (narrowComposer,
+// reported in the payload), so the runner never re-derives the boundary; the
+// verb count is the fixture's own (expectedVerbs, from its capabilities
+// and the container width). Every expected in-row control is present, inside
+// the card and the pane, no two overlap, and the current-work strip and the
+// card share the pane without horizontal overflow.
 function assertVerbCluster(work, steer) {
   const cluster = work.verbCluster;
   if (!Number.isFinite(cluster.containerWidth)) {
     return [`card container width unmeasured (${cluster.containerWidth})`];
   }
   const failures = [];
+  const narrow = cluster.narrowComposer;
   if (cluster.controls !== cluster.expectedVerbs) {
-    failures.push(`expected ${cluster.expectedVerbs} verbs, got ${cluster.controls}`);
+    failures.push(`expected ${cluster.expectedVerbs} in-row verbs, got ${cluster.controls}`);
   }
-  const expectWrapped = steer && cluster.containerWidth <= 399;
-  if (verbClusterWrapped(cluster) !== expectWrapped) {
+  if (verbClusterWrapped(cluster)) {
     failures.push(
-      `expected the verbs ${expectWrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px), ` +
-        `got top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+      `the verb cluster wrapped below the status row (top=${cluster.top} against status bottom=${cluster.statusRowBottom}); ` +
+        `the narrow layout relocates verbs into the session menu instead of wrapping`,
     );
+  }
+  if (!work.menuVerbs.open) {
+    failures.push("the session menu could not be opened for the relocated-verb probe");
+  } else {
+    const expectSteerInMenu = narrow && steer;
+    if (work.menuVerbs.stop !== narrow) {
+      failures.push(
+        `menu Stop ${work.menuVerbs.stop ? "present" : "absent"}, expected ${narrow ? "present" : "absent"}`,
+      );
+    }
+    if (work.menuVerbs.steer !== expectSteerInMenu) {
+      failures.push(
+        `menu Steer ${work.menuVerbs.steer ? "present" : "absent"}, expected ${narrow && steer ? "present" : "absent"}`,
+      );
+    }
   }
   if (!work.controlsFound || !work.controlsContained || !work.controlsDoNotOverlap || !work.sharedPaneWithoutOverflow) {
     failures.push(
@@ -1084,6 +1202,7 @@ function assertSettings(result, width) {
 }
 
 async function main() {
+  const footerOnly = process.argv.includes("--footer-only");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
@@ -1122,6 +1241,29 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
+    const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
+    if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
+    const protocol = await protocolResponse.json();
+    const safeAreaSupported = protocol.domains.find((domain) => domain.domain === "Emulation")
+      ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+    if (!safeAreaSupported) console.log("composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped");
+    for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
+      const measurements = await measureComposerFooter(
+        cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`, width, safeAreaSupported,
+      );
+      for (const measurement of measurements) {
+        const failures = assertComposerFooter(measurement, width);
+        const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+        } else {
+          console.log(`${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`);
+        }
+      }
+    }
+    if (footerOnly) return failed > 0 ? 1 : 0;
+
     for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
       const sendMeasurements = await measureComposerSend(
         cdpEndpoint,
@@ -1131,6 +1273,11 @@ async function main() {
       const sendFailures = [];
       for (const measurement of sendMeasurements) {
         const label = `${measurement.theme}/${measurement.fontSize}`;
+        if (width <= 390) {
+          if (measurement.activityPresent) {
+            sendFailures.push(`${label} composer Activity/recipient row is still rendered`);
+          }
+        }
         if (
           measurement.matchingButtons !== 1 ||
           measurement.tag !== "button" ||
@@ -1193,19 +1340,24 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    if (shortMenu.itemCount !== 10) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 10`);
+    const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
+    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
+    const menuLabels = shortMenu.itemLabels.map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
+      shortMenuFailures.push(`labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`);
+    }
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
     }
     if (
-      shortMenu.scrollHeight <= shortMenu.clientHeight ||
+      shortMenu.scrollHeight > shortMenu.clientHeight ||
       (shortMenu.overflowY !== "auto" && shortMenu.overflowY !== "scroll")
     ) {
       shortMenuFailures.push(
-        `vertical scroll=${shortMenu.scrollHeight}/${shortMenu.clientHeight}, overflow-y=${shortMenu.overflowY}`,
+        `vertical overflow=${shortMenu.scrollHeight}/${shortMenu.clientHeight}, overflow-y=${shortMenu.overflowY}`,
       );
     }
-    if (!shortMenu.activeIsLast || !shortMenu.lastVisible || !shortMenu.lastHitTestable || shortMenu.scrollTop <= 0) {
+    if (!shortMenu.activeIsLast || !shortMenu.lastVisible || !shortMenu.lastHitTestable || shortMenu.scrollTop > 0) {
       shortMenuFailures.push(
         `End reachability=${JSON.stringify({
           activeIsLast: shortMenu.activeIsLast,
@@ -1219,7 +1371,7 @@ async function main() {
       failed++;
       console.log(`short mobile menu ... FAIL - ${shortMenuFailures.join("; ")}`);
     } else {
-      console.log("short mobile menu ... PASS - popup contained, scrollable, and last action keyboard/touch reachable");
+      console.log("short mobile menu ... PASS - popup contained and last action keyboard/touch reachable");
     }
 
     const chatFocus = await verifyChatFocus(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024`);
@@ -1277,13 +1429,13 @@ async function main() {
 
     const panelCollapse = await verifyPanelCollapse(
       cdpEndpoint,
-      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=900&panels=1&activity=tasks`,
     );
     const panelFieldsetFailures = assertFieldsets(panelCollapse.detail, "1024 narrow dock");
     if (
       panelCollapse.mainWidth >= 640 ||
       !panelCollapse.panelVisible ||
-      panelCollapse.checkedText !== "Tasks ✓" ||
+      !panelCollapse.checkedText?.startsWith("Tasks") ||
       panelCollapse.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail?.triggerReachable ||
       !panelCollapse.detail?.triggerHitTestable ||
@@ -1296,7 +1448,7 @@ async function main() {
       console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
     } else {
       console.log(
-        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, ` +
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, Tasks activity sidebar and selected tab visible, ` +
           `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }
@@ -1485,8 +1637,10 @@ async function main() {
     // capability (Stop + Send, the cluster the status row's narrow-pane budget
     // was measured against) and with it (Stop + Send + Steer, every busy
     // session on a harness that can steer). Every swept width plus the widths
-    // that bracket the card's 399px threshold, where the three verbs take
-    // their own line (promptcard.module.css).
+    // that bracket the card's phone-width threshold (COMPOSER_PHONE_MAX_WIDTH,
+    // 399, from narrowComposer.ts), where the narrow layout
+    // relocates the verbs into the session menu instead of drawing them in
+    // the row (Jesse's 2026-09-28 ruling, replacing the old wrap).
     for (const steer of [false, true]) {
       for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
         const label = `${width}px${steer ? " steer" : ""} verbs`;
@@ -1498,7 +1652,9 @@ async function main() {
           console.log(`${label} ... FAIL - ${failures.join("; ")}`);
         } else {
           console.log(
-            `${label} ... PASS - ${cluster.controls} verbs ${verbClusterWrapped(cluster) ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
+            `${label} ... PASS - ${cluster.controls} verbs beside the status row, ` +
+              `menu ${work.menuVerbs.stop || work.menuVerbs.steer ? "carries the relocated verbs" : "carries none"} ` +
+              `(card container ${cluster.containerWidth}px)`,
           );
         }
       }

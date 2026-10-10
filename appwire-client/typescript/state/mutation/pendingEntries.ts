@@ -20,6 +20,7 @@ export interface PendingTurnEntry {
   // queued submission has no text at all, so these names are its whole
   // user-visible content.
   skillNames: string[];
+  commandNames?: string[];
   createdAt?: number;
   state: PendingTurnState;
   source: "outbox" | "optimistic" | "authoritative";
@@ -31,6 +32,11 @@ export interface PendingTurnEntry {
   // sends, never the daemon's session-wide projection of every client's), and
   // that answer cannot change when a hydrate lands.
   fromThisClient: boolean;
+  // The queued message a promote steers with, while a durable record of
+  // the promote is unsettled: the queue row it will replace.
+  queueEntryId?: string;
+  // The queue revision a drain steers with, likewise: the queue it takes.
+  queueRevision?: number;
 }
 
 // The wire-method → PendingMethod mapping that names the entry method family:
@@ -93,8 +99,13 @@ export function pendingEntryPreview(entry: {
   text: string;
   imageCount: number;
   skillNames: readonly string[];
+  commandNames?: readonly string[];
 }): string {
-  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+  return [
+    queueEntryPreviewText(entry.text, entry.imageCount),
+    skillMarkers(entry.skillNames),
+    commandMarkers(entry.commandNames ?? []),
+  ]
     .filter((part) => part !== "")
     .join(" ");
 }
@@ -125,7 +136,16 @@ export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPL
   return `${text.slice(0, max)}…`;
 }
 
-function inputPreview(input: InputItem[] | undefined): { text: string; imageCount: number; skillNames: string[] } {
+export function commandMarkers(names: readonly string[]): string {
+  return names.map((name) => `[command: ${name}]`).join(" ");
+}
+
+function inputPreview(input: InputItem[] | undefined): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
   const text = input
     ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
@@ -136,7 +156,12 @@ function inputPreview(input: InputItem[] | undefined): { text: string; imageCoun
       ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
       .map((item) => item.name),
   );
-  return { text: text ?? "", imageCount, skillNames };
+  const commandNames = canonicalSkillNames(
+    input
+      ?.filter((item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
+  return { text: text ?? "", imageCount, skillNames, commandNames };
 }
 
 type PendingRecord = MutationOutboxRecord | MutationOptimisticRecord;
@@ -172,6 +197,8 @@ function outboxEntry(
   const method = pendingMethod(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
+  const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
+  const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,
     ref: record.targetRef,
@@ -185,6 +212,8 @@ function outboxEntry(
     // or names this client - another client's in-flight send must not claim
     // tier-6 routing here.
     fromThisClient: isOwnMutationRecord(record),
+    ...(typeof queueEntryId === "string" ? { queueEntryId } : {}),
+    ...(typeof queueRevision === "number" ? { queueRevision } : {}),
   };
 }
 

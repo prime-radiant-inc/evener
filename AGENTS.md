@@ -5,6 +5,47 @@
 Always create an isolated worktree for feature, bug-fix, and PR work. You have permission.
 Keep unrelated changes in the current checkout out of the worktree and PR.
 
+## Product behavior and evergreen documentation
+
+Read [the product guide](docs/product/README.md) and the relevant row in
+[the subsystem map](docs/product/subsystems.md) before changing product behavior.
+Evener should help the user achieve their aims with minimal friction. Prefer
+automatic recovery, preservation of the user's work, and continued use of healthy
+parts of the product. A banner or a repair button is not a substitute for recovery.
+
+Do not treat "fail closed" or "fully locked down" as a default design goal. Explain
+the concrete user intent or guarantee a restriction serves, the work it prevents,
+and who restores operation when the triggering condition clears. Honor the user's
+chosen boundaries and reconcile uncertain outcomes without losing or duplicating
+their work. Discuss consequential product choices instead of inventing additional
+restrictions or silently changing existing promises.
+
+Keep the product docs evergreen in the same change as the code. Update subsystem
+responsibilities, source-of-truth and recovery ownership, affected client surfaces,
+and linked contracts when they change. Use stable filenames and current behavior;
+keep dated narratives, rollout logs, and PR progress out of these references.
+
+[The friction punchlist](docs/product/friction.md) distinguishes unresolved
+proposals, agreed product outcomes, and deferred work. Keep those states separate
+from implementation plans and verified behavior, and honor recorded deferrals.
+Discuss unresolved choices individually. After an agreed fix is implemented and verified,
+update its owning guide and remove the resolved case from the open list without
+renumbering other cases. Verify recovery and preservation contracts with meaningful
+behavior tests, including the transition back to useful operation.
+
+Session activity belongs to the domain reads described in
+[the session activity guide](docs/product/session-activity.md). Keep navigation
+shallow and compact; do not reconstruct activity ownership from navigation rows.
+Preserve explicit session/subtree scope and share subscription lifetimes across
+transcript and activity consumers. Changes to this boundary need real producer,
+routing and client-lifetime coverage, plus updates to the guide and subsystem map.
+Preserve the user-visible assertions when migrating an activity consumer to a
+new API. Use the recorded producers in `agent/testdata/subagentwire` to verify
+delegate outcomes through the shared adapter and phone renderer. Reports belong
+to a settled run generation; independently refreshed views must agree on that
+generation before combining their evidence. Paging tests must cover refresh and
+reconnect after loading multiple pages, including a visible row on a later page.
+
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
@@ -22,6 +63,19 @@ tagged compile floors, generated-output freshness, secret scan), `make vet`,
 is the canonical pre/post-merge sequence. Tool versions are pinned in
 `.tool-versions` — `make tools` installs what CI runs.
 
+The full suite runs faster in CI than on this workstation, the race, fuzz, and
+frontend lanes included. Do not block a push on a long local full-suite run:
+run the fast, targeted tests for what you changed, push, and let CI run the
+full suite as the source of truth. Reserve a local full run (`make test`,
+`make merge-approval-gate`) for when you need it, such as reproducing a CI
+failure.
+
+Run the heavy local gates one at a time — `make test-web`, `make vet` and
+`make lint` — not as parallel background jobs: the web gate's flush-scope
+hygiene meta-test can time out under that contention with everything else
+green (#3966), so rerun the gate alone before diagnosing that lone timeout
+as a regression.
+
 Use this boundary:
 
 - Evener plumbing: use a scripted provider at the LLM boundary and exercise real
@@ -36,6 +90,9 @@ A provider API key by itself must never cause default tests to issue live
 requests.
 
 ## Frontend gates
+
+Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
+with each tree's own Biome and re-stages it (`docs/developing-evener/README.md`).
 
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
@@ -57,7 +114,11 @@ rules, so an explicit-path Biome run over them reports violations the gate does
 not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
 `make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
 Chrome-capable hosts, also run `make test-web-browser` for real geometry and
-browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
+browser guards. `npm test`/vitest never typechecks — esbuild strips types —
+so a green targeted vitest run says nothing about `tsc`: `npm run typecheck`
+in `cmd/evener-hub/frontend` is the fast check before claiming a frontend
+change typechecks.
+CI checks Biome formatting. Avoid `noNonNullAssertion` and
 array-index-key violations.
 
 The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental

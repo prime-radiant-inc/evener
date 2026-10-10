@@ -46,10 +46,15 @@ export interface Size {
  * cross. Vertically: above the trigger when the bubble fits there, below it
  * when it does not, and clamped to the viewport when neither side has room.
  */
-export function computeTooltipPosition(triggerRect: DOMRect, bubbleSize: Size, viewport: Size): TooltipPosition {
+export function computeTooltipPosition(
+  triggerRect: DOMRect,
+  bubbleSize: Size,
+  viewport: Size,
+  gap = TRIGGER_GAP,
+): TooltipPosition {
   const centered = triggerRect.left + triggerRect.width / 2 - bubbleSize.width / 2;
-  const above = triggerRect.top - TRIGGER_GAP - bubbleSize.height;
-  const below = triggerRect.bottom + TRIGGER_GAP;
+  const above = triggerRect.top - gap - bubbleSize.height;
+  const below = triggerRect.bottom + gap;
   return {
     left: clampIntoViewport(centered, bubbleSize.width, viewport.width),
     top:

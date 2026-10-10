@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/plugins"
@@ -30,6 +31,7 @@ type runConfig struct {
 	visionModel               string // --vision-model override for the image-description side-channel
 	workDir                   string
 	stateDir                  string   // --state-dir override
+	disableMemory             bool     // sticky session-wide native memory opt-out
 	systemPrompt              string   // --system-prompt file path
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
@@ -61,6 +63,7 @@ type runConfig struct {
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
 	apiLog                      string        // --api-log on|off (default off)
+	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -97,8 +100,22 @@ var (
 	}
 )
 
+// Memory resolution is independent of history storage and never guesses an ID
+// after failure. Personal memory and ordinary work remain available.
+func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer) string {
+	project, err := identifier.ResolveProjectWith(env.WorkingDirectory(), execenv.NewProjectResolver(env))
+	if err != nil {
+		fmt.Fprintf(warnings, "warning: project memory unavailable: %v\n", err) //nolint:errcheck
+		return ""
+	}
+	return project.ID
+}
+
 func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
+		return err
+	}
+	if err := rejectAskResponderWithResume(cfg.askResponder, cfg.resume, cfg.resumeWith, cfg.resumeLast); err != nil {
 		return err
 	}
 	if cfg.runTimeout > 0 {
@@ -113,6 +130,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stderr == nil {
 		cfg.stderr = os.Stderr
 	}
+	// Wrapped once here, before anything can write to it: the event-drain
+	// goroutine (drainEventsHuman/drainEventsVerbose, started below) and the
+	// --ask-responder loop's own stderr logging (runAskResponderLoop) both
+	// write to cfg.stderr from different goroutines. Every read of
+	// cfg.stderr after this point — including the closures captured
+	// below — sees the synchronized writer.
+	cfg.stderr = syncio.NewWriter(cfg.stderr)
 	if cfg.workDir == "" {
 		wd, err := runGetwd()
 		if err != nil {
@@ -300,9 +324,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
 		return err
 	}
+	memoryProjectID := ""
+	if meta == nil {
+		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
+	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
+		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryProjectID:             memoryProjectID,
+		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
@@ -327,6 +358,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
+	}
+	// --ask-responder attaches a responder for this process only: ask_user is
+	// offered, while the session stays NonInteractive in everything it saves
+	// and in what it does without asking (default tasks, no sandbox
+	// escalation). With no responder there is nobody to answer, so ask_user
+	// stays unregistered.
+	if cfg.askResponder != "" {
+		baseSessionCfg.AskResponderAttached = true
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
@@ -354,12 +393,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		// Provisioning allocates the session scratch and the lease under it,
 		// which nothing releases until a session owns this environment.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             baseSessionCfg.MemoryStateRoot,
+			DisableMemory:               cfg.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,
@@ -371,13 +412,10 @@ func run(ctx context.Context, cfg runConfig) error {
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own the scratch and the
-			// flock lease it took. An allocation the resume adopted from the
-			// root's durable retention manifest is retained rather than
-			// removed; only a fresh mint is disposed.
-			agent.DisposeResumeScratchAfterFailure(stateDir, meta.ID, env)
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if resumeWithChildID != "" {
@@ -398,11 +436,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the cleanup must retain an allocation the manifest references
-			// rather than remove it out from under a later resume.
-			agent.DisposeRootScratchAfterFailure(stateDir, env)
+			// provisioned was never built, so its scratch goes here.
+			_ = env.DisposeSessionScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -429,6 +464,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	result, err := runProcessInput(sess, ctx, prompt)
+	if err == nil && cfg.askResponder != "" {
+		result, err = runAskResponderLoop(ctx, sess, cfg, result)
+	}
 	if err == nil {
 		// Drain every session-owned managed job before Close() SIGKILLs it: keep
 		// re-driving the coordinator on job completions until the job tree is

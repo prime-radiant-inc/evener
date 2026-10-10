@@ -14,39 +14,64 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
-	it("restores a shortcut editor's unfinished text in its original hub", () => {
+	it("returns an old unbound Reader to its saved owning conversation without erasing other storage", () => {
 		const disk = storage();
-		const repository = new LocationRepository(disk);
-		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
-		repository.save(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio"));
-		const saved = new LocationRepository(disk).read(["studio"]);
-		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
-		expect(restoredStack(saved).routes.slice(-2)).toEqual([
-			{ name: "HubSettings", params: { hubId: "studio" } },
-			{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
-		]);
-		expect(new LocationRepository(disk).read(["other"])).toBeNull();
-	});
-	it("rejects malformed and mixed shortcut destinations", () => {
-		const disk = storage();
-		const repository = new LocationRepository(disk);
-		for (const keybindings of [
-			{ editor: { actionId: "", chord: "" } },
-			{ editor: { actionId: "a", chord: null } },
-			true,
-		]) {
-			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", keybindings }));
-			expect(repository.read(["studio"])).toBeNull();
-		}
+		disk.setItemSync("evener.draft.other", "keep draft");
+		disk.setItemSync("evener.reader-memory", "keep memory");
+		disk.setItemSync("evener.outbox", "keep queued work");
 		disk.setItemSync(
 			"evener.last-location",
 			JSON.stringify({
-				hubId: "studio",
-				keybindings: {},
-				projects: { archived: false },
+				hubId: "saved-hub",
+				conversation: { ref: "remote:owner", title: "Saved owner" },
+				reader: { sessionRef: "remote:owner", path: "docs/a.md" },
 			}),
 		);
-		expect(repository.read(["studio"])).toBeNull();
+		const repository = new LocationRepository(disk);
+		const saved = repository.read(["unrelated-hub", "saved-hub"]);
+		expect(restoredStack(saved).routes).toEqual([
+			{ name: "Hubs" },
+			{ name: "Sessions" },
+			{ name: "Conversation", params: { hubId: "saved-hub", ref: "remote:owner", title: "Saved owner" } },
+		]);
+		expect(disk.getItemSync("evener.draft.other")).toBe("keep draft");
+		expect(disk.getItemSync("evener.reader-memory")).toBe("keep memory");
+		expect(disk.getItemSync("evener.outbox")).toBe("keep queued work");
+	});
+	it("round-trips the complete captured Reader reference, not the selected conversation", () => {
+		const disk = storage();
+		const reference = {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		};
+		const params = {
+			hubId: "saved-hub",
+			sessionRef: "remote:owner",
+			sessionTitle: "Saved owner",
+			path: "docs/a raw.md",
+			reference,
+		};
+		const repository = new LocationRepository(disk);
+		repository.save(locationForRoute({ name: "Reader", params }, "saved-hub"));
+		const saved = repository.read(["unrelated-hub", "saved-hub"]);
+		expect(saved).toEqual({
+			hubId: "saved-hub",
+			conversation: { ref: "remote:owner", title: "Saved owner" },
+			reader: { sessionRef: "remote:owner", path: "docs/a raw.md", reference },
+		});
+		expect(restoredStack(saved).routes.at(-1)).toEqual({ name: "Reader", params });
+	});
+	it("restores a saved shortcuts location, which is no longer a place, to that hub's Board", () => {
+		const disk = storage();
+		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
+		for (const keybindings of [{ editor }, {}, true]) {
+			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", keybindings }));
+			const saved = new LocationRepository(disk).read(["studio"]);
+			expect(saved).toEqual({ hubId: "studio" });
+			expect(restoredStack(saved).routes).toEqual([{ name: "Hubs" }, { name: "Sessions" }]);
+		}
 	});
 	it("restores project filters and the exact project tier after restart", () => {
 		for (const archived of [false, true])
@@ -431,24 +456,35 @@ describe("last mobile location", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle.md",
-			reviewRef: "local:coord",
-			reviewTitle: "Get PR 2138 Test Clean",
+			reference: {
+				path: "docs/superpowers/plans/settle.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/superpowers/plans/settle.md",
+				provenance: "relative",
+			},
+			sessionTitle: "Fix race",
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		};
 		repository.save(locationForRoute({ name: "Reader", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({
 			hubId: "studio",
-			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
+			conversation: { ref: "local:fix", title: "Fix race" },
 			reader: {
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle.md",
+				reference: {
+					path: "docs/superpowers/plans/settle.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/superpowers/plans/settle.md",
+					provenance: "relative",
+				},
 				updatedAt: "2026-09-26T11:39:00.000Z",
 			},
 		});
 		expect(restoredStack(saved).routes.slice(-3)).toEqual([
 			{ name: "Sessions" },
-			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ name: "Reader", params },
 		]);
 	});
@@ -480,6 +516,19 @@ describe("last mobile location", () => {
 		});
 	});
 
+	it("reopens a shell job's detail as its coordinator's session after a relaunch", () => {
+		const params = {
+			hubId: "studio",
+			jobId: "job-1",
+			title: "go test ./agent/...",
+			coordinator: { ref: "local:coord", threadId: "coord", title: "Coordinator" },
+		};
+		expect(locationForRoute({ name: "ShellJob", params }, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:coord", title: "Coordinator" },
+		});
+	});
+
 	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);
@@ -495,6 +544,26 @@ describe("last mobile location", () => {
 		expect(
 			locationForRoute(
 				{ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } },
+				"studio",
+			),
+		).toBeNull();
+	});
+
+	it("refuses Reader params that predate the single-ref route", () => {
+		// A pre-#2871 Reader named its session twice; the route now takes one ref
+		// and its title, so these params have no sessionTitle and are rejected.
+		expect(
+			locationForRoute(
+				{
+					name: "Reader",
+					params: {
+						hubId: "studio",
+						sessionRef: "local:fix",
+						path: "a.md",
+						reviewRef: "local:fix",
+						reviewTitle: "Fix race",
+					},
+				},
 				"studio",
 			),
 		).toBeNull();

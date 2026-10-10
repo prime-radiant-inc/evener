@@ -1,0 +1,78 @@
+schema: 1
+id: prose.bugfix-tally-asked
+tool: prompt-eval
+prompt: |
+  The totals in our weekly report are wrong. The report adds up numbers with tally.Sum, and the tests in this repository catch it too. Find the bug, fix it, and tell me what was wrong.
+person:
+  model: lunarouter/glm-5.3
+  brief: |
+    You are the person who asked for this. Everything needed is already in your request and the files; you have nothing to add. If asked anything, say briefly that the request and the repository have everything and they should go ahead.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/tally
+
+      go 1.22
+    tally/sum.go: |
+      package tally
+
+      // Sum adds up every value in xs.
+      func Sum(xs []int) int {
+      	total := 0
+      	for i := 1; i < len(xs); i++ {
+      		total += xs[i]
+      	}
+      	return total
+      }
+    tally/sum_test.go: |
+      package tally
+
+      import "testing"
+
+      func TestSum(t *testing.T) {
+      	cases := []struct {
+      		in   []int
+      		want int
+      	}{
+      		{nil, 0},
+      		{[]int{5}, 5},
+      		{[]int{1, 2, 3}, 6},
+      	}
+      	for _, c := range cases {
+      		if got := Sum(c.in); got != c.want {
+      			t.Errorf("Sum(%v) = %d, want %d", c.in, got, c.want)
+      		}
+      	}
+      }
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: tests pass
+      run: go test ./...
+    - name: original tests pass
+      run: |
+        first=$(git rev-list --max-parents=0 HEAD) || exit 1
+        tmp=$(mktemp -d /tmp/prompt-eval-original-tests.XXXXXX) || exit 1
+        trap 'rm -rf "$tmp"' EXIT INT TERM
+        cp -R . "$tmp/work" || exit 1
+        rm -rf "$tmp/work/.git"
+        find "$tmp/work" -name '*_test.go' -exec rm -f {} + || exit 1
+        git archive -o "$tmp/original.tar" "$first" -- ':(glob)**/*_test.go' || exit 1
+        tar -xf "$tmp/original.tar" -C "$tmp/work" || exit 1
+        cd "$tmp/work" || exit 1
+        out=$(go test -count=1 -v ./... 2>&1) || { printf '%s\n' "$out"; exit 1; }
+        case "$out" in *"--- PASS"*) ;; *) printf 'no test ran:\n%s\n' "$out"; exit 1 ;; esac
+reference: |
+  cat > tally/sum.go <<'EOF'
+  package tally
+
+  // Sum adds up every value in xs.
+  func Sum(xs []int) int {
+  	total := 0
+  	for _, x := range xs {
+  		total += x
+  	}
+  	return total
+  }
+  EOF

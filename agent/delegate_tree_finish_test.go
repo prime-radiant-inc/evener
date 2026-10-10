@@ -387,9 +387,7 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 	c.mu.Lock()
 	runtime := c.live[lease.delegateID].binding.runtime
 	c.mu.Unlock()
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	c.mu.Lock()
 	claimRetained = c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()

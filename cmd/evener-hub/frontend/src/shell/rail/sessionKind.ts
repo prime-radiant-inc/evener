@@ -4,13 +4,18 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 // offers it. hubcore's nodeKind (internal/hubcore/tree.go) names the kinds
 // that are never top-level: "subagent" (nested under its parent) and "fork"
 // (a snapshotted original nested under the branch that superseded it) - the
-// same two nestedSessionIDs computes - plus the synthetic "cluster" fold row,
-// which stands for a group of sessions rather than being one. Everything else
-// is a real top-level session. Written as an exclusion list rather than
+// same two nestedSessionIDs computes. Everything else is a real top-level
+// session. Written as an exclusion list rather than
 // `=== "session"` so an unrecognized future kind still gets the action rather
 // than silently losing it.
-const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork", "cluster"]);
+const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork"]);
 
-export function isTopLevelSession(session: NavigationSessionSummary): boolean {
+export function isTopLevelSession(session: Pick<NavigationSessionSummary, "kind">): boolean {
   return !NESTED_KINDS.has(session.kind);
+}
+
+export function isConfirmedCrashedSession(
+  session: Pick<NavigationSessionSummary, "state" | "failure"> | undefined,
+): boolean {
+  return session?.state === "errored" && session.failure?.cause_kind === "crashed";
 }

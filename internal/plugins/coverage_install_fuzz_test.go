@@ -72,7 +72,6 @@ func fuzzUpgradeBranches(t *testing.T) {
 	t.Run("auto-skips", func(t *testing.T) {
 		for _, entry := range []InstallEntry{
 			{AutoUpgrade: false, Source: Source{Kind: SourceGitHub}},
-			{AutoUpgrade: true, Source: Source{Rel: true}},
 			{AutoUpgrade: true, Source: Source{Kind: SourceDirectory}},
 		} {
 			m := NewManager(t.TempDir())

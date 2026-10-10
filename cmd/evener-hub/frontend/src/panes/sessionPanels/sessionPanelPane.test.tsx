@@ -1,21 +1,11 @@
-import type {
-  ActivityTree,
-  NavigationSessionSummary,
-  NavigationWatchSummary,
-  ThreadCapabilities,
-  ThreadModel,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activityPanel";
-import { activitySummaryStore, initActivitySummary } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
-import { navigationStore } from "../../stores/navigation/store";
+import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -28,7 +18,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
   // This suite mounts the pane without the app shell that wires the stores.
-  initActivitySummary();
 });
 
 afterEach(() => {
@@ -100,51 +89,10 @@ function seedModel(model: ThreadModel): void {
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
 }
 
-// seedNavigationWatches materializes one live navigation section summary so the
-// standalone Activity pane's selectSessionWatches sees the session's rows.
-function seedNavigationWatches(ref: string, watches: NavigationWatchSummary[]): void {
-  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-  const summary = {
-    ref,
-    host_id: "local",
-    session_id: ref,
-    title: ref,
-    project: "p",
-    state: "idle",
-    kind: "session",
-    live: true,
-    watches,
-    children: [],
-  } as unknown as NavigationSessionSummary;
-  const resource: ResourceState = {
-    key: sectionKey,
-    data: { sessions: [summary] },
-    loadedRevision: 1,
-    targetRevision: 1,
-    forceToken: 0,
-    etag: "tag",
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "generation_test",
-  };
-  navigationStore.setState({ resources: new Map([[keyID(sectionKey), resource]]) });
-}
-
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
+  const fake = activityClient();
   connectionStore.getState().connect(fake);
   return fake;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 const RETAINED_TASKS = [
@@ -172,175 +120,6 @@ function readResponse(ref: string): ThreadReadResponse {
       cliVersion: "1.0.0",
       source: "evener",
       evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
-    },
-  };
-}
-
-function retainedActivity(): ActivityTree {
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "session_a",
-      ref: "ref_a",
-      label: "Build session",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 1, complete: true },
-      entries: [
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_a",
-            ownerSessionId: "session_a",
-            ownerRef: "ref_a",
-            type: "shell",
-            status: "running",
-            terminal: false,
-            background: false,
-            hasOutput: false,
-            description: "compile retained shell",
-            startedAt: "2026-08-05T00:00:00Z",
-            outputBytes: 0,
-          },
-        },
-        {
-          kind: "shell",
-          job: {
-            jobId: "job_done",
-            ownerSessionId: "session_a",
-            ownerRef: "ref_a",
-            type: "shell",
-            status: "completed",
-            terminal: true,
-            background: false,
-            hasOutput: false,
-            description: "retained done shell",
-            startedAt: "2026-08-05T00:01:00Z",
-            endedAt: "2026-08-05T00:02:00Z",
-            outputBytes: 0,
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
-function activityRootTree(): ActivityTree {
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "session_a",
-      ref: "ref_a",
-      label: "Build session",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 1, complete: true },
-      entries: [
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "delegate_partial",
-            ownerSessionId: "session_a",
-            rootSessionId: "session_a",
-            childSessionId: "session_partial",
-            childRef: "ref_partial",
-            transcriptRef: "ref_partial",
-            type: "delegate",
-            lifecycle: "retained",
-            phase: "idle",
-            status: "completed",
-            projectionRevision: 1,
-            terminal: true,
-            resumable: true,
-            mandate: "Continue retained branch",
-            runStartedAt: "2026-08-05T00:01:00Z",
-            runEndedAt: "2026-08-05T00:02:00Z",
-            latestActivityAt: "2026-08-05T00:02:00Z",
-            child: {
-              kind: "session",
-              sessionId: "session_partial",
-              ref: "ref_partial",
-              label: "Partial session",
-              aggregate: "running",
-              counts: { active: 1, failed: 0, completed: 1, complete: false },
-              entries: [],
-              branch: { truncated: true, continuation: "page-2", error: "child unavailable" },
-            },
-            branch: {},
-          },
-        },
-      ],
-      branch: {},
-    },
-  };
-}
-
-function continuedActivityTree(): ActivityTree {
-  return {
-    // The continuation page shares the retained tree's revision: a page from a
-    // different revision is discarded by the consumer, not grafted.
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "session_a",
-      ref: "ref_a",
-      label: "Build session",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 1, complete: true },
-      entries: [
-        {
-          kind: "delegate",
-          delegate: {
-            delegateId: "delegate_partial",
-            ownerSessionId: "session_a",
-            rootSessionId: "session_a",
-            childSessionId: "session_partial",
-            childRef: "ref_partial",
-            transcriptRef: "ref_partial",
-            type: "delegate",
-            lifecycle: "retained",
-            phase: "idle",
-            status: "completed",
-            projectionRevision: 2,
-            terminal: true,
-            resumable: true,
-            mandate: "Continue retained branch",
-            runStartedAt: "2026-08-05T00:01:00Z",
-            runEndedAt: "2026-08-05T00:02:00Z",
-            latestActivityAt: "2026-08-05T00:02:00Z",
-            child: {
-              kind: "session",
-              sessionId: "session_partial",
-              ref: "ref_partial",
-              label: "Partial session",
-              aggregate: "running",
-              counts: { active: 1, failed: 0, completed: 1, complete: true },
-              entries: [
-                {
-                  kind: "shell",
-                  job: {
-                    jobId: "continued_shell",
-                    ownerSessionId: "session_partial",
-                    ownerRef: "ref_partial",
-                    type: "shell",
-                    status: "running",
-                    terminal: false,
-                    background: false,
-                    hasOutput: false,
-                    description: "continued shell",
-                    startedAt: "2026-08-05T00:03:00Z",
-                    outputBytes: 0,
-                  },
-                },
-              ],
-              branch: {},
-            },
-            branch: {},
-          },
-        },
-      ],
-      branch: {},
     },
   };
 }
@@ -401,50 +180,6 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   expect(screen.getByTestId("task-prompt")).toBeTruthy();
 });
 
-test("renders retained Activity rows and expanded fold state after a pane remount", () => {
-  const model = testModel({ jobsUpdatedAt: 1 });
-  const tree = retainedActivity();
-  const entry: ActivityPanelEntry = {
-    load: { kind: "ready", tree },
-    disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false, tree },
-    established: true,
-    continuationFailures: {},
-    requestID: 0,
-    expandedFoldIDs: ["session:session_a:inactive-fold"],
-  };
-  activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
-  activitySummaryStore.setState({
-    entries: new Map([
-      [
-        model.ref,
-        {
-          counts: tree.root.counts,
-          established: true,
-          mountedBodies: 0,
-          loading: false,
-          lastFetchedBump: model.jobsUpdatedAt,
-          requestID: 1,
-        },
-      ],
-    ]),
-  });
-  seedModel(model);
-
-  const first = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
-  );
-  expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
-  first.unmount();
-
-  seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-2" focused kind="activity" />);
-  expect(screen.getByRole("treeitem", { name: /compile retained shell/i })).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
-});
-
 test("renders daemon-gone state from the retained Tasks store result", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => {
@@ -458,82 +193,18 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
   expect(await screen.findByText("This session has ended")).toBeTruthy();
 });
 
-test.each(["tasks", "activity"] as const)("%s pane does not install the Details clock", async (kind) => {
+test("Tasks pane does not install the Details clock", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
-  fake.on("evener/jobs/list", () => ({ data: retainedActivity() }));
-  const model = testModel({ tasks: { total: 0, done: 0 }, jobsUpdatedAt: 1 });
+  const model = testModel({ tasks: { total: 0, done: 0 } });
   seedModel(model);
   const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId={`panel-${kind}`} focused kind={kind} />);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
   await act(async () => Promise.resolve());
 
-  // The dense activity tree runs its own 1s live-row ticker; the assertion is
-  // only that neither pane installs the Details clock's NOW_TICK_MS cadence.
   expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
   setIntervalSpy.mockRestore();
-});
-
-// The standalone Activity pane installs no clock of its own, yet an OPEN watch
-// row must still count down: the meta reads the tree's own live tick, which
-// ActivityTree enables for a session carrying watch rows. This is the
-// regression the chrome-hosted panel (which passes its own `now`) used to hide.
-test("standalone activity pane shows an open watch row's countdown without its own clock", () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.setSystemTime(new Date("2026-08-05T15:00:12.000Z"));
-  try {
-    const model = testModel({ jobsUpdatedAt: 1 });
-    seedModel(model);
-    const tree = retainedActivity();
-    const entry: ActivityPanelEntry = {
-      load: { kind: "ready", tree },
-      disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false, tree },
-      established: true,
-      continuationFailures: {},
-      requestID: 0,
-      expandedFoldIDs: [],
-    };
-    activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
-    // The retained tree is current for the model's jobs bump, so the pane
-    // mounts without starting a root refresh.
-    activitySummaryStore.setState({
-      entries: new Map([
-        [
-          model.ref,
-          {
-            counts: tree.root.counts,
-            established: true,
-            mountedBodies: 0,
-            loading: false,
-            lastFetchedBump: model.jobsUpdatedAt,
-            requestID: 1,
-          },
-        ],
-      ]),
-    });
-    seedNavigationWatches(model.ref, [
-      {
-        id: "watch_open",
-        source: "self",
-        deliveries: 0,
-        created_at: "2026-08-05T12:48:00Z",
-        active: true,
-        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
-      },
-    ]);
-
-    render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-watch" focused kind="activity" />);
-
-    const row = screen.getByRole("treeitem", { name: /Watch:/ });
-    expect(row.getAttribute("aria-expanded")).toBe("true");
-    expect(row.textContent).toContain("next ~4m");
-  } finally {
-    act(() => {
-      navigationStore.setState({ resources: new Map() });
-    });
-    vi.useRealTimers();
-  }
 });
 
 test("Details owns a clock after hydration", () => {
@@ -575,93 +246,6 @@ test("retains Details rendering and the current clock value across a pane remoun
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
   act(() => vi.advanceTimersByTime(3_000));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("8s");
-});
-
-test("retains deferred Activity root completion after unmount and remount", async () => {
-  const fake = connectFakeClient();
-  const root = deferred<{ data: unknown }>();
-  fake.on("evener/jobs/list", () => root.promise);
-  const model = testModel({ jobsUpdatedAt: 1 });
-  seedModel(model);
-
-  const first = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
-  );
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
-  first.unmount();
-
-  await act(async () => {
-    root.resolve({ data: retainedActivity() });
-    await Promise.resolve();
-  });
-  expect(activityPanelStore.getState().entries.get(model.ref)?.load.kind).toBe("ready");
-
-  seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-remount" focused kind="activity" />);
-  const row = await screen.findByRole("treeitem", { name: /compile retained shell/i });
-  expect(row).toBeTruthy();
-
-  await userEvent.click(screen.getByRole("treeitem", { name: "1 inactive" }));
-  expect(activityPanelStore.getState().entries.get(model.ref)?.expandedFoldIDs).toEqual([
-    "session:session_a:inactive-fold",
-  ]);
-  expect(screen.getByRole("treeitem", { name: /retained done shell/i })).toBeTruthy();
-});
-
-test("retains Activity continuation failure, retry, and graft across remounts", async () => {
-  const fake = connectFakeClient();
-  const root = deferred<{ data: unknown }>();
-  const failedContinuation = deferred<{ data: unknown }>();
-  const retriedContinuation = deferred<{ data: unknown }>();
-  let continuationCalls = 0;
-  fake.on("evener/jobs/list", ({ continuation }) => {
-    if (!continuation) return root.promise;
-    continuationCalls += 1;
-    return continuationCalls === 1 ? failedContinuation.promise : retriedContinuation.promise;
-  });
-  const model = testModel({ jobsUpdatedAt: 1 });
-  seedModel(model);
-
-  const first = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
-  );
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
-  first.unmount();
-  await act(async () => {
-    root.resolve({ data: activityRootTree() });
-    await Promise.resolve();
-  });
-
-  seedModel(model);
-  const second = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-second" focused kind="activity" />,
-  );
-  expect(await screen.findByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
-  second.unmount();
-
-  await act(async () => {
-    failedContinuation.reject(new Error("continuation unavailable"));
-    await Promise.resolve();
-  });
-  seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-failed" focused kind="activity" />);
-  expect(await screen.findByText(/couldn't load more retained activity/i)).toBeTruthy();
-  expect(screen.getByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
-
-  await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3));
-  cleanup();
-  await act(async () => {
-    retriedContinuation.resolve({ data: continuedActivityTree() });
-    await Promise.resolve();
-  });
-
-  seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-grafted" focused kind="activity" />);
-  expect(await screen.findByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
-  expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
 });
 
 test("claims and releases the session ref with the pane lifecycle", async () => {

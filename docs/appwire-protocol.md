@@ -74,6 +74,49 @@ Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
+## Explicit skill and command input
+
+Input-bearing requests accept canonical selections alongside text and images:
+`{"type":"skill","name":"pkg:review"}` and
+`{"type":"command","name":"pkg:review"}` request different behavior even when
+their names match. These items admit only `type` and `name`; bodies, paths,
+arguments and other raw keys are rejected. The target's advertised `skillInput`
+or `commandInput` capability authorizes that kind, never a client assumption.
+
+Command selections resolve exact catalog identity at consumption and expand
+once per canonical name with empty arguments under their source's existing
+expansion rules. Original user text is retained separately from expanded bodies.
+Generated output cannot select or recursively invoke commands. Existing leading
+typed `/command args` retains its arguments; unselected inline slash prose is
+not an explicit selection. Queue, return and recovery input keeps both kinds.
+
+Text items may carry `mentions: [{kind, name, offset}]` as editing metadata.
+Offsets count UTF-16 code units in that text item and locate ordered,
+non-overlapping visible labels for separately selected canonical identities.
+They never authorize activation or carry command bodies, paths or arguments.
+Accepted input persists these locations; queue reads and `thread/queueChanged`
+project FIFO-aligned `mentions` beside full text and canonical name lists, so a
+fresh client's edit restores the chosen kind without selecting duplicate prose.
+Attachment marker translation shifts locations at the submission boundary.
+Automatic transcript-refusal recovery uses `returnClaimedQueuedMutation` to
+clone the original `pending.Input`, retaining text items and their locations.
+The separate `pushQueueHead` helper has no production callers; explicit use of
+it retains locations in the flattened returned text. Public `turn/drainAsSteer`
+preserves each retained entry's raw text and shifts its locations by the
+preceding UTF-16 text length plus the two-unit `\n\n` separator, including any
+extra drain input. Image-only entries add no text separator. Direct promotion
+retains the original text items and their item-relative locations. These
+locations survive durable recovery and mutation replay without changing
+canonical activation identities.
+
+Live completion reads `thread.evener.diagnostics.commands` from the owning
+session's `thread/read` response. It contains path-free descriptors for that
+session's loaded plugin, project and user commands, resolved for its cwd, host
+and harness. An absent field means unreported inventory; `[]` means an
+authoritative empty inventory. Neither permits controller catalog fallback.
+`evener/command/list` remains controller-wide discovery for the separate palette;
+`evener/spawn/slashCatalog` supplies target-scoped pre-session discovery.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
@@ -90,7 +133,7 @@ no router (reserved).
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
-| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor. |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both. |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -108,7 +151,7 @@ no router (reserved).
 | `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels whatever turn the session is running; the receipt names the turn actually cancelled. |
 | `turn/queue` | both | `TurnQueueParams` | `TurnQueueResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `TurnDrainAsSteerResponse` | Drains the input queue and injects it as a single steering message. |
-| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
+| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn (or the next turn when none is running). |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt. |
@@ -116,11 +159,16 @@ no router (reserved).
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `evener/jobs/get` | both | `JobsGetParams` | `JobsGetResponse` | Reads one job's metadata (the activity-tree job shape, including the untruncated command). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `evener/daemon/list` | hub | `DaemonListParams` | `DaemonListResponse` | Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes. |
 | `evener/daemon/retire` | both | `DaemonRetireParams` | `DaemonRetireResponse` | Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle. |
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
 | `evener/daemon/idle-timeout/set` | daemon | `DaemonIdleTimeoutSetParams` | `DaemonIdleTimeoutSetResponse` | Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/thread/activity/read` | both | `SessionActivityReadParams` | `SessionActivitySummary` | Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit. |
+| `evener/thread/delegates/list` | both | `SessionActivityListParams` | `SessionDelegatesResponse` | Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB. |
+| `evener/thread/jobs/list` | both | `SessionActivityListParams` | `SessionJobsResponse` | Pages shell jobs logically owned by a session or its subtree; job output is read separately. |
+| `evener/thread/watches/list` | both | `SessionActivityListParams` | `SessionWatchesResponse` | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
@@ -128,7 +176,7 @@ no router (reserved).
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
-| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base. |
+| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
 | `evener/project/delete` | hub | `ProjectDeleteParams` | `ProjectDeleteResponse` | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
@@ -137,9 +185,10 @@ no router (reserved).
 | `evener/pin-section/delete` | hub | `PinSectionDeleteParams` | `PinSectionDeleteResponse` | Deletes a named pin section and returns its removed membership and committed navigation receipt. |
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
-| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
+| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
+| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -175,7 +224,7 @@ no router (reserved).
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
-| `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog (one pinned to a tag or a commit is already current) and stamps its lastUpdated; returns the updated list. Broadcasts evener/marketplace/updated only when the refresh moved the clone to another commit or repaired it. |
 | `evener/marketplace/edit` | hub | `MarketplaceEditParams` | `MarketplaceListResponse` | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
@@ -185,6 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Refreshes each fetched git marketplace, within a time budget (a refresh it cannot make is a warning), then asks each git-backed installed plugin's remote whether it has moved past the installed commit and checks each plugin stored in its marketplace's own repo against the refreshed clone, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -198,11 +248,11 @@ no router (reserved).
 | `evener/delegate/stop` | both | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommittedRemoved \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationTeardownFailure \| HostMutationCollisionDropped` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
@@ -211,7 +261,7 @@ no router (reserved).
 | `evener/host/operations` | hub | `HostOperationsParams` | `HostOperationsResponse` | Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal "absent" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
 | `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
-| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
+| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 | `evener/session/document` | hub | `SessionDocumentParams` | `SessionDocumentResponse` | Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route. |
 
 ## Notifications (server → client)
@@ -235,14 +285,15 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change, including a launch model list refresh that changed what a picker showed. Clients refresh auth state, the instance list and their model list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
-| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/activity/changed` | `SessionActivityChangedParams` | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
 | `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
@@ -334,6 +385,29 @@ An embedded type contributes its own fields inline.
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 
+### `ArchivedListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `catalog` | `string` | yes |  |
+| `projectKey` | `string` |  |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+| `revision` | `string` | yes |  |
+
+
+### `ArchivedListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `jsontext.Value` |  |  |
+| `nextCursor` | `string` | yes |  |
+| `total` | `int` |  |  |
+| `catalog` | `string` | yes |  |
+| `revision` | `string` | yes |  |
+| `unchanged` | `bool` | yes |  |
+
+
 ### `AttentionChangedPayload`
 
 | Field | Go type | Omitempty | Embedded |
@@ -404,6 +478,7 @@ An embedded type contributes its own fields inline.
 | `userCode` | `string` |  |  |
 | `verificationUrl` | `string` |  |  |
 | `intervalSeconds` | `int` |  |  |
+| `expiresInSeconds` | `int` | yes |  |
 | `fallback` | `bool` | yes |  |
 
 
@@ -490,6 +565,7 @@ An embedded type contributes its own fields inline.
 | `workspaceId` | `string` | yes |  |
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
+| `refreshRejected` | `bool` | yes |  |
 | `error` | `string` | yes |  |
 | `configRevision` | `string` | yes |  |
 
@@ -627,6 +703,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `runGeneration` | `uint64` |  |  |
 | `delegateId` | `string` |  |  |
 | `ownerSessionId` | `string` |  |  |
 | `rootSessionId` | `string` |  |  |
@@ -639,6 +716,7 @@ _(no fields)_
 | `status` | `string` |  |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` |  |  |
 | `needsAttention` | `bool` |  |  |
@@ -890,7 +968,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `observedRow` | `appwire.HostRow` |  |  |
 
 
@@ -898,7 +976,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `droppedEntry` | `appwire.HostRow` |  |  |
 | `winningFingerprint` | `string` |  |  |
 | `host` | `*appwire.HostRow` | yes |  |
@@ -909,7 +987,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.HostRow` |  |  |
 
 
@@ -917,7 +995,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
 
 
@@ -925,7 +1003,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.HostRow` |  |  |
@@ -935,7 +1013,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `outcome` | `string` |  |  |
+| `outcome` | `appwire.HostMutationOutcome` |  |  |
 | `seam` | `string` |  |  |
 | `remnantId` | `string` |  |  |
 | `host` | `appwire.RemovedRow` |  |  |
@@ -1444,6 +1522,7 @@ _(no fields)_
 | `projectionRevision` | `uint64` | yes |  |
 | `outcome` | `string` | yes |  |
 | `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` | yes |  |
 | `notResumableReason` | `string` | yes |  |
@@ -1551,6 +1630,42 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobOutputPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `offsetBytes` | `int64` |  |  |
+| `bytesReturned` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `encoding` | `string` |  |  |
+| `data` | `string` |  |  |
+
+
+### `JobOutputPrunedErrorData`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `evenerErrorInfo` | `appwire.ErrorInfo` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
+
+
+### `JobsGetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` | yes |  |
+| `jobId` | `string` |  |  |
+
+
+### `JobsGetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `appwire.JobActivityJob` |  |  |
+
+
 ### `JobsListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1573,14 +1688,14 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| `beforeBytes` | `*int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobOutputPage` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
@@ -1854,6 +1969,25 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `notices` | `[]appwire.HubNotice` |  |  |
+
+
+### `OperationRecord`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+| `progress` | `[]appwire.OperationProgressEntry` | yes |  |
+| `result` | `*appwire.OperationResult` | yes |  |
+| `createdAt` | `string` |  |  |
+| `updatedAt` | `string` |  |  |
+| `hostRemoved` | `bool` |  |  |
+| `compacted` | `bool` | yes |  |
 
 
 ### `OverlayDeltaParams`
@@ -2154,6 +2288,144 @@ _(no fields)_
 | `match` | `bool` | yes |  |
 
 
+### `SessionActivityAncestor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `delegateId` | `string` | yes |  |
+| `title` | `string` |  |  |
+
+
+### `SessionActivityChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `resources` | `[]appwire.SessionActivityResource` |  |  |
+
+
+### `SessionActivityContext`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `parentRef` | `string` | yes |  |
+| `delegateId` | `string` | yes |  |
+| `ancestors` | `[]appwire.SessionActivityAncestor` |  |  |
+| `ancestryKnown` | `bool` |  |  |
+| `epoch` | `string` |  |  |
+| `availability` | `string` |  |  |
+
+
+### `SessionActivityCounts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `known` | `bool` |  |  |
+| `total` | `int` |  |  |
+| `active` | `int` |  |  |
+| `failed` | `int` |  |  |
+| `completed` | `int` |  |  |
+
+
+### `SessionActivityIssue`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `code` | `string` |  |  |
+
+
+### `SessionActivityListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+
+
+### `SessionActivityPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `nextCursor` | `string` | yes |  |
+| `complete` | `bool` |  |  |
+| `issues` | `[]appwire.SessionActivityIssue` |  |  |
+
+
+### `SessionActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+
+
+### `SessionActivitySummary`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `issues` | `[]appwire.SessionActivityIssue` | yes |  |
+| `refreshPending` | `bool` | yes |  |
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `delegates` | `appwire.SessionActivityCounts` |  |  |
+| `jobs` | `appwire.SessionActivityCounts` |  |  |
+| `watches` | `appwire.SessionActivityCounts` |  |  |
+
+
+### `SessionDelegate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `runGeneration` | `uint64` |  |  |
+| `reportPreview` | `string` | yes |  |
+| `reportPreviewTruncated` | `bool` | yes |  |
+| `delegateId` | `string` |  |  |
+| `ownerRef` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `childRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `description` | `string` |  |  |
+| `task` | `string` |  |  |
+| `type` | `string` |  |  |
+| `lifecycle` | `string` |  |  |
+| `phase` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
+| `terminal` | `bool` |  |  |
+| `resumable` | `bool` |  |  |
+| `notResumableReason` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `usage` | `*appwire.EvenerUsage` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
+
+
+### `SessionDelegatesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `delegates` | `[]appwire.SessionDelegate` |  |  |
+
+
 ### `SessionDeleteParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2205,6 +2477,16 @@ _(no fields)_
 | `size` | `int64` |  |  |
 | `sha` | `string` | yes |  |
 | `data` | `[]uint8` |  |  |
+
+
+### `SessionJobsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `jobs` | `[]appwire.JobActivityJob` |  |  |
 
 
 ### `SessionPinAssignParams`
@@ -2259,6 +2541,27 @@ _(no fields)_
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 
+### `SessionWatch`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ownerRef` | `string` |  |  |
+| `sourceRef` | `string` |  |  |
+| `receiverRef` | `string` |  |  |
+| `state` | `appwire.SessionWatchState` |  |  |
+| `watch` | `appwire.EvenerWatchInfo` |  |  |
+
+
+### `SessionWatchesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `watches` | `[]appwire.SessionWatch` |  |  |
+
+
 ### `SettingsOverviewResponse`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2286,6 +2589,24 @@ _(no fields)_
 | `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
+### `Task`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `int` |  |  |
+| `type` | `appwire.TaskType` |  |  |
+| `description` | `string` |  |  |
+| `prompt` | `string` |  |  |
+| `status` | `appwire.TaskStatus` |  |  |
+| `depends_on` | `[]int` | yes |  |
+| `notes` | `[]string` | yes |  |
+| `reasoning_effort` | `string` | yes |  |
+| `insert` | `string` | yes |  |
+| `created_at` | `*time.Time` | yes |  |
+| `updated_at` | `*time.Time` | yes |  |
+| `completed_at` | `*time.Time` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2297,7 +2618,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `[]appwire.Task` |  |  |
 
 
 ### `TaskUpdatedParams`
@@ -2635,6 +2956,7 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `before` | `*appwire.ThreadItemPosition` | yes |  |
 
 
 ### `ThreadTurnsListResponse`

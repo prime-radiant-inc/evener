@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -26,12 +26,15 @@ test-web: web-preflight build-dev
 # failing case does not hide the remaining guard's verdict; exit status is the
 # first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the
+## shellguard, spawnguard, transcriptscrollguard, sessioncacheguard,
+## retirementguard, mermaidguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
 ##   `browserguard` tag) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
-##   scroll/jump-to-latest path, and the real selected-thread recovery contract
+##   scroll/jump-to-latest path, session-cache deletion healing, clear-epoch
+##   suppression and envelope filtering across two real tabs with native
+##   BroadcastChannel and IndexedDB, and the real selected-thread recovery contract
 ##   when its daemon retires and is replaced; the skill guard additionally
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
@@ -42,10 +45,11 @@ test-web: web-preflight build-dev
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
 ##   drives the guard against it. The skill guard also needs the Go toolchain
-##   and the built frontend (built automatically when dist is missing).
+##   and the built frontend, which this target builds first (`build-web`); the
+##   gate still builds one when the dist is missing.
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
-test-web-browser: web-preflight build-dev
+test-web-browser: build-web build-dev
 	@scripts/web/test-web-browser.sh
 
 # check:scripts is separate from check because they answer different questions
@@ -116,6 +120,28 @@ native-preflight:
 test-native-bundle: native-preflight
 	@scripts/native/test-native-bundle.sh
 
+# `pod install --deployment` refuses a lock missing a pod the Podfile asks for,
+# and only the TestFlight workflow runs it, on a tag: #3252 added a native
+# dependency without its pod and every PR check stayed green (#3294). This
+# compares the lock with what autolinking resolves, on any host.
+## Check that mobile-native/Podfile.lock locks exactly the iOS pods
+## autolinking resolves.
+## proves: every pod the Expo and React Native autolinking the generated
+##   Podfile runs would link, Expo's companion pods included, is in the lock's
+##   DEPENDENCIES under the same name and directory, and every autolinked pod
+##   the lock lists is still linked.
+## trigger: Native CI; local pre-merge when mobile-native/package.json,
+##   package-lock.json or Podfile.lock change.
+## requires: Node 22.13+ and an already-installed, real (not symlinked)
+##   mobile-native dependency tree; no macOS, CocoaPods, Xcode or generated
+##   ios/ project. Expo's precompiled mode and extraPods are not handled.
+## fails-when: an autolinked pod is not locked, or the lock lists an
+##   autolinked pod nothing links (a version change inside an already locked
+##   pod is not checked), or the script's own tests
+##   (check-podfile-lock.test.mjs) fail.
+check-podfile-lock: native-preflight
+	@status=0; scripts/native/check-podfile-lock.mjs || status=1; node --test scripts/native/check-podfile-lock.test.mjs || status=1; exit $$status
+
 # api-package-preflight turns the misleading failure a fresh checkout gets into
 # a message naming the missing install and the command to run (or repairs a
 # real, non-symlinked install), the way web-preflight does for the frontend. A
@@ -160,11 +186,13 @@ TEST_SCOPE ?= all
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-# run-module-tests.sh's own contract — including that every test stream gets a
-# private HOME and TMPDIR — is currently unpinned: the shell suite that once
-# proved it faked `go` and `mktemp` on PATH, which docs/developing-evener/testing.md's
-# rule against faking the toolchain in a test bans outright, and was deleted.
-# The port that would pin this contract honestly is tracked as issue #293.
+# run-module-tests.sh's own contract — module selection, the explicit
+# WAVE1/WAVE2 overrides, the private per-stream HOME and TMPDIR, caller flags
+# reaching `go test`, failure propagation, cleanup, and the zero-test refusal —
+# is pinned by gatemodulerunner_test.go, which drives the real script against
+# tiny local modules with the installed toolchain. An earlier shell suite that
+# faked `go` and `mktemp` on PATH was deleted, because
+# docs/developing-evener/testing.md bans faking the toolchain in a test.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
@@ -256,7 +284,11 @@ vet:
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
-##   per-test ceiling.
+##   per-test ceiling. While the budget file's metric marker is absent (the
+##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
+##   wall time), the Go-package ratio check is suspended to a warning; the
+##   frontend ("web") row and the per-test ceiling keep their unchanged metrics
+##   and stay enforced.
 ## trigger: Local/on-demand; not required CI — deliberately not part of make
 ##   merge-approval-gate, since measuring durations means a second full test
 ##   run. CHECK=1 enforces the ratios; bare invocation only measures and
@@ -265,12 +297,14 @@ vet:
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: A broken measurement — go list or go test exiting nonzero, or a
 ##   go list package with no terminal event in the stream — is nonzero in every
-##   mode, and --bless refuses it. A bless writes every package it measured and
-##   preserves the rest of the file, so a narrowed run refreshes part of the
-##   file instead of deleting the entries it did not measure. Under CHECK=1 in a
-##   CI-shaped environment a package over 1.5x its budget or any per-test
-##   ceiling breach is nonzero too; a missing or empty budget file always
-##   exits zero.
+##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
+##   measured and preserves the rest of the file instead of deleting entries it
+##   did not measure; a full rebaseline also drops entries go list no longer
+##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
+##   its budget is nonzero once the budget file carries the wall-time metric
+##   marker; while the marker is absent those ratios are warnings. The "web" row
+##   and any per-test ceiling breach are metric-independent and nonzero
+##   regardless, and a missing or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

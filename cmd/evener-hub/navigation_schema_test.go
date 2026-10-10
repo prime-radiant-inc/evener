@@ -260,25 +260,23 @@ func TestValidateNavigationResourceSnapshotRejectsNullAndWrongWireTypes(t *testi
 	}
 }
 
-func TestValidateNavigationResourceSnapshotEnforcesProjectorDepth(t *testing.T) {
+func TestValidateNavigationResourceSnapshotRejectsChildrenOnLists(t *testing.T) {
 	fixtures := navigationSchemaFixtures(t)
-	for _, resource := range []string{"live", "project"} {
-		fixture := fixtures[resource]
-		t.Run(resource+"_maximum", func(t *testing.T) {
-			snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth)
-			if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err != nil {
-				t.Fatalf("depth %d rejected: %v", maxNavigationDepth, err)
-			}
-		})
-		t.Run(resource+"_one_beyond", func(t *testing.T) {
-			snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth+1)
-			if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err == nil {
-				t.Fatalf("depth %d accepted", maxNavigationDepth+1)
+	for _, resource := range []string{"live", "needs_you", "pin_section", "project", "project_page", "location"} {
+		t.Run(resource, func(t *testing.T) {
+			fixture := fixtures[resource]
+			// Depth 2 puts the second entity under a children slot: a
+			// non-empty children link, which lists must reject.
+			snapshot := navigationSchemaChainSnapshot(t, fixture, 2)
+			err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot)
+			if err == nil {
+				t.Fatalf("a children slot on %s was accepted", resource)
 			} else if err.Error() != "navigation schema: graph" {
 				t.Fatalf("error = %q, want graph category", err)
 			}
 		})
 	}
+
 }
 
 func TestNavigationTimestampParityFixturesMatchGoTime(t *testing.T) {
@@ -329,94 +327,6 @@ func fixtureZoneExceedsCodecBound(value string) bool {
 	return hour > 23 || minute > 59
 }
 
-// The web codec validates a watch's delivery_times as strict RFC3339 and its
-// cadence seconds/every/filter shapes, and fails the whole snapshot on a
-// mismatch. The hub schema must apply the same rules before the value reaches
-// the client, so a malformed value can never poison a watch-carrying resource.
-func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.T) {
-	watch := func(cadence []hubapi.NavigationWatchCadence, times []string) hubapi.NavigationSessionSummary {
-		session := navigationSchemaSession("local:schema-session", "schema-session")
-		session.Watches = hubapi.NavigationArray[hubapi.NavigationWatchSummary]{{
-			ID: "watch-1", Source: "self", Deliveries: 1,
-			Cadence: cadence, DeliveryTimes: times,
-			CreatedAt: "2026-09-12T10:00:00Z", Active: true,
-		}}
-		return session
-	}
-	accepted := watch(
-		[]hubapi.NavigationWatchCadence{{Kind: "events", Every: 3, Filter: "status=error"}},
-		[]string{"2026-09-12T10:00:01Z"},
-	)
-	if !navigationSessionValueValid(accepted) {
-		t.Fatal("a well-formed watch cadence and delivery ring must be accepted")
-	}
-	malformedCreatedAt := watch(nil, nil)
-	malformedCreatedAt.Watches[0].CreatedAt = "2026-09-12 10:00:00"
-	tests := map[string]hubapi.NavigationSessionSummary{
-		"non-RFC3339 delivery instant":  watch(nil, []string{"2026-09-12 10:00:01"}),
-		"non-RFC3339 created at":        malformedCreatedAt,
-		"empty cadence kind":            watch([]hubapi.NavigationWatchCadence{{Kind: ""}}, nil),
-		"over-budget cadence kind":      watch([]hubapi.NavigationWatchCadence{{Kind: strings.Repeat("😀", maxNavigationIdentityBytes/len("😀")+1)}}, nil),
-		"negative cadence seconds":      watch([]hubapi.NavigationWatchCadence{{Kind: "every", Seconds: -1}}, nil),
-		"negative event every count":    watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: -1}}, nil),
-		"event every beyond safe range": watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: int(maxNavigationSafeInteger) + 1}}, nil),
-		"over-long event filter":        watch([]hubapi.NavigationWatchCadence{{Kind: "events", Filter: strings.Repeat("f", maxNavigationLabelRunes+1)}}, nil),
-		"non-RFC3339 derived next fire": watch([]hubapi.NavigationWatchCadence{{Kind: "every", DerivedNextFireAt: "2026-09-12 10:00:00"}}, nil),
-	}
-	for name, session := range tests {
-		t.Run(name, func(t *testing.T) {
-			if navigationSessionValueValid(session) {
-				t.Fatalf("malformed watch value accepted: %+v", session.Watches)
-			}
-		})
-	}
-	acceptedBoundary := watch(
-		[]hubapi.NavigationWatchCadence{{
-			Kind:              strings.Repeat("k", maxNavigationIdentityBytes),
-			Every:             int(maxNavigationSafeInteger),
-			DerivedNextFireAt: "2026-09-12T10:10:00Z",
-		}},
-		nil,
-	)
-	if !navigationSessionValueValid(acceptedBoundary) {
-		t.Fatal("cadence values exactly on the codec bounds must be accepted")
-	}
-}
-
-// OmittedWatches is a count on the wire, so the hub schema must reject a
-// negative or out-of-range value exactly like every other session count.
-func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
-	session := navigationSchemaSession("local:schema-session", "schema-session")
-	session.OmittedWatches = 3
-	if !navigationSessionValueValid(session) {
-		t.Fatal("a non-negative omitted watch count must be accepted")
-	}
-	session.OmittedWatches = -1
-	if navigationSessionValueValid(session) {
-		t.Fatal("a negative omitted watch count must be rejected")
-	}
-	// OmittedArmedWatches is a safe non-negative count AND a subset of
-	// OmittedWatches: an armed count above the omitted total would let the rail
-	// report more armed rows than rows it knows were dropped.
-	session = navigationSchemaSession("local:schema-session", "schema-session")
-	session.OmittedWatches = 3
-	session.OmittedArmedWatches = 2
-	if !navigationSessionValueValid(session) {
-		t.Fatal("an armed subset no greater than the omitted total must be accepted")
-	}
-	session.OmittedArmedWatches = 4
-	if navigationSessionValueValid(session) {
-		t.Fatal("an armed count above the omitted total must be rejected")
-	}
-	session.OmittedArmedWatches = -1
-	if navigationSessionValueValid(session) {
-		t.Fatal("a negative armed omitted count must be rejected")
-	}
-}
-
-// The approval's tool is an identity and its target a label on the wire,
-// bounded as the codec's sessionValue bounds them: the tool within the identity
-// byte bound and the target within the label rune bound.
 func TestNavigationSessionValueValidatesApprovalDetail(t *testing.T) {
 	withApproval := func(tool, target string) hubapi.NavigationSessionSummary {
 		session := navigationSchemaSession("local:schema-session", "schema-session")
@@ -574,7 +484,7 @@ func navigationSchemaFixtures(t *testing.T) map[string]navigationSchemaFixture {
 }
 
 func navigationSchemaSession(ref, sessionID string) hubapi.NavigationSessionSummary {
-	return hubapi.NavigationSessionSummary{Ref: ref, HostID: "local", SessionID: sessionID, Title: "Schema session", Project: "schema-project", State: "idle", Kind: "session", RunningJobs: hubapi.NavigationArray[hubapi.NavigationJobSummary]{}, CompletedJobs: hubapi.NavigationArray[hubapi.NavigationJobSummary]{}, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
+	return hubapi.NavigationSessionSummary{Ref: ref, HostID: "local", SessionID: sessionID, Title: "Schema session", Project: "schema-project", State: "idle", Kind: "session", Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
 }
 
 func replaceNavigationSchemaJSONField(t *testing.T, raw json.RawMessage, name string, value any) json.RawMessage {
@@ -603,4 +513,29 @@ func deleteNavigationSchemaJSONField(t *testing.T, raw json.RawMessage, name str
 		t.Fatal(err)
 	}
 	return result
+}
+
+func TestNavigationSessionValueValidatesCompactActivityCounts(t *testing.T) {
+	session := navigationSchemaSession("local:schema-session", "schema-session")
+	session.RunningJobCount = 4
+	session.WatchCount = 7
+	session.ArmedWatchCount = 3
+	if !navigationSessionValueValid(session) {
+		t.Fatal("valid own-session counts rejected")
+	}
+	for _, mutate := range []func(*hubapi.NavigationSessionSummary){
+		func(s *hubapi.NavigationSessionSummary) { s.RunningJobCount = -1 },
+		func(s *hubapi.NavigationSessionSummary) { s.WatchCount = -1 },
+		func(s *hubapi.NavigationSessionSummary) { s.ArmedWatchCount = 8 },
+		func(s *hubapi.NavigationSessionSummary) { s.ArmedWatchCount = -1 },
+		func(s *hubapi.NavigationSessionSummary) {
+			s.RunningJobCommand = strings.Repeat("x", maxNavigationLabelRunes+1)
+		},
+	} {
+		bad := session
+		mutate(&bad)
+		if navigationSessionValueValid(bad) {
+			t.Fatalf("invalid counts accepted:%+v", bad)
+		}
+	}
 }

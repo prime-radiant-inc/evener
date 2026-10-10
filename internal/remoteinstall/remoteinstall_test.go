@@ -127,9 +127,9 @@ func TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine(t *testing.T) {
 		}
 	}
 
-	// The release: a real tar.gz holding the archive root install.sh expects,
-	// with the two binaries releases carry: evener, and evener-dev, which the
-	// archive keeps only so older versions can still upgrade into it.
+	// The release: a real tar.gz holding the archive root install.sh expects.
+	// It also carries evener-dev, as a legacy archive might, so the run below
+	// proves install.sh skips the dev tooling binary rather than installing it.
 	var archive bytes.Buffer
 	rootName := fmt.Sprintf("evener_%s_%s", runtime.GOOS, runtime.GOARCH)
 	archiveName := rootName + ".tar.gz"

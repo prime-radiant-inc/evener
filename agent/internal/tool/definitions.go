@@ -1,10 +1,51 @@
 package tool
 
 import (
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
 )
+
+// MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
+// at a memory scope's root, which Evener generates from the pages.
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
+// selection. Its path parameter is described as relative to the scope root,
+// since the ordinary tool's description invites a workspace or absolute path.
+func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
+	base.Name = name
+	base.Parameters = CloneSchemaMap(base.Parameters)
+	props := base.Parameters["properties"].(map[string]any)
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}, "description": "Which memory to use: personal or project."}
+	if param, ok := props["file_path"].(map[string]any); ok {
+		param["description"] = "Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory."
+	}
+	if param, ok := props["path"].(map[string]any); ok {
+		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
+	}
+	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	return base
+}
+
+func DefMemoryRead() llm.ToolDefinition {
+	read := DefReadFile()
+	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	return MemoryDefinition(read, "memory_read")
+}
+
+func DefMemoryDelete() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Remove one memory file, not a directory; directories it leaves empty go too. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
+		Parameters: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+			"required":   []string{"file_path"},
+		},
+	}, "memory_delete")
+}
 
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
@@ -94,7 +135,7 @@ func DefShell() llm.ToolDefinition {
 					"enum":        []any{"foreground", "background", "detached"},
 					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect to a file if you need it) and it sends no completion notification.",
 				},
-				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory; absolute paths must stay inside it. Must already exist. Default: your current working directory."},
+				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -187,7 +228,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here.",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, and its scratch is deleted when the session is archived, so have such a seat return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
@@ -305,7 +346,7 @@ func DefDelegateSend() llm.ToolDefinition {
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
 				"message":     map[string]any{"type": "string", "description": "The message to deliver to the addressed delegate or caller."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -322,7 +363,7 @@ func DefModelList() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
 				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
@@ -658,8 +699,41 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
+// Why a root session's communicate call ends its turn: done (nothing waits
+// on the human partner), needs_response (the agent cannot go on until its
+// human partner answers or acts), or waiting_on_work (work the agent started
+// will wake it). Offered only where someone can answer the session; only
+// needs_response rests the session awaiting.
+const (
+	CommunicateEndReasonDone          = "done"
+	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
+)
+
+// CommunicateEndReasons lists the end_reason values in the order the
+// parameter advertises them.
+var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
+
+// WithCommunicateEndReason returns a copy of a communicate definition that
+// also offers end_reason. Only a root someone can answer gets it: nobody
+// responds to a delegate's or a headless root's resting state.
+func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["end_reason"] = map[string]any{
+		"type":        "string",
+		"enum":        slices.Clone(CommunicateEndReasons),
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+	}
+	def.Parameters = params
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
@@ -676,8 +750,10 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
-		// violation) or "depends_on": [] (which clears deps) on every update
-		// item. Opting out keeps optional fields genuinely omittable.
+		// violation) or "depends_on": [] on every update item. Opting out keeps
+		// optional fields genuinely omittable; task_list's NormalizeArgs still
+		// drops update values that mean no change (its updatePlaceholders
+		// table), since some models send them anyway.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -716,11 +792,11 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer", "description": "ID of the existing task to change."},
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
-							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
+							"notes":  map[string]any{"type": "string", "description": "Only when something happened that a later step needs: a failure and why, a decision, a surprise. Leave it out when you only change status. Appended to the task's notes log."},
 							"depends_on": map[string]any{
-								"type":        "array",
+								"type":        []string{"array", "null"},
 								"items":       map[string]any{"type": "integer"},
-								"description": "Set dependencies. [] clears them. Omit to leave unchanged.",
+								"description": "Replace the dependencies with these task IDs. Omit it, or send [] or null, to leave them unchanged. [0] on its own clears them.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
@@ -753,7 +829,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
+		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. A metadata-only hit (title or original prompt) may carry a snippet whose seq is -1; that is a display marker, not a turn address — do not pass it to read_transcript. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -761,8 +837,20 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 			"properties": map[string]any{
 				"query":       map[string]any{"type": "string", "description": "Case-insensitive substring to match against session content (no regex/boolean). Omit for the plain catalog."},
 				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
-				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
-				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
+				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Keep only sessions of this lineage kind. \"any\" or omitted applies no kind filter."},
+				"has_children": map[string]any{
+					"type":        "boolean",
+					"description": "Keep only sessions that spawned children (true) or that spawned none (false). Omit for no filter.",
+				},
+				"min_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at least this many turns."},
+				"max_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at most this many turns."},
+				"updated_after": map[string]any{"type": "string", "description": "RFC3339 timestamp; keep only sessions updated at or after it."},
+				"updated_before": map[string]any{
+					"type":        "string",
+					"description": "RFC3339 timestamp; keep only sessions updated at or before it.",
+				},
+				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
+				"limit": map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
 			},
 		},
 	}
@@ -804,7 +892,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root)."},
 				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
 				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
-				"range":     map[string]any{"type": "string", "description": "transcript: turn window: last:N | start:N | A-B."},
+				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Entries read_transcript omits carry no turn number and render with the turn before them."},
 				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
 				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
 				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
@@ -971,8 +1059,8 @@ func DefReadTranscript() llm.ToolDefinition {
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
 				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
@@ -1071,23 +1159,38 @@ func DefUpdateGoal() llm.ToolDefinition {
 }
 
 // DefNotesAgentSet returns the tool definition for notes_agent_set.
-// The model calls this to record its one-paragraph session whiteboard.
+// The model calls this to keep its session whiteboard current: a short capsule
+// of the session for a manager (mission and progress, "Now:", "Next:").
 // (Agent tool, not a hub RPC: the daemon handles notes/agent/set in session.
 // Tool names cannot contain slashes — see llm.ValidateToolName — so the agent
 // tool uses snake_case.)
 func DefNotesAgentSet() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "notes_agent_set",
-		Description: `Record your one-paragraph session whiteboard. ` +
-			`Whitespace is collapsed and the note is clamped to 1000 characters. ` +
-			`Setting the same text again is a no-op.`,
+		Description: `Keep your session whiteboard current. ` +
+			`It is a capsule a manager checking on this session reads in ten seconds ` +
+			`to learn what the session is for and where it stands. ` +
+			`Use plain words, with no file paths, ids or jargon. ` +
+			`Write three parts, each on its own line: ` +
+			`a short paragraph with the mission and what is done so far; ` +
+			`one line starting "Now:" with what you are doing; ` +
+			`one or two lines starting "Next:" with what is left. ` +
+			`Set it once you understand the task, update it when a phase finishes, the plan changes, ` +
+			`or you are blocked, and bring it up to date before your final report; ` +
+			`for a job you finish in one go, one update before the report is enough. ` +
+			`Each update replaces the whole whiteboard. ` +
+			`Keep it under 600 characters. Example:` + "\n" +
+			`Fixing the importer's rejected timestamps for the reporting team. ` +
+			`The parser required seconds; I made them optional and added tests, which pass.` + "\n" +
+			`Now: checking the exporter, which uses the same parser.` + "\n" +
+			`Next: fix the exporter the same way, then report back.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note": map[string]any{
 					"type":        "string",
-					"description": "The agent's session note. Empty clears it.",
+					"description": "The whole whiteboard, in the three parts above. Line breaks are kept. Empty clears it.",
 				},
 			},
 			"required": []string{"note"},

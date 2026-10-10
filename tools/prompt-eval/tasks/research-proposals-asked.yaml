@@ -1,0 +1,36 @@
+schema: 1
+id: prose.research-proposals-asked
+tool: prompt-eval
+prompt: |
+  Read the two proposals in docs/ along with docs/constraints.md, and recommend one. Write your recommendation to RECOMMENDATION.md. Its first line must be exactly "Recommendation: Option A" or "Recommendation: Option B", and the rest should explain the trade-off that decides it. Then tell me briefly what you picked and why.
+person:
+  model: lunarouter/glm-5.3
+  brief: |
+    You are the person who asked for this. Everything needed is already in your request and the files; you have nothing to add. If asked anything, say briefly that the request and the repository have everything and they should go ahead.
+fixture:
+  files:
+    docs/constraints.md: |
+      # Constraints
+
+      The tool runs on laptops at field sites that go without internet for days at a time.
+      Two people maintain it, part time.
+      There is no budget for hosted services.
+    docs/option-a.md: |
+      # Option A: a local notification table
+
+      Job notifications go into a table in the local SQLite database, and the UI checks the table once a second.
+      It works with no network, and backing up the database backs up the notifications.
+      Checking once a second costs a little CPU and delays a notification by up to a second.
+    docs/option-b.md: |
+      # Option B: a hosted message service
+
+      Job notifications go to a hosted publish-and-subscribe service, and the UI subscribes to it.
+      Notifications arrive at once, and the service keeps them for a week.
+      It needs a network connection and a paid account, and the client library adds 40 MB to the install.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: recommends the offline option
+      run: "head -n 1 RECOMMENDATION.md | grep -qx 'Recommendation: Option A'"
+reference: |
+  printf 'Recommendation: Option A\n\nThe field sites go days without a network, and Option B needs one.\n' > RECOMMENDATION.md

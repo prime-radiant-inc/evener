@@ -1,35 +1,61 @@
+import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
+import {
+	type AnyNotification,
+	makeTranscriptDisplayConfig,
+	type SessionDelegatesResponse,
+	type Thread,
+	WireError,
+} from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	keyboard,
 	alertRequests,
+	dockBody,
+	dropped as droppedConnection,
 	type PanGestureMock,
+	playedHaptics,
 	pressable,
 	render,
 	renderedText,
 	screenConnection,
+	settle,
+	systemGlass,
 	textOf,
+	unmountMountedTrees,
+	until,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { FindBar } from "./session/FindBar";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
-import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
-import { AccessibilityInfo, ActionSheetIOS } from "react-native";
+import { compactDuration } from "./session/format";
+import { SubagentPanel } from "./subagents/SubagentPanel";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -40,6 +66,7 @@ import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetT
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 
@@ -60,6 +87,8 @@ const navigationState = vi.hoisted(() => ({
 }));
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// Who alerted you most recently, and Next's word that it moved you on.
+const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -71,7 +100,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -163,12 +191,19 @@ vi.mock("expo-secure-store", () => ({
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
 }));
+vi.mock("./alerts/alertsContext", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./alerts/alertsContext")>()),
+	useAlertedRecently: () => alerts.recent,
+	useNextUsed: () => alerts.nextUsed,
+}));
+// The hub's transcript display setting, when a test sets one.
+const displayPrefs = vi.hoisted(() => ({ hubId: null as string | null, config: null as unknown }));
 vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({
-		hubId: null,
+		hubId: displayPrefs.hubId,
 		model: null,
 		snapshot: null,
-		config: null,
+		config: displayPrefs.config,
 		connected: false,
 		offlineDraftUnreadable: false,
 		offlineStorageUnavailable: false,
@@ -190,14 +225,10 @@ const navigation = {
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
 
-async function flush() {
+async function advanceFakeTimers(ms: number) {
 	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await vi.advanceTimersByTimeAsync(ms);
 	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
 }
 
 const CAPABILITIES = {
@@ -286,22 +317,52 @@ const otherThreads = new Map<string, Thread>();
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
-// Every screen a test mounts. Each is unmounted after its test: a screen
-// left mounted keeps answering late reads and setting header options on the
-// shared navigation mock, so a later test reading the last header options
-// could act on it instead of its own screen.
-const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
-const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
-	{
-		tree: null,
-		stop: () => ({ outcome: "stopping" }),
-		readFails: null,
-	};
+const coordinatorHub: {
+	tree: unknown;
+	delegates: SessionDelegatesResponse | null;
+	stop: (params: Record<string, unknown>) => unknown;
+	readFails: string | null;
+} = {
+	tree: null,
+	delegates: null,
+	stop: () => ({ outcome: "stopping" }),
+	readFails: null,
+};
+// Whether thread/read answers with a history identity, as a v6 hub does:
+// only then does the store take live pushes (overlay streams among them).
+const readHistory = { live: false };
+const READ_HISTORY_IDENTITY = {
+	bootGeneration: "1",
+	epoch: 1,
+	snapshot: { incarnation: "inc-1", length: 0 },
+} as const;
+// Whether model/list refuses, as a hub mid-restart does.
+const catalogHub = { fails: false };
+// Keep diagnostics visible and check the entire case, including afterEach teardown.
+beforeEach(({ onTestFinished }) => {
+	const errors = vi.spyOn(console, "error");
+	const warnings = vi.spyOn(console, "warn");
+	onTestFinished(() => {
+		try {
+			expect({ errors: errors.mock.calls, warnings: warnings.mock.calls }).toEqual({ errors: [], warnings: [] });
+		} finally {
+			errors.mockRestore();
+			warnings.mockRestore();
+		}
+	});
+});
 afterEach(() => {
-	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	unmountMountedTrees();
+	displayPrefs.hubId = null;
+	displayPrefs.config = null;
+	catalogHub.fails = false;
+	readHistory.live = false;
+	keyboard.reset();
+	systemGlass.reset();
 	coordinatorHub.tree = null;
+	coordinatorHub.delegates = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
 	otherThreads.clear();
@@ -318,13 +379,13 @@ function hubClient(
 	readLatencyMs = 0,
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
+	olderPage: Promise<void> = Promise.resolve(),
+	compacting: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready") as Pick<FakeClient, "state" | "onReady" | "onStateChange">, {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -346,10 +407,19 @@ function hubClient(
 				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
-				return { thread, ...(olderCursor ? { olderCursor } : {}) };
+				return {
+					thread,
+					...(olderCursor ? { olderCursor } : {}),
+					...(readHistory.live ? READ_HISTORY_IDENTITY : {}),
+				};
 			}
 			// The page before the first read: older turns, and the start of history.
-			if (method === "thread/turns/list") return { data: olderTurns };
+			if (method === "thread/compact/start") await compacting;
+			if (method === "thread/turns/list") {
+				await olderPage;
+				return { data: olderTurns };
+			}
+			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
@@ -378,13 +448,28 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method === "evener/thread/delegates/list" && coordinatorHub.delegates) return coordinatorHub.delegates;
+			if (method.startsWith("evener/thread/") && coordinatorHub.tree) {
+				const f = activityFixture(coordinatorHub.tree, {
+					ref: String(params.ref),
+					scope: params.scope as "session" | "subtree",
+				});
+				if (method === "evener/thread/activity/read") return f.summary;
+				const page = {
+					complete: !f.continuation,
+					issues: f.issues,
+					...(f.continuation ? { nextCursor: f.continuation } : {}),
+				};
+				if (method === "evener/thread/delegates/list")
+					return { context: f.context, scope: f.scope, delegates: f.delegates, page };
+				if (method === "evener/thread/jobs/list") return { context: f.context, scope: f.scope, jobs: f.jobs, page };
+			}
 			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
 		},
-	};
+	});
 	return {
 		client,
 		mutations: () => requests.filter((request) => request.method.startsWith("turn/")).map((request) => request.method),
@@ -404,10 +489,20 @@ async function mount(
 		settled = true,
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
+		// Holds the older page until the promise settles, for what happens
+		// while one is on its way.
+		olderPage = Promise.resolve(),
+		// Holds a compact until the promise settles, so a session control stays
+		// pending.
+		compacting = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
+		// The bottom bar lays out as it would on a device (0pt here, so it
+		// leaves the transcript's geometry as it was); a test of what waits
+		// for that layout says false.
+		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage, compacting);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -421,10 +516,20 @@ async function mount(
 		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-	mountedScreens.push(tree);
+	// Await mount-time accessibility and navigation reads, not the session
+	// read's clock, before handing the live renderer back to the case.
+	let tree!: ReactTestRenderer;
+	await act(async () => {
+		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	});
+	if (barLaysOut) {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
+	}
 	if (settled) await settle();
-	return { tree, hub };
+	return { tree, hub, route };
 }
 
 function field(tree: ReactTestRenderer) {
@@ -433,11 +538,17 @@ function field(tree: ReactTestRenderer) {
 		.find((node) => node.props.accessibilityLabel === "Message");
 }
 
+/** Puts the composer's field in focus, which raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() => field(tree)?.props.onFocus());
+	act(() => keyboard.show());
+}
+
 async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
 	act(() => input.props.onChangeText(text));
-	await flush();
+	await settle();
 }
 
 async function press(tree: ReactTestRenderer, label: string) {
@@ -464,8 +575,11 @@ it("sends a message when the agent is at rest", async () => {
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
 	expect(send?.findByType("SymbolView" as never).props.name).toBe("paperplane.fill");
+	playedHaptics.length = 0;
 	await press(tree, "Send");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, once the hub took it.
+	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
 it("stops the running turn from the tray and says so", async () => {
@@ -499,6 +613,63 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// A node's style flattened, as React Native flattens a style array.
+const flatStyle = (node: ReactTestInstance): Record<string, unknown> =>
+	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+
+// The views between `node` and the screen's capped bottom area (the view
+// with a maxHeight), each with its flattened style.
+function viewsUpToBottomArea(node: ReactTestInstance) {
+	const views: Record<string, unknown>[] = [];
+	for (let at = node.parent; at; at = at.parent) {
+		if (String(at.type) !== "View") continue;
+		const style = flatStyle(at);
+		if (style.maxHeight !== undefined) return views;
+		views.push(style);
+	}
+	throw new Error("no capped bottom area above this node");
+}
+
+// Style wiring only (the geometry is checked on a simulator): the dock's own
+// slot gives up height inside the capped bottom area, so a dock taller than
+// the room left scrolls its body there, and nothing else in that area
+// shrinks, so the tray and the composer keep their height.
+function expectOnlyTheDockSlotShrinks(tree: ReactTestRenderer, testID: string) {
+	const slot = viewsUpToBottomArea(tree.root.findByProps({ testID }));
+	expect(slot).toEqual([expect.objectContaining({ flexShrink: 1 })]);
+	const input = tree.root.findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline)[0];
+	if (input) for (const style of viewsUpToBottomArea(input)) expect(style.flexShrink ?? 0).toBe(0);
+}
+
+// A question taller than any phone's bottom area: a long question, a long
+// why, and five options with long details.
+const LONG_QUESTION = "Fourteen tool descriptions mention options their tools don't accept. ".repeat(4).trim();
+const LONG_WHY = "Models try them and fail, which costs a retry each time and sometimes derails a whole turn. "
+	.repeat(6)
+	.trim();
+const LONG_QUESTION_TURN = {
+	...QUESTION_TURN,
+	items: [
+		{
+			...QUESTION_TURN.items[0],
+			argumentsJson: JSON.stringify({
+				questions: [
+					{
+						header: "Choice",
+						question: LONG_QUESTION,
+						why: LONG_WHY,
+						options: ["Drop them", "Keep them", "Only three", "Ask per tool", "Leave them"].map((label) => ({
+							label,
+							detail: `${label}, and everything that follows from it across the web and the TUI help text.`,
+						})),
+						multi_select: false,
+					},
+				],
+			}),
+		},
+	],
+};
+
 describe("a question waiting for an answer (spec 8.4)", () => {
 	// "Other answer…" focuses the composer on the next frame; these tests run
 	// that frame at once.
@@ -508,7 +679,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			return 0;
 		});
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
@@ -519,6 +693,126 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("puts a long question's text and options in the dock's scroller, and its answer controls outside it", async () => {
+		const served = thread("ref-question-long", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
+		expect(scrolled).toContain(LONG_QUESTION);
+		expect(scrolled).toContain(LONG_WHY);
+		expect(body.holds("Leave them")).toBe(true);
+		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
+	});
+
+	// The bar's cap is measured, not a percentage (#3248): arriving by a push,
+	// the screen first lays out at the full window, then shorter once the
+	// header's inset lands, and a dock's content arriving in that same pass left
+	// a percentage cap worked out against the old height until the next layout.
+	it("caps the bottom bar at four fifths of its room's latest height, in points", async () => {
+		const served = thread("ref-question-cap", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+		const room = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar-room",
+		);
+		// Before the room is measured, the cap is the same share as a percentage.
+		expect(flatStyle(bar).maxHeight).toBe("80%");
+		const layout = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 375, height } } });
+		act(() => room.props.onLayout(layout(667)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(533.6);
+		// The header's inset lands: the room is shorter, and so is the cap.
+		act(() => room.props.onLayout(layout(593)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(474.4);
+	});
+
+	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
+		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+		await press(tree, "Other answer…");
+		expect(field(tree)).toBeDefined();
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+	});
+
+	it("shows only the question while the keyboard is up for your own answer, and the options once it goes down", async () => {
+		const { tree } = await mount(thread("ref-question-typing", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		expect(options()).not.toHaveLength(0);
+		typeInComposer(tree);
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(options()).toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Other answer…")).toBeUndefined();
+		expect(field(tree)).toBeDefined();
+		act(() => keyboard.hide());
+		expect(options()).not.toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeDefined();
+	});
+
+	// The dock follows the same typing rule as the rest (useComposerTyping):
+	// a keyboard up for the find bar's field isn't the composer's.
+	it("keeps the options while the keyboard is up for the find bar", async () => {
+		const { tree } = await mount(thread("ref-question-find", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.hide());
+	});
+
+	it("brings the options back from Show options, which lowers the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
+		await press(tree, "Other answer…");
+		typeInComposer(tree);
+		const showOptions = pressable(tree, "Show options");
+		expect(showOptions).toBeDefined();
+		act(() => showOptions?.props.onPress());
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+	});
+
+	it("sends what you typed as the answer while the keyboard is up", async () => {
+		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
+		await press(tree, "Other answer…");
+		typeInComposer(tree);
+		await type(tree, "Drop them");
+		const send = composerSend(tree, "Send your answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "turn/start").map((request) => request.params.input),
+		).toEqual([[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }]]);
+		act(() => keyboard.hide());
+	});
+
+	it("lets a drag lower the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-drag", "awaiting", true));
+		const [list] = tree.root.findAll(
+			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+		);
+		expect(list?.props.keyboardDismissMode).toBe("interactive");
+	});
+
+	it("lets a drag lower the keyboard on Android, which has no interactive dismissal", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-question-drag-android", "awaiting", true));
+			const [list] = tree.root.findAll(
+				(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+			);
+			expect(list?.props.keyboardDismissMode).toBe("on-drag");
+		} finally {
+			platform.OS = "ios";
+		}
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
@@ -545,7 +839,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends the option chosen in the dock, and says so", async () => {
 		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
 		await press(tree, "Drop them");
+		playedHaptics.length = 0;
 		await press(tree, "Send answer");
+		// Spec 16.6: success on answer sent.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const starts = hub.requests.filter((request) => request.method === "turn/start");
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
@@ -681,6 +978,110 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	expect(hub.mutations()).toEqual([]);
 });
 
+// A typed /steer or /queue is the composer's Steer or Queue: the outbox
+// keeps it, so a lost answer isn't a failure, and what the hub took reads as
+// this phone's.
+it.each([
+	["/steer check the logs", "Steer", "turn/steer", "Steering · arrives at the next step"],
+	["/queue check the logs", "Queue", "turn/queue", "Queued · sends when this turn ends"],
+])("sends %s through the outbox", async (text, label, method, caption) => {
+	const ref = `ref-typed-${method}`;
+	const served = thread(ref, "active");
+	const { tree, hub } = await mount(served);
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	client.request = async (requested, params) => {
+		const answer = await request(requested, params);
+		if (requested !== method) return answer;
+		// The hub took it, and its answer was lost.
+		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+		if (method === "turn/queue")
+			evener.queue = { ...queueState(["check the logs"], 1), clientMutationIds: [params.clientMutationId] };
+		else
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method,
+					input: params.input,
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+		throw new Error("connection lost");
+	};
+	await type(tree, text);
+	await press(tree, label);
+	const sent = hub.requests.filter((entry) => entry.method === method);
+	expect(sent.map((entry) => entry.params.input)).toEqual([[{ type: "text", text: "check the logs" }]]);
+	act(() =>
+		hub.notify({
+			method: "evener/thread/resync",
+			params: { ref, threadId: served.id },
+		} as AnyNotification),
+	);
+	await settle();
+	expect(field(tree)?.props.value).toBe("");
+	expect(renderedText(tree)).not.toContain("Couldn't");
+	expect(renderedText(tree)).toContain("check the logs");
+	expect(renderedText(tree)).toContain(caption);
+});
+
+// A typed command the outbox couldn't take never left the phone: it says try
+// again, and the text is still there to send.
+it("asks to try a typed /queue again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/queue check the logs");
+	await press(tree, "Queue");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Could not confirm the command");
+	// Nothing left the phone, so the command goes back to the composer.
+	expect(field(tree)?.props.value).toBe("/queue check the logs");
+	expect(renderedText(tree)).not.toContain("Couldn't confirm");
+});
+
+// A typed /interrupt the phone couldn't keep says so, and stays to try again.
+it("asks to try a typed /interrupt again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
+	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(field(tree)?.props.value).toBe("/interrupt");
+});
+
+// A typed /interrupt is Stop: it holds the messages this phone hasn't sent
+// yet, so they don't go out after it.
+it("holds the phone's unsent messages on /interrupt, as Stop does", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt", "active"));
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	let answerFirst: () => void = () => undefined;
+	const firstAnswered = new Promise<void>((resolve) => {
+		answerFirst = resolve;
+	});
+	client.request = async (requested, params) => {
+		const answer = request(requested, params);
+		if (requested === "turn/queue" && hub.requests.filter((entry) => entry.method === "turn/queue").length === 1)
+			await firstAnswered;
+		return answer;
+	};
+	await type(tree, "first");
+	await press(tree, "Queue message");
+	await type(tree, "second");
+	await press(tree, "Queue message");
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	await act(async () => answerFirst());
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]);
+	expect(renderedText(tree)).toContain("Held · you stopped this turn");
+	expect(renderedText(tree)).toContain("Stopped");
+});
+
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
 	const served = thread("ref-typed-shutdown", "idle");
 	// thread() shares the module-level CAPABILITIES object; clone it so this
@@ -706,7 +1107,7 @@ it("keeps the session open when /shutdown is typed and completed (ruling 19)", a
 	expect(navigation.pop).not.toHaveBeenCalled();
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(field(tree)).toBeDefined();
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("does nothing when a Stop lands after the turn already ended", async () => {
@@ -736,6 +1137,52 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	expect(renderedText(tree)).not.toContain("Stopped");
 	// No error text of any kind: the screen reads exactly as it did.
 	expect(renderedText(tree)).toBe(before);
+});
+
+it("brings back messages a Stop held before they left the phone: Cancel drops one, Send now sends one (phase 6)", async () => {
+	const ref = "ref-held";
+	const { tree, hub } = await mount(thread(ref, "idle"));
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const yours = (text: string) =>
+		runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text }] },
+			attachments: [],
+			optimisticDisplay: { text },
+		});
+	const dropped = await yours("drop this one");
+	const kept = await yours("send this one");
+	// A Stop commits before either left the phone, and holds them both.
+	await runtime.storage.enqueueInterruptAndCancel({
+		targetRef: targetKey,
+		method: "turn/interrupt",
+		payload: { ref },
+		attachments: [],
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	await act(async () => {
+		await runtime.discardRecovery("no-such-row", targetKey);
+	});
+	await settle();
+	const text = renderedText(tree);
+	expect(text).toContain("drop this one");
+	expect(text).toContain("send this one");
+	expect(text).toContain("Held · you stopped this turn");
+
+	// Cancel drops the first from the phone's outbox; it never reaches the hub.
+	await press(tree, "Cancel");
+	await settle();
+	expect(await runtime.storage.getOutbox(dropped.clientMutationId)).toBeUndefined();
+	expect(renderedText(tree)).not.toContain("drop this one");
+
+	// Send now releases the second behind the Stop that held it.
+	await press(tree, "Send now");
+	await settle();
+	await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/queue"]));
+	const sent = hub.requests.find((request) => request.method === "turn/queue");
+	expect(sent?.params).toMatchObject({ clientMutationId: kept.clientMutationId });
 });
 
 it("holds Stop while a queued message is handed to the outbox", async () => {
@@ -798,6 +1245,439 @@ it("opens at the start of a reply that finished since you last read to the end",
 		.map((call) => (call.args as { index: number }).index);
 	expect(indexes).toContain(3);
 	expect(indexes).not.toContain(0);
+});
+
+it("restores a reading position once, however its row's measured y moves after", async () => {
+	// A virtualized list re-estimating rows it unmounted (older pages provoke
+	// it) moves the anchor row's measured y back and forth; the restore used
+	// to chase every move, and the list ping-ponged.
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-once": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-once",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-once"));
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const items = () => transcriptList(tree).findAll((node) => String(node.type) === "Item");
+	// The rows are ask/reply for turn_1, then turn_2: its reply is row 3.
+	const reply = () => {
+		const cell = items()[3]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+		if (!cell) throw new Error("no reply cell");
+		return cell;
+	};
+	const layOut = (y: number) =>
+		act(() => reply().props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
+	flatListCalls.length = 0;
+	layOut(9_523);
+	await settle();
+	layOut(9_684);
+	await settle();
+	layOut(9_523);
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+});
+
+// A frame's layout events arrive together: the rows' layouts, then the
+// content size they add up to. The restore waits for all of them, so a row
+// measured before the content size is known never lands the list short of it.
+it("restores a reading position once the frame's layouts are all in", async () => {
+	seedReaderPosition("ref-restore-frame", "a-turn_2", "turn_2");
+	const { tree } = await mount(twoTurns("ref-restore-frame"));
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	flatListCalls.length = 0;
+	act(() => {
+		layOutRow(tree, 3, 9_523);
+		transcriptList(tree).props.onContentSizeChange(390, 20_000);
+	});
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+});
+
+// The content size can come in a later batch than the rows: until it is
+// known, where the list can reach isn't, so the restore waits for it.
+it("waits for the content size before restoring a reading position", async () => {
+	seedReaderPosition("ref-restore-size", "a-turn_2", "turn_2");
+	const { tree } = await mount(twoTurns("ref-restore-size"));
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	flatListCalls.length = 0;
+	layOutRow(tree, 3, 9_523);
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+	expect(transcriptList(tree).props.style?.opacity).toBe(0);
+	act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+	expect(transcriptList(tree).props.style?.opacity).toBe(1);
+});
+
+it("waits for the bottom bar to lay out before restoring a reading position", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-waits": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-waits",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-waits"), { barLaysOut: false });
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")[3]
+		?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error("no reply cell");
+	flatListCalls.length = 0;
+	// 19,500 is past what the list reaches without the bar's inset (19,400).
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: 19_500, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+	// The bar lays out: its inset lets the list reach the row.
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 19_500, animated: false } },
+	]);
+});
+
+// Opening lands once (spec 7.3): the list stays hidden while it travels to
+// where the session opens, and shows only once it is there, so no one sees it
+// land, move and land again.
+describe("opening a session", () => {
+	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
+	const layOutViewport = (tree: ReactTestRenderer, contentHeight = 20_000) => {
+		act(() =>
+			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+		);
+		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
+	};
+	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
+		harness.kv.set(
+			"evener.reader-positions",
+			JSON.stringify({
+				[`hub-1\u0000${ref}`]: {
+					hubId: "hub-1",
+					sessionRef: ref,
+					itemKey,
+					withinItemOffset: 0,
+					touchedAt: 1,
+					turnsSeen,
+				},
+			}),
+		);
+
+	it("shows the live end only once its last row is measured and the list is pinned there", async () => {
+		const { tree } = await mount(twoTurns("ref-open-live"));
+		layOutViewport(tree);
+		await settle();
+		// The list has laid out, but the rows at its end haven't: it would show
+		// at the top and then jump.
+		expect(opacity(tree)).toBe(0);
+		layOutRow(tree, 0, 16);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		// Pinned to the end after the last row measured, then shown.
+		expect(flatListCalls.map((call) => call.method)).toEqual(["scrollToEnd"]);
+		expect(opacity(tree)).toBe(1);
+	});
+
+	// A ghost is the list's last row: showing before it measures would show
+	// the end short of it and then move.
+	it("shows the live end only once a queued message at its end has measured", async () => {
+		const served = twoTurns("ref-open-ghost");
+		(served as unknown as { evener: { queue: unknown } }).evener.queue = queueState(["check the logs"]);
+		const { tree } = await mount(served);
+		layOutViewport(tree);
+		await settle();
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		layOutRow(tree, 4, 19_150);
+		await settle();
+		expect(flatListCalls.map((call) => call.method)).toEqual(["scrollToEnd"]);
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows a saved reading position only once the exact restore has landed", async () => {
+		savePosition("ref-open-anchor");
+		flatListCalls.length = 0;
+		const { tree } = await mount(twoTurns("ref-open-anchor"));
+		layOutViewport(tree);
+		await settle();
+		// The approximate jump toward the unmeasured row happens out of sight.
+		expect(flatListCalls.map((call) => call.method)).toContain("scrollToIndex");
+		expect(flatListCalls.map((call) => call.method)).not.toContain("scrollToOffset");
+		expect(opacity(tree)).toBe(0);
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 9_523, animated: false } });
+		expect(opacity(tree)).toBe(1);
+		// Later reflows restore in view: the opening has landed.
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows a reading position restored before the viewport's first layout without moving it again", async () => {
+		savePosition("ref-open-early");
+		const { tree } = await mount(twoTurns("ref-open-early"));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		// The row measures before the list's own layout: the restore lands, but
+		// the list can't show until its viewport has laid out.
+		layOutRow(tree, 3, 19_500);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 19_500, animated: false } });
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		act(() =>
+			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+		);
+		await settle();
+		// The viewport arriving shows the list where it landed, with no second restore.
+		expect(flatListCalls).toEqual([]);
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the start of an unread reply only once the restore to it has landed", async () => {
+		savePosition("ref-open-unread", "u-turn_1", "turn_1");
+		const { tree } = await mount(twoTurns("ref-open-unread"));
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		// turn_2's reply, row 3, finished since you last read to the end.
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 9_523, animated: false } });
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the list at once when you touch it while it opens", async () => {
+		savePosition("ref-open-touch");
+		const { tree } = await mount(twoTurns("ref-open-touch"));
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		act(() => transcriptList(tree).props.onScrollBeginDrag({ nativeEvent: { contentOffset: { y: 4_000 } } }));
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the list after a second even when the opening never lands", async () => {
+		savePosition("ref-open-cap");
+		const { tree } = await mount(twoTurns("ref-open-cap"));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(999);
+			// The anchor's row never measures: without a cap the list would
+			// stay hidden.
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("gives a session the screen switches to its own full second to land", async () => {
+		savePosition("ref-open-first");
+		const { tree, route } = await mount(twoTurns("ref-open-first"));
+		const next = "ref-open-second";
+		otherThreads.set(next, twoTurns(next));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(600);
+			expect(opacity(tree)).toBe(0);
+			const moved = { ...route, params: { ...route.params, ref: next } };
+			navigationState.state = { index: 0, routes: [moved] };
+			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			// The first session's cap has 400ms left; the second's starts afresh.
+			await advanceFakeTimers(999);
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// Jesse, 2026-09-29: a saved spot that hasn't loaded within the cap opens
+	// at the live end instead, and the spot is dropped; never the top and then
+	// a jump, and never a blank wait.
+	describe("when the saved spot hasn't loaded within the cap", () => {
+		const mountWaitingOnOlderPage = async (ref: string) => {
+			savePosition(ref, "a-turn_0", "turn_0");
+			let deliver = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				deliver = resolve;
+			});
+			const mounted = await mount(twoTurns(ref), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0")],
+				olderPage,
+			});
+			return { ...mounted, deliver };
+		};
+
+		it("opens at the live end and forgets the spot", async () => {
+			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advanceFakeTimers(999);
+				expect(opacity(tree)).toBe(0);
+				flatListCalls.length = 0;
+				await advanceFakeTimers(1);
+				// It heads for the end, still out of sight until the end's last row measures.
+				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
+				expect(opacity(tree)).toBe(0);
+				layOutRow(tree, 3, 19_000);
+				await advanceFakeTimers(0);
+				expect(opacity(tree)).toBe(1);
+				// The older page landing later doesn't pull the list back to the spot.
+				flatListCalls.length = 0;
+				deliver();
+				await advanceFakeTimers(0);
+				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("shows the live end a second later even if its last row never measures", async () => {
+			const { tree } = await mountWaitingOnOlderPage("ref-open-unloaded-cap");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advanceFakeTimers(1000);
+				expect(opacity(tree)).toBe(0);
+				await advanceFakeTimers(999);
+				expect(opacity(tree)).toBe(0);
+				await advanceFakeTimers(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	// The list's content grows in stages as it renders the rows below a saved
+	// position, so the first restore can fall short of it (clamped). Showing
+	// the list there would show it land short and then move.
+	describe("when the list can't reach the saved position yet", () => {
+		const offsets = () =>
+			flatListCalls
+				.filter((call) => call.method === "scrollToOffset")
+				.map((call) => (call.args as { offset: number }).offset);
+
+		it("shows it only once the restore reaches the row", async () => {
+			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			// It moves as far as the list reaches, out of sight.
+			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(opacity(tree)).toBe(0);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+			layOutRow(tree, 3, 19_000);
+			await settle();
+			expect(offsets().at(-1)).toBe(9_523);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it short of the row once the last row has measured", async () => {
+			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 2_800);
+			layOutRow(tree, 3, 2_900);
+			await settle();
+			// The content is whole, so as far as the list reaches is where it rests.
+			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
+			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			// A row between measures: the restore runs again, already as far as
+			// the list reaches, so it neither moves the list nor shows it, since
+			// the rows below are still estimates.
+			flatListCalls.length = 0;
+			layOutRow(tree, 2, 9_700);
+			await settle();
+			expect(flatListCalls).toEqual([]);
+			expect(opacity(tree)).toBe(0);
+			layOutRow(tree, 3, 9_900);
+			await settle();
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it after a second when the last row never measures", async () => {
+			savePosition("ref-open-clamped-cap", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree, 3_000);
+				layOutRow(tree, 1, 9_523);
+				await advanceFakeTimers(0);
+				// The restore fell short and the rows below never measure.
+				expect(offsets().at(-1)).toBeLessThan(9_523);
+				await advanceFakeTimers(999);
+				expect(opacity(tree)).toBe(0);
+				await advanceFakeTimers(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	it("shows a session with no rows at once", async () => {
+		const served = thread("ref-open-empty", "idle");
+		(served as unknown as { turns: unknown[] }).turns = [];
+		const { tree } = await mount(served);
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
 });
 
 it("reads the session again on its own after a read fails", async () => {
@@ -871,6 +1751,34 @@ function transcriptList(tree: ReactTestRenderer) {
 	)[0];
 }
 
+// Saves a reading position on hub-1 for the session ref, at the top of the
+// row keyed itemKey, with the turns through turnsSeen already seen.
+function seedReaderPosition(sessionRef: string, itemKey: string, turnsSeen: string) {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			[`hub-1\u0000${sessionRef}`]: {
+				hubId: "hub-1",
+				sessionRef,
+				itemKey,
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen,
+			},
+		}),
+	);
+}
+
+// Lays out the transcript's row at index at y. twoTurns' rows are ask/reply
+// for turn_1, then turn_2.
+function layOutRow(tree: ReactTestRenderer, index: number, y: number) {
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")
+		[index]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error(`no cell at row ${index}`);
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
+}
+
 function scrollTo(tree: ReactTestRenderer, y: number) {
 	act(() =>
 		transcriptList(tree).props.onScroll({
@@ -879,22 +1787,610 @@ function scrollTo(tree: ReactTestRenderer, y: number) {
 	);
 }
 
+describe("following the live end (spec 8.2)", () => {
+	// scrollTo's list is 4,000pt tall in a 600pt viewport: 3,400 is its end.
+	const END = 3_400;
+	const at = (y: number, content = 4_000) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: content }, layoutMeasurement: { height: 600 } },
+	});
+	const list = (tree: ReactTestRenderer) => transcriptList(tree);
+	// A drag the way a finger makes one: it begins, the list scrolls through
+	// each offset, and it ends at the last. Await its deferred history read's
+	// publication before the case continues or starts teardown.
+	async function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
+		for (const y of offsets) scrollTo(tree, y);
+		await act(async () => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+	}
+	// A reply streaming into the session: a new row below whatever you read.
+	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
+		const key = `stream:${id}:agentMessage`;
+		act(() =>
+			hub.notify({
+				method: "overlay/upserted",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					item: {
+						key,
+						kind: "stream",
+						turnId: "turn_2",
+						roundId: id,
+						streamId: id,
+						item: { id: key, type: "agentMessage", roundId: id, text: `streamed ${id}`, status: "inProgress" },
+					},
+				},
+			} as unknown as AnyNotification),
+		);
+	}
+	// The list growing, as it does when a row lands. Whether the screen
+	// answered by scrolling to the end says whether it follows.
+	function contentGrows(tree: ReactTestRenderer, height: number) {
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onContentSizeChange(390, height));
+		return flatListCalls.some((call) => call.method === "scrollToEnd");
+	}
+	beforeEach(() => {
+		readHistory.live = true;
+	});
+	// Two turns, the second still running, so replies can stream into it.
+	function working(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1"),
+			{ ...askReplyTurn("turn_2"), status: "inProgress" },
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnId = "turn_2";
+		return served;
+	}
+	const pill = (tree: ReactTestRenderer) =>
+		tree.root.findAll((node) =>
+			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
+		)[0];
+
+	it("keeps a streamed reply's row, and doesn't count it as new, once history records it", async () => {
+		// Recorded items carry their transcript positions, as a hub's do, so
+		// the recorded reply lands after them.
+		const served = working("ref-follow-recorded");
+		const at = (turnId: string, entry: number) => ({
+			turnId,
+			status: "completed",
+			transcriptKey: `${turnId}:${entry}:0`,
+			position: { entry, item: 0 },
+		});
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{ id: "u-turn_1", type: "userMessage", text: "ask turn_1", ...at("turn_1", 0) },
+					{ id: "a-turn_1", type: "agentMessage", text: "reply turn_1", ...at("turn_1", 1) },
+				],
+			},
+			{
+				id: "turn_2",
+				status: "inProgress",
+				itemsView: "default",
+				items: [{ id: "u-turn_2", type: "userMessage", text: "ask turn_2", ...at("turn_2", 2) }],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		stream(hub, served, "s1");
+		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
+		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
+		await drag(tree, 100);
+		act(() =>
+			hub.notify({
+				method: "history/updated",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					...READ_HISTORY_IDENTITY,
+					items: [
+						{
+							id: "item_assistant_3_0",
+							turnId: "turn_2",
+							type: "agentMessage",
+							roundId: "s1",
+							transcriptKey: "turn_2:3:0",
+							position: { entry: 3, item: 0 },
+							status: "completed",
+							text: "streamed s1",
+						},
+					],
+				},
+			} as unknown as AnyNotification),
+		);
+		const rows = list(tree).props.data as { id: string }[];
+		expect(rows.map((row) => row.id)).toContain("item_assistant_3_0");
+		expect(rows.map((row) => row.id)).not.toContain("stream:s1:agentMessage");
+		expect(keyOf(rows.at(-1))).toBe(streamed);
+		expect(pill(tree)).toBeUndefined();
+	});
+
+	// Tapping "↓ new" follows again, but the cap trims the top only once the
+	// list reaches the end: trimming while it still travels would move what it
+	// passes.
+	it("trims past the cap only once the pill's scroll reaches the end", async () => {
+		const served = working("ref-follow-trim");
+		const turns = (served as unknown as { turns: { items: unknown[] }[] }).turns;
+		turns[0].items = Array.from({ length: 510 }, (_, i) => ({
+			id: `u-${i}`,
+			turnId: "turn_1",
+			type: "userMessage",
+			status: "completed",
+			text: `message ${i}`,
+			transcriptKey: `turn_1:${i}:0`,
+			position: { entry: i, item: 0 },
+		}));
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, pageBefore: true };
+		const { tree, hub } = await mount(served);
+		const rows = () => (list(tree).props.data as unknown[]).length;
+		await drag(tree, 100);
+		// A reply lands below while you read above: nothing is trimmed, so the
+		// session's rows past the cap are all there.
+		stream(hub, served, "s-trim");
+		const grown = rows();
+		const tap = pill(tree);
+		if (!tap) throw new Error("no new-below pill");
+		act(() => tap.props.onPress());
+		// The pill scrolls toward the end; nothing is trimmed on the way.
+		expect(rows()).toBe(grown);
+		scrollTo(tree, END);
+		expect(rows()).toBeLessThan(grown);
+	});
+
+	it("stops following when you drag up, and says what landed below", async () => {
+		const served = working("ref-follow-away");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		stream(hub, served, "s1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
+		const served = working("ref-follow-again");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		act(() => list(tree).props.onScrollBeginDrag(at(100)));
+		scrollTo(tree, END);
+		stream(hub, served, "s2");
+		// A row landing mid-drag doesn't pull the list from under the finger.
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		await act(async () => list(tree).props.onScrollEndDrag(at(END)));
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "s2b");
+		expect(contentGrows(tree, 4_400)).toBe(true);
+	});
+
+	it("doesn't follow after a drag that reached the end and came back up", async () => {
+		const served = working("ref-follow-back-up");
+		const { tree } = await mount(served);
+		await drag(tree, 100, END, 1_000);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again when a flick's momentum carries you to the end", async () => {
+		const served = working("ref-follow-flick");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		await drag(tree, 1_000);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, END);
+		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
+		stream(hub, served, "s3");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
+		const served = working("ref-follow-coast");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100, END);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, 2_000);
+		stream(hub, served, "m1");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onMomentumScrollEnd(at(2_000)));
+		expect(contentGrows(tree, 4_400)).toBe(false);
+	});
+
+	it("follows a transcript shorter than the screen once you let go", async () => {
+		const served = working("ref-follow-short");
+		const { tree } = await mount(served);
+		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(0, 300)));
+		expect(contentGrows(tree, 320)).toBe(true);
+	});
+
+	it("stays unfollowed when the app itself scrolls to the end", async () => {
+		const served = working("ref-follow-app-scroll");
+		const { tree } = await mount(served);
+		await drag(tree, 100);
+		// No finger: a restore or the list settling lands at the end.
+		scrollTo(tree, END);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("counts what landed since you last left the end", async () => {
+		const served = working("ref-follow-counts");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		stream(hub, served, "c1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		await drag(tree, END);
+		expect(pill(tree)).toBeUndefined();
+		await drag(tree, 100);
+		stream(hub, served, "c2");
+		stream(hub, served, "c3");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
+	});
+
+	it("follows again from the pill, which then goes", async () => {
+		const served = working("ref-follow-pill");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		stream(hub, served, "p1");
+		flatListCalls.length = 0;
+		act(() => pill(tree)?.props.onPress());
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "p2");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	// The ghosts are the list's last rows (spec 8.5): the hub's queue frame
+	// adds or takes one away below whatever you read.
+	function queueNow(hub: { notify(notification: AnyNotification): void }, served: Thread, texts: string[]) {
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref: served.evener.ref, queue: queueState(texts, texts.length + 1) },
+			} as AnyNotification),
+		);
+	}
+
+	it("keeps following at the live end when a queued message lands there", async () => {
+		const served = working("ref-follow-ghost");
+		const { tree, hub } = await mount(served);
+		queueNow(hub, served, ["check the logs"]);
+		expect(textOf(transcriptList(tree))).toContain("check the logs");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("never moves the list or counts as new when a ghost comes or goes while you read above", async () => {
+		const served = working("ref-follow-ghost-away");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		flatListCalls.length = 0;
+		queueNow(hub, served, ["check the logs"]);
+		expect(textOf(transcriptList(tree))).toContain("check the logs");
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "g1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		queueNow(hub, served, []);
+		expect(textOf(transcriptList(tree))).not.toContain("check the logs");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(flatListCalls).toEqual([]);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("keeps the end in view when the viewport changes while following, as the keyboard does", async () => {
+		const served = working("ref-follow-viewport");
+		const { tree } = await mount(served);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		await drag(tree, 100);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
+	});
+});
+
+// A ghost can show before the first read lands (ghosts() lists this phone's
+// own sends with no session yet); the quiet blocks still stand in for the
+// conversation above it.
+it("keeps the loading blocks above a ghost until the conversation first loads", async () => {
+	const ref = "ref-skeleton-ghost";
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { tree } = await mount(thread(ref, "idle"), { failedReads: 2 });
+	await vi.waitFor(() => expect(textOf(transcriptList(tree))).toContain("Couldn't confirm this was sent"));
+	expect(
+		transcriptList(tree).findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
+	).toBeGreaterThan(0);
+});
+
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
 	const { tree } = await mount(thread("ref-empty", "idle"));
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
-it("loads older history as you scroll near the top", async () => {
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
+});
+
+// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
+// system's glass over the transcript (spec 16.3), and the header's glass runs
+// on under the chips and note: the transcript runs under both, and its top
+// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
+// is opaque and the screen starts below it.
+describe("the nav bar's glass (spec 16.3)", () => {
+	// The bar's options: transparent, and clear, since react-native-screens
+	// draws a transparent bar's background only when its color is itself
+	// clear; and no system edge effect where the header's own glass is drawn.
+	const lastBar = () => {
+		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+			.map(([options]) => options)
+			.findLast((options) => "headerTransparent" in options);
+		if (options?.headerTransparent === undefined) return undefined;
+		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
+		expect(background === "transparent").toBe(options.headerTransparent);
+		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
+	};
+	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
+	const layout = (tree: ReactTestRenderer) => ({
+		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
+		glassTop: header(tree).props.glassTop,
+		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
+		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
+			.keyboardVerticalOffset,
+	});
+	const measureHeader = (tree: ReactTestRenderer, height: number) =>
+		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+
+	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass"));
+		await act(async () => {});
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		// Before the header has measured, the list keeps the bar's room.
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		// The header's height covers the bar's room and the rows under it.
+		measureHeader(tree, 64 + 48);
+		expect(layout(tree).listTop).toBe(16 + 64 + 48);
+		// The find bar, in the chips' place, draws clear on the glass too.
+		chooseMenu("Find in session");
+		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
+	});
+
+	// Turning the bar glass or opaque moves the list's frame by the bar's
+	// height and its top padding by the same, so the rows stay where they are
+	// with no scroll of the list's own; only the rows block growing or
+	// shrinking asks for one.
+	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass-flip"));
+		await act(async () => {});
+		measureHeader(tree, 64 + 48);
+		scrollTo(tree, 500);
+		flatListCalls.length = 0;
+		act(() => systemGlass.setReduceTransparency(true));
+		measureHeader(tree, 48);
+		act(() => systemGlass.setReduceTransparency(false));
+		measureHeader(tree, 64 + 48);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+		// The rows block itself growing (the connection line arriving) still does.
+		measureHeader(tree, 64 + 48 + 24);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
+		]);
+	});
+
+	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
+		const { tree } = await mount(twoTurns("ref-no-glass"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+	});
+
+	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
+});
+
+it("moves the Session with the keyboard through the keyboard controller", async () => {
+	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
+	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
+	expect(avoiding).toHaveLength(1);
+	expect(avoiding[0]?.props).toMatchObject({ behavior: "padding", keyboardVerticalOffset: 64 });
+});
+
+// A short transcript rests just above the composer (spec 8.5), not at the top
+// with the page's empty middle between it and the bar.
+it("rests a short transcript's end just above the composer", async () => {
+	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
+	const opacity = () => transcriptList(tree).props.style?.opacity;
+	// It shows once the viewport and the bar have both laid out.
+	expect(opacity()).toBe(0);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	expect(opacity()).toBe(0);
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	// And once its last row has measured, so it lands at its end once.
+	expect(opacity()).toBe(0);
+	layOutRow(tree, 3, 300);
+	await settle();
+	expect(opacity()).toBe(1);
+	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
+		minHeight: 450,
+		justifyContent: "flex-end",
+	});
+});
+
+it("loads older history as you drag near the top", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
-	scrollTo(tree, 2_000);
+	const drag = (y: number) => {
+		const at = {
+			nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		};
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+		scrollTo(tree, y);
+		act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	};
+	drag(2_000);
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-	scrollTo(tree, 100);
+	drag(100);
 	await settle();
 	expect(
 		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 	).toEqual(["cursor-1"]);
+});
+
+// A long session watched from its start: its first read held it all, so
+// there is no cursor, and the 500-row cap trimmed its top while you followed
+// the live end. Scrolling up asks for the trimmed rows by the oldest one kept.
+it("pages the rows the cap trimmed back as you drag near the top", async () => {
+	const served = thread("ref-trimmed", "idle");
+	const items = Array.from({ length: 600 }, (_, i) => ({
+		id: `u-${i}`,
+		turnId: "turn_1",
+		type: "userMessage",
+		status: "completed",
+		text: `message ${i}`,
+		transcriptKey: `turn_1:${i}:0`,
+		position: { entry: i, item: 0 },
+	}));
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ id: "turn_1", status: "completed", itemsView: "default", items },
+	];
+	// The hub's read says it pages this thread from a before position.
+	const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+	evener.capabilities = { ...evener.capabilities, pageBefore: true };
+	const { tree, hub } = await mount(served);
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 40_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	scrollTo(tree, 100);
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	const pages = hub.requests.filter((request) => request.method === "thread/turns/list").map((r) => r.params);
+	expect(pages).toHaveLength(1);
+	expect(pages[0]).toMatchObject({ ref: "ref-trimmed", before: { entry: 100, item: 0 } });
+	expect(pages[0]).not.toHaveProperty("cursor");
+});
+
+it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
+	// Opening at the live end of a page shorter than the screen puts the list
+	// near its top; paging there chained every older page in on open, each
+	// prepend landing the list near the top again.
+	const { tree, hub } = await mount(twoTurns("ref-older-live"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("pages older history on a short first page you drag, whose end is its top", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-short"), { olderCursor: "cursor-1" });
+	const short = {
+		nativeEvent: { contentOffset: { y: 0 }, contentSize: { height: 300 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(short));
+	act(() => transcriptList(tree).props.onScrollEndDrag(short));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("pages older history on a flick near the top that reports no scroll mid-drag", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-flick"), { olderCursor: "cursor-1" });
+	const at = (y: number) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	});
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at(900)));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at(700)));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("pages older history when the list moves near the top with no drag, as a VoiceOver scroll moves it", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-assistive"), { olderCursor: "cursor-1" });
+	// Away from the live end with no finger: the app scrolls only to follow
+	// the end or to restore (which suppresses capture), so this is the reader.
+	act(() => transcriptList(tree).props.onScrollBeginDrag());
+	act(() =>
+		transcriptList(tree).props.onScrollEndDrag({
+			nativeEvent: { contentOffset: { y: 2_000 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+	scrollTo(tree, 1_400);
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("doesn't page older history for a reading position restored near the top before you scroll", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-older-restored": {
+				hubId: "hub-1",
+				sessionRef: "ref-older-restored",
+				itemKey: "u-turn_1",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree, hub } = await mount(twoTurns("ref-older-restored"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 40);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("keeps the transcript's first row when an older page lands above it", async () => {
+	// Timed turns, the older one ending five minutes before the next starts,
+	// so a whole history marks only the first.
+	const minute = 60_000;
+	const start = Date.parse("2026-09-28T12:00:00Z");
+	const timed = (id: string, from: number) => ({ ...askReplyTurn(id), startedAt: from, completedAt: from + minute });
+	const served = thread("ref-older-first-key", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		timed("turn_1", start + 6 * minute),
+		timed("turn_2", start + 8 * minute),
+	];
+	const { tree } = await mount(served, { olderCursor: "cursor-1", olderTurns: [timed("turn_0", start)] });
+	const ids = () => (transcriptList(tree).props.data as { id: string }[]).map((row) => row.id);
+	const first = ids()[0];
+	// No time marker leads while older history is still to load.
+	expect(first).toBe("u-turn_1");
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	expect(ids()).toContain("u-turn_0");
+	expect(ids()).toContain(first);
 });
 
 it("doesn't page older history while the hub is away", async () => {
@@ -929,11 +2425,43 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	];
 	const { tree, hub } = await mount(served);
 	await type(tree, "keep this");
+	playedHaptics.length = 0;
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, a retry's included.
+	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+// Retry shows only while a press would send, which a session control going
+// pending (a compact) changes without changing the rows: the row still
+// follows it.
+it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
+	const served = thread("ref-retry-pending", "idle");
+	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	let settleCompact = () => {};
+	const compacting = new Promise<void>((resolve) => {
+		settleCompact = resolve;
+	});
+	const { tree } = await mount(served, { compacting });
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await type(tree, "/compact");
+	await press(tree, "Compact transcript");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	await act(async () => settleCompact());
+	await settle();
+	expect(pressable(tree, "Retry")).toBeDefined();
 });
 
 it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {
@@ -1026,6 +2554,21 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
 	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
 	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
+});
+
+it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {
+	catalogHub.fails = true;
+	fleet.live = [fleetSession("ref-model", { title: "Model", state: "idle", model_name: "Claude Sonnet 5" })];
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree } = await mount(served);
+	await act(async () => {});
+	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
+	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
 });
 
 it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {
@@ -1181,7 +2724,12 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
 	await press(tree, "Sign in");
-	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	// The error doesn't name the provider, so the Hub opens at Providers.
+	expect(navigation.navigate).toHaveBeenCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: "hub-1" },
+		initial: false,
+	});
 });
 
 it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
@@ -1260,7 +2808,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	client.request = async (method, params) => {
 		if (method === "notes/human/set") {
 			attempts += 1;
-			if (attempts === 1) throw new Error("offline");
+			if (attempts === 1) {
+				// Fail a timer turn late, as a real dropped request does, so the
+				// test can't count on the failure landing within a fixed turn.
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				throw new Error("offline");
+			}
 		}
 		return request(method, params);
 	};
@@ -1280,11 +2833,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	act(() => editor.props.onChangeText("first try"));
 	act(() => pressable(sheet, "Done")?.props.onPress());
 	act(() => sheet.unmount());
-	await settle();
 	// The session stayed open, connected and in front the whole time: the
 	// screen retries the failed save on its own rather than waiting for an
-	// unrelated reconnect or remount to notice it.
-	expect(attempts).toBe(2);
+	// unrelated reconnect or remount to notice it. The retry runs a timer turn
+	// after the failure lands, and the failure can itself land after any one
+	// timer turn, so wait for the attempt rather than counting turns (#4119).
+	await until(() => expect(attempts).toBe(2));
 	expect(
 		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 	).toEqual(["first try"]);
@@ -1349,13 +2903,136 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
 });
 
-describe("queued messages above the composer (spec 8.5)", () => {
-	it("paints a swiped ghost what it sits on: the composer, or the page while the dock takes its place", async () => {
+// Everything waiting to reach the agent is the transcript's last rows, just
+// above the composer, and scrolls with it (spec 8.5; Jesse, 2026-10-03).
+describe("queued messages at the transcript's end (spec 8.5)", () => {
+	const bottomBar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const lastRow = (tree: ReactTestRenderer) => {
+		const row = transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.at(-1);
+		if (!row) throw new Error("no transcript rows");
+		return textOf(row);
+	};
+
+	it("shows a queued message as the transcript's last row, not in the bottom bar", async () => {
+		const served = thread("ref-queue-row", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		const { tree } = await mount(served);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(textOf(transcriptList(tree))).toContain("ask turn_1");
+		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
+	});
+
+	// A message you queue shows once at every frame on its way: its ghost
+	// while it sends and while it waits in the queue, then your message once
+	// its turn starts, never beside its ghost.
+	it("shows a queued message once at every frame until it lands as your message", async () => {
+		readHistory.live = true;
+		const served = thread("ref-queue-lands", "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "inProgress",
+				itemsView: "default",
+				items: [
+					{
+						id: "u-turn_1",
+						turnId: "turn_1",
+						type: "userMessage",
+						status: "completed",
+						text: "ask turn_1",
+						transcriptKey: "turn_1:0:0",
+						position: { entry: 0, item: 0 },
+					},
+				],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
+		const frame = (notification: Record<string, unknown>) =>
+			act(() => hub.notify(notification as unknown as AnyNotification));
+		await type(tree, "check the logs");
+		await press(tree, "Queue message");
+		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
+		expect(shown()).toBe(1);
+		const queue = (texts: string[], revision: number) => ({
+			...queueState(texts, revision),
+			clientMutationIds: texts.map(() => clientMutationId),
+		});
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
+		});
+		expect(shown()).toBe(1);
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		// The turn ends and the hub takes the message for the next one: the
+		// queue frame comes first, then the message's own item.
+		frame({
+			method: "thread/queueChanged",
+			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
+		});
+		expect(shown()).toBe(1);
+		frame({
+			method: "history/updated",
+			params: {
+				threadId: served.id,
+				ref: "ref-queue-lands",
+				...READ_HISTORY_IDENTITY,
+				items: [
+					{
+						id: "u-turn_2",
+						turnId: "turn_2",
+						type: "userMessage",
+						status: "completed",
+						text: "check the logs",
+						clientMutationId,
+						transcriptKey: "turn_2:1:0",
+						position: { entry: 1, item: 0 },
+					},
+				],
+			},
+		});
+		expect(shown()).toBe(1);
+		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
+		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+	});
+
+	// The usage lines (token counts, estimated cost) close the conversation;
+	// the ghosts still come last, just above the composer.
+	it("keeps the ghosts last, below the usage lines", async () => {
+		displayPrefs.hubId = "hub-1";
+		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { tokenCounts: true });
+		const served = thread("ref-usage-ghost", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		(served as unknown as { evener: Record<string, unknown> }).evener.usage = { inputTokens: 1200, outputTokens: 300 };
+		const { tree } = await mount(served);
+		const text = textOf(transcriptList(tree));
+		expect(text).toContain("Input: 1,200");
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(text.indexOf("Input: 1,200")).toBeLessThan(text.indexOf("check the logs"));
+	});
+
+	// With both settings off there are no usage lines, and no row stands in
+	// for them between the conversation and the ghosts.
+	it("adds no usage row when there are no usage lines to show", async () => {
+		displayPrefs.hubId = "hub-1";
+		displayPrefs.config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		const served = thread("ref-usage-none", "active", false, ["check the logs"]);
+		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
+		const { tree } = await mount(served);
+		const rows = transcriptList(tree).props.data as { kind: string }[];
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "ghost"]);
+	});
+
+	it("paints a swiped ghost the page it sits on, and keeps it there while the dock is open", async () => {
 		const palette = paletteFor("light");
 		const backdrop = (tree: ReactTestRenderer) =>
-			tree.root.findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
+			transcriptList(tree).findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
 		const composing = (await mount(thread("ref-swipe-composer", "active", false, ["check the logs"]))).tree;
-		expect(backdrop(composing)).toBe(palette.surface);
+		expect(backdrop(composing)).toBe(palette.page);
 		const asking = (await mount(thread("ref-swipe-dock", "awaiting", true, ["check the logs"]))).tree;
 		expect(field(asking)).toBeUndefined();
 		expect(backdrop(asking)).toBe(palette.page);
@@ -1370,6 +3047,346 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(promote).toHaveLength(1);
 		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	// Between the press and the agent's next step, the hub holds the steer as
+	// a pending mutation; the phone shows it as its own (spec 8.5).
+	// Send now on a queue a Stop held is a promote too: it starts the turn
+	// that takes it.
+	const STEERS_FROM_QUEUE = [
+		["Steer now", "active", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Send now", "idle", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Steer all now", "active", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
+	] as const;
+	// Starts the action, as a press does, and leaves it running. Steer all
+	// now is the Queue sheet's, which shows what it hands back.
+	async function steerFromQueue(tree: ReactTestRenderer, ref: string, label: string) {
+		let handedBack: Promise<unknown> | undefined;
+		if (label === "Steer all now")
+			await act(async () => {
+				handedBack = queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
+			});
+		else await press(tree, label);
+		return { handedBack };
+	}
+	it.each(STEERS_FROM_QUEUE)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
+		const ref = `ref-steering-${label}`;
+		const served = thread(ref, status, false, [...queued]);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === method) {
+				// The next read: the queue is empty, and the hub holds the steer
+				// for the agent's next step.
+				const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+				evener.queue = queueState([], 1);
+				evener.pendingMutations = [
+					{
+						clientMutationId: params.clientMutationId,
+						method,
+						input: queued.map((text) => ({ type: "text", text })),
+						executionState: "accepted",
+						projectionState: "pending",
+					},
+				];
+				// A drain's receipt names every entry it took.
+				const { receipt } = answer as { receipt: Record<string, unknown> };
+				return { receipt: { queueEntryIds: queued.map((_, index) => `queue_${index + 1}`), ...receipt } };
+			}
+			return answer;
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		// The read settles the phone's own record of the steer, and the hub's
+		// pending steer is still this phone's.
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(hub.requests.filter((entry) => entry.method === "thread/read").length).toBeGreaterThan(1);
+		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	// The hub took the steer, but its answer never reached the phone: the
+	// phone sends it again under the same id, the hub replays it, and it
+	// shows as steering. Nothing says the steer failed.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows %s as steering when the hub's answer was lost",
+		async (label, status, method, queued) => {
+			const ref = `ref-lost-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let lost = false;
+			client.request = async (requested, params) => {
+				const answer = await request(requested, params);
+				if (requested !== method || lost) return answer;
+				lost = true;
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				throw new Error("connection lost");
+			};
+			const { handedBack } = await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(renderedText(tree)).not.toContain("Couldn't steer");
+			expect(await handedBack).toBeFalsy();
+			await act(async () => {
+				await getNativeMutationRuntime().connectionReady();
+			});
+			await settle();
+			const sent = hub.requests.filter((entry) => entry.method === method);
+			expect(sent).toHaveLength(2);
+			expect(sent[1]?.params.clientMutationId).toBe(sent[0]?.params.clientMutationId);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+			expect(renderedText(tree)).not.toContain("Couldn't steer");
+		},
+	);
+
+	// The hub's queue frame can reach the phone before its answer does: the
+	// message leaves the queue, and the transcript's end still shows it on
+	// its way.
+	it.each(STEERS_FROM_QUEUE)(
+		"keeps %s at the transcript's end while the hub's answer is on its way",
+		async (label, status, method, queued) => {
+			const ref = `ref-frames-first-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let answer: () => void = () => undefined;
+			const answered = new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				const reply = request(requested, params);
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				await answered;
+				return reply;
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).not.toContain("Queued ·");
+			await act(async () => answer());
+			await settle();
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		},
+	);
+
+	const rowsWith = (tree: ReactTestRenderer, text: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.map(textOf)
+			.filter((row) => row.includes(text));
+
+	// Until the hub answers, the message shows once, on its way, and there is
+	// no second Steer now (or Steer all now) to press for it.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows a message once, with nothing to press again, while its %s waits for the hub",
+		async (label, status, method, queued) => {
+			const ref = `ref-pressed-once-${label}`;
+			const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				// The hub never answers: record the request and leave it there.
+				hub.requests.push({ method: requested, params });
+				return new Promise(() => undefined);
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
+			expect(pressable(tree, "Steer now")).toBeUndefined();
+			expect(pressable(tree, "Send now")).toBeUndefined();
+			expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		},
+	);
+
+	// Steer all now would take the message Steer now is already steering with.
+	const STEERING_WITH_QUEUE =
+		"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
+	it("withholds Steer all now while a Steer now waits for the hub", async () => {
+		const ref = "ref-steer-all-after-promote";
+		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeDefined();
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
+			return new Promise(() => undefined);
+		};
+		const [steerNow] = tree.root.findAll(
+			(node) => node.props.accessibilityLabel === "Steer now" && typeof node.props.onPress === "function",
+		);
+		act(() => steerNow?.props.onPress());
+		await settle();
+		expect(rowsWith(tree, "Queued ·")).toHaveLength(2);
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		// Typed, it waits too, and says why.
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
+		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
+		// Nothing was tried, so the command stays in the composer.
+		expect(field(tree)?.props.value).toBe("/drain-as-steer");
+		expect(renderedText(tree)).not.toContain("Couldn't confirm");
+	});
+
+	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
+	// isn't a failure, and the hub's pending steer reads as this phone's.
+	it("sends /drain-as-steer through the outbox, as Steer all now", async () => {
+		const ref = "ref-drain-command";
+		const queued = ["check the logs", "and the metrics"];
+		const served = thread(ref, "active", false, queued);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested !== "turn/drainAsSteer") return answer;
+			// The hub took the drain, and its answer was lost.
+			const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+			evener.queue = queueState([], 1);
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method: requested,
+					input: queued.map((text) => ({ type: "text", text })),
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+			throw new Error("connection lost");
+		};
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		const sent = hub.requests.filter((entry) => entry.method === "turn/drainAsSteer");
+		expect(sent.map((entry) => entry.params)).toMatchObject([{ expectedQueueRevision: 0, input: [] }]);
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(field(tree)?.props.value).toBe("");
+		expect(renderedText(tree)).not.toContain("Couldn't");
+	});
+
+	// A drain takes the queue it saw; a message queued after the hub took it
+	// is queued again, with its own Steer now.
+	it("shows a message queued after Steer all now took the queue", async () => {
+		const ref = "ref-queued-after-drain";
+		const served = thread(ref, "active", false, ["check the logs", "and the metrics"]);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === "turn/drainAsSteer")
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+			return answer;
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref, queue: { ...queueState(["one more thing"], 2), ids: ["queue_9"] } },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(rowsWith(tree, "Steering · arrives at the next step")[0]).toContain("check the logs");
+		expect(lastRow(tree)).toContain("one more thing");
+		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(pressable(tree, "Steer now")).toBeDefined();
+	});
+
+	// A message with no text (an image) steers under its preview, so the
+	// ghost of Steer all now still names every message it took.
+	it("names an image-only message by its preview in Steer all now's ghost", async () => {
+		const ref = "ref-drain-preview";
+		const served = thread(ref, "active", false, ["check the logs", ""]);
+		const evener = (served as unknown as { evener: { queue: ReturnType<typeof queueState> } }).evener;
+		evener.queue = { ...evener.queue, preview: ["check the logs", "[image]"] };
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/drainAsSteer") return request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
+			return new Promise(() => undefined);
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		const [ghost] = rowsWith(tree, "Sending…");
+		expect(ghost).toContain("check the logs");
+		expect(ghost).toContain("[image]");
+	});
+
+	// A steer the hub refuses names the message it was for, says it was a
+	// steer, and offers only Discard: the message may still be queued.
+	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
+		const ref = `ref-refused-${label}`;
+		const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== method) return request(requested, params);
+			hub.requests.push({ method: requested, params });
+			throw new WireError("queue entry changed", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		const [refused] = rowsWith(tree, "Couldn't steer with this · queue entry changed");
+		expect(refused).toContain("check the logs");
+		expect(refused).toContain("Discard");
+		expect(refused).not.toContain("Edit");
+	});
+
+	// They take no room from the transcript, so nothing folds while you type.
+	it("keeps a queued message and its Steer now while you type", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
+		typeInComposer(tree);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		await press(tree, "Steer now");
+		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+		act(() => keyboard.hide());
 	});
 
 	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
@@ -1454,6 +3471,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const text = renderedText(tree);
 		for (const shown of ["one", "two", "three"]) expect(text).toContain(shown);
 		expect(text).not.toContain("four");
+		expect(lastRow(tree)).toBe("1 more queued");
 		act(() => pressable(tree, "1 more queued")?.props.onPress());
 		expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref: "ref-four" });
 		const host = queueHosts.get(sheetKey("hub-1", "ref-four"));
@@ -1465,6 +3483,121 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		});
 		const cancel = hub.requests.filter((request) => request.method === "turn/cancelQueued");
 		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
+	});
+});
+
+describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
+	// The bar's own host view, not the BarFrame element that carries its props.
+	const bar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const homeIndicator = () => useSafeAreaInsets().bottom;
+
+	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
+		const { tree } = await mount(thread("ref-bar", "active"));
+		// The screen leaves the bottom safe area to the bar, which paints it.
+		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
+		expect(screen?.props.edges).not.toContain("bottom");
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		// The tray and the composer ride in it, so the bar's padding lifts them
+		// clear of the home indicator.
+		expect(
+			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
+		).toHaveLength(1);
+		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
+	});
+
+	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
+		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
+		act(() => keyboard.show());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
+		act(() => keyboard.hide());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+	});
+
+	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
+		const { tree } = await mount(thread("ref-bar-over", "active"));
+		expect(flatStyle(bar(tree))).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
+	});
+
+	const barLaysOut = (tree: ReactTestRenderer, height: number) =>
+		act(() => bar(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height } } }));
+	const transcript = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+	const moves = () => flatListCalls.filter((call) => call.method !== "scrollToIndex");
+
+	it("keeps the transcript's end clear of the bar as an inset, so its content size ignores the bar", async () => {
+		const { tree } = await mount(thread("ref-bar-end", "active"));
+		barLaysOut(tree, 180);
+		// iOS: the bar is a content inset past the 60pt end room, which stays
+		// the content's own padding.
+		expect(transcript(tree).props.contentInset).toEqual({ bottom: 180 });
+		expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(60);
+		expect(transcript(tree).props.scrollIndicatorInsets).toEqual({ bottom: 180 });
+		// Next, a toast and "↓ new" float 10pt above the bar.
+		expect(
+			flatStyle(tree.root.findByType(FloatingStack).findAll((node) => String(node.type) === "View")[0]),
+		).toMatchObject({ bottom: 180 + 10 });
+	});
+
+	it("keeps a follower at the end as the bar grows and shrinks, the keyboard's drop included", async () => {
+		const { tree } = await mount(thread("ref-bar-follow", "active"));
+		barLaysOut(tree, 180);
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		flatListCalls.length = 0;
+		// Keyboard up: the bar drops the home indicator's room.
+		act(() => keyboard.show());
+		barLaysOut(tree, 226);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		act(() => keyboard.hide());
+	});
+
+	it("pads the transcript's end by the bar on Android, and keeps a follower at the end as the bar changes", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-bar-follow-android", "active"));
+			barLaysOut(tree, 180);
+			expect(transcript(tree).props.contentInset).toBeUndefined();
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(180 + 60);
+			flatListCalls.length = 0;
+			barLaysOut(tree, 260);
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(260 + 60);
+			expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		} finally {
+			platform.OS = "ios";
+		}
+	});
+
+	it("never moves a reader mid-list, or one resting at the end without following, as the bar changes", async () => {
+		const { tree } = await mount(thread("ref-bar-reader", "active"));
+		barLaysOut(tree, 180);
+		const at = (y: number) => ({
+			nativeEvent: {
+				contentOffset: { y },
+				contentSize: { height: 4_000 },
+				layoutMeasurement: { height: 600 },
+				contentInset: { bottom: 180 },
+			},
+		});
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at(1_000)));
+		act(() => transcriptList(tree).props.onScroll(at(1_000)));
+		act(() => transcriptList(tree).props.onScrollEndDrag(at(1_000)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		barLaysOut(tree, 120);
+		expect(moves()).toEqual([]);
+		// The app lands the list at the end (a restore), with no finger: not following.
+		act(() => transcriptList(tree).props.onScroll(at(4_000 - 600 + 180)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves()).toEqual([]);
+	});
+
+	it("holds a question dock too", async () => {
+		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
+		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
 	});
 });
 
@@ -1499,6 +3632,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1512,6 +3646,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
@@ -1520,6 +3657,34 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
+		const served = withApproval("ref-approval-long");
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
+		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
+			.pendingEscalations;
+		if (!escalation) throw new Error("no escalation");
+		escalation.deniedPath = deniedPath;
+		escalation.partiallyRan = true;
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "approval-dock");
+		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
+		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("keeps Allow and Deny while the keyboard is up", async () => {
+		const { tree } = await mount(withApproval("ref-approval-keyboard"));
+		act(() => keyboard.show());
+		expect(pressable(tree, "Allow this file only")).toBeDefined();
+		expect(pressable(tree, "Deny")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("wires only the approval dock's slot to shrink", async () => {
+		const { tree } = await mount(withApproval("ref-approval-room"));
+		expectOnlyTheDockSlotShrinks(tree, "approval-dock");
 	});
 
 	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
@@ -1546,12 +3711,23 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("allows the one file, and says so", async () => {
 		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
+		playedHaptics.length = 0;
 		await press(tree, "Allow this file only");
+		// Spec 16.6: success on approval allowed.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
 		expect(resolves.map((request) => request.params)).toEqual([
 			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
 		]);
 		expect(renderedText(tree)).toContain("Allowed once");
+	});
+
+	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
+		const { tree } = await mount(withApproval("ref-approval-deny"));
+		playedHaptics.length = 0;
+		await press(tree, "Deny");
+		expect(renderedText(tree)).toContain("Denied");
+		expect(playedHaptics).toEqual([]);
 	});
 });
 
@@ -1616,7 +3792,10 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		});
 		vi.mocked(navigation.navigate).mockClear();
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
 		const { tree } = await mount(thread("ref-slash", "idle"));
@@ -1651,7 +3830,7 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
 		expect(host?.session.capabilities).toMatchObject({ send: true });
 		act(() => host?.choose("/goal"));
-		await flush();
+		await settle();
 		expect(field(tree)?.props.value).toBe("/goal hello");
 	});
 });
@@ -1765,6 +3944,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
 		});
 		afterEach(() => {
+			unmountMountedTrees();
 			flatListScrollFailures.remaining = 0;
 			vi.unstubAllGlobals();
 		});
@@ -1891,6 +4071,93 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		expect(renderedText(tree)).toContain("1 of 3");
 	});
 
+	describe("following the live end while find pages older history", () => {
+		// Whether new content pulls the list to its end. The size keeps the
+		// unmeasured test list (a 0pt viewport at offset 0) at its end.
+		const followsTheEnd = (tree: ReactTestRenderer) => {
+			flatListCalls.length = 0;
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 0));
+			return flatListCalls.some((call) => call.method === "scrollToEnd");
+		};
+		const unrelated = [askReplyTurn("turn_0", "Unrelated?", "Yes.")];
+
+		it("leaves the end while a page is on its way, and follows again when find closes", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree, hub } = await mount(findTurns("ref-find-close"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(false);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(true);
+			release();
+			await settle();
+		});
+
+		it("stays off the end when find closes after the list moved away from it", async () => {
+			let release = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { tree } = await mount(findTurns("ref-find-moved"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+				olderPage,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			act(() =>
+				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+			);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 4_000));
+			scrollTo(tree, 1_000);
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			expect(followsTheEnd(tree)).toBe(false);
+			release();
+			await settle();
+		});
+
+		it("follows again when a search reaches the start of history with no match", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-miss"), {
+				olderCursor: "cursor-1",
+				olderTurns: unrelated,
+			});
+			chooseMenu("Find in session");
+			await search(tree, "nowhere");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(followsTheEnd(tree)).toBe(true);
+		});
+
+		it("stays with a match it paged back to", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-paged-match"), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0", "Is it flaky?", "Sometimes.")],
+			});
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			await search(tree, "Is it flaky");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+			expect(flatListCalls.filter((call) => call.method === "scrollToIndex")).not.toEqual([]);
+			expect(followsTheEnd(tree)).toBe(false);
+		});
+
+		it("asks for no page when the match is already loaded", async () => {
+			const { tree, hub } = await mount(findTurns("ref-find-loaded"), { olderCursor: "cursor-1" });
+			chooseMenu("Find in session");
+			await search(tree, "settle");
+			expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+		});
+	});
+
 	it("says there are no older matches once history ends", async () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
@@ -1955,13 +4222,18 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
-			reviewRef: "ref-chips",
-			reviewTitle: "Session",
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
+			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
 	});
 
-	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files & artifacts", async () => {
+	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
 		vi.mocked(navigation.navigate).mockClear();
 		const { tree } = await mount(namedAfterWriting("ref-files"));
@@ -1972,6 +4244,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			ref: "ref-files",
 			title: "Session",
+			cwd: "/home/jesse/git/evener",
 			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
 		});
 	});
@@ -1998,6 +4271,8 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		vi.mocked(navigation.replace).mockClear();
 		vi.mocked(navigation.goBack).mockClear();
 		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		alerts.recent = [];
+		alerts.nextUsed.mockClear();
 	});
 
 	/** The Back the screen set last, rendered as the header renders it. */
@@ -2031,8 +4306,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree, hub } = await mount(thread("ref-next", "idle"));
 		const next = capsule(tree);
 		if (!next) throw new Error("no Next capsule");
+		playedHaptics.length = 0;
 		await act(async () => next.props.onPress());
 		await settle();
+		// Spec 16.6: a selection tick on a lateral session move.
+		expect(playedHaptics).toEqual(["selection"]);
 		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
 			hubId: "hub-1",
 			ref: "local:fail",
@@ -2076,6 +4354,31 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(navigation.push).toHaveBeenCalledTimes(1);
 	});
 
+	it("serves what alerted you first, on Next and on its list, and tells alerts it moved you on (spec 8.3)", async () => {
+		alerts.recent = ["local:ask"];
+		const { tree } = await mount(thread("ref-alerted", "idle"));
+		const next = pressable(tree, "Next, Pick a name");
+		if (!next) throw new Error("no Next capsule for the session that alerted");
+		act(() => next.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Pick a name", "Fix retry loop", "Cancel"]);
+		act(() => choose(2));
+		expect(alerts.nextUsed).not.toHaveBeenCalled();
+		act(() => choose(1));
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(1);
+		await act(async () => next.props.onPress());
+		expect(alerts.nextUsed).toHaveBeenCalledTimes(2);
+		expect(navigation.push).toHaveBeenLastCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
+	});
+
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
 		const { tree } = await mount(thread("ref-stacked", "active"));
 		await press(tree, "Stop");
@@ -2093,10 +4396,66 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
+	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+		const served = thread("ref-inset", "active");
+		const { tree, hub } = await mount(served);
+		const list = () =>
+			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+		const bottom = () => list().props.contentContainerStyle.paddingBottom;
+		// Who needs you changes, as fleet polling finds: Next goes, then comes.
+		let sequence = 0;
+		async function needsYou(sessions: typeof fleet.needsYou) {
+			fleet.needsYou = sessions;
+			fleet.live = sessions;
+			sequence += 1;
+			fleet.revision = sequence + 1;
+			act(() =>
+				hub.notify({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "generation-test",
+						sequence,
+						targets: [
+							{ kind: "section", section: "needs_you", revision: sequence + 1 },
+							{ kind: "section", section: "live", revision: sequence + 1 },
+						],
+					},
+				} as AnyNotification),
+			);
+			await settle();
+		}
+		await needsYou([]);
+		expect(capsule(tree)).toBeUndefined();
+		expect(bottom()).toBe(60);
+		await needsYou([failing]);
+		expect(capsule(tree)).toBeDefined();
+		expect(bottom()).toBe(60);
+		// A toast joins it.
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(bottom()).toBe(60);
+		// Away from the end, with rows the list didn't hold then, the pill joins too.
+		act(() =>
+			list().props.onScroll({
+				nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			}),
+		);
+		expect(bottom()).toBe(60);
+	});
+
 	it("shows no Next while this session asks you something", async () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
 		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
+		const { tree } = await mount(thread("ref-next-typing", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		typeInComposer(tree);
+		expect(capsule(tree)).toBeUndefined();
+		act(() => keyboard.hide());
+		expect(capsule(tree)).toBeDefined();
 	});
 
 	it("shows no Next while the find bar is open", async () => {
@@ -2238,8 +4597,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(seenMarks()).toEqual([{ sessions: [{ ref: "ref-watching", seenThrough: Date.parse(at(7)) }] }]);
 	});
 
-	it("names the session's host from the manifest in the Session sheet", async () => {
-		fleet.sources = [{ id: "local", label: "Laptop" }];
+	// The hub calls its own machine "this host" in the manifest
+	// (cmd/evener-hub/web_api_tree.go); the Session sheet names it for the
+	// hub, as Hub > Hosts does, with its connection dot (spec 8.6, audit N6).
+	it("names the session's own-machine host for the hub in the Session sheet, with its dot", async () => {
+		fleet.sources = [{ id: "local", label: "this host" }];
 		await mount(thread("ref-host", "idle"));
 		const sheet = render(
 			<SessionInfoSheet
@@ -2253,8 +4615,9 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
 			/>,
 		);
-		expect(renderedText(sheet)).toContain("Laptop");
-		expect(renderedText(sheet)).not.toContain("Work hub");
+		expect(renderedText(sheet)).toContain("Work hub");
+		expect(renderedText(sheet)).not.toContain("this host");
+		expect(sheet.root.findAll((node) => node.props.accessibilityLabel === "Work hub, connected")).not.toEqual([]);
 	});
 });
 
@@ -2267,7 +4630,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			revision,
 			root: {
 				kind: "session",
-				// ActivityList checks the root is the coordinator's thread.
+				// The activity context names the coordinator's thread.
 				sessionId: COORDINATOR.threadId,
 				ref: COORDINATOR.ref,
 				label: COORDINATOR.title,
@@ -2295,9 +4658,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
-	/** The coordinator's thread, as the phone reads it without following it. */
-	function coordinator(stopSubagent: boolean) {
+	/** The coordinator's thread, as the phone reads it without following it.
+	 * `id` models a coordinator that restarted under a new thread. */
+	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
 		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { id: string }).id = id;
 		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
 			...CAPABILITIES,
 			...(stopSubagent ? { stopSubagent: true } : {}),
@@ -2317,9 +4682,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2345,13 +4713,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			] as never,
 		};
 		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
-		mountedScreens.push(tree);
 		await settle();
 		return { tree, hub };
 	}
 
 	const jobReads = (hub: ReturnType<typeof hubClient>) =>
-		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+		hub.requests.filter((request) => request.method === "evener/thread/delegates/list").length;
 
 	beforeEach(() => {
 		vi.mocked(navigation.navigate).mockClear();
@@ -2359,6 +4726,62 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		vi.mocked(navigation.push).mockClear();
 		// The per-hub stop requests are one instance for the app's life.
 		forgetStopRequestsForHub("hub-1");
+	});
+
+	it("times a running subagent's state line by its run, as its row does", async () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run
+		// four: one number per subagent everywhere (ruling on the device pass).
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served);
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 2m");
+		// Session info times it the same way.
+		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
+		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
+	});
+
+	it("times a still-working subagent by its turn once its row has ended", async () => {
+		// The row reads done a moment before the session itself stops: the row's
+		// time since it ended is no Working time.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
+		await mountSubagent(served, {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 2m");
+	});
+
+	it("takes back the row it reported when its panel goes away", async () => {
+		// A screen that stops showing the panel shows no subagent's time.
+		await mountSubagent(subagent(true));
+		const reported: (string | null)[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onRow={(row) => void reported.push(row?.ref ?? null)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("local:fix");
+		act(() => panel.unmount());
+		expect(reported.at(-1)).toBeNull();
 	});
 
 	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {
@@ -2403,7 +4826,39 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
-		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+		const [stoppedRow] = flattenSubagents(subagentTree() as never);
+		if (!stoppedRow) throw new Error("no row");
+		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
+	});
+
+	it("keeps another root's colliding stop evidence separate from the actual direct stop target", async () => {
+		const [current] = flattenSubagents(subagentTree() as never);
+		if (!current) throw new Error("no row");
+		const other = {
+			...current,
+			ref: "remote:other-child",
+			delegate: {
+				...current.delegate,
+				childRef: "remote:other-child",
+				rootRef: "remote:other-root",
+			},
+		};
+		stopRequests("hub-1").request("remote:other-root", other, 1000, { direct: true });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(stopRequests("hub-1").view(other)).toBe("requested");
+		expect(stopRequests("hub-1").direct(current)).toBe(true);
 	});
 
 	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
@@ -2423,6 +4878,40 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		// The screen opened with the route's thread, but the coordinator has
+		// since restarted under a new one: its tree comes back under that new
+		// thread, so the panel must ask for it by the thread it reads now.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+	});
+
+	it("tells its screen the coordinator's thread it reads now, for the transcript's finished rows (#3326 review)", async () => {
+		// The screen holds the same tree for its transcript's finished subagent
+		// rows, and a tree asked for under the route's old thread is refused.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		const reported: string[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onTreeThread={(threadId) => void reported.push(threadId)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("thread-restarted");
+		act(() => panel.unmount());
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
@@ -2545,12 +5034,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	it("reads the coordinator's tree again when this subagent's status changes", async () => {
 		const { hub } = await mountSubagent(subagent(true));
 		const before = jobReads(hub);
-		act(() =>
-			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
-			} as AnyNotification),
-		);
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
@@ -2612,9 +5096,83 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race in tree settle",
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
+			sessionTitle: "Fix race in tree settle",
 		});
+	});
+
+	// G13: a finished subagent's row shows its report's opening line, read
+	// from the coordinator's tree, which the screen holds and the list's rows
+	// read. The tree lands after the rows first render, so the rows must
+	// render again when it does.
+	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
+		forgetSubagentTrees("hub-1");
+		const actual = subagentOutcomesDelegatesResponse();
+		const reported = actual.delegates.find((row) => row.delegateId === "dlg_reported");
+		if (!reported) throw new Error("missing real producer report");
+		coordinatorHub.delegates = {
+			...actual,
+			context: { ...actual.context, ref: COORDINATOR.ref, rootRef: COORDINATOR.ref, sessionId: COORDINATOR.threadId },
+			delegates: [{ ...reported, ownerRef: COORDINATOR.ref, rootRef: COORDINATOR.ref, childRef: "local:fix" }],
+		};
+		const endedAt = reported.runEndedAt;
+		coordinatorHub.tree = subagentTree({
+			terminal: true,
+			outcome: "completed",
+			packetKind: "reported",
+			message: "Fixed the race: settle now waits for the drain.",
+			runEndedAt: endedAt,
+		});
+		const served = thread(COORDINATOR.ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-d",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: reported.delegateId,
+					runGeneration: reported.runGeneration,
+					ownerSessionId: "coord",
+					rootSessionId: "coord",
+					childSessionId: "fix",
+					transcriptRef: "local:fix",
+					originItemId: "call-d",
+					description: "Fix race in tree settle",
+					type: "subagent",
+					lifecycle: "idle",
+					phase: "idle",
+					status: "idle",
+					outcome: "completed",
+					terminal: true,
+					runEndedAt: endedAt,
+					resumable: true,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mount(served);
+		await settle();
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
@@ -2672,6 +5230,64 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		});
 	});
 
+	it("opens a subagent's own subagent under the coordinator's thread as it reads now (#3326 RoboRev)", async () => {
+		// The coordinator restarted since this screen opened: the screen it
+		// pushes asks for the coordinator's tree under the thread it runs now.
+		forgetSubagentTrees("hub-1");
+		const served = subagent(false);
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-n",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Check drain ordering" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-nested",
+					ownerSessionId: "fix",
+					rootSessionId: "coord",
+					childSessionId: "nested",
+					transcriptRef: "local:nested",
+					originItemId: "call-n",
+					description: "Check drain ordering",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(served, { jobs: restarted, coordinatorId: "thread-restarted" });
+		const row = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Check drain ordering, "),
+		)[0];
+		if (!row) throw new Error("no subagent row");
+		act(() => row.props.onPress());
+		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+			hubId: "hub-1",
+			ref: "local:nested",
+			title: "Check drain ordering",
+			coordinator: { ...COORDINATOR, threadId: "thread-restarted" },
+		});
+	});
+
 	it("shows the toast once when the subagent stops at your request", async () => {
 		const { tree, hub } = await mountSubagent(subagent(true));
 		const [row] = flattenSubagents(subagentTree() as never);
@@ -2681,14 +5297,155 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
 			2,
 		);
-		act(() =>
-			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
-			} as AnyNotification),
-		);
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");
 	});
+});
+
+describe("Send while offline (phase 6, spec 8.5)", () => {
+	type Route = ConversationScreenProps["route"];
+	/** The connection drops, or comes back with the same client. */
+	async function reach(tree: ReactTestRenderer, route: Route, live: boolean) {
+		harness.connection = live
+			? { ...harness.connection, state: "ready", downSince: null }
+			: { ...harness.connection, ...droppedConnection(harness.connection) };
+		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		await settle();
+	}
+	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
+
+	it("keeps a message sent offline, and sends it exactly once when the connection returns", async () => {
+		const ref = "ref-train";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "sent on the train");
+		playedHaptics.length = 0;
+		await press(tree, "Send when you're back online");
+		expect(field(tree)?.props.value).toBe("");
+		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
+		expect(renderedText(tree)).toContain("Will send when you're back online");
+		expect(playedHaptics).toEqual(["impact:light"]);
+		expect(hub.mutations()).toEqual([]);
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/queue"]));
+		const sent = hub.requests.find((request) => request.method === "turn/queue");
+		expect(sent?.params.input).toEqual([{ type: "text", text: "sent on the train" }]);
+		await settle();
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+	});
+
+	it("keeps Send off, and the draft, for a session this phone hasn't read since launch", async () => {
+		const read = await mount(thread("ref-read", "idle"));
+		await reach(read.tree, read.route, false);
+		const ref = "ref-never-read";
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		} as unknown as Route;
+		navigationState.state = { index: 0, routes: [route] };
+		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		await settle();
+		await type(tree, "not yet");
+		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({
+			disabled: true,
+		});
+		expect(field(tree)?.props.value).toBe("not yet");
+		expect(await outbox(ref)).toEqual([]);
+	});
+
+	it("answers a question offline, and sends the answer once when the connection returns", async () => {
+		const ref = "ref-question-offline";
+		const { tree, hub, route } = await mount(thread(ref, "awaiting", true));
+		await reach(tree, route, false);
+		await press(tree, "Drop them");
+		await press(tree, "Send answer when you're back online");
+		const records = await outbox(ref);
+		expect(records).toHaveLength(1);
+		expect((records[0]?.payload as { input: unknown }).input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+		// The batch is answered: the dock gives way.
+		expect(pressable(tree, "Send answer when you're back online")).toBeUndefined();
+
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(hub.mutations()).toHaveLength(1));
+		await settle();
+		// Queued, it runs as your next turn: the daemon runs queued input
+		// ahead of everything else while awaiting, superseding the question
+		// as an online answer's turn/start does.
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(hub.requests.find((request) => request.method === "turn/queue")?.params.input).toEqual([
+			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
+		]);
+	});
+
+	it("offers no Send offline where the session can't take it when it arrives", async () => {
+		const ref = "ref-cannot-queue";
+		const served = thread(ref, "awaiting", true);
+		const evener = (served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener;
+		evener.capabilities = { ...evener.capabilities, queue: false };
+		const { tree, route } = await mount(served);
+		await reach(tree, route, false);
+		// Nothing there can act, so nothing offers to (Calm).
+		for (const label of ["Drop them", "Send answer when you're back online"])
+			expect(pressable(tree, label)?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(await outbox(ref)).toEqual([]);
+	});
+
+	it("shows a held message refused once a restarted session answers it, with Discard", async () => {
+		const ref = "ref-restarted";
+		const { tree, hub, route } = await mount(thread(ref, "idle"));
+		await reach(tree, route, false);
+		await type(tree, "for the old instance");
+		await press(tree, "Send when you're back online");
+		const request = hub.client.request;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method !== "turn/queue") return request(method, params);
+			hub.requests.push({ method, params });
+			// The daemon's answer to a stale fence (MutationNotAccepted).
+			throw new WireError("thread instance is stale", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await reach(tree, route, true);
+		await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't send this · thread instance is stale"));
+		expect(hub.mutations()).toEqual(["turn/queue"]);
+		expect(pressable(tree, "Discard")).toBeDefined();
+	});
+});
+
+it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
+	const ref = "ref-draft-lost";
+	const key = nativeMutationTargetKey("hub-1", ref);
+	const runtime = getNativeMutationRuntime();
+	// The draft kept a send the outbox also holds, and the outbox couldn't
+	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
+	// the blockedUnknown row. Seed that exact pair before mounting.
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { clientMutationId } = await runtime.storage.enqueueIntent({
+		targetRef: key,
+		method: "turn/start",
+		payload: { ref, input: [{ type: "text", text: "lost send" }] },
+		attachments: [],
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
+	});
+	await runtime.storage.markAttempted(clientMutationId);
+	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
+
+	const { tree } = await mount(thread(ref, "idle"));
+	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await press(tree, "Discard");
+
+	// One Discard clears both: the draft's uncertainty and the row it stood in
+	// for, which otherwise returns as its own ghost.
+	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
+	await settle();
+	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
 });

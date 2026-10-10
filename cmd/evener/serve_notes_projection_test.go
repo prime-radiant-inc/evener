@@ -17,7 +17,9 @@ func TestNotesCanonicalEnvelopeProjection(t *testing.T) {
 	// Expected values are fixtures, independent of the production normalizer.
 	for _, tc := range []struct{ name, raw, want string }{
 		{"normal", "  opaque\t control\n", "opaque control"},
-		{"clamp-at-space", strings.Repeat("x", 999) + " y", strings.Repeat("x", 999) + " "},
+		// A clamp that ends on a space drops it, so the stored note normalizes to itself.
+		{"clamp-at-space", strings.Repeat("x", 999) + " y", strings.Repeat("x", 999)},
+		{"lines", "Mission  here.\r\n\n\nNow: one\nNext: two  \n", "Mission here.\n\nNow: one\nNext: two"},
 		{"unicode", strings.Repeat("界", 999) + "🛰界", strings.Repeat("界", 999) + "🛰"},
 		{"clear", " \t\n", ""},
 	} {

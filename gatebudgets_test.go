@@ -214,7 +214,8 @@ printf 'resolved=%s\nbudget=%s\n' "$(command -v load_aware_workers)" "$(gate_bud
 // TestVitestRunArgsFollowTheLoadAwareBudget is the frontend half of the wiring:
 // the flags package.json hands `vitest run` carry the worker count sized to the
 // machine's spare capacity, floored at two, and the pre-helper ceiling of four
-// when the helper is unavailable.
+// when the helper is unavailable. Every variant also selects the runner config
+// loader (see vitest_run_args).
 func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -222,11 +223,11 @@ func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 		load string
 		want string
 	}{
-		{"idle machine keeps the ceiling", "0", "--maxWorkers=4"},
-		{"loaded machine backs off", "13.5", "--maxWorkers=2"},
+		{"idle machine keeps the ceiling", "0", "--maxWorkers=4 --configLoader runner"},
+		{"loaded machine backs off", "13.5", "--maxWorkers=2 --configLoader runner"},
 		// vitest runs a vm pool's files in ONE shared context when it has a
 		// single worker, so the budget never goes below two.
-		{"saturated machine keeps two workers", "40", "--maxWorkers=2"},
+		{"saturated machine keeps two workers", "40", "--maxWorkers=2 --configLoader runner"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -240,7 +241,7 @@ func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	t.Run("helper unavailable keeps the ceiling", func(t *testing.T) {
 		t.Parallel()
 		got := runSourcedGate(t, ". "+gateBudgetsLib+"; vitest_run_args")
-		if want := "--maxWorkers=4"; got != want {
+		if want := "--maxWorkers=4 --configLoader runner"; got != want {
 			t.Errorf("vitest_run_args without the helper = %q, want %q", got, want)
 		}
 	})

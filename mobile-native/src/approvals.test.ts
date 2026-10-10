@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxEscalationRequested, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -53,10 +54,9 @@ function boundary() {
 			pendingEscalations: [pending],
 		},
 	};
-	const client = {
-		request: async () => ({ thread }),
-		onNotification: () => () => {},
-	} as unknown as ConversationClientLike;
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => ({ thread }));
+	client.on("thread/unsubscribe", () => ({}));
 	return { client, service: createConversationService(client) };
 }
 describe("native approval projection", () => {
@@ -343,8 +343,7 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
 	const began = new Promise<void>((resolve) => {
 		started = resolve;
 	});
-	const client = {
-		...base.client,
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const response = await base.client.request("thread/read", {
 				ref: "local:s",
@@ -361,7 +360,7 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
 				thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
 			};
 		},
-	} as unknown as ConversationClientLike;
+	});
 	const service = createConversationService(client),
 		store = createConversationStore(),
 		sink = createActivityStore().getState();
@@ -387,7 +386,7 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
 	const began = new Promise<void>((resolve) => {
 		started = resolve;
 	});
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const response = await base.client.request("thread/read", {
 				ref: "local:s",
@@ -407,7 +406,7 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
 			notification = listener;
 			return () => {};
 		},
-	} as unknown as ConversationClientLike;
+	});
 	const service = createConversationService(client),
 		store = createConversationStore(),
 		sink = createActivityStore().getState();
@@ -423,14 +422,14 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
 });
 it("unsubscribes a failed initial read", async () => {
 	let unsubscribed = 0;
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			throw new Error("Read failed");
 		},
 		onNotification: () => () => {
 			unsubscribed++;
 		},
-	} as unknown as ConversationClientLike;
+	});
 	const store = createConversationStore();
 	await store.getState().openProjected(createConversationService(client), createActivityStore().getState(), "local:s");
 	expect(store.getState().status).toBe("error");

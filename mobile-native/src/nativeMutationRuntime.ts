@@ -38,6 +38,8 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	readStopEpoch(targetRef: string): Promise<number>;
 	listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
+	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
+	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
 };
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
@@ -65,6 +67,7 @@ function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number
 	if (kind === "send") return "turn/start";
 	if (kind === "queue") return "turn/queue";
 	if (kind === "interrupt") return "turn/interrupt";
+	if (kind === "promote") return "turn/promoteQueuedAsSteer";
 	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
 }
 
@@ -74,8 +77,13 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		ref: request.targetRef,
 		expectedInstanceId: request.instanceId,
 	};
-	if (request.kind !== "interrupt") payload.input = request.input;
+	if (request.kind !== "interrupt" && request.kind !== "promote") payload.input = request.input;
 	if (method === "turn/drainAsSteer") payload.expectedQueueRevision = request.expectedQueueRevision;
+	if (request.kind === "promote") {
+		payload.index = request.queueEntry.index;
+		payload.expectedEntryId = request.queueEntry.id;
+	}
+	const input = request.display ?? request.input;
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
@@ -83,7 +91,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		method,
 		payload,
 		attachments: [],
-		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input: request.input },
+		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input },
 	};
 }
 
@@ -234,6 +242,32 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return discarded;
 	}
 
+	// Discard on your own message a Stop held or whose delivery couldn't be
+	// confirmed. It notifies as discardRecovery does, after the write, zero
+	// rows included. Removing a blocked head lets the target's next message
+	// go, so the target is dispatched again (the dispatcher still checks its
+	// gate).
+	async discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean> {
+		const discarded = await this.storage.discardUndelivered(clientMutationId, targetRef);
+		this.#notifyStorageChange([targetRef]);
+		if (discarded) void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
+		return discarded;
+	}
+
+	// Send now on your own message a Stop held before it left the phone.
+	async releaseCanceled(clientMutationId: string, targetRef: string): Promise<boolean> {
+		// The press-time half of the stop barrier, captured as submit's is:
+		// readStopEpoch's body is synchronous, so the epoch is read inside this
+		// call, before any other event runs. A Stop that lands during start()
+		// then moves the epoch past it, and storage refuses the release.
+		const barrier: MutationStopBarrier = { stopEpoch: await this.storage.readStopEpoch(targetRef) };
+		await this.start();
+		const released = await this.storage.releaseCanceled(clientMutationId, targetRef, barrier);
+		this.#notifyStorageChange([targetRef]);
+		if (released) void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
+		return released;
+	}
+
 	subscribeStorage(listener: NativeMutationStorageListener): () => void {
 		this.#storageListeners.add(listener);
 		return () => this.#storageListeners.delete(listener);
@@ -268,6 +302,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				this.#blockedTargets.delete(key);
 			}
 		};
+	}
+
+	/** The client a session screen, or the flush, registered this target
+	 * with; undefined while nobody holds it. */
+	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
+		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
 	}
 
 	beginAuthoritativeRead(
@@ -470,6 +510,8 @@ const SUBMITTED_HERE_LIMIT = 100;
 const SUBMITTED_TARGETS_LIMIT = 50;
 
 function createNativeMutationRuntime(): NativeMutationRuntime {
+	// Single-writer by construction: this one handle is memoized by
+	// getNativeMutationRuntime below; see sqliteSync's connection contract.
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
 	return new NativeMutationRuntime(database as unknown as SqliteSync, {

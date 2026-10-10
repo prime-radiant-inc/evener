@@ -27,7 +27,7 @@ import (
 //
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
-// deliberately absent from remoteHostAdminMethods (see app_host_admin.go).
+// deliberately absent from the AppWire host-request catalog (see app_host_admin.go).
 func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
 	// hosts is the one live registry the server constructor resolved — in
 	// production the same *hostreg.Registry the SSH manager dials through and

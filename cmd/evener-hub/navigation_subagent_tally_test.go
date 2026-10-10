@@ -11,10 +11,9 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-// A root's row carries its whole tree's tally even when the row cannot carry
-// every child: 60 subagents are more than the row's children cap, and nested
-// ones never appear as its children at all. The tally is the daemon's count,
-// not the rows' (S3, Review Focus 5). A root with no subagents carries no key.
+// A root's row carries its whole tree's tally though subagents have no rows:
+// the tally is the daemon's count, not the rows' (S3, Review Focus 5). A root
+// with no subagents carries no key.
 func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -37,16 +36,11 @@ func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 	}
 	rows := liveNavigationRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)
 	root := rows["01ROOT"]
-	if len(root.Children) == 0 || len(root.Children) >= 60 {
-		t.Fatalf("root row carries %d children; the fixture must reach the row's children cap without showing all 60", len(root.Children))
+	if len(root.Children) != 0 {
+		t.Fatalf("root row carries %d children, want none: subagents have no rows", len(root.Children))
 	}
 	if want := (hubapi.NavigationSubagentTally{Running: 2, Failed: 1, Done: 57}); root.Subagents == nil || *root.Subagents != want {
 		t.Fatalf("root tally = %+v, want %+v", root.Subagents, want)
-	}
-	for _, child := range root.Children {
-		if child.Subagents != nil {
-			t.Fatalf("subagent row %s carries a tally %+v", child.SessionID, child.Subagents)
-		}
 	}
 	if _, present := navigationSummaryJSONFields(t, rows["01QUIET"])["subagents"]; present {
 		t.Fatal("a root with no subagents carries the subagents key")

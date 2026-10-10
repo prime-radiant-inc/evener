@@ -1,4 +1,5 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import { type ReactElement, useEffect, useState } from "react";
@@ -11,14 +12,26 @@ import {
 	View,
 } from "react-native";
 import type { Palette } from "../design/tokens";
+import { useDisplayChoices } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
+import {
+	bandOf,
+	type ClassifiedRow,
+	lastLine,
+	stateWord,
+	subagentChipText,
+	type Usual,
+	type WhyLine,
+	whyLine,
+} from "./attention";
+import { FreshDot } from "../reader/FreshDot";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
+import { isTopLevel } from "./rowActions";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
-	/** Signal rows (Needs you, unseen Finished, Working in Live) have up to
+	/** Signal rows (Needs you and Working in Live) have up to
 	 * three lines; quiet rows (Idle, and rows in pinned categories, Projects
 	 * and Archived) have one. */
 	variant: "signal" | "quiet";
@@ -38,6 +51,9 @@ export interface BoardRowProps {
 	onOpen: (row: NavigationSessionSummary) => void;
 	/** Half opacity and busy while a change to this row is on its way. */
 	dimmed?: boolean;
+	/** What waits for the connection on this row (phase 6 ruling 18), in
+	 * place of its why line. */
+	waiting?: string | null;
 	accessibilityActions?: readonly AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 	/** The row's long press, which RowMenu gives it: the row is the one
@@ -129,6 +145,7 @@ export function BoardRow({
 	now,
 	onOpen,
 	dimmed = false,
+	waiting = null,
 	accessibilityActions,
 	onAccessibilityAction,
 	onLongPress,
@@ -142,12 +159,36 @@ export function BoardRow({
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
 	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
-	const last = signal ? lastLine(row, usual, hostLabel) : null;
+	const { showModel } = useDisplayChoices();
+	const last = signal ? lastLine(row, usual, hostLabel, showModel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
+	// The chip reads the navigation row's tally (the shared gate the web rail
+	// uses), which the hub revises on invalidation; it is not the Board's S5
+	// activity read, which is Board-only and can lag behind this count.
+	const tally = chipTally(row);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, reason, age && spokenAge(age)].filter(Boolean).join(", ");
+	// The row is one accessibility element, so the chip's text reaches
+	// VoiceOver through this label, not a nested one. Speak the tally once: the
+	// why line can already state the running count ("Waiting on N subagents").
+	const spoken = waiting ?? reason;
+	// Only a signal row's why line names the running count; a quiet row has no
+	// why line, so the chip must speak it. `waiting` replaces the reason with a
+	// held-change message, so it never names the count either.
+	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
+	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
+	const chipLabel = tally ? subagentChipText({ running: whyNamesRunning ? 0 : tally.running }) : "";
+	const label = [
+		row.title,
+		word,
+		item.unseen ? "unread" : undefined,
+		spoken,
+		chipLabel || undefined,
+		age && spokenAge(age),
+	]
+		.filter(Boolean)
+		.join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -208,8 +249,9 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age ? (
+					{hasDraft || age || tally || item.unseen ? (
 						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
+							<SubagentChip session={row} />
 							{hasDraft ? (
 								<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
 									<Text
@@ -233,21 +275,82 @@ export function BoardRow({
 									{age}
 								</Text>
 							) : null}
+							{item.unseen ? <FreshDot /> : null}
 						</View>
 					) : null}
 				</View>
-				{why ? <WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} /> : null}
+				{waiting ? (
+					<WhyText why={{ text: waiting }} numberOfLines={1} marginTop={2} />
+				) : why ? (
+					<WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} />
+				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
 						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
 						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
 						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
+						{last.model ? <Fact text={last.model} scale={scale} /> : null}
 					</View>
 				) : null}
 			</View>
 		</Pressable>
 	);
 }
+
+/** Running subagents on a live root row, in neutral ink. Settled outcomes
+ * remain available in activity history without calling for attention. */
+export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const tally = chipTally(session);
+	if (!tally) return null;
+	return (
+		<View
+			testID="subagent-chip"
+			style={{
+				backgroundColor: palette.inset,
+				borderRadius: 4,
+				paddingHorizontal: 4,
+			}}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					fontSize: 11 * scale,
+					lineHeight: 13 * scale,
+					fontWeight: "600",
+					color: palette.inkMid,
+				}}
+			>
+				{subagentChipText(tally)}
+			</Text>
+		</View>
+	);
+}
+
+/** The tally a row's chip shows, or null for a nested row or one with no
+ * running subagents (subagentTallyToShow gates on live and non-empty). Only a live root
+ * carries a subagent tally (S3, D1), and the hub may set one on a nested fork
+ * row, so the chip gates on the kind the way the web rail's isTopLevelSession
+ * does. */
+const chipTally = (session: NavigationSessionSummary) => {
+	const tally = isTopLevel(session) ? subagentTallyToShow(session) : null;
+	return tally && tally.running > 0 ? tally : null;
+};
+
+/** A session row's subagent chip, for the lists that render their own rows
+ * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
+ * row has no chip, so a list can tell whether it has one. */
+export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
+	chipTally(session) ? <SubagentChip session={session} /> : null;
+
+/** The chip's text for the row's own accessibilityLabel: a Pressable override
+ * hides the chip's text from VoiceOver, so the list row has to speak it.
+ * Undefined when the row has no chip. */
+export const sessionSubagentChipLabel = (session: NavigationSessionSummary): string | undefined => {
+	const tally = chipTally(session);
+	return tally ? subagentChipText(tally) : undefined;
+};
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):
@@ -328,7 +431,8 @@ export function Fact({
 	scale,
 	shrink = false,
 }: {
-	glyph: "checklist" | "folder" | "server.rack";
+	/** None for the model's name, which the prototype prints bare. */
+	glyph?: "checklist" | "folder" | "server.rack";
 	text: string;
 	scale: number;
 	shrink?: boolean;
@@ -337,7 +441,7 @@ export function Fact({
 	const flexShrink = shrink ? 1 : 0;
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
-			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
+			{glyph ? <SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} /> : null}
 			<Text
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}

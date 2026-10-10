@@ -464,7 +464,7 @@ snapshot controller installs through `install.sh` on the host. Where that
 fallback is refused — a dev or dirty controller, or a release build with no
 stamped tag — nothing is installed, so the host keeps its own build and
 attaches, and the hub logs which build it kept. The fallback is also refused for
-a snapshot controller once the mutable `snapshot` tag has moved past this
+a snapshot controller once the mutable `snapshot` channel has moved past this
 controller's commit. For a snapshot controller the fallback writes the binary
 before its commit is proven, so prefer the push path; the push path is the one
 the refusal names.

@@ -121,7 +121,19 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
+	// Nested session activity resources need field tables independently of the
+	// catalog's top-level read and page responses.
+	register(appwire.Task{})
+	register(appwire.SessionActivityAncestor{})
+	register(appwire.SessionActivityContext{})
+	register(appwire.SessionActivityCounts{})
+	register(appwire.SessionActivityIssue{})
+	register(appwire.SessionActivityPage{})
+	register(appwire.SessionDelegate{})
+	register(appwire.SessionWatch{})
 	register(appwire.HostEntry{})
+	register(appwire.JobOutputPage{})
+	register(appwire.JobOutputPrunedErrorData{})
 	// InstanceEntry never appears as a method's own Params/Result - only
 	// nested inside InstanceListResponse.Instances - so without this it
 	// would never get a field table of its own, and a field documented on
@@ -172,6 +184,12 @@ func build() docData {
 	// never a method's own Params/Result, so it needs the same explicit
 	// registration for a field table of its own (RoboRev review of PR 22).
 	register(appwire.HubNotice{})
+	// OperationRecord is the element type of HostOperationsResponse.Operations —
+	// the deploy pipeline's operations read (08b §§8, 10) — never a method's own
+	// Params/Result, so it needs the same explicit registration: without it the
+	// reference would name the record but document none of its fields (state,
+	// result, and the progress entries a reader inspects).
+	register(appwire.OperationRecord{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

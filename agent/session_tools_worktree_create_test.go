@@ -16,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
@@ -160,6 +162,7 @@ func (p *worktreeMaintenanceProbe) published() {
 }
 
 func TestMain(m *testing.M) {
+	memoryEvalCaptureSources()
 	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if out, err := exec.Command("go", "env", key).Output(); err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {
@@ -199,6 +202,12 @@ func TestMain(m *testing.M) {
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// A developer with EVENER_NO_USER_SKILLS exported would otherwise flip
+	// which user-global sources sessions discover: Discover skips the global
+	// MCP layer and DiscoverEvenerWideCommands skips the user-global commands
+	// dir (#3487), and sessions hide the operator's skills (#3227). Tests that
+	// pin one side of that behavior set the variable themselves.
+	_ = os.Unsetenv(envvars.EVENERNoUserSkills.Name)
 	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
 		_ = os.Chmod(sharedWorkspace, 0o555)
@@ -800,6 +809,37 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 	}
 }
 
+// REAL git: the published path is the linked checkout git actually created and
+// the session installed, not a requested argument or a synthetic fixture path.
+func TestWorktreeCreate_PublishesInstalledCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+	}, func() {})
+
+	result, err := r.create(t, map[string]any{"name": "document-lane"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := result["path"].(string)
+	select {
+	case got := <-changed:
+		if got != want {
+			t.Fatalf("published cwd = %q, want %q", got, want)
+		}
+		if installed := r.s.currentEnv().WorkingDirectory(); installed != got {
+			t.Fatalf("published %q before installation %q", got, installed)
+		}
+	case <-ctx.Done():
+		t.Fatal("installed cwd was not published")
+	}
+}
+
 // REAL git: the subject is that `worktree add --lock --reason` really lands a
 // lock in git's registry, read back through real `--porcelain` output.
 func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
@@ -1231,6 +1271,61 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 	}
 	if got.CreatorSession != "someone-else" {
 		t.Errorf("pre-seeded sidecar mutated: creator = %q, want %q", got.CreatorSession, "someone-else")
+	}
+}
+
+// TestWorktreeCreate_CorruptReservationSurfaced: a create that died between its
+// O_EXCL open and its write leaves a malformed sidecar that ListSidecars hides.
+// Once that residue is past the reconciliation grace, a retry's O_EXCL write
+// fails with EEXIST and create must name the corrupt reservation (repairable by
+// hand) instead of reporting a live create that is not happening — and must not
+// delete the file, since malformed metadata does not authorize a destructive
+// cleanup. A fresh undecodable file is deliberately NOT named (see the sibling
+// case below): it may be the winner of a live race mid-write.
+func TestWorktreeCreate_CorruptReservationSurfaced(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	corruptPath := filepath.Join(metaDir, worktree.EncodeSidecarName("x")+".json")
+	if err := os.WriteFile(corruptPath, []byte("{torn"), 0o644); err != nil {
+		t.Fatalf("seed corrupt sidecar: %v", err)
+	}
+	ageSidecar(t, metaDir, "x", worktree.ReconcileGrace+time.Minute)
+
+	_, err := r.create(t, map[string]any{"name": "x"})
+	if err == nil || !strings.Contains(err.Error(), "reserved by a corrupt sidecar") {
+		t.Fatalf("create over a corrupt reservation: err = %v, want a corrupt-reservation message", err)
+	}
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Errorf("create removed the corrupt reservation: %v", statErr)
+	}
+}
+
+// TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight: an undecodable
+// sidecar younger than the reconciliation grace is indistinguishable from the
+// winner of a live concurrent create caught between its O_EXCL open and its
+// write, so create must fall back to the "already being created" message and
+// must never advise removing that file.
+func TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	// Zero bytes, exactly what a winner's file looks like before its write.
+	if err := os.WriteFile(filepath.Join(metaDir, worktree.EncodeSidecarName("y")+".json"), nil, 0o644); err != nil {
+		t.Fatalf("seed empty sidecar: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "y"})
+	if err == nil || !strings.Contains(err.Error(), "already being created") {
+		t.Fatalf("create over a fresh undecodable reservation: err = %v, want the already-being-created message", err)
 	}
 }
 

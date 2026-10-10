@@ -126,6 +126,27 @@ func TestApplyOverlayItemNoticeAddsSystemMessage(t *testing.T) {
 	}
 }
 
+// A daemon warning arrives as an overlay notice whose Raw names its source,
+// title and hint, and its code when it has one (a context-budget notice's
+// "context_budget"). The TUI shows the warning's title and message whatever
+// Raw carries, so a coded notice renders as an uncoded one always did.
+func TestApplyOverlayItemCodedWarningNoticeShowsItsTitleAndMessage(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.ApplyOverlayItem(appwire.OverlayItem{
+		Key: "notice:1", Kind: appwire.OverlayNotice, TurnID: "turn_1",
+		Item: appwire.ThreadItem{
+			Type: "systemMessage", ID: "notice:1", EventKind: appwire.ThreadItemEventKindWarning,
+			Description: "Context budget", Text: "Output allocation reduced for p/m: requested=100 admitted=50",
+			Raw: []byte(`{"warning":{"source":"evener","title":"Context budget","hint":"No action needed.","code":"context_budget"}}`),
+		},
+	})
+
+	want := "Context budget\nOutput allocation reduced for p/m: requested=100 admitted=50"
+	if len(r.messages) != 1 || r.messages[0].Kind != MsgSystem || r.messages[0].Text != want {
+		t.Fatalf("messages = %+v, want one system row %q", r.messages, want)
+	}
+}
+
 // ApplyOverlayDelta (overlay/delta): incremental text/output chunks.
 
 func TestApplyOverlayDeltaAppendsStreamText(t *testing.T) {

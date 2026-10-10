@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -452,6 +453,35 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 	}
 }
 
+// TestLoadConfig_MachineRoots pins hub.toml's top-level `roots` — the hub's own
+// machine's project roots, reported in ServerInfo: entries are trimmed, blank
+// ones dropped, and an absent key leaves no roots.
+func TestLoadConfig_MachineRoots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	body := `
+roots = ["  /Users/jesse/git  ", "", "   ", "/srv/work"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if want := []string{"/Users/jesse/git", "/srv/work"}; !slices.Equal(cfg.Roots, want) {
+		t.Fatalf("Roots = %v, want %v", cfg.Roots, want)
+	}
+
+	absent, err := LoadConfig(filepath.Join(t.TempDir(), "hub.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfig (missing): %v", err)
+	}
+	if absent.Roots != nil {
+		t.Fatalf("Roots = %v, want nil for an absent key", absent.Roots)
+	}
+}
+
 func TestLoadConfig_RejectsRemovedCodexSections(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -658,7 +688,7 @@ func TestHubSpawnResumePassDaemonIdleTimeout(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

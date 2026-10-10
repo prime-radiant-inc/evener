@@ -22,6 +22,9 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// concrete job-started/job-finished pushes, so the Web UI's root-tree cache
 	// invalidation notification has no TUI state to update.
 	appwire.NotifyEvenerJobsTreeUpdated,
+	// The TUI owns no session activity collection cache to invalidate. Its job
+	// rows continue to consume the concrete job-started/job-finished pushes.
+	appwire.NotifyEvenerThreadActivityChanged,
 	// Tasks render from fetchHubTasks, not from the push.
 	appwire.NotifyEvenerTaskUpdated,
 	// TUI goal status still comes from its own fetch/status surface.

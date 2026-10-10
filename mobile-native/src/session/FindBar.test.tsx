@@ -40,6 +40,14 @@ function text(tree: ReactTestRenderer, words: string): ReactTestInstance | undef
 }
 
 describe("the find bar", () => {
+	// Under the nav bar's glass the bar draws clear on it; elsewhere on the page.
+	it("draws clear on the header's glass, and on the page off it", () => {
+		const fill = (tree: ReactTestRenderer) =>
+			tree.root.findAll((node) => String(node.type) === "View")[0]?.props.style.backgroundColor;
+		expect(fill(bar().tree)).toBe(palette.page);
+		expect(fill(bar({ onGlass: true }).tree)).toBe("transparent");
+	});
+
 	it("holds a focused field that finds in the session", () => {
 		const { tree } = bar();
 		expect(field(tree).props).toMatchObject({

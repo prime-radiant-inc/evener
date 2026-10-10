@@ -14,7 +14,7 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { workspaceStore } from "../shell/workspace";
-import { connectionStore } from "../stores/connection";
+import { connectionStore, readyConnectionTransition } from "../stores/connection";
 import { selectLiveRows, selectNeedsYouRows } from "../stores/navigation/selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore } from "../stores/prefs";
@@ -67,7 +67,7 @@ function snapshotBaseline(state: ReturnType<typeof navigationStore.getState>): M
 function onNavigationAttention(): void {
   const state = navigationStore.getState();
   applyCounts();
-  if (state.mode !== "v2") return;
+  if (state.mode !== "v3") return;
   if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
   const next = rebaselinePending
     ? (snapshotBaseline(state) ?? new Map(prevNavigationAttention))
@@ -84,6 +84,7 @@ function onNavigationAttention(): void {
       level,
       askPending: changed.askPending === true,
       approvalPending: changed.approvalPending === true,
+      needsResponse: changed.needsResponse === true,
     });
   }
   if (prevNavigationAttention === null) {
@@ -137,15 +138,16 @@ export function initNotifications(): void {
 
   subscriptions.push(
     connectionStore.subscribe((state, prev) => {
-      if (state.client && state.state === "ready" && (state.client !== prev.client || prev.state !== "ready"))
-        initNavigation(state.client);
+      // The client check only narrows for TS; readyConnectionTransition
+      // already guarantees a wired client.
+      if (state.client && readyConnectionTransition(state, prev)) initNavigation(state.client);
     }),
   );
   subscriptions.push(
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
       if (state.resources !== prev.resources) applyTitleNow();
-      if (prev.mode === "v2" && state.mode !== "v2") prevNavigationAttention = null;
+      if (prev.mode === "v3" && state.mode !== "v3") prevNavigationAttention = null;
     }),
   );
 

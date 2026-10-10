@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +17,99 @@ import (
 
 	"primeradiant.com/evener/appwire"
 )
+
+func TestRemoteHubAdminMutationPreservesWireErrorRegardlessOfDataShape(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	data := appwire.ErrorData{
+		EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+		RetryDisposition: appwire.RetryDispositionNone,
+		Cause:            "remote-refusal",
+	}
+	for _, tc := range []struct {
+		name string
+		data any
+	}{
+		{"typed", data},
+		{"decoded", map[string]any{
+			"evenerErrorInfo":  "sessionUnavailable",
+			"mutationOutcome":  "notAccepted",
+			"retryDisposition": "none",
+			"cause":            "remote-refusal",
+		}},
+		{"typed extension", appwire.HostFieldErrorData{ErrorData: data, Field: "host"}},
+	} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", tc.name, wrapped), func(t *testing.T) {
+				var original error = appwire.WireError{
+					Code:    appwire.CodeUnavailable,
+					Message: "remote refused the mutation",
+					Data:    tc.data,
+				}
+				if wrapped {
+					original = fmt.Errorf("forward admin mutation: %w", original)
+				}
+				got := source.remoteHubAdminMutationCallError(original)
+				if !reflect.DeepEqual(got, original) {
+					t.Fatalf("delivered refusal changed: got %#v, want %#v", got, original)
+				}
+			})
+		}
+	}
+}
+
+func TestRemoteHubAdminMutationMapsTransportFailures(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"raw", io.EOF},
+		{"marked", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")}},
+		{"cancellation", context.Canceled},
+		{"deadline", context.DeadlineExceeded},
+	} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", tc.name, wrapped), func(t *testing.T) {
+				original := tc.err
+				if wrapped {
+					original = fmt.Errorf("forward admin mutation: %w", original)
+				}
+				got := source.remoteHubAdminMutationCallError(original)
+				wire, ok := errors.AsType[appwire.WireError](got)
+				if !ok || wire.Code != appwire.CodeInternalError {
+					t.Fatalf("error = %T %v, want an internal wire error", got, got)
+				}
+				want := appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
+					MutationOutcome:  appwire.MutationOutcomeUnknown,
+					RetryDisposition: appwire.RetryDispositionBlocked,
+				}
+				if wire.Data != want {
+					t.Fatalf("data = %#v, want %#v", wire.Data, want)
+				}
+			})
+		}
+	}
+}
+
+func TestRemoteHubAdminMutationPreservesRequestNotSent(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", cause, wrapped), func(t *testing.T) {
+				var original error = appwire.RequestNotSentError{Err: cause}
+				if wrapped {
+					original = fmt.Errorf("forward admin mutation: %w", original)
+				}
+				got := source.remoteHubAdminMutationCallError(original)
+				if !reflect.DeepEqual(got, original) || !errors.Is(got, cause) {
+					t.Fatalf("unsent request error changed: got %v, want %v", got, original)
+				}
+			})
+		}
+	}
+}
 
 func TestRemoteHubSourceAdminCallReturnsRemoteResultVerbatim(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
@@ -276,6 +370,47 @@ func TestRemoteHubSourceAdminMutationCallPreservesSemanticWireError(t *testing.T
 	}
 	if !strings.Contains(wire.Message, "refused by the host") {
 		t.Fatalf("message = %q, want the remote's own text", wire.Message)
+	}
+}
+
+func TestRemoteHubSourceAdminMutationCallPreservesReceivedSessionUnavailable(t *testing.T) {
+	refusal := appwire.WireError{
+		Code:    appwire.CodeUnavailable,
+		Message: "remote refused the mutation",
+		Data: appwire.HostFieldErrorData{
+			ErrorData: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+				MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+				RetryDisposition: appwire.RetryDispositionNone,
+				Cause:            "remote-refusal",
+			},
+			Field: "host",
+		},
+	}
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{wireErr: &refusal}
+	})
+
+	var out json.RawMessage
+	err := source.AdminMutationCall(t.Context(), appwire.MethodEvenerPluginInstall, nil, &out)
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %T %v, want the received wire refusal", err, err)
+	}
+	// The client adds the method name to the message; the source must retain
+	// the remote's refusal and all decoded metadata.
+	if wire.Code != refusal.Code || !strings.Contains(wire.Message, refusal.Message) {
+		t.Fatalf("received refusal changed: got %#v, want code %d and remote message", wire, refusal.Code)
+	}
+	want := map[string]any{
+		"evenerErrorInfo":  "sessionUnavailable",
+		"mutationOutcome":  "notAccepted",
+		"retryDisposition": "none",
+		"cause":            "remote-refusal",
+		"field":            "host",
+	}
+	if !reflect.DeepEqual(wire.Data, want) {
+		t.Fatalf("received refusal metadata changed: got %#v, want %#v", wire.Data, want)
 	}
 }
 

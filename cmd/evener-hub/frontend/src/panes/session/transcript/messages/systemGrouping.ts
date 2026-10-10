@@ -5,7 +5,14 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import type { ItemModel } from "@evener/appwire-client";
+import {
+  APPROVAL_DECISION_EVENT_KIND,
+  attentionWarningNotice,
+  type ItemModel,
+  isErrorEvent,
+  MEMORY_CONTEXT_EVENT_KIND,
+  type ThreadItemEventKind,
+} from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -22,16 +29,16 @@ export interface SystemRun {
 // lifecycle events do not coalesce").
 const MIN_GROUP_SIZE = 3;
 
-// A persisted turn failure arrives as a systemMessage item carrying the wire's
-// typed "error" eventKind (appwire.ThreadItemEventKindError). It is the one
-// system item that is not lifecycle churn, and the one readers actively hunt
-// for, so it is classified off that typed field rather than by reading English
-// out of the message - the same rule the scaffold and hook-exit kinds follow.
-const TURN_FAILURE_EVENT_KIND = "error";
+// ItemModel.eventKind is a plain string; typing the constant keeps the
+// comparison in joinsRun checked against the wire's kinds.
+const INTERRUPTED_EVENT_KIND: ThreadItemEventKind = "interrupted";
 
-export function isTurnFailureItem(item: ItemModel): boolean {
-  return item.type === "systemMessage" && item.eventKind === TURN_FAILURE_EVENT_KIND;
-}
+// A persisted turn failure arrives as a systemMessage item carrying the wire's
+// typed "error" eventKind (appwire.ThreadItemEventKindError; the package's
+// isErrorEvent). It is the one system item that is not lifecycle churn, and
+// the one readers actively hunt for, so it is classified off that typed field
+// rather than by reading English out of the message - the same rule the
+// scaffold and hook-exit kinds follow.
 
 function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
@@ -41,9 +48,25 @@ function isSystemMessage(item: ItemModel): boolean {
 // churn from reading as a wall of dividers; folding a failure into one buys a
 // row of quiet at the cost of hiding the row a reader came for - behind a
 // summary that names the run's FIRST member, which need not be the failure at
-// all. So a failure both stays out of its neighbours' run and breaks it.
+// all. So a failure both stays out of its neighbours' run and breaks it, and
+// so do a daemon warning a human should see (attentionWarningNotice) and an
+// interrupted notice (a model round whose output or tool calls were never
+// recorded), which stays its own line as on the phone. An informational
+// warning still folds. Shared-notes snapshots stay separate under their own
+// folded label. A human's Allow or Deny is a decision, not churn, so it stays
+// in view too. A memory refresh is a standalone notification (its own
+// collapsed "Refreshed my memory" disclosure), so it neither joins a run nor
+// lets one straddle it.
 function joinsRun(item: ItemModel): boolean {
-  return isSystemMessage(item) && !isTurnFailureItem(item);
+  return (
+    isSystemMessage(item) &&
+    item.eventKind !== "notes-context" &&
+    item.eventKind !== MEMORY_CONTEXT_EVENT_KIND &&
+    item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
+    item.eventKind !== INTERRUPTED_EVENT_KIND &&
+    !isErrorEvent(item) &&
+    attentionWarningNotice(item) === null
+  );
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in
@@ -55,10 +78,10 @@ export function systemRunFor(turnItems: ItemModel[], itemId: string): SystemRun 
   const index = turnItems.findIndex((it) => it.id === itemId);
   const item = turnItems[index];
   if (!item || !isSystemMessage(item)) return undefined;
-  // A run of one, always first, so the failure always renders itself. Returning
-  // undefined here would be the opposite of the point: SystemNoticeItem reads
-  // that as "not mine" and renders nothing at all.
-  if (isTurnFailureItem(item)) return { items: [item], isFirst: true };
+  // A run of one, always first, so a failure or a daemon warning always renders
+  // itself. Returning undefined here would be the opposite of the point:
+  // SystemNoticeItem reads that as "not mine" and renders nothing at all.
+  if (!joinsRun(item)) return { items: [item], isFirst: true };
 
   let start = index;
   while (start > 0) {

@@ -157,7 +157,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-	  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -665,7 +665,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -720,7 +720,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -790,7 +790,7 @@ func TestHubSpawnerListsModelsFromEvenerLaunchContract(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
@@ -818,7 +818,7 @@ func TestListEvenerLaunchModelContractCarriesWarnings(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","models":[{"provider":"vertex","model":"gemini-3.5-flash","warnings":["regional Vertex location \\"us-central1\\" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash"]}]}\n'
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"vertex","model":"gemini-3.5-flash","warnings":["regional Vertex location \\"us-central1\\" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash"]}]}\n'
   exit 0
 fi
 exit 2
@@ -847,7 +847,7 @@ func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testin
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
 case " $* " in
-	  *" --protocol evener-appwire-v6 "*)
+	  *" --protocol evener-appwire-v7 "*)
     printf '{"protocol":"evener-appwire-v2"}\n'
     exit 0
     ;;
@@ -1405,7 +1405,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -1453,7 +1453,7 @@ func TestHubSpawnerResumeJudgesThePersistedModel(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -1573,12 +1573,10 @@ func TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir(t *testing.T) {
 	}
 }
 
-// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: whether a child gets the
-// user layer is a live property, not a startup constant. The auth controller
-// reloads the registry on every credential action, so a hub that started
-// refusing writes can come to accept them and vice versa; a frozen answer
-// hands the child a providers.toml the hub is not reading, or withholds one it
-// is (spec §10).
+// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: the child provider source
+// follows the live registry. Valid files use their source path, invalid edits
+// use the retained user layer, and repairs return to the source. A startup-only
+// choice would discard a usable provider or reread an invalid file.
 func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	const good = "default = \"groq\"\n"
@@ -1611,19 +1609,19 @@ func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
 		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path the hub is reading", got, ok)
 	}
 
-	// fixed → broken: the hub degrades mid-life, so the child must too.
+	// A broken edit retains the usable user layer for new children.
 	if err := os.WriteFile(f.tomlPath, []byte(broken), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ctl.reg.Reload(); err == nil {
 		t.Fatal("the registry accepted an old-schema file")
 	}
-	if got, ok := childProvidersConfig(); !ok || got != "" {
-		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty: the hub is not reading this file", got, ok)
+	if got, ok := childProvidersConfig(); !ok || got == "" || got == f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want a retained copy of the usable user file", got, ok)
 	}
 
 	// broken → fixed: the user repairs the file and a credential action
-	// reloads it, so the child gets the user layer back.
+	// reloads it, so the child returns to the source file.
 	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}

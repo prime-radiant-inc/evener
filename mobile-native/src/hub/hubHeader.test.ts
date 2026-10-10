@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { UpdateCheckResponse } from "@evener/appwire-client";
-import { hubStatusLine } from "./hubHeader";
+import { appVersionText, hubStatusLine } from "./hubHeader";
 
 const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => ({
 	channel: "release",
@@ -30,4 +30,13 @@ it.each([
 	[false, null, check(), "Connecting… · evener 0.9.412 · up to date"],
 ] as const)("ready %s, connection %s, check %o → %s", (ready, connection, answer, expected) => {
 	expect(hubStatusLine(ready, connection, answer)).toBe(expected);
+});
+
+it.each([
+	["0.1.0", "5", "0.1.0 (5)"],
+	["0.1.0", null, "0.1.0"],
+	[null, "5", "5"],
+	[null, null, "Unknown"],
+] as const)("names this app's version %s and build %s as %s", (version, build, expected) => {
+	expect(appVersionText(version, build)).toBe(expected);
 });

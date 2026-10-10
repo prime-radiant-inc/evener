@@ -17,15 +17,15 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the job log tail parser, the send/queue availability table, the
+rules, the lossless job-output page codec, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from,
-the slash invocation and catalog visibility rules the palette and composer
-share, the command catalog itself as a framework-free store
-(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
-and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
-beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
+the shared slash invocation rules, and two command catalog stores with distinct
+owners (`createCommandCatalog(client)`, the controller palette's global list,
+and `createSessionCommandCatalog(client, ref)`, the owning session's loaded
+commands and skills read only through `thread/read` diagnostics, with no global
+fallback), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
@@ -91,14 +91,255 @@ for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy. The hub overview store,
+origin nor a credentials policy. `createDocumentReadDemand(read)` is the shared,
+framework-free lifetime for later web and native readers: hosts drive active,
+refresh, replacement and disposal demand while it keeps at most one physical
+read in flight, rejects stale publication through `attempt.isCurrent()`, and
+retries transient outcomes after 1, 2, 4, 8 and then 15 seconds, capped at 15
+seconds. Each attempt's viewer-unique generation is a cache discriminator, not
+a credential; `docImageReadURL` appends it only to an active reader's image
+request. Ordinary `docImageURL` transcript previews keep their existing URL and
+cache behavior. The module stores demand, timers and publication identity, not
+file bytes. Platform visibility/foreground/source events and HTTP outcome
+classification remain host-adapter responsibilities. This feature adds no
+version fallback or alternate protocol. That subpath also exports the pure
+file-reference contract described below. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
-both apps' hub settings render from.
+both apps' hub settings render from. The archived list store,
+`createArchivedListStore(client)`, is the same triple plus store-bound
+actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
+`request`-only port: each opened project's archived sessions from
+`evener/archived/list`, paged by cursor and refreshed in place (a refresh
+sends the list's revision and keeps its rows when the hub answers
+unchanged); the host resets it when its connection is replaced or recovers. The hub's own update
+check and apply,
+`createHubUpdateController({ client, awaitRestart })`, is the same triple
+with the restart wait as a port: each app says how it notices the new hub.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
+
+## Automatic memory refreshes
+
+The root export provides `MEMORY_CONTEXT_EVENT_KIND`, `parseMemoryContext` and
+the shared display labels used by web and native refresh disclosures.
+`parseMemoryContext` validates `raw.memoryContext` without reading files or
+changing the recorded text. An invalid payload returns `undefined`; clients
+then show the complete original text. Keep that source independently available
+even when validation succeeds, because formatted Markdown can omit source content.
+
+## Document file references
+
+`bindFilePath`, `parseFileReference`, and `findFileReferences` keep a
+reference's three identities separate: `path` is its normalized cwd-relative
+display and deduplication identity, `cwd` is the source session directory
+captured for that render, and `readTarget` is the absolute target the opening
+action reads. `provenance` records whether the source spelling was relative or
+absolute. Recognition is lexical and pure; it neither checks existence nor
+decides which session or document port has authority.
+
+Structured callers use `bindFilePath` for raw filesystem text, including
+spaces. Prose and inline-code parsing is literal too: supported numeric
+line/column suffixes are removed, but percent sequences, hashes, and question
+marks remain filename data. Markdown link destinations are URI references:
+schemes, protocol-relative values, and query- or fragment-only values are
+rejected; raw query/fragment metadata and a raw numeric location suffix are
+removed before the pathname is decoded exactly once. Every surface rejects
+parent traversal before collapsing dot segments and repeated interior
+separators.
+
+`rebindFileReference(reference, cwd)` is an explicit viewer transition, not an
+implicit read rewrite. A relative reference follows the new cwd and receives a
+new `readTarget`; an absolute reference records the new cwd but retains its
+original absolute target, including when that target is outside the new root
+and the server will forbid the read. Callers supply a nonempty trusted cwd and
+retain ownership of session/ref validation.
+## Generated results
+
+`MethodTypes` correlates each method's parameters and result. Fixed result
+discriminators come from Go's `StringDiscriminators` catalog: host plans narrow
+on `outcome`, and teardown retry results narrow on `outcome` and `hostKind`.
+Use those generated unions directly when consuming results; the failure arms
+carry `seam`, and planned results carry `plan` and `token`. The public Go arm
+structs and their wire fields remain the protocol authority.
+
+## Host-scoped requests
+
+`hostRequest(client, host, method, params, opts)` sends a typed request to the
+selected host. Its method is limited to the generated `HostRequestMethod`
+catalog, retaining the method's precise parameter and result types. An absent,
+empty, or `local` host uses the plain client request;
+other hosts use `evener/host/request`. Parameters, results, errors, and caller
+timeouts pass through unchanged. AppWire owns the explicit forwarding catalog;
+the hub enforces it and owns retry-safety classification. `LOCAL_HOST`,
+`isLocalHost`, and `normalizeHost` provide the shared host spelling rules, and
+`HOST_DEPENDENT_DISCOVERY_METHODS` names the discovery calls used by the
+new-session forms.
+
+`RequestPort<Methods>` is the shared structural request interface, including
+per-call timeouts. `LaunchConfigClient`, `MarketplacesClient`, `PluginsClient`,
+and `LaunchLayerClient` combine `RequestPort<HostRequestMethod>` with
+notifications, so browser adapters can bind them to a remote host without
+advertising unsupported operations. A full `AppwireClient` or
+`AppwireClientLike` satisfies these ports and retains every protocol method.
+Use its plain `request` for local operations outside the forwarding catalog,
+including `evener/instance/refreshModels` and `evener/instance/setModelDisabled`;
+the credential store keeps its broad local client for those operations.
+
+## Forwarded method catalog
+
+`HOST_REQUEST_METHODS` and its `HostRequestMethod` type are generated from
+AppWire's explicit host-request allow-list. The hub checks that same catalog
+before forwarding; registering a new RPC never grants forwarding permission.
+Retry classification remains with the hub because session mutations and admin
+mutations have different replay guarantees.
+
+## Job output pages
+
+`evener/jobs/output` returns six raw-page fields: `offsetBytes`,
+`bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+Omit `beforeBytes` for latest output; supply it for a backward page ending at
+that lifetime byte offset. Explicit zero remains zero. The default limit is
+4 KiB and positive `maxBytes` limits are capped at 64 KiB.
+
+The root exports `parseJobOutputPage(data)`, which returns a validated page
+with `bytes: Uint8Array`, or `null` for invalid input. It accepts lossless `utf8`
+and standard base64 without Node globals. `decodeJobOutputText(bytes)` renders
+raw bytes; join contiguous pages before decoding split UTF-8 scalars.
+`forEachJobOutputScalar` supplies source-byte spans for bounded rendering.
+`jobOutputPrunedBounds(error)` extracts the structured `jobOutputPruned`
+floor and total from error code `-32014`.
+
+Fixtures use the same six-field contract. The codec owns validation and
+decoding; each application owns its read cadence, retained windows and recovery.
+The [output guide](../../docs/product/session-activity.md#job-output-pages)
+defines snapshot selection, floor/EOF semantics and the current protocol.
+
+## Older-history demand
+
+`HistoryPaging` retains a requested older page until history advances. Attach
+active readers with `activate()` and observe `getSnapshot()`/`subscribe()`;
+release readers while their view is inactive. `request()` coalesces concurrent
+reads and retries unresolved pages with exponential backoff capped at 30 seconds,
+without an attempt or duration limit. `retryNow()` is the explicit retry affordance.
+Pass a view or Find consumer identity to `request()`/`retryNow()`; `cancel()` with
+that identity drops only its demand. Inactivity releases the reader, preserving
+pending demand; explicitly leaving history cancels it. An in-flight page can still
+merge, but a late failure cannot revive cancelled demand.
+A fulfilled read without cursor progress remains pending without an error; only
+a rejected read publishes its failure. Repeated error-free demand respects the
+existing backoff; explicit retry after a failure can start immediately.
+The supplied page key is an opaque cursor (including any trim boundary), `null`
+for confirmed history end, or `undefined` while history is unavailable. Adapters
+translate their store's end marker: the browser's loaded model has an absent
+optional `olderCursor` at history end, while an unavailable model stays `undefined`. The
+existing history store remains responsible for merging pages and scroll anchors.
+Typed client-upgrade and deleted-target rejections remain explained failures.
+
+## Session activity demand and subscriptions
+
+`SessionActivityStore` owns typed activity for one connection, public session ref,
+and ownership scope. It reads the session summary independently of collection
+pages. `start()` observes only that summary; `observe("delegates" | "jobs" |
+"watches")` acquires a collection's demand and returns an idempotent release.
+`load` performs a one-shot read; `loadMore` reads the next keyset page when a
+visible list approaches its boundary. Empty incomplete scan pages advance
+without a repair action. `refresh(resource?)` wakes a read immediately; omitting
+the resource refreshes summary and observed collections. `dispose` releases the
+owner and ignores late results. Create a new owner when client, ref or scope
+changes.
+
+Consumers sharing a client, ref and scope lifetime share one store binding.
+That owner coalesces collection demand and reads. Separate store instances
+share wire subscription membership through leases; they do not share a second
+collection cache or RPC registry.
+
+The [session activity guide](../../docs/product/session-activity.md) describes
+current browser and native binding lifetimes, collection demand and navigation
+ownership. Keep those consumers on the same subscription lease as their
+transcripts; importing the activity store alone does not migrate an application's
+existing unsubscribe or replacing-read behavior.
+
+`projectSessionActivity(snapshot)` is a pure projection of loaded activity into
+the shared `ActivityTree` rendering model. It returns `tree`, `context`,
+`summary`, domain `watches`, `complete`, `pending`, and `issues`. Summary known
+counts remain independent of the tree's loaded-row counts. Missing parents
+leave loaded descendants visible with incomplete evidence until their parent
+arrives. Optional logical session IDs are preserved when supplied; opaque refs
+are never parsed into IDs. The tree's revision is rendering-only, never a
+response ordering authority.
+
+`activityNodeID` qualifies session identity by ref, delegate identity by child
+ref plus delegate ID, and job identity by owner ref plus job ID.
+`indexActivityEntities` and `buildEntityView` use those same IDs. Entity views
+also carry their original `logicalId` and `ownerRef` for actions and transcript
+resolution. `findEntityView(entities, kind, logicalId, ownerRef)` finds a
+transcript reference within its owning session and returns no result for
+ambiguous evidence. API actions use the raw IDs/refs held by the row.
+
+Watch presentation consumes `SessionWatch`, preserving receiver identity and
+explicit `armed`, `ended`, or `unknown` state. Required `sourceRef` identifies
+the physical source manager and scopes a resolved job target; `ownerRef` and
+`receiverRef` retain logical recipient ownership. Readable target labels use
+only already loaded entities qualified by that exact source ref and job ID,
+with the raw target preserved when metadata is missing. The nested `watch` contains the
+domain `EvenerWatchInfo` cadence, delivery ring/count, note, source/target and end
+reason. Cadence functions take `EvenerWatchCadence`; `watchArmedLabel` takes
+`SessionWatchState`. `buildWatchRows` namespaces row IDs by receiver ref and watch
+ID. Unknown runtime state remains unknown even if retained watch data carries
+an inactive boolean.
+
+`getSnapshot()` returns `context`, `summary`, `summaryState`, and collection
+states `delegates`, `jobs`, `watches`. Collection states expose typed `rows`,
+`context`, `loading`, `pending`, `complete`, `hasMore`, `issues`, `error`,
+`unavailable`, and `permanent`. Counts come from the summary, never the length of
+loaded rows. Check `known` before displaying a count. `context.ancestryKnown`
+distinguishes proven ancestry from bounded retained-source progress; an empty
+ancestor list is root evidence only when ancestry is known. Observed pending
+ancestry is paced without treating useful progress as a failure. `clock` options
+inject timeout scheduling for deterministic tests.
+
+Useful rows survive transient failures, stale cursors, and reconnects. Transient
+failure retries continue while observed after 1, 2, 4, 8, 16, then 30 seconds,
+capped at 30 seconds. A typed `sessionActivityCursorStale` rejection restarts only
+the affected collection. Invalid inputs, deleted resources and unsupported
+methods do not retry automatically. A source read `actionUnavailable` with an
+explicit `retryDisposition: "automatic"` uses the same paced retry owner and can
+heal on typed activity invalidation; definitive absence and unsupported resources
+remain parked. Typed activity invalidations revalidate only
+observed resources; subtree owners accept descendant changes routed to their
+subscription. Collection pages merge stable identities only within the current
+source epoch and root read lifetime. A thread resync fences all pre-resync
+replies, including those emitted by the server before a workspace clear. The
+requested routing ref and lease remain stable when an alias resolves to another
+session. A changed resolved session identity retires former summary and
+collection rows, issues, cursors and completeness together; observed demand
+rebuilds only the replacement session. An opaque cache epoch change within the
+same session keeps unrelated useful evidence. A resync retries demanded resources
+against the current target even if its former target was unavailable.
+
+Useful collection progress refreshes an observed unknown summary count at a
+bounded pace, so retained index reconstruction can make its authoritative count
+known. An unknown badge count alone does not start a collection scan.
+
+Activity and transcript owners share wire membership through
+`acquireThreadSubscription(client, ref)`. Its lease has `ensure`, `read`, and
+idempotent `release`. `ensure` makes a lean additive `thread/read`.
+`read(params)` preserves the caller's hydration fields and makes its rich read
+acquire absent membership directly; it does not need a separate lean request on
+that healthy path. After membership exists, independent rich reads run without
+waiting on one another. Only membership acquisition/release is serialized.
+Reconnect retires old membership generations. The helper owns no history,
+mutation state, or retry loop.
+
+Every pane, watch, outbox, conversation and followed session link on that
+connection must acquire a lease, use `lease.read` for subscribed reads, and
+release its own lifetime. Raw replacing subscriptions or direct
+`thread/unsubscribe` bypass this ownership and can remove another mounted
+owner's subscription. The final lease releases the wire membership; releasing
+an activity view cannot unsubscribe a transcript that holds its own lease.
 
 ## Published subpaths
 
@@ -107,7 +348,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
   document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
-  `fileURLToPath`, `cwdRelative`).
+  `fileURLToPath`, `cwdRelative`). It also exports the pure source-bound file
+  reference helpers (`bindFilePath`, `parseFileReference`,
+  `findFileReferences`, `rebindFileReference`) and their types.
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
   `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
@@ -146,12 +389,15 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
-  (`createMarketplacesStore(client)`, a framework-free store over a
+  (`createMarketplacesStore(client, gate)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
   one cached browse result per marketplace), the installed-plugins store
-  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  (`createPluginsStore(client, gate)`, the same port, holding a hub's installed
   plugins, their six mutations and a `pluginRevision` that moves as the hub
-  announces a change), the global launch-layer store
+  announces a change). `gate` is the `HubWriteGate` those two stores share
+  (`createHubWriteGate`), which serializes their writes the way the hub
+  serializes them under one lock; a write that finds it held rejects with
+  `HubWriteBusyError`. The global launch-layer store
   (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
   skill directory lists and the MCP server list are four fields of, read and
   written at cwd `/` and layer `global`), and the pieces they are built over:
@@ -160,7 +406,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen. In every store fetches record their failure in state and
+  from its screen, and `createHubWriteGate`, the one write gate the marketplaces
+  and plugins stores share. In every store fetches record their failure in state and
   mutations reject. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
@@ -171,8 +418,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   own-echo correlation, over a `request`/`onNotification` client port; with
   the stale-listing refusal and its `staleListingHeld` predicate, the
   `foreignListingChange` predicate both hosts gate a credential probe on, and
-  `listingEstablished` in the state. Resolves to
-  `state/credentials/index.ts`, a barrel.
+  `listingEstablished` in the state. `createAuthStatusesStore(client)` is the
+  hub's credential statuses (`evener/auth/list`) by provider, each with the
+  error the hub found with its credential, over the extensions stores'
+  lifecycle (it follows `evener/auth/updated` and re-reads on reconnect).
+  Resolves to `state/credentials/index.ts`, a barrel.
 - `@evener/appwire-client/state/mutation` - the mutation state layer: the
   durable record shapes both apps' outboxes store (`MutationIntent`,
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,

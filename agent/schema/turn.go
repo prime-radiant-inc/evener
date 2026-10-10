@@ -64,6 +64,9 @@ const (
 	// UIs render it as harness chrome, not user speech. The persisted note is
 	// the source of truth; each turn carries a fresh projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
+	// TurnMemoryContext carries one boundary's lower-trust memory news for
+	// every scope, as one system notification.
+	TurnMemoryContext TurnKind = "MEMORY_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
@@ -91,6 +94,15 @@ const (
 // identity (TurnID, TurnKind and the other identity fields). An entry without
 // it is a legacy entry, whose turn identity readers infer as they always have.
 const TurnFormatIdentity = 1
+
+// PublicTranscript reports whether entries of this kind appear in the public
+// transcript, the one read_transcript and doctor transcript number turn by
+// turn. Resolution markers carry no model/public content, and transcript-only
+// entries exist for the history projection alone; both are omitted entirely so
+// interleaved tool calls and results remain adjacent.
+func (k TurnKind) PublicTranscript() bool {
+	return k != TurnAttentionResolution && !k.TranscriptOnly()
+}
 
 // TranscriptOnly reports whether entries of this kind are written to the
 // transcript only. They never enter a session's in-memory history, resume
@@ -146,6 +158,10 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
+	// EndReason is why a root session's call ended its turn (one of
+	// tool.CommunicateEndReasons); empty on a call that kept the turn going
+	// and wherever end_reason is not offered (delegates, headless roots).
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // NoticeKind names a presentational notice.
@@ -157,6 +173,10 @@ const (
 	NoticeGoalEnded      NoticeKind = "goal_ended"
 	NoticeTurnLimit      NoticeKind = "turn_limit"
 	NoticeSkillActivated NoticeKind = "skill_activated"
+	// NoticeApprovalDecision records a human's Allow or Deny on a sandbox
+	// escalation (S16). It has no live notice of its own: the escalation's
+	// card is the live form, and this is its history.
+	NoticeApprovalDecision NoticeKind = "approval_decision"
 )
 
 // NoticeInfo is a persisted presentational notice: its kind and exactly one
@@ -168,6 +188,8 @@ type NoticeInfo struct {
 	GoalEnded      *GoalEndedNotice      `json:"goal_ended,omitempty"`
 	TurnLimit      *TurnLimitNotice      `json:"turn_limit,omitempty"`
 	SkillActivated *SkillActivatedNotice `json:"skill_activated,omitempty"`
+	// ApprovalDecision rides a NoticeApprovalDecision notice.
+	ApprovalDecision *ApprovalDecisionNotice `json:"approval_decision,omitempty"`
 }
 
 // Validate enforces NoticeInfo's own doc contract: exactly one of the payload
@@ -179,10 +201,11 @@ func (n NoticeInfo) Validate() error {
 	matched := false
 	count := 0
 	for kind, present := range map[NoticeKind]bool{
-		NoticeToolRepair:     n.ToolRepair != nil,
-		NoticeGoalEnded:      n.GoalEnded != nil,
-		NoticeTurnLimit:      n.TurnLimit != nil,
-		NoticeSkillActivated: n.SkillActivated != nil,
+		NoticeToolRepair:       n.ToolRepair != nil,
+		NoticeGoalEnded:        n.GoalEnded != nil,
+		NoticeTurnLimit:        n.TurnLimit != nil,
+		NoticeSkillActivated:   n.SkillActivated != nil,
+		NoticeApprovalDecision: n.ApprovalDecision != nil,
 	} {
 		if !present {
 			continue
@@ -223,6 +246,18 @@ type TurnLimitNotice struct {
 	MaxToolRoundsPerInput int `json:"max_tool_rounds_per_input,omitempty"`
 }
 
+// ApprovalDecisionNotice is a human's decision on one sandbox escalation: the
+// escalation it answered, whether it was allowed, and what the card asked
+// about (the denied tool, the card's kind and the path). It carries what the
+// card showed and nothing else, never file contents.
+type ApprovalDecisionNotice struct {
+	EscalationID string `json:"escalation_id"`
+	Approved     bool   `json:"approved"`
+	Tool         string `json:"tool"`
+	Kind         string `json:"kind"`
+	DeniedPath   string `json:"denied_path"`
+}
+
 // SkillActivatedNotice mirrors events.SkillActivatedData.
 type SkillActivatedNotice struct {
 	Name string `json:"name"`
@@ -238,8 +273,9 @@ type AttentionResolutionInfo struct {
 }
 
 // DelegateDeliveryCommit records which exact tool call durably received one
-// delegate delivery on this tool-result turn. It is private persistence
-// metadata, not model content.
+// delegate delivery on this tool-result turn. One call may receive several in
+// its turn (a delegate_send wait carrying earlier results ahead of its own).
+// It is private persistence metadata, not model content.
 type DelegateDeliveryCommit struct {
 	ToolCallID string `json:"tool_call_id"`
 	DeliveryID string `json:"delivery_id"`
@@ -373,7 +409,8 @@ type Turn struct {
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string `json:"client_mutation_id,omitempty"`
+	ClientMutationID string              `json:"client_mutation_id,omitempty"`
+	CommandInput     *CommandInputRecord `json:"command_input,omitempty"`
 	// Communicate carries a delivered message on TurnCommunicate entries.
 	Communicate *CommunicateInfo `json:"communicate,omitempty"`
 	// Completion carries how an execution ended on TurnCompletion entries.

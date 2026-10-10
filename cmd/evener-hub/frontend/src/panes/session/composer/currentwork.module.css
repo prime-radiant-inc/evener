@@ -60,6 +60,26 @@
   white-space: nowrap;
 }
 
+/* The status word is wire text, not a fixed micro-label: known statuses are
+   title-cased in code and unknown ones must render as written, so there is
+   deliberately no text-transform here. It shares the row's sizing contract,
+   so a long status ellipsizes like the objective instead of escaping the pane. */
+.status {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-caption);
+  letter-spacing: var(--tracking-eyebrow);
+}
+
+.statusBlocked {
+  color: var(--attention-ink);
+}
+
 .link {
   appearance: none;
   border: 0;

@@ -24,9 +24,9 @@ no pane handle on `window`, and the opener is `paneActions.openBeside`
   isolated `$HOME` (see the Setup checklist in `docs/developing-evener/agentic-testing.md`).
 - **Not** `shell-generated-image-path-inline.md`. Its row structurally cannot
   produce an open-beside control: `openBesidePath` is defined only on
-  `read_file` (`tools/fsTools.tsx:64-67`) and `edit_file`/`write_file`
-  (`tools/editTools.tsx:78,96`), never on `shell`/`exec_command`, and
-  `apply_patch` opts out explicitly (`editTools.tsx:99`).
+  `read_file` (`tools/fsTools.tsx:70`) and `edit_file`/`write_file`
+  (`tools/editTools.tsx:48,63`), never on `shell`/`exec_command`, and
+  `apply_patch` opts out explicitly (`editTools.tsx:66`).
 - The full workspace shell (`/s/local:<SID>`), not a chrome-stripped route —
   `openBeside` needs the dockview host.
 - `make build-web` before building the hub (rebuild matrix item 3 in the

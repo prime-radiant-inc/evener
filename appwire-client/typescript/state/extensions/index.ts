@@ -3,6 +3,7 @@
 // both apps' plugin marketplace and installed-plugin settings.
 // Each is a factory taking a narrow client port; the apps build the instances
 // they wire to their view layers.
+export * from "./hubWriteGate";
 export * from "./keyedRevision";
 export * from "./launchLayer";
 export * from "./listRevision";

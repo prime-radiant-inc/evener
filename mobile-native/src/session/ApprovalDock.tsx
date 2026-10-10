@@ -10,7 +10,9 @@ import type { ApprovalControls } from "../approvalControls";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { approvalCard } from "./askDockCopy";
+import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
+import { wrapAfterSlashes } from "./format";
 
 export interface ApprovalDockProps {
 	request: SandboxEscalationRequested;
@@ -23,10 +25,6 @@ export interface ApprovalDockProps {
 	 * turn, in the order the hub raised them. */
 	waiting?: number;
 }
-
-// A path wraps only at its slashes: a zero-width space after each one gives
-// the line a break there and nowhere else.
-const breakAtSlashes = (path: string) => path.replaceAll("/", "/\u200b");
 
 const NO_DECISION = { pending: null, refreshing: false, error: null };
 const noDecision = () => NO_DECISION;
@@ -109,31 +107,41 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (
-		<View style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
-			<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-				<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
+		// What the sandbox blocked scrolls when the screen has less room than it
+		// needs (a long target, the largest text sizes); Allow and Deny stay on
+		// screen.
+		<View testID="approval-dock" style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
+			<DockBody contentContainerStyle={{ gap: 8 }}>
+				<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+					<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+					>
+						{card.wants}
+					</Text>
+				</View>
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+					style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 				>
-					{card.wants}
+					{card.target ? `${card.tool}  ${wrapAfterSlashes(card.target)}` : card.tool}
 				</Text>
-			</View>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ fontFamily: fonts.mono, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
-			>
-				{card.target ? `${card.tool}  ${breakAtSlashes(card.target)}` : card.tool}
-			</Text>
-			<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
-			{waiting > 0 ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
-				>
-					{`${waiting} more waiting`}
-				</Text>
-			) : null}
+				<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
+				{waiting > 0 ? (
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							fontSize: 13 * scale,
+							lineHeight: 18 * scale,
+							color: palette.inkMid,
+							fontVariant: ["tabular-nums"],
+						}}
+					>
+						{`${waiting} more waiting`}
+					</Text>
+				) : null}
+			</DockBody>
 			{controls && state.error ? (
 				<Text {...body} numberOfLines={1} style={{ ...body.style, color: palette.dangerInk }}>
 					{state.error}

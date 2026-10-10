@@ -323,7 +323,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Fork }, "source does not advertise fork"),
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			m.enterSessionBrowse(false)
-			m.addSessionSystem("Select a user message, then press f to fork.")
+			m.addSessionSystem("Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.")
 			return nil
 		},
 	},
@@ -515,7 +515,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 			panel := launchconfig.NewPluginsPanel()
 			m.pluginsPanel = &panel
 			if m.client != nil {
-				return tea.Batch(m.marketplaceListRead(), launchconfig.CmdPluginList(m.client))
+				return tea.Batch(m.pluginsPanelReads()...)
 			}
 			return nil
 		},
@@ -698,10 +698,11 @@ func hubCommandHelpLive(caps hubSessionCapabilities, live bool, state string) st
 		"  ctrl+j           New line in input (alternative)",
 		"  esc              Browse transcript / select messages",
 		"  pgup             Browse transcript and page up",
-		"  esc / i          Return from browse to compose",
+		"  esc              Return from browse to compose",
+		"  ctrl+up/down     Move the browse selection",
 	)
 	if caps.Fork {
-		lines = append(lines, "  f                Fork selected user message in browse")
+		lines = append(lines, "  ctrl+f           Fork selected user message in browse")
 	}
 	lines = append(lines,
 		"  ctrl+o           Go to live dashboard",

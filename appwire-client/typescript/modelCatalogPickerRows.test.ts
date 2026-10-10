@@ -110,11 +110,11 @@ describe("pickableModelRows", () => {
 
 describe("rowMeta", () => {
   test("joins capabilities, cost, and context window with a middot", () => {
-    expect(rowMeta(SONNET, false)).toBe("tools · $3 in · $15 out /Mtok · 200k");
+    expect(rowMeta(SONNET, false)).toBe("tools · $3 in · $15 out /Mtok · 200K");
   });
 
   test("leads with the provider when asked (the mixed-provider Recent group)", () => {
-    expect(rowMeta(GPT5, true)).toBe("openai · tools · $1.25 in · $10 out /Mtok · 400k");
+    expect(rowMeta(GPT5, true)).toBe("openai · tools · $1.25 in · $10 out /Mtok · 400K");
   });
 
   test("an entry with no metadata at all yields an empty string", () => {

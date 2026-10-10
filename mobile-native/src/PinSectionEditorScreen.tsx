@@ -8,11 +8,13 @@ import { updating } from "./navigationPages";
 import { pinSectionAsShown } from "./pinNavigation";
 import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
+import { destructiveButton } from "./haptics";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Button } from "./sheet/Grouped";
 
-const storageError =
-	"Your last saved section name is kept. This edit could not be saved on this device; refresh to retry.";
+const storageError = "Your last saved section name is kept. This edit could not be saved on this device. Try again.";
 export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSectionEditor">) {
 	const { hubId, sectionId, title } = route.params;
 	const pin = usePinNavigation(hubId, undefined, sectionId);
@@ -61,7 +63,6 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 			setProposal((previous) => ({ ...previous, error: storageError }));
 		}
 		if (pin.ready) void pin.actions?.reconcile();
-		else pin.retry();
 	}
 	function change(value: string) {
 		if (blocked) return;
@@ -82,7 +83,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 		} catch {
 			setProposal((previous) => ({
 				...previous,
-				error: "The saved name could not be cleared from this device. Refresh before editing again.",
+				error: "The saved name could not be cleared from this device. Check the section before editing again.",
 			}));
 			return false;
 		}
@@ -105,23 +106,19 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Delete section",
-					style: "destructive",
-					onPress: () => {
-						// The catalog re-reads itself while the alert is up; delete only
-						// the section as it was shown.
-						if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section)) void execute(true);
-						else setChangedUnderAlert(true);
-					},
-				},
+				destructiveButton("Delete section", () => {
+					// The catalog re-reads itself while the alert is up; delete only
+					// the section as it was shown.
+					if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section)) void execute(true);
+					else setChangedUnderAlert(true);
+				}),
 			],
 		);
 	}
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -136,10 +133,13 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 						<Copy>{section?.name ?? title}</Copy>
 						<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 						<ErrorMessage message={message} />
-						{!pin.ready || pin.action?.uncertain || pin.page?.error || selected?.error ? (
-							<Action disabled={!!pin.action?.pending || !!pin.page?.loading} onPress={refresh}>
-								{pin.ready ? "Refresh section" : "Reconnect"}
-							</Action>
+						{pin.ready && (pin.action?.uncertain || pin.page?.error || selected?.error) ? (
+							<Button
+								text
+								label="Check again"
+								disabled={!!pin.action?.pending || !!pin.page?.loading}
+								onPress={refresh}
+							/>
 						) : null}
 						{pin.action?.pending ? (
 							<Copy muted>Checking the section…</Copy>
@@ -172,28 +172,22 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 							{!valid ? <Copy muted>Use 1–80 characters.</Copy> : null}
 						</View>
 						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							<Action tone="primary" disabled={blocked || !valid} onPress={() => void execute()}>
-								Save name
-							</Action>
+							<Button primary compact label="Save name" disabled={blocked || !valid} onPress={() => void execute()} />
 							{selected?.draft ? (
-								<Action
-									tone="quiet"
+								<Button
+									text
+									quiet
+									label="Discard saved edit"
 									disabled={!settled}
 									onPress={() => {
 										if (selected.draft) clear(selected.draft);
 									}}
-								>
-									Discard saved edit
-								</Action>
+								/>
 							) : null}
 						</View>
-						<Action disabled={blocked} onPress={confirmDelete}>
-							Delete section
-						</Action>
+						<Button text label="Delete section" disabled={blocked} onPress={confirmDelete} />
 						<Copy muted>Deleting a section keeps its sessions and their history.</Copy>
-						<Action tone="quiet" onPress={() => navigation.goBack()}>
-							Close
-						</Action>
+						<Button text quiet label="Close" onPress={() => navigation.goBack()} />
 					</ScrollView>
 				</KeyboardAvoidingView>
 			)}

@@ -443,7 +443,7 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 
 // TestHostManageNotForwarded pins the spec's negative requirement: the
 // host-management methods (add/list/status/remove/update) are controller-local
-// and MUST NOT be added to remoteHostAdminMethods — otherwise the proxy would
+// and MUST NOT be added to the AppWire host-request catalog — otherwise the proxy would
 // forward them to a remote hub instead of acting on the controller's own
 // config.
 func TestHostManageNotForwarded(t *testing.T) {
@@ -454,7 +454,7 @@ func TestHostManageNotForwarded(t *testing.T) {
 		appwire.MethodEvenerHostRemove,
 		appwire.MethodEvenerHostUpdate,
 	} {
-		if _, ok := remoteHostAdminMethods[name]; ok {
+		if appwire.IsHostRequestMethod(name) {
 			t.Errorf("controller-local %q is on the remote forward allow-list", name)
 		}
 	}

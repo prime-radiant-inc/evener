@@ -260,13 +260,55 @@ test("a failed card carries the danger rail itself - there is no module chrome t
     argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
-  seedCurrentDelegate("ref_current", "job_f", "failed", "build error");
+  seedCurrentDelegate("ref_current", "job_f", "failed", "build error", { transcriptRef: "ref_f" });
   render(<Body item={failed} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
   // The folded quote IS the failure reason, verbatim, ✕-marked - the exception
   // earns the explanation without a click.
   expect(within(row).getByTestId("subagent-quote").textContent).toBe("✕ build error");
+});
+
+// The hub's reason is a code; a failed card leads with the run's cause, else
+// the code in words (#3327).
+test.each([
+  ["failed", { error: "provider returned 500" }, "✕ provider returned 500"],
+  ["runtime_lost", {}, "✕ runtime lost"],
+])("a failed card with reason %s says the ending in words", (reason, overrides, quote) => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail",
+    callId: "call_fail",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason }),
+  });
+  seedCurrentDelegate("ref_current", "job_f", "failed", reason, { ...overrides, transcriptRef: "ref_f" });
+  render(<Body item={failed} live={false} sessionRef="ref_current" />);
+  expect(within(screen.getByTestId("subagent-row")).getByTestId("subagent-quote").textContent).toBe(quote);
+});
+
+// With no stable delegate to read, the card and its launch receipt read the
+// tool output's reason, a code too: both say it in words, never snake_case
+// (#3375 review).
+test("a failed card with no stable delegate says the tool output's reason code in words", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const failed = delegateItem({
+    id: "d_fail_raw",
+    callId: "call_fail_raw",
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
+    output: JSON.stringify({
+      delegate_id: "job_raw",
+      status: "failed",
+      transcript_ref: "ref_raw",
+      reason: "runtime_lost",
+    }),
+  });
+  render(<Body item={failed} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByTestId("subagent-quote").textContent).toContain("runtime lost");
+  expect(row.textContent).not.toContain("runtime_lost");
 });
 
 // 3zf8: a child deliberately killed with job_stop (or reconciled to
@@ -283,7 +325,7 @@ test("3zf8: a cancelled child gets its own distinct stopped kind", () => {
     argumentsJSON: JSON.stringify({ prompt: "misbehaving, killed" }),
     output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
-  seedCurrentDelegate("ref_current", "job_stopped", "cancelled");
+  seedCurrentDelegate("ref_current", "job_stopped", "cancelled", undefined, { transcriptRef: "ref_stopped" });
   render(<Body item={stopped} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("stopped");
@@ -1019,6 +1061,7 @@ test("resumed work keeps its identity and historical report but uses the current
   const now = 1_700_000_221_000;
   const stable = {
     delegateId: "dlg_resumed",
+    transcriptRef: "child_resumed",
     status: "running",
     outcome: "exhausted",
     terminal: false,
@@ -1119,6 +1162,7 @@ test("the stable lifecycle owns the card while child content status changes, and
 
   const stable = {
     delegateId: "dlg_attention",
+    transcriptRef: "ref_await_child",
     status: "running",
     outcome: "running",
     terminal: false,
@@ -1396,6 +1440,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
             diagnostics: {
               delegates: [
                 {
+                  runGeneration: 1,
                   delegateId: "dlg_hist",
                   ownerSessionId: "sess_parent_hist",
                   rootSessionId: "sess_parent_hist",
@@ -1453,7 +1498,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
   // frozen "running" spawn output.
   await waitFor(() => expect(row.dataset.kind).toBe("done"));
   const stats = within(row).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("↑41k ↓6k");
+  expect(stats.textContent).toContain("↑41.2K ↓6.1K");
   expect(stats.textContent).toContain("22m00s");
 });
 

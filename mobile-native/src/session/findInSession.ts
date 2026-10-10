@@ -2,20 +2,51 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
+import { composeStepWords, type EvenerDelegateInfo, type SteeringFragment } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
-import { stepTarget } from "./transcriptRows";
-
-function stepText(step: RunStep): string {
-	return `${step.label}\n${step.detail.description ?? ""}\n${stepTarget(step.label, step.detail.arguments) ?? ""}`;
+import { notificationLine, notificationText } from "./notificationLine";
+/** Find in session while it's open: what you typed, the current match's
+ * reader key, whether older history is being searched, and whether that
+ * search reached the start of history with nothing older. */
+export interface FindState {
+	query: string;
+	key: string | null;
+	seeking: boolean;
+	exhausted: boolean;
 }
 
-/** The words a row shows, or would show when opened. A time marker has none. */
-export function rowText(row: TimelineRow): string {
+/** A new query starts a new search: no current match yet, and older history
+ * is searched only when there is something to look for. */
+export function newFind(query: string): FindState {
+	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
+}
+
+// A step's intent and its words, which name what it acted on: a file, a
+// command, a fetched page's URL, a search's query. An intent row keeps its
+// words but not their composed summary, and its line shows their target.
+function stepText(step: RunStep): string {
+	const { description, words, summary } = step.detail;
+	return [step.label, description ?? "", words ? composeStepWords(words) : (summary ?? "")].join("\n");
+}
+
+// A notification reads as its card, not its markup.
+function fragmentText(fragment: SteeringFragment, delegates: readonly EvenerDelegateInfo[] | undefined): string {
+	if (fragment.kind === "text") return notificationText(fragment.text);
+	const line = notificationLine(fragment.notification, delegates);
+	return [line.headline, line.detail, line.output].filter(Boolean).join("\n");
+}
+
+/** The words a row shows, or would show when opened. A time marker has none.
+ * The session's subagents name the subagents its notifications report on. */
+export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInfo[]): string {
 	switch (row.kind) {
 		case "user":
 		case "note":
-		case "notice":
 			return row.text;
+		case "notice":
+			return row.notifications
+				? row.notifications.map((fragment) => fragmentText(fragment, delegates)).join("\n")
+				: row.text;
 		case "assistant":
 			return row.markdown;
 		case "failure":
@@ -36,12 +67,16 @@ export function rowText(row: TimelineRow): string {
 }
 
 /** The indexes of the rows holding `query`, ignoring case, oldest first. */
-export function findMatches(rows: readonly TimelineRow[], query: string): number[] {
+export function findMatches(
+	rows: readonly TimelineRow[],
+	query: string,
+	delegates?: readonly EvenerDelegateInfo[],
+): number[] {
 	const needle = query.trim().toLowerCase();
 	if (!needle) return [];
 	const matches: number[] = [];
 	rows.forEach((row, index) => {
-		if (rowText(row).toLowerCase().includes(needle)) matches.push(index);
+		if (rowText(row, delegates).toLowerCase().includes(needle)) matches.push(index);
 	});
 	return matches;
 }

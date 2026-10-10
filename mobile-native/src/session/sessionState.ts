@@ -1,11 +1,12 @@
 // What the Session's header says: the nav bar's state line with its still
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
-// never unread, so a finished one is Idle, with no dot.
-import type { EvenerDelegateInfo, ThreadModel } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+// never unread, so one whose turn ended is Idle, with no dot.
+import { summaryTally } from "../subagents/subagentModel";
+import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+import { taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration } from "./format";
+import { compactDuration, timeAgo } from "./format";
 
 export interface SessionStateLine {
 	state: BoardState;
@@ -21,7 +22,10 @@ export type StateSource = Pick<
  * session can't be shut down FROM again, since it already is. */
 export const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
 
-export function sessionStateLine(session: StateSource, now: number): SessionStateLine {
+/** `runMs` is a subagent's time in its run, as its Subagents row shows it:
+ * its screen says "Working" with that number rather than its current turn's,
+ * so a subagent has one time everywhere. */
+export function sessionStateLine(session: StateSource, now: number, runMs?: number | null): SessionStateLine {
 	const type = session.status.type;
 	// This follows the Board's own attention order (board/attention.ts's
 	// boardState, which matches the hub's NeedsYouBand) exactly, so the two
@@ -35,14 +39,17 @@ export function sessionStateLine(session: StateSource, now: number): SessionStat
 	// A question outranks an approval, as on the Board.
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
+	// Awaiting without a question: the turn ended on needs_response (#4093).
+	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
 	if (type === "active") {
+		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);
 		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}
-	const finished = lastCompletion(session.turns);
+	const ended = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: ended === null ? "Idle" : `Idle · ${timeAgo(now - ended)}`,
 	};
 }
 
@@ -61,28 +68,11 @@ export interface SubagentTally {
 	done: number;
 }
 
-/** Running, failed or done, as the hub's job counts are (spec 9), over the
- * subagents this session has loaded: S3's fallback until the hub tallies the
- * whole tree. */
-export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
-	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
-	for (const delegate of delegates ?? []) {
-		tally.total += 1;
-		const tone = projectDelegateEntry(delegate).tone;
-		if (tone === "running") tally.running += 1;
-		else if (tone === "failed") tally.failed += 1;
-		else tally.done += 1;
-	}
-	return tally;
-}
-
 export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 
 export interface ContextChip {
 	kind: ChipKind;
 	label: string;
-	/** "2 failed", drawn in red ink after the label. */
-	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
 	/** A blue dot after the label: a document is new or changed (Files). */
@@ -97,22 +87,32 @@ export interface ContextChip {
  * the screen last read them; Goal (opens the local Session sheet) and Queue
  * (a local toggle) need no connection either, and all three always show when
  * they have content. `files` counts the session's documents, and `fresh`
- * says one is new or changed since you last opened it. */
+ * says one is new or changed since you last opened it. `subagents` supplies
+ * authoritative summary counts; a transcript roster is never a count source,
+ * only evidence that subagents exist while the count isn't known. A shut-down
+ * session's count can stay unknown for good, so the Subagents chip shows no
+ * count until the summary knows it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
 	files: { count: number; fresh: boolean } = { count: 0, fresh: false },
+	subagents: SessionActivityCounts | null = null,
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
-	const subagents = subagentTally(session.delegates);
-	if (connected && subagents.total > 0) {
-		const failed = subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
+	const tally = summaryTally(subagents ?? undefined);
+	if (connected && tally && tally.total > 0) {
 		chips.push({
 			kind: "subagents",
-			label: `Subagents ${subagents.total}`,
-			failed,
+			label: `Subagents ${tally.total}`,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${subagents.total}, ${failed}` : `Subagents, ${subagents.total}`,
+			accessibilityLabel: `Subagents, ${tally.total}`,
+		});
+	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
+		chips.push({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
 		});
 	}
 	if (files.count > 0)
@@ -124,13 +124,17 @@ export function contextChips(
 			accessibilityLabel: `Files, ${files.count}${files.fresh ? ", new or changed" : ""}`,
 		});
 	const tasks = session.tasks;
-	if (connected && tasks && tasks.total > 0)
+	// The Tasks sheet's groups and the web's activity chips read the same
+	// count, so the chip must too.
+	if (connected && tasks && tasks.total > 0) {
+		const settled = taskSettledCount(tasks);
 		chips.push({
 			kind: "tasks",
-			label: `Tasks ${tasks.done}/${tasks.total}`,
+			label: `Tasks ${settled}/${tasks.total}`,
 			attention: false,
-			accessibilityLabel: `Tasks, ${tasks.done} of ${tasks.total} done`,
+			accessibilityLabel: `Tasks, ${settled} of ${tasks.total} settled`,
 		});
+	}
 	if (session.goal) {
 		const blocked = session.goal.status === "blocked";
 		chips.push({

@@ -138,9 +138,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			*history = result
 			after := s.cm.estimateTokensFor(prof, *history)

@@ -11,6 +11,7 @@
 // The local codec is a pinned localStorage contract: values a browser already
 // stores must keep decoding, so its encoding does not change.
 
+import { isPlainObject } from "./plainObject";
 import type {
   TranscriptDisplayAdvanced as WireAdvanced,
   TranscriptDisplayConfig as WireConfig,
@@ -106,10 +107,6 @@ function cloneConfig(config: TranscriptDisplayConfigV1): TranscriptDisplayConfig
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -129,7 +126,7 @@ function isBoolean(value: unknown): value is boolean {
 
 function isContentVector(value: unknown): value is ContentVector {
   return (
-    isRecord(value) &&
+    isPlainObject(value) &&
     hasExactKeys(value, ["toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
     isBoolean(value.toolIntent) &&
     isBoolean(value.toolCalls) &&
@@ -140,7 +137,7 @@ function isContentVector(value: unknown): value is ContentVector {
 
 function isCustomSelection(value: unknown): value is { readonly kind: "custom" } & ContentVector {
   return (
-    isRecord(value) &&
+    isPlainObject(value) &&
     hasExactKeys(value, ["kind", "toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
     value.kind === "custom" &&
     isBoolean(value.toolIntent) &&
@@ -154,15 +151,38 @@ export function presetContent(level: ContentLevel): ContentVector {
   return cloneVector(CONTENT_VECTORS[level]);
 }
 
+/** The content vector a display config selects: the named preset's vector, or
+ * the custom selection's own. The one lookup the web and native surfaces share,
+ * so they cannot drift on what a level shows. */
+export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
+  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
+}
+
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
- * warnings, and tool-repair notices - the repair already succeeded) are
- * high-verbosity content. expandByDefault is the content-vector
- * field that marks the high levels - it is on exactly for the activity and
- * full presets, the sole field separating tools from activity - and a custom
- * vector opts the notices in by opting into default expansion. */
+ * warnings, and tool-repair notices - the repair already succeeded) show only
+ * at full, the level that shows everything: the full preset, or a custom
+ * vector with every field of full's turned on. */
 export function informationalNoticesVisible(vector: ContentVector): boolean {
-  return vector.expandByDefault;
+  const full = CONTENT_VECTORS.full;
+  return (Object.keys(full) as (keyof ContentVector)[]).every((field) => vector[field] === full[field]);
+}
+
+/** The one rule the transcript projector and the category inventory answer
+ * from: the chat preset — "just the conversation" — shows no daemon steering
+ * (instructions to the agent, never the conversation; Jesse, 2026-10-03). A
+ * steer the human wrote (source "user", the human-note kind included) is the
+ * human's own words and shows at every level, so the projector checks the
+ * source before it consults this rule. Custom selections model tool intent,
+ * calls, reasoning and expansion — never steering — so daemon steering shows
+ * for them as it does at intent and above. */
+export function hidesDaemonSteering(content: ContentSelection): boolean {
+  return content.kind === "preset" && content.level === "chat";
+}
+
+/** Internal snapshots stay out of the chat preset, even with diagnostics on. */
+export function sharedNotesVisible(config: TranscriptDisplayConfigV1): boolean {
+  return config.advanced.systemEvents && !(config.content.kind === "preset" && config.content.level === "chat");
 }
 
 export function normalizeContent(content: ContentSelection): ContentSelection {
@@ -181,7 +201,7 @@ export function normalizeContent(content: ContentSelection): ContentSelection {
 export function normalizeConfig(config: TranscriptDisplayConfigV1): TranscriptDisplayConfigV1 {
   if (config.version !== 1) throw new Error("unsupported transcript display config version");
   const content = normalizeContent(config.content);
-  if (!isRecord(config.advanced)) throw new Error("invalid transcript display advanced settings");
+  if (!isPlainObject(config.advanced)) throw new Error("invalid transcript display advanced settings");
   if (
     !isBoolean(config.advanced.roundTimings) ||
     !isBoolean(config.advanced.tokenCounts) ||
@@ -245,7 +265,7 @@ type ShippedCandidate = TranscriptDisplayConfigV1 | TranscriptViewportClass | nu
 
 function candidateConfig(value: ConfigCandidate | HubCandidate): TranscriptDisplayConfigV1 | undefined {
   if (value === null || value === undefined) return undefined;
-  if (isRecord(value) && "config" in value && isRecord(value.config))
+  if (isPlainObject(value) && "config" in value && isPlainObject(value.config))
     return value.config as unknown as TranscriptDisplayConfigV1;
   return value as TranscriptDisplayConfigV1;
 }
@@ -265,7 +285,7 @@ export function resolveEffectiveConfig(
   let hubValue: HubCandidate;
   let shippedValue: ShippedCandidate;
   if (
-    isRecord(localOrSources) &&
+    isPlainObject(localOrSources) &&
     (Object.hasOwn(localOrSources, "local") ||
       Object.hasOwn(localOrSources, "hub") ||
       Object.hasOwn(localOrSources, "shipped") ||
@@ -321,7 +341,7 @@ export function toWireConfig(config: TranscriptDisplayConfigV1): WireConfig {
 }
 
 function readWireContent(value: unknown): ContentSelection | undefined {
-  if (!isRecord(value) || typeof value.kind !== "string") return undefined;
+  if (!isPlainObject(value) || typeof value.kind !== "string") return undefined;
   if (value.kind === "preset") {
     if (!hasExactKeys(value, ["kind", "level"]) || !isContentLevel(value.level)) return undefined;
     return { kind: "preset", level: value.level };
@@ -335,7 +355,7 @@ function readWireContent(value: unknown): ContentSelection | undefined {
 
 function readWireAdvanced(value: unknown): TranscriptDisplayAdvancedV1 | undefined {
   if (
-    !isRecord(value) ||
+    !isPlainObject(value) ||
     !hasExactKeys(value, [
       "roundTimings",
       "tokenCounts",
@@ -364,7 +384,7 @@ function readWireAdvanced(value: unknown): TranscriptDisplayAdvancedV1 | undefin
 }
 
 export function fromWireConfig(value: unknown): TranscriptDisplayConfigV1 | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, ["version", "content", "advanced"]) || value.version !== 1)
+  if (!isPlainObject(value) || !hasExactKeys(value, ["version", "content", "advanced"]) || value.version !== 1)
     return undefined;
   const content = readWireContent(value.content);
   const advanced = readWireAdvanced(value.advanced);
@@ -381,7 +401,7 @@ export function toWireDefault(value: HubTranscriptDisplayDefault): WireDefault {
 /** Validates revision and config while ignoring unknown wrapper fields,
  * so additional hub metadata does not invalidate a usable default. */
 export function fromWireDefault(value: unknown): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
+  if (!isPlainObject(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
     return undefined;
   }
   const config = fromWireConfig(value.config);
@@ -399,7 +419,7 @@ export function toWireDefaults(
 export function fromWireDefaults(
   value: unknown,
 ): Readonly<Record<TranscriptViewportClass, HubTranscriptDisplayDefault>> | undefined {
-  if (!isRecord(value)) return undefined;
+  if (!isPlainObject(value)) return undefined;
   const desktop = fromWireDefault(value.desktop);
   const mobile = fromWireDefault(value.mobile);
   return desktop === undefined || mobile === undefined ? undefined : { desktop, mobile };
@@ -476,6 +496,8 @@ export type TranscriptDisplayCategory =
   | "reasoning"
   | "expandedDetails"
   | "informationalNotices"
+  | "daemonSteering"
+  | "sharedNotes"
   | "roundTimings"
   | "tokenCounts"
   | "estimatedCost"
@@ -492,7 +514,7 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   const normalized = normalizeConfig(config);
   const visible: TranscriptDisplayCategory[] = ["userMessages", "agentMessages", "criticalRows"];
   const hidden: TranscriptDisplayCategory[] = [];
-  const content = normalized.content.kind === "preset" ? presetContent(normalized.content.level) : normalized.content;
+  const content = contentVectorForConfig(normalized);
   const contentCategories: readonly [keyof ContentVector, TranscriptDisplayCategory][] = [
     ["toolIntent", "toolIntent"],
     ["toolCalls", "toolCalls"],
@@ -503,6 +525,10 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
   // Informational notices answer from the same rule the projector gates them
   // by, so the settings summary can never disagree with what renders.
   (informationalNoticesVisible(content) ? visible : hidden).push("informationalNotices");
+  // Daemon steering answers from the same rule the projector gates it by, so
+  // the settings summary can never disagree with what renders.
+  (hidesDaemonSteering(normalized.content) ? hidden : visible).push("daemonSteering");
+  (sharedNotesVisible(normalized) ? visible : hidden).push("sharedNotes");
 
   const advanced = normalized.advanced;
   const advancedCategories: readonly [boolean, TranscriptDisplayCategory][] = [

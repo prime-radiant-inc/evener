@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -54,7 +55,7 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 		if recovery != "" {
 			truncation = "\n... [session log truncated; the full detail is in this session's transcript." + recovery + "]"
 		}
-		logText = logText[:maxLogChars] + truncation
+		logText = runetrim.Cut(logText, maxLogChars) + truncation
 	}
 
 	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far.%s\n\n%s\n[END ORIENTATION]", recovery, logText)

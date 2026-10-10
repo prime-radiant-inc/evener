@@ -7,7 +7,7 @@
 // (createNativeMutationHost, start, a fenced thread/read), enqueues the
 // interrupt before it opens that gate, and holds the registration until the
 // interrupt has left the outbox.
-import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
+import type { AppwireClientLike, EvenerThread, ThreadReadResponse } from "@evener/appwire-client";
 import { sessionControls } from "@evener/appwire-client";
 import { READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
 import { createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
@@ -15,13 +15,16 @@ import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMu
 
 /** "stopped": the interrupt is durably admitted, the Session's "Stopped"
  * moment. "notWorking": a fresh read shows no turn to stop, so nothing was
- * sent. "unavailable": the session couldn't be read or opened for mutations. */
-export type StopOutcome = "stopped" | "notWorking" | "unavailable";
+ * sent. "unavailable": the session couldn't be read or opened for mutations.
+ * "dropped": a held Stop's guard found the turn it named no longer runs
+ * (phase 6 ruling 18), so nothing was sent. */
+export type StopOutcome = "stopped" | "notWorking" | "unavailable" | "dropped";
 
 /** What the Board's toast says after a Stop (spec 8.3 for "Stopped"). */
 export function stopToast(outcome: StopOutcome, title: string): string {
 	if (outcome === "stopped") return "Stopped";
 	if (outcome === "notWorking") return "Nothing to stop: its turn had already ended.";
+	if (outcome === "dropped") return "The turn you stopped ended before you were back online";
 	return `Couldn't stop “${title}”. Open it to stop it there.`;
 }
 
@@ -44,11 +47,13 @@ export class BoardStops {
 		return this.#inFlight.has(ref) || this.#holds.has(ref);
 	}
 
-	stop(client: AppwireClientLike, ref: string): Promise<StopOutcome> {
+	/** Stops the session's running turn. `guard`, a held Stop's, reads the
+	 * fresh thread first: false drops the Stop, sending nothing. */
+	stop(client: AppwireClientLike, ref: string, guard?: (thread: EvenerThread) => boolean): Promise<StopOutcome> {
 		const running = this.#inFlight.get(ref);
 		if (running) return running;
 		if (this.#holds.has(ref)) return Promise.resolve("stopped");
-		const run = this.#stop(client, ref).finally(() => this.#inFlight.delete(ref));
+		const run = this.#stop(client, ref, guard).finally(() => this.#inFlight.delete(ref));
 		this.#inFlight.set(ref, run);
 		return run;
 	}
@@ -65,7 +70,11 @@ export class BoardStops {
 		this.releaseAll();
 	}
 
-	async #stop(client: AppwireClientLike, ref: string): Promise<StopOutcome> {
+	async #stop(
+		client: AppwireClientLike,
+		ref: string,
+		guard: ((thread: EvenerThread) => boolean) | undefined,
+	): Promise<StopOutcome> {
 		if (this.#disposed || client.state !== "ready") return "unavailable";
 		let runtime: NativeMutationRuntime;
 		let host: NativeMutationHost;
@@ -108,6 +117,10 @@ export class BoardStops {
 			host.dispose();
 			return "unavailable";
 		}
+		if (guard && !guard(thread.evener)) {
+			host.dispose();
+			return "dropped";
+		}
 		// The store's requireControl(conversation, "stop", "interrupt"). The wire
 		// omits a zero queue depth, as the store reads it.
 		if (!sessionControls(status, thread.evener.capabilities, thread.evener.queue.depth ?? 0).stop) {
@@ -133,7 +146,14 @@ export class BoardStops {
 		// Opens the dispatch gate on this read; the runtime then sends the
 		// interrupt. A lease gone stale (the connection dropped in these few
 		// milliseconds) leaves it in the outbox, delivered as any durable Stop is.
-		await host.reconcileRead(lease, response);
+		// A fence that cannot settle is non-fatal, as on the Session screen: the
+		// interrupt is already durably admitted, and the failure only leaves the
+		// gate blocked (the fail-safe direction) until a later read reconciles it.
+		try {
+			await host.reconcileRead(lease, response);
+		} catch (error) {
+			console.error("BoardStops: read fence failed", error);
+		}
 		return "stopped";
 	}
 

@@ -1,10 +1,37 @@
 // @vitest-environment node
 
-import type { AnyNotification } from "@evener/appwire-client";
+import type { AnyNotification, LaunchConfigClient, PathValidateResponse } from "@evener/appwire-client";
+import type { LaunchLayerClient, MarketplacesClient, PluginsClient } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, expectTypeOf, test } from "vitest";
 import { connectionStore } from "./connection";
-import { remoteHostStoreClient } from "./hostStoreClient";
+import { type HostStoreClient, remoteHostStoreClient } from "./hostStoreClient";
+
+function hostStoreTypeContract(client: HostStoreClient) {
+  expectTypeOf(client.request("evener/path/validate", { path: "/srv", kind: "dir" })).toEqualTypeOf<
+    Promise<PathValidateResponse>
+  >();
+  // @ts-expect-error -- the host port retains method-specific required params
+  client.request("evener/path/validate", { prefix: "/srv" });
+  // @ts-expect-error -- a host-bound store cannot issue thread reads
+  client.request("thread/read", { ref: "local:t", includeTurns: false });
+  // Each real remote store must accept the narrow host port without a cast.
+  const [launchConfig, marketplaces, plugins, launchLayer]: [
+    LaunchConfigClient,
+    MarketplacesClient,
+    PluginsClient,
+    LaunchLayerClient,
+  ] = [client, client, client, client];
+  // @ts-expect-error -- local-only credential operations cannot escape through launch config
+  launchConfig.request("evener/instance/refreshModels", { name: "primary" });
+  // @ts-expect-error -- local-only credential operations cannot escape through marketplaces
+  marketplaces.request("evener/instance/refreshModels", { name: "primary" });
+  // @ts-expect-error -- local-only credential operations cannot escape through plugins
+  plugins.request("evener/instance/refreshModels", { name: "primary" });
+  // @ts-expect-error -- local-only credential operations cannot escape through launch layers
+  launchLayer.request("evener/instance/refreshModels", { name: "primary" });
+}
+void hostStoreTypeContract;
 
 // The store-boundary port a REMOTE host's package stores take (component 07b):
 // every request goes through evener/host/request, and only that host's own
@@ -33,6 +60,32 @@ test("forwards every request through evener/host/request with the bound host", a
 
 test("rejects instead of reaching a controller method when no client is connected", async () => {
   await expect(remoteHostStoreClient("beta").request("model/list", {})).rejects.toThrow(/no client connected/);
+});
+
+test("an existing host port resolves the replacement connection on each request", async () => {
+  const first = connectFakeClient();
+  first.on("evener/host/request", () => ({ data: [] }));
+  const port = remoteHostStoreClient("beta");
+  await port.request("model/list", {});
+  const replacement = connectFakeClient();
+  replacement.on("evener/host/request", () => ({ data: [] }));
+  await port.request("model/list", { harness: "evener" });
+
+  expect(first.calls).toEqual([
+    { method: "evener/host/request", params: { host: "beta", method: "model/list", params: {} } },
+  ]);
+  expect(replacement.calls).toEqual([
+    { method: "evener/host/request", params: { host: "beta", method: "model/list", params: { harness: "evener" } } },
+  ]);
+});
+
+test("propagates the selected host's application refusal unchanged", async () => {
+  const fake = connectFakeClient();
+  const refusal = new Error("host refused model discovery");
+  fake.on("evener/host/request", () => {
+    throw refusal;
+  });
+  await expect(remoteHostStoreClient("beta").request("model/list", {})).rejects.toBe(refusal);
 });
 
 test("delivers only the frames wrapped for its host, unwrapped to the plain method", () => {

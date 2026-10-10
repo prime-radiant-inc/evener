@@ -10,9 +10,14 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 const trail = {
 	sessionRef: "local:fix",
 	path: "docs/superpowers/plans/settle-race.md",
+	reference: {
+		path: "docs/superpowers/plans/settle-race.md",
+		cwd: "/work/owner",
+		readTarget: "/work/owner/docs/superpowers/plans/settle-race.md",
+		provenance: "relative" as const,
+	},
 	title: "Fix the settle/drain race",
-	reviewRef: "local:coord",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 	progress: 0.617,
 	leftAt: 0,
 	updatedAt: "2026-09-26T11:39:00.000Z",

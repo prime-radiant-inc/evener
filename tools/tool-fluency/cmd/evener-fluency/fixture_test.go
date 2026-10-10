@@ -58,7 +58,7 @@ func TestMaterializeFixtureIgnoresTheUsersGitSetup(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(home, "ignore"), "*.txt\n")
 	global := filepath.Join(home, "gitconfig")
-	mustWrite(t, global, "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"+
+	mustWrite(t, global, "[commit]\n\tgpgsign = true\n[tag]\n\tgpgSign = true\n\tforceSignAnnotated = true\n[gpg]\n\tprogram = false\n"+
 		"[core]\n\thooksPath = "+filepath.Join(home, "hooks")+"\n\texcludesFile = "+filepath.Join(home, "ignore")+"\n"+
 		"[init]\n\ttemplateDir = "+filepath.Join(home, "template")+"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
@@ -74,6 +74,7 @@ func TestMaterializeFixtureIgnoresTheUsersGitSetup(t *testing.T) {
 	mustWrite(t, filepath.Join(work, "more.txt"), "the agent's change\n")
 	fixtureGit(t, work, "add", "more.txt")
 	fixtureGit(t, work, "commit", "-q", "-m", "the agent's commit")
+	fixtureGit(t, work, "tag", "-a", "v1.0.0", "-m", "the agent's annotated tag")
 }
 
 func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {
@@ -83,6 +84,30 @@ func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "escapes workdir") {
 		t.Fatalf("err = %v, want a path-escape error", err)
+	}
+}
+
+// TestMaterializeFixtureCommitDisablesAutoMaintenance: since git 2.5x a commit
+// runs `git maintenance run --auto --detach` (run-command.c:
+// prepare_auto_maintenance). That writer lives in its own session, outlives the
+// commit, and writes into the fixture's .git — recreating it if t.TempDir()
+// cleanup already removed it, so cleanup then fails with "directory not empty".
+// The fixture must commit with maintenance.auto=false, as the worktree tools
+// already do, so no detached writer is left to race the cleanup.
+func TestMaterializeFixtureCommitDisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, fixtureSpec{Git: true, Files: map[string]string{"main.go": "package main\n"}}); err != nil {
+		t.Fatalf("materializeFixture: %v", err)
+	}
+	cmd := exec.Command("git", "config", "--get", "maintenance.auto")
+	cmd.Dir = work
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the fixture repository does not set maintenance.auto, so on git 2.5x its commit leaves a detached `git maintenance run --auto` writer that outlives it and races t.TempDir() cleanup: git config --get maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "false" {
+		t.Errorf("fixture maintenance.auto = %q, want false so the fixture's commit leaves no detached maintenance writer", got)
 	}
 }
 
@@ -126,6 +151,39 @@ func TestRunCLIProbeCutsTheFixtureOffFromAnEnclosingRepository(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(stdout.String()), "off|"+filepath.Dir(work); got != want {
 		t.Errorf("evener saw GOWORK|GIT_CEILING_DIRECTORIES = %q, want %q", got, want)
+	}
+}
+
+// A CLI probe's `evener run` keeps its named scratch at exit, and no hub ever
+// archives a probe, so the harness removes the probe session's tree itself.
+func TestRunProbeRemovesTheCLISessionsScratchTree(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	tree := filepath.Join(tmp, "evener-scratch-"+id)
+	bin := filepath.Join(t.TempDir(), "fake-evener")
+	// Like a real run: a root meta in --state-dir and a named scratch in TMPDIR.
+	mustWrite(t, bin, `#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--state-dir" ]; then state="$2"; fi
+  shift
+done
+mkdir -p "$state/sessions" "$TMPDIR/evener-scratch-`+id+`/`+id+`"
+printf '{"id":"`+id+`"}' > "$state/sessions/`+id+`.meta.json"
+`)
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runConfig{evenerBin: bin, model: "openai/m", reasoningEffort: "low", outDir: t.TempDir(), timeout: time.Minute}
+	res := runProbe(cfg, probeFile{ID: "scratch", Prompt: "p"}, 1, nil, nil)
+	if res.SessionID != id {
+		t.Fatalf("probe session = %q, want %q (the fake run's meta was not read)", res.SessionID, id)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("the CLI probe left its session's scratch tree %s: %v", tree, err)
 	}
 }
 

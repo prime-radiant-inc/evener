@@ -5,11 +5,10 @@ import type {
   TranscriptProjection,
 } from "@evener/appwire-client";
 import {
-  type ContentVector,
   configFingerprint,
+  contentVectorForConfig,
   makeTranscriptDisplayConfig,
   normalizeConfig,
-  presetContent,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
@@ -31,6 +30,7 @@ export interface TranscriptRenderContextValue {
   readonly fullBaselineGeneration: number;
   /** Snapshot supplied by the owning transcript; never read from threadsStore. */
   readonly thread?: ThreadModel;
+  readonly sourcePaneId?: string;
 }
 
 export interface TranscriptRenderContextInput {
@@ -44,10 +44,7 @@ export interface TranscriptRenderContextInput {
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
   thread?: ThreadModel;
-}
-
-export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
+  sourcePaneId?: string;
 }
 
 export function expandDetailsByDefault(config: TranscriptDisplayConfigV1): boolean {
@@ -89,6 +86,7 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
   thread: undefined,
+  sourcePaneId: undefined,
 };
 
 const TranscriptRenderContext = createContext<TranscriptRenderContextValue | null>(null);
@@ -130,6 +128,7 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
     thread: input.thread,
+    sourcePaneId: input.sourcePaneId,
   };
 }
 
@@ -166,6 +165,7 @@ export function TranscriptRenderProvider({
   eligibleDisclosureIds,
   fullBaselineGeneration,
   thread,
+  sourcePaneId,
   entities,
 }: TranscriptRenderProviderProps) {
   const semanticConfig = normalizeConfig(config ?? DEFAULT_CONFIG);
@@ -181,6 +181,7 @@ export function TranscriptRenderProvider({
     semanticSurface,
     semanticScope,
     semanticGeneration,
+    sourcePaneId,
   ].join("\0");
   const semanticContextRef = useRef<
     | {
@@ -203,10 +204,11 @@ export function TranscriptRenderProvider({
       disclosureScope: semanticScope,
       fullBaselineGeneration: semanticGeneration,
       thread,
+      sourcePaneId,
     });
     semanticContextRef.current = { key: semanticKey, thread, context: next };
     return next;
-  }, [semanticKey, thread, value]);
+  }, [semanticKey, sourcePaneId, thread, value]);
   const full = isFullConfig(context.config);
   const previous = useRef<{ scope: string; full: boolean; generation: number; eligible: string } | undefined>(
     undefined,
@@ -249,7 +251,9 @@ export function TranscriptRenderProvider({
 
   return (
     <TranscriptRenderContext.Provider value={context}>
-      <EntityViewsProvider entities={entities}>{children}</EntityViewsProvider>
+      <EntityViewsProvider entities={entities} ownerRef={sessionRef}>
+        {children}
+      </EntityViewsProvider>
     </TranscriptRenderContext.Provider>
   );
 }

@@ -115,6 +115,7 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 		parentModel        string
 		pluginModel        string
 		explicitModel      string
+		initialLiveModels  []registry.Model
 		liveModels         []registry.Model
 		listErr            error
 		wantRequestedModel string
@@ -135,6 +136,18 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 			wantProfileID:      "openai",
 			wantModel:          "gpt-5.3",
 			wantWarning:        false,
+			wantResolverCalls:  0,
+			wantListCalls:      1,
+		},
+		{
+			name:               "unusable listing cannot reject plugin model",
+			parentModel:        "gpt-5.2",
+			pluginModel:        "openai/company-special-v9",
+			initialLiveModels:  listedModels("gpt-5.2"),
+			liveModels:         listedModels("text-embedding-3-small"),
+			wantRequestedModel: "openai/company-special-v9",
+			wantProfileID:      "openai",
+			wantModel:          "company-special-v9",
 			wantResolverCalls:  0,
 			wantListCalls:      1,
 		},
@@ -226,7 +239,11 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			adapter := &pluginModelListAdapter{models: tc.liveModels, err: tc.listErr}
+			initialLiveModels := tc.liveModels
+			if tc.initialLiveModels != nil {
+				initialLiveModels = tc.initialLiveModels
+			}
+			adapter := &pluginModelListAdapter{models: initialLiveModels, err: tc.listErr}
 			adapter.name = "openai"
 			client := registryClient(t, map[string]registry.Provider{
 				"openai": {Base: "openai", APIKey: "k", Models: map[string]registry.Model{
@@ -246,6 +263,9 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 					testOnly: testConfig{skipGitSnapshot: true},
 				}),
 			)
+			adapter.mu.Lock()
+			adapter.models = tc.liveModels
+			adapter.mu.Unlock()
 			adapter.resetListCalls()
 			sess.pluginAgents = map[string]plugin.Agent{
 				"reviewer": {

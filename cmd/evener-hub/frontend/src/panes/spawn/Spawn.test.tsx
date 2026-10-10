@@ -37,8 +37,9 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { enterText } from "../../textEntryTestUtils";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
-import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import editorStyles from "../session/composer/skilleditor.module.css";
+import { editorCursor, selectEditorText } from "../session/testing/editor";
 import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
@@ -390,7 +391,7 @@ test("draft survives unmount and bare /new return before any successful start", 
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
 });
@@ -404,12 +405,12 @@ test("project navigation isolates drafts and ignores non-new URL prefill", async
   fireEvent.change(effortControl(), { target: { value: "high" } });
   await visitSpawnURL("/settings?dir=/tmp/foreign&prompt=foreign");
   expectWorkingDir("/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("");
   await fillPrompt(user, "draft-b-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-a-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
 });
 
@@ -435,7 +436,7 @@ test("re-entering the same /new URL after leaving /new re-applies its explicit p
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/reentry-a");
-  expect(promptField().value).toBe("sentinel-a");
+  expect(promptField().textContent).toBe("sentinel-a");
   expect(completionDraft("/tmp/reentry-b").fields.getState().prompt).toBe("sentinel-b");
 });
 
@@ -454,7 +455,7 @@ test("remounting the same /new URL without leaving /new keeps the picker-selecte
   renderSpawn(client);
   await settled();
   expectWorkingDir("/tmp/reentry-b");
-  expect(promptField().value).toBe("sentinel-b");
+  expect(promptField().textContent).toBe("sentinel-b");
 });
 
 function deferred<T>() {
@@ -550,7 +551,7 @@ test.each(["A first", "B first"])("completion ownership: concurrent launches fin
   if (order === "A first") {
     await act(async () => startA.resolve(startResponse("local:completion-a")));
     expect(window.location.pathname).toBe("/new");
-    expect(promptField().value).toBe("submitted-b");
+    expect(promptField().textContent).toBe("submitted-b");
     await act(async () => startB.resolve(startResponse("local:completion-b")));
   } else {
     await act(async () => startB.resolve(startResponse("local:completion-b")));
@@ -600,7 +601,7 @@ test.each(["preflight", "create confirmation"])(
       cwd: "/tmp/completion-a",
       input: [{ type: "text", text: "submitted-a" }],
     });
-    expect(promptField().value).toBe("");
+    expect(promptField().textContent).toBe("");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(window.location.pathname).toBe("/new");
   },
@@ -664,7 +665,7 @@ test("completion menu ownership: a remounted prompt's cleared snapshot retires i
   renderSpawn(fake);
   await screen.findByTestId("composer-slash-menu");
   await act(async () => started.resolve(startResponse("local:completion-a")));
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(window.location.pathname).toBe("/new");
 });
@@ -690,7 +691,7 @@ test.each(["unchanged", "newer prompt", "other draft"])("completion menu ownersh
   }
   await act(async () => started.resolve(startResponse("local:completion-a")));
   await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
-  expect(promptField().value).toBe(scenario === "unchanged" ? "" : "/rev");
+  expect(promptField().textContent).toBe(scenario === "unchanged" ? "" : "/rev");
   if (scenario === "unchanged") expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   else {
     expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -1088,7 +1089,7 @@ test.each(["%20/tmp/review-a%20", "%20%20"])(
     renderSpawn(fake);
     await fillPrompt(user, "normalized-draft");
     await visitSpawnURL(`/new?dir=${dir}`);
-    expect(promptField().value).toBe("normalized-draft");
+    expect(promptField().textContent).toBe("normalized-draft");
     await user.click(screen.getByTestId("spawn-submit"));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
     expect(fake.calls.find((c) => c.method === "thread/start")?.params).toMatchObject({
@@ -1107,24 +1108,24 @@ test("directory picker assigns the unscoped draft and restores each project's la
   fireEvent.change(effortControl(), { target: { value: "high" } });
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("unscoped-sentinel");
+  expect(promptField().textContent).toBe("unscoped-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.selectOptions(screen.getByLabelText("Harness"), "evener");
   await setWorkingDir(user, "/tmp/draft-b");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect((effortControl() as HTMLSelectElement).value).toBe("");
   await fillPrompt(user, "draft-b-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
-  expect(promptField().value).toBe("unscoped-sentinel");
+  expect(promptField().textContent).toBe("unscoped-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect(modelValue().textContent).toBe("openai/gpt-5");
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("read-only");
   expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("evener");
   await setWorkingDir(user, "/tmp/draft-b");
-  expect(promptField().value).toBe("draft-b-sentinel");
+  expect(promptField().textContent).toBe("draft-b-sentinel");
 });
 
 test("URL prefill is applied to its project but not replayed over edits on remount", async () => {
@@ -1135,13 +1136,13 @@ test("URL prefill is applied to its project but not replayed over edits on remou
   await user.type(promptField(), "-edited");
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("seed-edited");
+  expect(promptField().textContent).toBe("seed-edited");
   await visitSpawnURL("/new?dir=/tmp/draft-b&prompt=other-seed");
-  expect(promptField().value).toBe("other-seed");
+  expect(promptField().textContent).toBe("other-seed");
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect(promptField().value).toBe("seed-edited");
+  expect(promptField().textContent).toBe("seed-edited");
   await visitSpawnURL("/new?prompt=replacement");
-  expect(promptField().value).toBe("replacement");
+  expect(promptField().textContent).toBe("replacement");
 });
 
 test("unchanged URL directory prefill does not replace a picker-selected draft on remount", async () => {
@@ -1154,10 +1155,10 @@ test("unchanged URL directory prefill does not replace a picker-selected draft o
   mounted.unmount();
   renderSpawn(fake);
   expectWorkingDir("/tmp/review-b");
-  expect(promptField().value).toBe("picker-draft");
+  expect(promptField().textContent).toBe("picker-draft");
   await visitSpawnURL("/new?dir=/tmp/review-a");
   expectWorkingDir("/tmp/review-a");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
 });
 
 test.each(["unrelated field", "newer same field", "other project"])(
@@ -1233,13 +1234,14 @@ test("successful creation preserves edits made while directory preflight was pen
   await fillPrompt(user, "submitted-sentinel");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
-  await user.type(promptField(), "-newer");
+  selectEditorText(promptField(), promptField().textContent?.length ?? 0);
+  await user.type(promptField(), "-newer", { skipClick: true });
   await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: true }));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
     input: [{ type: "text", text: "submitted-sentinel" }],
   });
-  expect(promptField().value).toBe("submitted-sentinel-newer");
+  expect(promptField().textContent).toBe("submitted-sentinel-newer");
 });
 
 test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
@@ -1263,7 +1265,7 @@ test("late missing-directory preflight keeps Create and start with its originati
     input: [{ type: "text", text: "draft-a-sentinel" }],
   });
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  expect(promptField().value).toBe("draft-b-sentinel");
+  expect(promptField().textContent).toBe("draft-b-sentinel");
 });
 
 test("late successful creation clears only the originating draft across remount and project navigation", async () => {
@@ -1287,10 +1289,10 @@ test("late successful creation clears only the originating draft across remount 
   act(() => pastePngInto(promptField(), "other.png"));
   await screen.findByRole("button", { name: "View other.png" });
   await act(async () => started.resolve(startResponse("local:abc123")));
-  expect(promptField().value).toBe("other-project-sentinel[image 1]");
+  expect(promptField().textContent).toBe("other-project-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View other.png" })).toBeTruthy();
   await visitSpawnURL("/new?dir=/tmp/draft-a");
-  expect(promptField().value).toBe("");
+  expect(promptField().textContent).toBe("");
   expect(screen.queryByTestId("attachment-tile")).toBeNull();
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
@@ -1368,7 +1370,7 @@ test("missing credentials surface setup in the composer without opening a dialog
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect(screen.getByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
 });
 
@@ -1444,7 +1446,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   expectWorkingDir("/tmp/handoff-project");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "handoff-draft");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "handoff-draft");
   await user.click(option);
   expect(modelValue().textContent).toBe("team-local/served-model");
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1533,7 +1535,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   expect(modelValue().textContent).not.toBe("openai/from-server");
   await user.keyboard("{Escape}");
   expectWorkingDir("/tmp/guided");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "guided-draft");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "guided-draft");
   expect(modelValue().textContent).not.toBe("openai/from-server");
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1823,7 +1825,7 @@ test("credential changes reload the cached model catalog and re-enter setup afte
   await act(async () => credentialsStore.getState().fetch());
   await waitFor(() => expect(modelRequests).toBeGreaterThan(requestsBefore));
   expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-sentinel");
   configured = false;
   await act(async () => credentialsStore.getState().fetch());
   await screen.findByRole("button", { name: "Connect provider" });
@@ -1883,7 +1885,7 @@ test("the directory and git info sit above the prompt; model and effort live in 
   expect(card.contains(effortControl())).toBe(true);
   expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
   // The prompt takes the page's vertical slack via its own min-height.
-  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.minHeight).toBe("6lh");
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
@@ -1936,7 +1938,7 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
   expect(screen.getByTestId("pane-title-mobile").textContent).toBe("New session");
   expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed mobile work");
 });
 
 // The placeholder repeated the heading and subtitle standing right above it
@@ -1947,8 +1949,8 @@ test("the prompt placeholder does not repeat the heading", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  expect(prompt.placeholder).toBe("Describe the task…");
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
+  expect(prompt.dataset.placeholder).toBe("Describe the task…");
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
 });
 
@@ -2014,7 +2016,7 @@ test("the primary verb is Start, in the card's own corner, and the page is title
 // icon-only button the phone gets, and a viewport media query cannot see that
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the composer cluster's own compact threshold
-// (SessionChrome's GoalControl chip swap).
+// (the status row's first container query, statusrow.module.css).
 test("the Start button's word collapses to the glyph below the compact pane threshold", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "spawn.module.css"), "utf8");
@@ -2066,7 +2068,7 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
 test("the prompt field is seamless, so the card's border is the only one", async () => {
   renderSpawn(readyClient());
   await settled();
-  expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(textareaStyles.seamless);
+  expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(editorStyles.editor);
 });
 
 // --- branch: a read-only HEAD readout on the directory row -----------------
@@ -2278,7 +2280,7 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
       mounted = renderSpawn(fake);
     }
     await screen.findAllByText("Couldn't inspect plugins");
-    expect(promptField().value).toBe("unsent-a");
+    expect(promptField().textContent).toBe("unsent-a");
     expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual({
       mode: "explicit",
       names: ["alpha", "beta"],
@@ -2352,7 +2354,7 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
       await screen.findAllByText("Couldn't inspect plugins");
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
-    expect(promptField().value).toBe("unsent-b");
+    expect(promptField().textContent).toBe("unsent-b");
     expect(window.location.pathname).toBe("/new");
     expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual(
       scenario === "newer origin selection" ? { mode: "explicit", names: [] } : { mode: "default" },
@@ -2938,7 +2940,7 @@ test("Welcome preserves URL-prefilled setup fields when routing to Spawn", async
   renderSpawn(client);
   await settled();
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("fix it"),
   );
   expectWorkingDir("/home/me/app");
   expect(window.location.hash).toBe("#setup");
@@ -2950,7 +2952,7 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
   await settled();
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("fix it"),
   );
   expectWorkingDir("/home/me/app");
 });
@@ -2989,7 +2991,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
   window.history.pushState({}, "", "/new?prompt=first");
   renderSpawn(readyClient());
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("first"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("first"),
   );
 
   act(() => {
@@ -2998,7 +3000,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
   });
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("second"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("second"),
   );
 });
 
@@ -3021,7 +3023,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
   });
 
   expectWorkingDir("/home/me/app");
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed by hand");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed by hand");
 });
 
 test("only confirming a directory updates the launch defaults", async () => {
@@ -3051,7 +3053,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
   expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(window.location.pathname).toBe(pathname);
-  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe(
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe(
     "my important draft text",
   );
   expectWorkingDir("/tmp/project");
@@ -4486,6 +4488,79 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   ).toHaveLength(2);
 });
 
+// The hub announces a refreshed model list on evener/auth/updated (#3539). An
+// open picker updates in place: the list it shows stays up, with no loading
+// state in between, and the new model appears without reopening it.
+test("an open model picker updates in place when the hub announces a refreshed list", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("combobox", { name: "Model" });
+  await screen.findByRole("listbox", { name: "Model" });
+
+  // The refreshed list is held back until the test releases it, so the
+  // picker's state while it loads can be seen.
+  let release: () => void = () => {};
+  const refreshed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("model/list", async () => {
+    await refreshed;
+    return {
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
+      ],
+    };
+  });
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => {});
+  // Still showing the list it had while the refresh loads.
+  expect(screen.queryByRole("listbox", { name: "Model" })).not.toBeNull();
+  await act(async () => release());
+  await screen.findByText("google-vertex/gemini-3.8-flash");
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+});
+
+// A host switch is a new scope, not newer data: the picker drops the old
+// host's list and loads the new host's from scratch, even though the switch
+// also moves the instance list the in-place reload follows.
+test("switching host under an open model picker reloads it from scratch", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The remote host's model list waits for the test, so the picker's state
+  // while it loads can be seen.
+  let release: () => void = () => {};
+  const remoteList = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", async (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "model/list") {
+        await remoteList;
+        return { data: [{ provider: "buildbox-llm", model: "local-7b", displayName: "buildbox-llm/local-7b" }] };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("listbox", { name: "Model" });
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => {});
+  expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
+  await act(async () => release());
+  await screen.findByText("buildbox-llm/local-7b");
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing
@@ -4501,7 +4576,7 @@ function pastePngInto(el: HTMLElement, name = "shot.png"): void {
   const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
-    value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    value: { getData: () => "", items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
   });
   el.dispatchEvent(event);
 }
@@ -4572,7 +4647,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
   await screen.findByText(/draft-start-failure/);
   mounted.unmount();
   renderSpawn(fake);
-  expect(promptField().value).toBe("retained-sentinel[image 1]");
+  expect(promptField().textContent).toBe("retained-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View retained.png" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
@@ -4613,7 +4688,7 @@ test("successful submitted snapshot clears only its images and preserves newer e
   await screen.findByRole("button", { name: "View newer.png" });
   fireEvent.change(effortControl(), { target: { value: "high" } });
   await act(async () => started.resolve(startResponse("local:abc123")));
-  expect(promptField().value).toBe("submitted-sentinel-newer[image 2]");
+  expect(promptField().textContent).toBe("submitted-sentinel-newer[image 2]");
   expect(screen.queryByRole("button", { name: "View submitted.png" })).toBeNull();
   expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
@@ -4622,6 +4697,84 @@ test("successful submitted snapshot clears only its images and preserves newer e
   await visitSpawnURL("/new?dir=/tmp/draft-a");
   expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
 });
+
+test.each([false, true])(
+  "submitted launch markers preserve retained command and skill identities (remount: %s)",
+  async (remount) => {
+    installCanvasStubs();
+    const user = setupUser();
+    const cwd = "/tmp/retained-launch-selections";
+    window.history.pushState({}, "", `/new?dir=${cwd}`);
+    const draft = selectSpawnDirectory(cwd);
+    draft.fields.setState({
+      prompt: "😀 /same /same /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    const mounted = renderSpawn(fake);
+    await settled();
+    let editor = promptField();
+    selectEditorText(editor, 0);
+    act(() => pastePngInto(editor, "before.png"));
+    await screen.findByRole("button", { name: "View before.png" });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    act(() => pastePngInto(editor, "after.png"));
+    await screen.findByRole("button", { name: "View after.png" });
+    expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+    expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    if (remount) {
+      mounted.unmount();
+      renderSpawn(fake);
+      await settled();
+      editor = promptField();
+    }
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+    await act(async () => started.resolve(startResponse("local:retained-launch")));
+
+    expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+    expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+    expect.soft(draft.fields.getState()).toMatchObject({
+      prompt: "😀 /same /same /same later",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    expect(screen.queryByRole("button", { name: "View before.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View after.png" })).toBeNull();
+    await visitSpawnURL(`/new?dir=${cwd}`);
+    await user.click(screen.getByTestId("spawn-submit"));
+    const submissions = fake.calls.filter((call) => call.method === "thread/start");
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]?.params).toMatchObject({
+      input: [
+        {
+          type: "text",
+          text: "😀 /same /same /same later",
+          mentions: [
+            { kind: "command", name: "same", offset: 3 },
+            { kind: "skill", name: "same", offset: 9 },
+          ],
+        },
+        { type: "skill", name: "same" },
+        { type: "command", name: "same" },
+      ],
+    });
+  },
+);
 
 test.each([
   { outcome: "success", remount: false },
@@ -4659,29 +4812,30 @@ test.each([
     expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
     await user.click(screen.getByTestId("spawn-submit"));
     expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
-    await user.type(promptField(), "-newer");
+    selectEditorText(promptField(), promptField().textContent?.length ?? 0);
+    await user.type(promptField(), "-newer", { skipClick: true });
     await visitSpawnURL("/new?dir=/tmp/draft-b");
     await fillPrompt(user, "draft-b-sentinel");
     act(() => pastePngInto(promptField(), "b.png"));
     expect(images).toHaveLength(2);
-    promptField().setSelectionRange(promptField().value.length, promptField().value.length);
+    selectEditorText(promptField(), promptField().textContent?.length ?? 0);
     await act(async () => {
       if (outcome === "success") images[0]?.onload?.();
       else images[0]?.onerror?.();
     });
-    expect(promptField().value).toBe("draft-b-sentinel[image 1]");
+    expect(promptField().textContent).toBe("draft-b-sentinel[image 1]");
     expect(screen.getByRole("img", { name: "b.png (still processing)" })).toBeTruthy();
     if (outcome === "failure") {
       act(() => pastePngInto(promptField(), "b2.png"));
-      expect(promptField().value).toBe("draft-b-sentinel[image 1][image 2]");
+      expect(promptField().textContent).toBe("draft-b-sentinel[image 1][image 2]");
     }
     await visitSpawnURL("/new?dir=/tmp/draft-a");
     if (outcome === "success") {
       await screen.findByRole("button", { name: "View a.png" });
-      expect(promptField().value).toBe("draft-a-sentinel[image 1]-newer");
+      expect(promptField().textContent).toBe("draft-a-sentinel[image 1]-newer");
     } else {
       expect(screen.queryByTestId("attachment-tile")).toBeNull();
-      expect(promptField().value).toBe("draft-a-sentinel-newer");
+      expect(promptField().textContent).toBe("draft-a-sentinel-newer");
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
     await act(async () => images[1]?.onload?.());
@@ -4698,20 +4852,20 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   renderSpawn(fake);
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await setWorkingDir(user, "/tmp/project");
   await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
-  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 
-  expect(prompt.value).toBe("");
+  expect(prompt.textContent).toBe("");
   expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
   // Sticky default (floor §1.9) survives a successful spawn - only the
   // transient prompt/attachment state resets.
@@ -4729,18 +4883,18 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   renderSpawn(fake);
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
-  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(/start failed/i);
-  expect(prompt.value).toBe("do the thing[image 1]");
+  expect(prompt.textContent).toBe("do the thing[image 1]");
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
   // handleSpawn's catch already resets busy on a thrown startThread (same
   // class of bug, verified already-fixed here - the button must stay usable
@@ -4896,11 +5050,11 @@ test("a settled attachment renders as a thumbnail tile, not a text chip (kata kb
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
-  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("[image 1]"));
 
   // The whole thumbnail is the control that opens the lightbox, named for the
   // file it shows - the composer's tile exactly.
@@ -4915,11 +5069,11 @@ test("a pending attachment is the same tile, and says nothing about its progress
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
-  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+  await waitFor(() => expect(prompt.textContent).toBe("[image 1]"));
 
   // An empty slot the thumbnail will fill, named so a screen reader hears
   // which attachment is holding things up, with its remove button already
@@ -4946,7 +5100,7 @@ test("focus on a staged attachment's remove button survives its decode settling 
   renderSpawn(readyClient());
   await settled();
 
-  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
@@ -5174,8 +5328,8 @@ function slashOptions() {
   return within(slashMenu()).getAllByRole("option");
 }
 
-function promptField(): HTMLTextAreaElement {
-  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+function promptField(): HTMLDivElement {
+  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
 }
 
 // The slash catalog is debounced (useSpawnSlashCatalog): wait for the
@@ -5216,6 +5370,62 @@ test("typing /re opens the menu with builtin and catalog matches but not /simpli
     expect.stringContaining("/review"),
   ]);
   expect(slashMenu().querySelectorAll('[role="option"]')).toHaveLength(2);
+});
+
+test("launcher command and skill selections with identical spelling survive failed start and project remount", async () => {
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/atomic-a");
+  const fake = readyClient((client) => {
+    client.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "same", description: "command intent", source: "user" }],
+      skills: [
+        {
+          name: "same",
+          description: "skill intent",
+          disableModelInvocation: false,
+          userInvocable: true,
+          available: true,
+        },
+      ],
+    }));
+    client.on("thread/start", () => {
+      throw new WireError("start refused", -32602);
+    });
+  });
+  const mounted = renderSpawn(fake);
+  await settled();
+  await typeSlashQuery(user, fake, "Use /sa");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("command intent"))!);
+  await user.keyboard("and /sa");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("skill intent"))!);
+  await user.paste("literal /same");
+  expect(promptField().textContent).toBe("Use /same and /same literal /same");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(getToasts()).toEqual(
+    expect.arrayContaining([expect.objectContaining({ text: "Start failed: start refused" })]),
+  );
+  expect(promptField().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(promptField().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  await visitSpawnURL("/new?dir=/tmp/atomic-b");
+  expect(promptField().textContent).toBe("");
+  mounted.unmount();
+  renderSpawn(fake);
+  await visitSpawnURL("/new?dir=/tmp/atomic-a");
+  expect(promptField().textContent).toBe("Use /same and /same literal /same");
+  expect(promptField().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(promptField().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  fake.on("thread/start", () => startResponse("local:abc123"));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.filter((call) => call.method === "thread/start").at(-1)?.params).toMatchObject({
+    input: [
+      { type: "text", text: "Use /same and /same literal /same" },
+      { type: "skill", name: "same" },
+      { type: "command", name: "same" },
+    ],
+  });
 });
 
 test("typing further narrows the spawn slash menu live", async () => {
@@ -5261,8 +5471,8 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await typeSlashQuery(user, fake, "/rev");
   await user.keyboard("{Tab}");
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
-  expect(promptField().selectionStart).toBe("/review ".length);
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
+  expect(editorCursor(promptField())).toBe("/review ".length);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(document.activeElement).toBe(promptField());
 
@@ -5272,7 +5482,7 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await user.type(promptField(), "/rev");
   await user.keyboard("{Enter}");
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
   expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
 
   // Mod+Enter ALWAYS submits, even with the menu open: commit nothing.
@@ -5284,7 +5494,7 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   // The menu committed nothing: a successful Start clears the prompt (Spawn's
   // own doSpawn reset), so the field must NOT hold the committed "/review ".
-  expect((promptField() as HTMLTextAreaElement).value).not.toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).not.toBe("/review ");
 });
 
 test("a successful submit closes the slash menu with the cleared prompt", async () => {
@@ -5306,7 +5516,7 @@ test("a successful submit closes the slash menu with the cleared prompt", async 
   // the session pane, so the stale token must not survive the cleared prompt.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
-  expect((promptField() as HTMLTextAreaElement).value).toBe("");
+  expect((promptField() as HTMLDivElement).textContent).toBe("");
   await waitFor(() => expect(screen.queryByTestId("composer-slash-menu")).toBeNull());
 });
 
@@ -5371,7 +5581,7 @@ test("Shift+Tab does not commit the spawn menu", async () => {
   // Modified Tab falls through for focus navigation instead of committing:
   // the prompt keeps its text and no completion is spliced in.
   await user.keyboard("{Shift>}{Tab}{/Shift}");
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/re");
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
 
@@ -5399,7 +5609,7 @@ test("reopening the identical token restarts the highlight at the first option",
   // Committing now must splice the FIRST option, not the previously
   // highlighted one.
   await user.keyboard("{Tab}");
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/reasoning-effort ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/reasoning-effort ");
 });
 
 test("catalog entries colliding with pre-session builtins are not offered twice", async () => {
@@ -5452,7 +5662,7 @@ test("a prefilled slash token opens its menu without waiting for a keystroke", a
   renderSpawn(fake);
 
   await waitFor(() =>
-    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("/rev"),
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("/rev"),
   );
   // The catalog lands debounced; the menu for the prefilled token must open
   // on its own once rows arrive — no keystroke needed.
@@ -5476,7 +5686,7 @@ test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu"
 
   await user.keyboard("{Escape}");
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/re");
 
   await user.clear(promptField());
   await user.type(promptField(), "/zzz");
@@ -5594,7 +5804,7 @@ test("clicking a spawn menu option commits it without ever blurring the prompt",
   // index 0 is the built-in /reasoning-effort, 1 /review.
   await user.click(slashOptions()[1] as HTMLElement);
 
-  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect((promptField() as HTMLDivElement).textContent).toBe("/review ");
   // The option's onMouseDown preventDefault keeps focus in the field, so the
   // click's onSelect commits rather than racing the blur-close.
   expect(document.activeElement).toBe(promptField());
@@ -6600,6 +6810,525 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.source).toBe("buildbox");
   expect(completionDraft("/tmp/host-target").fields.getState().source).toBe("buildbox");
+});
+
+// --- host picker: the working directory is resolved over the selected host ---
+
+// The working directory a new session is seeded with belongs to the machine the
+// session starts on. Switching the Host picker re-resolves it over the SELECTED
+// host alone: that host is asked whether it has the directory, and a refusal
+// re-seeds it from that host's own default - its home, resolved over THAT host
+// through evener/path/validate's "~" expansion - so neither the controller's
+// default nor the previous host's value can ride to a machine that does not
+// have it.
+/** A host-routed path/validate call: the resolution a switch is made of. */
+function routedPathValidations(fake: FakeClient, host: string): { path?: string }[] {
+  return fake.calls
+    .filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === host &&
+        (call.params as HostRequestParams).method === "evener/path/validate",
+    )
+    .map((call) => (call.params as HostRequestParams).params as { path?: string });
+}
+
+/** readyClient for a host that has only its own home: its path/validate answers
+ * "~" with `home` and refuses every other path, the way a real host answers for
+ * a directory that belongs to another machine. */
+function readyClientWithRemoteHome(home: string): FakeClient {
+  return readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        return path === "~"
+          ? { path: home, valid: true }
+          : { path: path ?? "", valid: false, error: "no such file or directory" };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+}
+
+test("switching the host re-seeds the working directory from the selected host", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The controller's default working directory (spawnDefaults'
+  // GLOBAL_WORKING_DIR_KEY): what a fresh /new seeds when the URL names no dir.
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/controller-default");
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/controller-default");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The switch asks the SELECTED host about the controller's directory...
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "/tmp/controller-default")).toBe(
+    true,
+  );
+  // ...and, refused, resolves that host's own home over that host. The
+  // directory shown and seeded for the new session is the host's.
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "~")).toBe(true);
+  expectWorkingDir("/home/buildbox");
+  expect(workingDir().textContent).not.toContain("/tmp/controller-default");
+});
+
+test("switching back to local restores the controller's own default directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/controller-default");
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  // ...and that home is not a directory on the controller either.
+  fake.on("evener/path/validate", ({ path }) =>
+    path === "/home/buildbox" ? { path, valid: false, error: "no such file or directory" } : { path: "", valid: true },
+  );
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+
+  // The reverse switch resolves the directory over the local host too: refused
+  // here, it re-seeds the controller's own default - the same value a fresh
+  // local mount seeds - and never keeps the previous host's path.
+  expectWorkingDir("/tmp/controller-default");
+  expect(workingDir().textContent).not.toContain("/home/buildbox");
+  // Local keeps its current behavior: its own resolution is the plain call,
+  // never a forwarded one.
+  expect(routedPathValidations(fake, "local")).toEqual([]);
+});
+
+test("a host switch moves the draft's typed state to the selected host's directory", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/typed-before-switch");
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "typed before the switch");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  // The re-seed moves the draft to the selected host's directory: the person's
+  // typed state travels with it (a reconnect/host move is not a discard).
+  expect(promptField().textContent).toBe("typed before the switch");
+  expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("typed before the switch");
+  expect(spawnDraftsStore.getState().drafts.has("/tmp/typed-before-switch")).toBe(false);
+});
+
+test("a same-host re-read neither re-resolves nor discards the working directory", async () => {
+  const sources = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ] as const;
+  seedSources([...sources]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/reconnect-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+  const resolutions = routedPathValidations(fake, "buildbox").filter((params) => params.path === "~").length;
+  expect(resolutions).toBe(1);
+
+  // A reconnect re-seeds the navigation store and the manifest revalidates;
+  // the host itself does not change. That is not a switch: nothing re-resolves
+  // the default, and the directory stands.
+  await act(async () => {
+    seedSources([...sources], { loading: true });
+  });
+  await act(async () => {
+    seedSources([...sources]);
+  });
+  await settled();
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toHaveLength(resolutions);
+  expectWorkingDir("/home/buildbox");
+
+  // A pane remount (the same draft restored) is not a switch either.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/home/buildbox");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toHaveLength(resolutions);
+});
+
+// The other half of "a reconnect is not a switch": a re-VISIT to the same host
+// IS a switch, and a new question. An answer to an earlier visit's question -
+// issued for this same host and this same draft - describes a moment the form
+// has left, so it must not land: only the newest issuance's answer decides.
+test("a stale answer from an earlier visit to the same host cannot move the directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The FIRST buildbox question about this directory hangs; every later one
+  // answers the way a host that has the directory does. The hanging answer is a
+  // refusal, which late would re-seed the form from buildbox's home.
+  const firstVisit = deferred<{ path: string; valid: boolean; error?: string }>();
+  let buildboxDirectoryAsks = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/visit-a") {
+        buildboxDirectoryAsks++;
+        return buildboxDirectoryAsks === 1 ? firstVisit.promise : { path, valid: true };
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/visit-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this first question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(1);
+  // buildbox -> local: the local host has the directory, so it stays.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+  // local -> buildbox again: the second question answers "this host has it".
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(2);
+  expectWorkingDir("/tmp/visit-a");
+
+  // The first visit's refusal finally lands. It is not this switch's answer.
+  await act(async () => {
+    firstVisit.resolve({ path: "/tmp/visit-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/visit-a");
+  // Nothing re-seeded: only the latest issuance's answer landed, so the host's
+  // own home was never resolved over it.
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// The guard belongs to the form INSTANCE, not to the draft store: the store is
+// module scope and outlives the pane, so a validation still in flight when the
+// pane goes away (a route change) must not seed the form a later mount shows
+// for the same draft.
+test("an answer still in flight when the pane unmounts cannot seed the remount", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/unmount-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/unmount-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The pane goes away while the answer is out, and comes back on the same
+  // draft: a fresh mount's first run only records, so a host+draft check alone
+  // would let the dead instance's answer through.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+
+  // The answer finally lands. It belongs to a form that no longer exists.
+  await act(async () => {
+    held.resolve({ path: "/tmp/unmount-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// Drafts are keyed by directory and outlive a draft transition: picking another
+// directory and then back returns the SAME draft object. An answer issued
+// before that round trip must not pass for the draft that came back - only the
+// question asked for the visit it belongs to may decide.
+test("an answer issued before a directory round trip cannot seed the returned draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/trip-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      if (path === "/tmp/trip-a" || path === "/tmp/trip-b") return { path, valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/trip-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question about trip-a hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The person visits another directory and comes back to the first one, which
+  // returns the original draft.
+  await setWorkingDir(user, "/tmp/trip-b");
+  await settled();
+  await setWorkingDir(user, "/tmp/trip-a");
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The trip's question finally answers - with a refusal, which late would
+  // re-seed the returned draft from buildbox's home.
+  await act(async () => {
+    held.resolve({ path: "/tmp/trip-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// The re-seed moves the live draft onto a key another draft may already occupy
+// (a directory visited earlier by a draft that has since moved on). The live
+// draft wins the key - the person's current work must not be dropped for stale
+// state - and the displaced draft becomes unreachable: drafts are keyed by the
+// directory, and nothing else holds a reference to it. Pinned as the
+// deliberate tradeoff rather than inventing storage the pane does not have.
+test("a re-seed onto an occupied directory keeps the live draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  // An earlier visit's draft for the host's home directory...
+  const displaced = selectSpawnDirectory("/home/buildbox");
+  setDraftField(displaced, "prompt", "stale home draft");
+  window.history.pushState({}, "", "/new?dir=/tmp/collide-a");
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "live work");
+
+  // ...and the live draft, which the switch re-seeds onto that same key.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expectWorkingDir("/home/buildbox");
+  expect(promptField().textContent).toBe("live work");
+  expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("live work");
+  expect(spawnDraftsStore.getState().drafts.get("/home/buildbox")).toBe(spawnDraftsStore.getState().current);
+  // The displaced draft is unreachable: no key resolves to it any more.
+  expect([...spawnDraftsStore.getState().drafts.values()]).not.toContain(displaced);
+});
+
+// A picked directory is the person's own choice, and it opens that directory's
+// own draft (drafts are keyed by the exact directory). Selecting another draft
+// is not a switch of the selected host, so the picked directory's draft keeps
+// the directory the person just chose - the re-seed belongs to a host change
+// WITHIN one draft, never to a draft change.
+test("a directory pick does not re-seed the picked directory's own draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        if (path === "~") return { path: "/home/buildbox", valid: true };
+        // The prefill's directory is not on this host; the one the person
+        // picks is.
+        if (path === "/tmp/pick-a") return { path, valid: false, error: "no such file or directory" };
+        return { path: path ?? "", valid: true };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/pick-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  await setWorkingDir(user, "/srv/app");
+  await settled();
+  expectWorkingDir("/srv/app");
+});
+
+// The other half of the same rule: a directory the SELECTED host itself
+// resolves as one it has is kept. It is no longer the previous host's value -
+// it is the machine the session starts on saying it can start there - and no
+// home is resolved over the host.
+test("a switch keeps a directory the selected host also has", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        return path === "/tmp/shared-repo"
+          ? { path, valid: true }
+          : { path: path ?? "", valid: false, error: "no such file or directory" };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/shared-repo");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "/tmp/shared-repo")).toBe(true);
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "~")).toBe(false);
+  expectWorkingDir("/tmp/shared-repo");
+});
+
+// A host that cannot answer keeps the directory: unknown is not absent (the
+// same rule the phone's New session follows when it moves between hosts), and
+// the submit's own host-routed preflight is the authority on the path then.
+test("a host that cannot answer keeps the working directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") throw new Error("host went away");
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/away-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expectWorkingDir("/tmp/away-a");
+});
+
+// The last resort of the re-seed: the host refused the directory, and its own
+// home cannot be resolved either - refused, or a request that throws. The form
+// must not keep a path that belongs to another machine, so it seeds NO
+// directory: the picker already opens at the selected host's home there, and
+// no launch carries a foreign path.
+test.each([
+  ["refuses it", () => ({ path: "", valid: false, error: "no such file or directory" })],
+  [
+    "cannot answer for it",
+    () => {
+      throw new Error("host went away");
+    },
+  ],
+])("an unresolvable host default seeds no directory (%s)", async (_case, answerHome) => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return answerHome() as HostForwardedResult;
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/foreign-a");
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/foreign-a");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Nothing of the previous host's path is kept, and the form says so.
+  expect(workingDir().textContent).not.toContain("/tmp/foreign-a");
+  expect(workingDir().textContent).toContain("Choose a folder");
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+});
+
+// `path` is typed non-optional, but evener/host/request hands a remote host's
+// answer back through a cast, so an answer that is valid and names no directory
+// (an older host, a malformed one) reaches this code as undefined. It must seed
+// no directory - never a non-string key in the string-keyed drafts map.
+test("a host answering valid with no path seeds no directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return { valid: true } as HostForwardedResult; // no path at all
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/nopath-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Every draft key stays a directory string...
+  expect([...spawnDraftsStore.getState().drafts.keys()].every((key) => typeof key === "string")).toBe(true);
+  // ...and the form seeds no directory rather than a nameless one.
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+  expect(workingDir().textContent).toContain("Choose a folder");
 });
 
 test("a local host choice omits source from the thread/start request", async () => {
@@ -7878,7 +8607,7 @@ test("a path marked invalid while local reaches the launch after switching host 
 // The discovery methods the spawn form's mount path issues for the selected
 // host. The on-demand methods (path completion/validation, dirs/create, recent
 // projects, the slash catalog, plugin preview) are covered by their own seams'
-// tests; stores/hostRouting.test.ts covers the whole spec set at the seam.
+// tests; appwire-client/typescript/hostRouting.test.ts covers the whole spec set at the seam.
 const MOUNT_DISCOVERY_METHODS = [
   "model/list",
   "evener/harnesses/list",
@@ -7969,7 +8698,11 @@ function answerRemoteHost(
     const forwarded = params as HostRequestParams;
     if (forwarded.host !== "buildbox") throw new Error(`unexpected host "${forwarded.host}"`);
     if (options.fail?.includes(forwarded.method)) throw new Error(`remote ${forwarded.method} unavailable`);
-    return (answers[forwarded.method] ?? {}) as HostForwardedResult;
+    const answer = answers[forwarded.method];
+    // A function answers per call: a host whose answer depends on what is asked
+    // (whether it has a directory, vs the verdict on a field's value).
+    if (typeof answer === "function") return (answer as (params: unknown) => HostForwardedResult)(forwarded.params);
+    return (answer ?? {}) as HostForwardedResult;
   });
 }
 
@@ -8854,6 +9587,141 @@ test("a failed catalog load leaves the draft's harness and advanced options alon
   expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "controller-agent" } });
 });
 
+// A refused catalog read (the hub's forwarded-read pool was full, or the host
+// was briefly unreachable) is said, beside a Retry that reads both catalogs
+// again: nothing else re-reads them until the host changes.
+test("a refused host catalog read says so and Retry reads it again", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let refuse = true;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (refuse && forwarded.method === "evener/harnesses/list") {
+        throw new WireError(
+          "this connection already has 32 requests waiting on slow answers; try again shortly",
+          -32014,
+        );
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  expect(notice.textContent).toContain("try again shortly");
+
+  refuse = false;
+  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(2));
+  await waitFor(() => expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
+});
+
+// Each catalog's failure is said on its own, so a host refusing both shows
+// both reasons.
+test("both refused host catalog reads are said", async () => {
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/harnesses/list") throw new WireError("harness list down", -32014);
+      if (forwarded.method === "evener/launch/schema") throw new WireError("schema down", -32014);
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-both-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-both-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  await waitFor(() => {
+    expect(notice.textContent).toContain("harness list down");
+    expect(notice.textContent).toContain("schema down");
+  });
+});
+
+// Retry reads the launch schema again too, and keeps what the host already
+// answered: it is no host change, so the harness list it holds stays offered
+// while the retried reads are out.
+test("Retry re-reads the launch schema and keeps the answered harness list", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let refuseSchema = true;
+  let harnessReads = 0;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema" && refuseSchema) throw new WireError("schema down", -32014);
+      if (forwarded.method === "evener/harnesses/list" && ++harnessReads > 1) {
+        return new Promise<HostForwardedResult>(() => {});
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-schema-refused");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-schema-refused");
+  renderSpawn(fake);
+  await settled();
+
+  const notice = await screen.findByTestId("spawn-host-catalog-error");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
+
+  refuseSchema = false;
+  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/launch/schema")).toHaveLength(2));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(2));
+  await act(async () => {});
+  expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
+  expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull();
+});
+
+// A previous host's catalog read that fails after the host changed says
+// nothing about the host now selected.
+test("a previous host's late catalog failure shows no notice", async () => {
+  const user = setupUser();
+  seedSources(REMOTE_SOURCES);
+  let failHarnesses!: (err: Error) => void;
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/harnesses/list") {
+        return new Promise<HostForwardedResult>((_, reject) => {
+          failHarnesses = reject;
+        });
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-late-failure");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-late-failure");
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "local");
+  await act(async () => {
+    failHarnesses(new WireError("buildbox went away", -32014));
+  });
+  expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull();
+});
+
 // The other half of the same rule, on a host that has no answers at all: the
 // request SETTLED, so the submit gate opens - the host refuses what it cannot
 // serve at start rather than leaving Start disabled forever.
@@ -8968,10 +9836,15 @@ test("a late path validation from the previous host never marks the field on the
     f.on("evener/path/validate", ({ path }) =>
       path === "review-agent" ? localValidation.promise : { path, valid: true },
     );
-    // buildbox offers the same field but rejects the value.
+    // buildbox offers the same field but rejects the value - and has the
+    // working directory, so the switch's own resolution of that directory
+    // keeps it (only the field's value is refused).
     readyRemoteHost(f, {
       "evener/launch/schema": { options: [agentOption] },
-      "evener/path/validate": { path: "review-agent", valid: false, error: "not on buildbox" },
+      "evener/path/validate": (params: { path?: string } | undefined) =>
+        params?.path === "review-agent"
+          ? { path: "review-agent", valid: false, error: "not on buildbox" }
+          : { path: params?.path ?? "", valid: true },
     });
   });
   connectionStore.getState().connect(fake);
@@ -8996,12 +9869,19 @@ test("a late path validation from the previous host never marks the field on the
   // local answer's re-ask is not the only routed call - what this pins is that
   // every routed ask names this field and that the verdict that lands is
   // buildbox's.
-  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate").length).toBeGreaterThan(0));
+  // The routed path questions are exactly two: whether the SELECTED host has
+  // the draft's directory (the switch's own resolution of it), and the verdict
+  // on the field's value. Any other ask would be a question for a machine the
+  // form has left.
+  const fieldAsks = routedHostCalls(fake, "evener/path/validate").filter(
+    (call) => (call.params as { kind?: string }).kind !== "dir",
+  );
+  expect(fieldAsks.length).toBeGreaterThan(0);
   for (const call of routedHostCalls(fake, "evener/path/validate")) {
-    expect(call.params).toMatchObject({
-      path: "review-agent",
-      kind: "command",
-    });
+    const params = call.params as { kind?: string };
+    expect(call.params).toMatchObject(
+      params.kind === "dir" ? { path: draft.cwd, kind: "dir" } : { path: "review-agent", kind: "command" },
+    );
   }
   await waitFor(() =>
     expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "review-agent", invalid: true } }),
@@ -9033,10 +9913,15 @@ test("a late pathList validation from the previous host cannot re-add its entry 
     f.on("evener/path/validate", ({ path }) =>
       path === "review-dir" ? localValidation.promise : { path, valid: true },
     );
-    // buildbox offers the same field but refuses the entry.
+    // buildbox offers the same field but refuses the entry - and has the
+    // working directory, so the switch's own resolution of that directory
+    // keeps it (only the entry is refused).
     readyRemoteHost(f, {
       "evener/launch/schema": { options: [pathListOption] },
-      "evener/path/validate": { path: "review-dir", valid: false, error: "no such dir on buildbox" },
+      "evener/path/validate": (params: { path?: string } | undefined) =>
+        params?.path === "review-dir"
+          ? { path: "review-dir", valid: false, error: "no such dir on buildbox" }
+          : { path: params?.path ?? "", valid: true },
     });
   });
   connectionStore.getState().connect(fake);
@@ -9055,7 +9940,13 @@ test("a late pathList validation from the previous host cannot re-add its entry 
 
   // The controller accepts it only after the user has left it.
   await act(async () => localValidation.resolve({ path: "review-dir", valid: true, error: "" }));
-  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
+  await waitFor(() =>
+    expect(
+      routedHostCalls(fake, "evener/path/validate").filter(
+        (call) => (call.params as { kind?: string }).kind === "command",
+      ),
+    ).toHaveLength(1),
+  );
   // buildbox refused it, so the entry never joins the draft's list - and so
   // never rides the launch to a host that never accepted it. (Its message is
   // the add row's own transient feedback; the host switch repopulates the
@@ -9349,4 +10240,22 @@ test("a ?host=local prefill overrides the draft's last-chosen host for the same 
   applySpawnURL();
   expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("local");
   window.history.replaceState({}, "", "/");
+});
+
+test("an open launch picker adopts a provider-file repair notification", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.clear(combo);
+  await user.type(combo, "repaired-model");
+  expect(screen.queryByText("work/repaired-model")).toBeNull();
+  modelListOverride = [
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+    { provider: "work", model: "repaired-model", displayName: "work/repaired-model" },
+  ];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText("work/repaired-model");
 });

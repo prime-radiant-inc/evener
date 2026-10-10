@@ -61,6 +61,12 @@ const askItem = {
 const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.deepEqual(
+  client.parseMemoryContext({ memoryContext: { scope: "personal", state: "current", truncated: false, content: "x" } }),
+  { scope: "personal", state: "current", truncated: false, content: "x" },
+);
+assert.equal(client.parseMemoryContext({ memoryContext: { scope: "team" } }), undefined);
+assert.equal(client.MEMORY_CONTEXT_LABEL, "Refreshed my memory");
 assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
@@ -97,12 +103,12 @@ const session = {
 };
 const tree = { revision: 1, root: session };
 assert.equal(client.parseActivityTree(null), null);
-assert.equal(client.activityNodeID(session), "session:thread");
+assert.equal(client.activityNodeID(session), "session:ref");
+assert.equal(client.projectSessionActivity(new client.SessionActivityStore({ state: "ready" }, "ref").getSnapshot()).tree, null);
+assert.equal(client.findEntityView(new Map(), "job", "job", "ref"), undefined);
 assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
-assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
-assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
-assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.equal(client.foldRowID("session:ref"), "session:ref:inactive-fold");
 assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
 assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
 assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
@@ -111,7 +117,7 @@ assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
-assert.equal(client.parseJobLogTail(null), null);
+assert.equal(client.parseJobOutputPage(null), null);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
 assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
@@ -119,6 +125,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.parseSteeringNotifications('<delegate-notification delegate_id="dlg_1">{"kind":"reported","message":"Done."}</delegate-notification>')[0].notification.message, "Done.");
 assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
@@ -138,9 +145,9 @@ assert.deepEqual(
   client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
   { stop: false, steer: false, drain: true, drainQueue: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
 );
-assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatTokenCount(41200), "41.2K");
 assert.equal(client.formatDurationMs(1500), "1.5s");
-assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatCharCount(2500), "2.5K chars");
 assert.equal(client.formatClockTime(undefined), undefined);
 assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
 assert.equal(client.formatElapsed(65000), "1m05s");
@@ -154,8 +161,6 @@ const catalogRead = commandCatalog.getState().refresh();
 assert.equal(commandCatalog.getState().loading, true);
 catalogRead.then(() => assert.deepEqual(commandCatalog.getState().commands.map((c) => c.name), ["plan"])).catch((error) => { console.error(error); process.exit(1); });
 assert.deepEqual(client.sessionPluginNames({ plugins: [{ name: "acme" }] }), new Set(["acme"]));
-const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
-assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");
 assert.equal(client.clipJobID("job"), "job");
 assert.equal(client.tailSlice("hello", 2), "lo");
@@ -194,7 +199,7 @@ assert.equal(client.canReadSharedNotes(undefined), false);
 assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
 assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
-assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("awaiting", false), "needs you");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.deepEqual(client.decodeActivityRead({ sessions: [{ ref: "local:a", minutes: [0, 1], runningSubagents: 0, quietForMs: 200000 }] }).map((session) => session.ref), ["local:a"]);
 assert.equal(client.quietState({ ref: "local:a", minutes: [0], runningSubagents: 0, quietForMs: 200000 }, 0).state, "quiet");
@@ -205,8 +210,8 @@ assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
 assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
 assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
 assert.equal(client.formatCost(catalogEntry), null);
-assert.equal(client.contextWindowLabel(catalogEntry), "200k");
-assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.contextWindowLabel(catalogEntry), "200K");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200K");
 assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
 const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
 assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
@@ -295,6 +300,8 @@ assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.adv
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
 assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+const archivedLists = client.createArchivedListStore({ request: async () => ({ sessions: [], total: 0 }) });
+archivedLists.refresh("projects", "p").then(() => { const { rows, loaded, error } = archivedLists.getState().lists[client.archivedListKey("projects", "p")]; assert.deepEqual({ rows, loaded, error }, { rows: [], loaded: true, error: null }); });
 const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });
 hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } }, mcpDiscovered: { servers: [] }, agents: [] }));
 // The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
@@ -550,7 +557,7 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
       // sources and no needs-you rows, and the row age formatter is pure),
-      // hostGrouping (a cluster sits under its newest member's host).
+      // hostGrouping (a project's hosts come from its rows).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -584,7 +591,7 @@ assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
-assert.equal(client.sessionGroupHostId({ kind: "cluster", host_id: "cluster", children: [{ host_id: "devbox" }] }), "devbox");
+assert.deepEqual(client.projectHostIds(undefined, [{ host_id: "devbox" }]), ["devbox"]);
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
@@ -637,17 +644,17 @@ Promise.all([
     // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
+const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient, createHubWriteGate());
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
-const plugins: PluginsStore = createPluginsStore(pluginsClient);
+const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
 const revision: ListRevision = createListRevision(); void plugins; void revision;
 const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
 const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
-      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
-const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
@@ -655,9 +662,9 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
-const marketplacesStore = client.createMarketplacesStore(offline);
+const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
 assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
-const pluginsStore = client.createPluginsStore(offline);
+const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
@@ -1071,7 +1078,12 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v6";
+  const serverProtocolVersion = run(
+    process.execPath,
+    ["-p", "require('@evener/appwire-client').APPWIRE_PROTOCOL_VERSION"],
+    consumerDir,
+  ).trim();
+  assert.equal(serverProtocolVersion, "evener-appwire-v7");
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

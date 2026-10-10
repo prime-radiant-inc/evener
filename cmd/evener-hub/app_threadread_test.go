@@ -31,8 +31,10 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {
-	cfg, params := seedBoundedPastThread(t)
+// seedColdDelegate writes one idle delegate with the given brief fields to the
+// past thread's delegates journal and returns its session id.
+func seedColdDelegate(t *testing.T, cfg hubcore.WebConfig, params appwire.ThreadReadParams, task, description string) string {
+	t.Helper()
 	sessionID := strings.TrimPrefix(params.Ref, "local:")
 	entry, ok := cfg.Past.Find(sessionID)
 	if !ok {
@@ -44,7 +46,7 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 	descriptor := map[string]any{
 		"child_session_id": "child-cold", "transcript_ref": "local:child-cold", "owner_session_id": sessionID,
-		"task": "cold task", "description": "cold description", "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
+		"task": task, "description": description, "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
 		"tool_name_ceiling": []string{"communicate"}, "delegation_allowance": 2, "parent_watch_granted": true, "resumable": true, "config": map[string]any{},
 	}
 	childWriter, err := transcript.NewWriter(filepath.Join(entry.StateDir, "sessions", "child-cold.transcript.jsonl"), transcript.Header{
@@ -69,6 +71,12 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	if err := os.WriteFile(path, rawJournal, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return sessionID
+}
+
+func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	sessionID := seedColdDelegate(t, cfg, params, "cold task", "cold description")
 
 	thread, found := requirePastThreadForRead(t, cfg, params)
 	if !found {
@@ -85,6 +93,22 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 }
 
+func TestAppThreadReadColdDelegateRosterCapsBriefStoredTwice(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	brief := strings.Repeat("Investigate the flaky scheduler. ", 200)
+	seedColdDelegate(t, cfg, params, brief, brief)
+
+	thread, found := requirePastThreadForRead(t, cfg, params)
+	if !found {
+		t.Fatal("past thread not found")
+	}
+	got := thread.Evener.Diagnostics.Delegates[0]
+	if got.Description != "" || got.Task == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Task, "…")) ||
+		len([]rune(got.Task)) > appwire.DelegateRosterTextMaxRunes {
+		t.Fatalf("cold roster label = task %d runes, description %d runes; want one capped copy", len([]rune(got.Task)), len([]rune(got.Description)))
+	}
+}
+
 func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
@@ -94,12 +118,12 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	if thread.Evener.Diagnostics == nil {
 		t.Fatal("past thread has no diagnostics")
 	}
-	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill"} {
+	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory"} {
 		if !hasSkill(thread.Evener.Diagnostics.Skills, want) {
 			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
 		}
 	}
-	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "project-skill"}
+	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory", "project-skill"}
 	if len(thread.Evener.Diagnostics.Skills) != len(wantNames) {
 		t.Fatalf("skill catalog = %+v, want exactly %d entries", thread.Evener.Diagnostics.Skills, len(wantNames))
 	}
@@ -115,6 +139,9 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 		"doctoring-evener":            "extra override",
 	}
 	for _, got := range thread.Evener.Diagnostics.Skills {
+		if got.Name == "gardening-memory" && strings.TrimSpace(got.Description) == "" {
+			t.Fatal("gardening-memory description must be nonempty")
+		}
 		if want, ok := descriptions[got.Name]; ok && got.Description != want {
 			t.Fatalf("%s description = %q, want %q", got.Name, got.Description, want)
 		}
@@ -1286,7 +1313,10 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
+		CommandInput:      true,
 		Queue:             true,
+		// The hub pages the saved transcript from a before position itself.
+		PageBefore: true,
 		// Steer and Interrupt stay false: they act on a turn that is already
 		// running, which a cold exited session does not have. Queue does not need
 		// one — the hub resumes for it and the queued message runs as the next
@@ -1948,5 +1978,46 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 	}
 	if fullFlushed != pagedFlushed {
 		t.Errorf("full read flushed Text = %q, paged read flushed Text = %q, want equal", fullFlushed, pagedFlushed)
+	}
+}
+
+// A saved transcript pages before a boundary with no cursor the same as with
+// the cursor that points there.
+func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5})
+	if !found || err != nil {
+		t.Fatalf("latest saved page: found=%v err=%v", found, err)
+	}
+	items := flattenTestItems(latest.Data)
+	if len(items) == 0 || items[0].Position == nil || latest.NextCursor == "" {
+		t.Fatalf("latest saved page = %+v, want positioned items and a cursor", latest)
+	}
+	withCursor, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Cursor: latest.NextCursor})
+	if err != nil {
+		t.Fatalf("saved page with a cursor: %v", err)
+	}
+	cursorless, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: items[0].Position})
+	if err != nil {
+		t.Fatalf("saved page before the latest page's first item: %v", err)
+	}
+	ids := func(page appwire.ThreadTurnsListResponse) []string {
+		var out []string
+		for _, item := range flattenTestItems(page.Data) {
+			out = append(out, item.ID)
+		}
+		return out
+	}
+	if got, want := ids(cursorless), ids(withCursor); len(want) == 0 || !slicesEqual(got, want) {
+		t.Fatalf("cursorless saved page = %v, want the cursor's page %v", got, want)
+	}
+	future := &appwire.ThreadItemPosition{Entry: items[0].Position.Entry + 10_000}
+	_, _, err = pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: future})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("saved page before a future position: error = %T %v, want a stale cursor", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("saved page before a future position: error data = %#v, want stale cursor", wireErr.Data)
 	}
 }

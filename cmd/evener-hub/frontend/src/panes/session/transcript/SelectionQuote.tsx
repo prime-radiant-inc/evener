@@ -161,7 +161,13 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
       debounceTimer = setTimeout(evaluate, SELECTIONCHANGE_DEBOUNCE_MS);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      // Claim the key only when it actually dismisses a captured selection
+      // (Menu/Popover/OverlayPanel's preventDefault precedent): a listener
+      // that runs later - the activity sidebar's window-level one - reads
+      // defaultPrevented and stands, so one Esc never dismisses two
+      // surfaces. With nothing captured the key belongs to everyone else.
+      if (event.key === "Escape" && selectionRef.current !== null) {
+        event.preventDefault();
         setSelection(null);
       }
     };

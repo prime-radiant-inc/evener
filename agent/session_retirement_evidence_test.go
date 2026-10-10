@@ -1285,12 +1285,18 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 	t.Parallel()
 	for _, order := range []string{"claim-first", "pending", "resolved-rerun", "pre-attach", "close"} {
 		t.Run(order, func(t *testing.T) {
-			home := t.TempDir()
+			// The sandbox refuses to traverse a symlinked path component unless
+			// the request carries a grant for the resolved location, so a test
+			// that pins a denied boundary must name the physical path. On macOS
+			// t.TempDir sits under /var, a symlink to /private/var; the lexical
+			// spelling never settles through a grant. Resolve both temp roots so
+			// the boundary is the supported one on every platform.
+			home := resolvedPath(t, t.TempDir())
 			workdir := filepath.Join(home, "work")
 			if err := os.Mkdir(workdir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			outside := filepath.Join(t.TempDir(), "original.txt")
+			outside := filepath.Join(resolvedPath(t, t.TempDir()), "original.txt")
 			originalBytes := []byte("original escalation content")
 			if err := os.WriteFile(outside, originalBytes, 0o600); err != nil {
 				t.Fatal(err)

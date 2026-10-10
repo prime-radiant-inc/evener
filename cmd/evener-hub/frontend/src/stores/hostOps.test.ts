@@ -23,7 +23,6 @@ import {
   clearedOutcomeLine,
   deployRefusalAction,
   type HostOperationRef,
-  type HostRemnantRepair,
   hostOperationView,
   hostOpRefusal,
   hostOpRefusalBlocksRetry,
@@ -32,7 +31,6 @@ import {
   operationReadPending,
   operationShownOnHost,
   operationStateSettled,
-  orphanFenceFor,
   planNoTokenAction,
   planRefusalAction,
   restartRefusalAction,
@@ -1500,10 +1498,10 @@ describe("operations polling (S15)", () => {
     for (const state of ["complete", "failed", "interrupted"]) {
       expect(operationStateSettled(state)).toBe(true);
     }
-    // S16 (S15 follow-up): `orphan-unverified` is durable but NOT settled — it
-    // resolves through the fencing paths (orphan-resolve / a later boot's
-    // reap), so the read loop must keep polling until a terminal state rather
-    // than freeze the resolved record behind a settled state.
+    // S16 (S15 follow-up): `orphan-unverified` is durable but NOT settled — an
+    // out-of-band transition can still move it, so the read loop must keep
+    // polling until a terminal state rather than freeze the record behind a
+    // settled state.
     expect(operationStateSettled("orphan-unverified")).toBe(false);
     for (const state of ["pending", "running"]) {
       expect(operationStateSettled(state)).toBe(false);
@@ -1521,7 +1519,7 @@ describe("operations polling (S15)", () => {
     expect(operationNeedsRead({ ...seed, fetched: true })).toBe(false);
     expect(operationNeedsRead({ ...seed, fetched: true, gone: true })).toBe(false);
     expect(operationNeedsRead({ ...seed, state: "running" })).toBe(true);
-    // An orphan-unverified body is durable-but-resolvable: it still owes reads.
+    // An orphan-unverified body is durable: it still owes reads.
     expect(operationNeedsRead({ ...seed, state: "orphan-unverified", fetched: true })).toBe(true);
   });
 
@@ -1541,8 +1539,7 @@ describe("operations polling (S15)", () => {
     expect(
       hostOperationView({ ...base, state: "interrupted", result: { ok: false, message: "controller shutdown" } }),
     ).toMatchObject({ tone: "danger", label: "Restart interrupted", line: "controller shutdown" });
-    // `orphan-unverified` is durable (its affordance is the fencing slice's):
-    // render the state truthfully, nothing more.
+    // `orphan-unverified` is durable: render the state truthfully, nothing more.
     expect(hostOperationView({ ...base, state: "orphan-unverified" })).toMatchObject({
       tone: "attention",
       label: "Restart orphan-unverified",
@@ -1616,8 +1613,8 @@ describe("operations polling (S15)", () => {
     let ref = hostOpsStore.getState().operations.beta;
     if (ref === undefined) throw new Error("unreachable");
     expect(ref.state).toBe("orphan-unverified");
-    // The state is durable but resolvable elsewhere (orphan-resolve / boot reap):
-    // the loop keeps owing a read instead of freezing on it.
+    // The state is durable: the loop keeps owing a read instead of freezing
+    // on it.
     expect(operationNeedsRead(ref)).toBe(true);
 
     await hostOpsStore.getState().pollOperation("beta");
@@ -1837,31 +1834,6 @@ describe("operations polling (S15)", () => {
       expect(teardownRetryRefusalAction(repair.refusal.kind)).toBe("none");
     });
 
-    test("an orphan-fenced-busy refusal renders resolve-first, never the generic busy", async () => {
-      const fake = connectFakeClient();
-      // Fencing spec 08c §8: the orphan fence's refusal on teardown-retry names
-      // the blocking orphan-unverified record plus the orphan-resolve next step.
-      fake.on("evener/host/teardown-retry", () => {
-        throw new WireError('host "beta": an orphan-unverified record fences teardown repair', -32013, {
-          evenerErrorInfo: "orphan-fenced-busy",
-          recordId: "rec-9",
-        });
-      });
-
-      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
-
-      const repair = hostOpsStore.getState().repairs.beta;
-      if (repair?.phase !== "refused") throw new Error("unreachable");
-      expect(repair.refusal.kind).toBe("orphan-fenced-busy");
-      expect(repair.refusal.recordId).toBe("rec-9");
-      expect(repair.refusal.message).toContain("rec-9");
-      expect(repair.refusal.message).toContain("evener/host/orphan-resolve");
-      expect(repair.refusal.message).not.toContain("The host is busy right now.");
-      expect(teardownRetryRefusalAction(repair.refusal.kind)).toBe("none");
-      // The grounded fence signal the row degrades on.
-      expect(orphanFenceFor(repair, undefined, "remnant-7")).toEqual({ recordId: "rec-9" });
-    });
-
     test("teardownRecover submits the wire's attestation fields and projects recovered-cleared", async () => {
       const fake = connectFakeClient();
       fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
@@ -1899,28 +1871,6 @@ describe("operations polling (S15)", () => {
       });
       expect(clearedOutcomeLine(repair.result)).toContain("beta");
       await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(2));
-    });
-
-    test("a recover refused by an open orphan fence renders resolve-first", async () => {
-      const fake = connectFakeClient();
-      fake.on("evener/host/teardown-recover", () => {
-        throw new WireError('host "beta": an orphan-unverified record fences recovery', -32013, {
-          evenerErrorInfo: "orphan-fenced-busy",
-          recordId: "rec-9",
-        });
-      });
-
-      await hostOpsStore.getState().teardownRecover("beta", "remnant-7", {
-        operator: "operator-1",
-        statement: TEARDOWN_RECOVER_STATEMENT,
-        observedAt: "2026-09-28T09:29:00Z",
-      });
-
-      const repair = hostOpsStore.getState().repairs.beta;
-      if (repair?.phase !== "refused") throw new Error("unreachable");
-      expect(repair.action).toBe("recover");
-      expect(repair.refusal.kind).toBe("orphan-fenced-busy");
-      expect(repair.refusal.recordId).toBe("rec-9");
     });
 
     test("a response landing after a client replacement publishes the connection-changed refusal", async () => {
@@ -2003,60 +1953,6 @@ describe("operations polling (S15)", () => {
       ).toContain("still open");
       // An unrecognized future arm renders its raw outcome, never a success claim.
       expect(retryOutcomeLine({ ...base, outcome: "teardown-deferred" })).toContain("teardown-deferred");
-    });
-
-    test("orphanFenceFor prefers the hub's refusal and otherwise reads the tracked orphan-unverified record", () => {
-      const running: HostOperationRef = {
-        id: "op-7",
-        clientOperationId: "client-op-7",
-        kind: "deploy",
-        state: "running",
-        progress: [],
-      };
-      expect(orphanFenceFor(undefined, undefined, "remnant-7")).toBeNull();
-      expect(orphanFenceFor(undefined, running, "remnant-7")).toBeNull();
-      expect(orphanFenceFor(undefined, { ...running, state: "orphan-unverified" }, "remnant-7")).toEqual({
-        recordId: "op-7",
-      });
-      const fenced: HostRemnantRepair = {
-        phase: "refused",
-        remnantId: "remnant-7",
-        action: "retry",
-        refusal: { kind: "orphan-fenced-busy", message: "fenced", recordId: "rec-9" },
-      };
-      expect(orphanFenceFor(fenced, { ...running, state: "orphan-unverified" }, "remnant-7")).toEqual({
-        recordId: "rec-9",
-      });
-      const busy: HostRemnantRepair = {
-        phase: "refused",
-        remnantId: "remnant-7",
-        action: "retry",
-        refusal: { kind: "host-busy-transient", message: "busy" },
-      };
-      expect(orphanFenceFor(busy, running, "remnant-7")).toBeNull();
-    });
-
-    test("a stored orphan-fenced-busy refusal fences only its own remnant", () => {
-      const fenced: HostRemnantRepair = {
-        phase: "refused",
-        remnantId: "remnant-7",
-        action: "retry",
-        refusal: { kind: "orphan-fenced-busy", message: "fenced", recordId: "rec-9" },
-      };
-      // Its own remnant: fenced by the refusal the hub actually returned.
-      expect(orphanFenceFor(fenced, undefined, "remnant-7")).toEqual({ recordId: "rec-9" });
-      // A DIFFERENT remnant on the name: the old refusal must not fence it.
-      expect(orphanFenceFor(fenced, undefined, "remnant-8")).toBeNull();
-      // The operation record fences the NAME — any remnant on it — because the
-      // orphan fence itself is scoped to the host's name (fencing spec 08c §8).
-      const orphan: HostOperationRef = {
-        id: "op-7",
-        clientOperationId: "client-op-7",
-        kind: "deploy",
-        state: "orphan-unverified",
-        progress: [],
-      };
-      expect(orphanFenceFor(fenced, orphan, "remnant-8")).toEqual({ recordId: "op-7" });
     });
 
     test("an empty remnant id publishes a refusal instead of a silent no-op", async () => {
@@ -2193,13 +2089,11 @@ describe("operations polling (S15)", () => {
       expect(after.operationId).toBe(newer.operationId);
     });
 
-    test("teardown recovery actions: the transient busy retries; fence and unknown key never bare-retry", () => {
+    test("teardown recovery actions: the transient busy retries; occupied gate and unknown key never bare-retry", () => {
       expect(teardownRetryRefusalAction("host-busy-transient")).toBe("retry");
       expect(teardownRetryRefusalAction("host-busy-operation")).toBe("none");
       expect(teardownRetryRefusalAction("teardown-unknown-key")).toBe("none");
-      expect(teardownRetryRefusalAction("orphan-fenced-busy")).toBe("none");
       expect(teardownRecoverRefusalAction("host-busy-transient")).toBe("retry");
-      expect(teardownRecoverRefusalAction("orphan-fenced-busy")).toBe("none");
       expect(teardownRecoverRefusalAction("invalid-params")).toBe("none");
     });
   });

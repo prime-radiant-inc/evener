@@ -3,11 +3,21 @@
 // Only native edges are mocked.
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { ActionSheetIOS, Platform } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { alertRequests, pressable, render, renderedText, swipeRowFully, textOf } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	swipeRowFully,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -77,11 +87,10 @@ function memoryStorage(): SyncStringStorage {
 
 let owner: object;
 let controller: NotesController | null = null;
-const mounted: ReactTestRenderer[] = [];
 
 /** The screen's side: a controller over a hub that saves and removes, and the
  * host it provides under the session's key. */
-function provide(current: Session, { removeFails = false } = {}) {
+function provide(current: Session, { removeThrows }: { removeThrows?: string } = {}) {
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const client = {
 		request: async (method: string, params: Record<string, unknown>) => {
@@ -91,7 +100,7 @@ function provide(current: Session, { removeFails = false } = {}) {
 					note: params.note,
 					receipt: { projectionState: "pending" },
 				} as unknown as NotesHumanSetResponse;
-			if (method === "urls/remove" && removeFails) throw new Error("hub unreachable");
+			if (method === "urls/remove" && removeThrows) throw new Error(removeThrows);
 			return {};
 		},
 	};
@@ -119,7 +128,6 @@ function sheet(focusEditor?: boolean): ReactTestRenderer {
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "NotesSheet">;
 	const tree = render(<NotesSheet {...props} />);
-	mounted.push(tree);
 	return tree;
 }
 
@@ -135,12 +143,6 @@ function editorStyle(input: ReactTestInstance) {
 const symbols = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => String(node.type) === "SymbolView").map((node) => node.props.name);
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 const actionSheet = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
 
 beforeEach(() => {
@@ -152,7 +154,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	notesHosts.release(sheetKey(HUB, REF), owner);
 	controller?.dispose();
 	controller = null;
@@ -187,6 +189,12 @@ describe("your note (spec 8.8)", () => {
 		act(() => input.props.onChangeText("keep the tests green"));
 		expect(notes.getSnapshot()).toEqual({ text: "keep the tests green", phase: "editing" });
 		expect(editor(tree)?.props.value).toBe("keep the tests green");
+	});
+
+	it("lets a drag of the sheet put the keyboard away", () => {
+		provide(session());
+		const tree = sheet();
+		expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
 	});
 
 	it("draws the focus ring while focused, and leaving it schedules the save", () => {
@@ -224,6 +232,20 @@ describe("your note (spec 8.8)", () => {
 		act(() => editor(tree)?.props.onChangeText("draft"));
 		act(() => editor(tree)?.props.onBlur());
 		expect(renderedText(tree)).toContain("Saves in 10 seconds, or when you close this.");
+	});
+
+	it("announces each change to the status line, since iOS ignores accessibilityLiveRegion (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		provide(session());
+		const tree = sheet();
+		// The standing explanation is the first render, not a change: quiet.
+		expect(announce).not.toHaveBeenCalled();
+		// Editing still shows the same explanation, so still nothing to say.
+		act(() => editor(tree)?.props.onChangeText("draft"));
+		expect(announce).not.toHaveBeenCalled();
+		act(() => editor(tree)?.props.onBlur());
+		expect(announce).toHaveBeenCalledWith("Saves in 10 seconds, or when you close this.");
 	});
 
 	it("says the agent is told when the agent is working", () => {
@@ -324,8 +346,8 @@ describe("links", () => {
 			hubId: HUB,
 			sessionRef: REF,
 			path: "docs/plan.md",
-			reviewRef: REF,
-			reviewTitle: "Fix race",
+			reference: { path: "docs/plan.md", cwd: CWD, readTarget: `${CWD}/docs/plan.md`, provenance: "absolute" },
+			sessionTitle: "Fix race",
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
 		expect(browser.openBrowserAsync).not.toHaveBeenCalled();
@@ -356,10 +378,14 @@ describe("links", () => {
 			destructiveButtonIndex: 2,
 			cancelButtonIndex: 3,
 		});
+		playedHaptics.length = 0;
 		act(() => choose?.(1));
 		expect(clipboard.setStringAsync).toHaveBeenCalledWith("https://example.com/pr/1");
+		expect(playedHaptics).toEqual([]);
 		act(() => choose?.(2));
-		await flush();
+		// Spec 16.6: rigid on a destructive choice, and only that one.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
@@ -367,29 +393,71 @@ describe("links", () => {
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
-	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", () => {
+	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", async () => {
 		const os = Platform.OS;
 		(Platform as { OS: string }).OS = "android";
 		try {
-			provide(session({ sessionUrls: [web] }));
+			const { requests } = provide(session({ sessionUrls: [web] }));
 			const tree = sheet();
 			act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 			const request = alertRequests.at(-1);
 			expect(request?.title).toBe("The PR");
 			expect(request?.buttons?.map((button) => button.text)).toEqual(["Open", "Copy link", "Remove link"]);
 			expect(request?.options).toEqual({ cancelable: true });
+			// Spec 16.6: rigid on the destructive choice here too.
+			playedHaptics.length = 0;
+			act(() => request?.buttons?.[2]?.onPress?.());
+			expect(playedHaptics).toEqual(["impact:rigid"]);
+			await settle();
+			expect(
+				requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id),
+			).toEqual(["u1"]);
+			expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}
 	});
 
 	it("says so in the sheet when a link couldn't be removed", async () => {
-		provide(session({ sessionUrls: [web] }), { removeFails: true });
+		provide(session({ sessionUrls: [web] }), { removeThrows: "hub unreachable" });
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
-		await flush();
+		await settle();
 		expect(renderedText(tree)).toContain("Couldn't remove that link.");
+	});
+
+	it("drops a link the hub already removed, rather than leaving it listed (RoboRev #2769)", async () => {
+		const { requests } = provide(session({ sessionUrls: [web] }), { removeThrows: 'no URL entry with id "u1"' });
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await settle();
+		expect(requests.filter((request) => request.method === "urls/remove")).toHaveLength(1);
+		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(renderedText(tree)).not.toContain("example.com");
+		expect(symbols(tree)).toEqual([]);
+	});
+
+	it("stops hiding an id the session no longer lists, so a re-added link shows (RoboRev #2769)", async () => {
+		provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await settle();
+		expect(symbols(tree)).toEqual([]);
+		const removedOwner = owner;
+		// The hub re-reads with the row gone, then lists it again.
+		act(() => {
+			provide(session({ sessionUrls: [] }));
+		});
+		const emptyOwner = owner;
+		act(() => {
+			provide(session({ sessionUrls: [web] }));
+		});
+		expect(symbols(tree)).toEqual(["globe"]);
+		notesHosts.release(sheetKey(HUB, REF), removedOwner);
+		notesHosts.release(sheetKey(HUB, REF), emptyOwner);
 	});
 
 	it("removes a link on a full swipe left, with the same toast as its menu (spec 8.8)", async () => {
@@ -399,7 +467,7 @@ describe("links", () => {
 		expect(swipeables).toHaveLength(2);
 		expect(renderedText(render(swipeables[0]?.props.renderRightActions()))).toBe("Remove");
 		swipeRowFully(swipeables[0], "left");
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
@@ -420,7 +488,7 @@ describe("links", () => {
 		const row = pressable(tree, "The PR, https://example.com/pr/1");
 		expect(row?.props.accessibilityActions).toEqual([{ name: "remove", label: "Remove link" }]);
 		act(() => row?.props.onAccessibilityAction({ nativeEvent: { actionName: "remove" } }));
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
@@ -431,7 +499,7 @@ describe("links", () => {
 		const { requests } = provide(session({ sessionUrls: [web] }));
 		const tree = sheet();
 		swipeRowFully(tree.root.findAllByType("ReanimatedSwipeable" as never)[0], "left", { pageX: 10 });
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove")).toEqual([]);
 	});
 
@@ -461,8 +529,7 @@ describe("closing the sheet", () => {
 		const tree = sheet();
 		act(() => editor(tree)?.props.onChangeText("keep the tests"));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
-		await flush();
+		await settle();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 		).toEqual(["keep the tests"]);
@@ -476,11 +543,10 @@ describe("closing the sheet", () => {
 		act(() => {
 			for (const listener of [...appState.listeners]) listener("background");
 		});
-		await flush();
+		await settle();
 		expect(requests.map((request) => request.method)).toEqual(["notes/human/set"]);
 		expect(saved).not.toHaveBeenCalled();
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
 		expect(appState.listeners).toEqual([]);
 	});
 
@@ -501,8 +567,7 @@ describe("closing the sheet", () => {
 		// finish() unmounts this component after that release, in that order.
 		act(() => notesHosts.release(sheetKey(HUB, REF), owner));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
-		await flush();
+		await settle();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 		).toEqual(["keep the tests"]);

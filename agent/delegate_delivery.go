@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -29,7 +30,16 @@ type delegateInlineWaiter struct {
 type delegateInlineResolution struct {
 	packet   *delegatestore.TerminalPacket
 	commit   *delegateToolResultCommit
+	earlier  []delegateInlineEarlier
 	fallback bool
+}
+
+// delegateInlineEarlier is an earlier result of the same delegate that the
+// waiting caller had not yet received, which the inline reply carries ahead of
+// its own (#3906, #3951). Its commit completes before the reply's.
+type delegateInlineEarlier struct {
+	packet delegatestore.TerminalPacket
+	commit *delegateToolResultCommit
 }
 
 type delegateToolResultCommit struct {
@@ -51,6 +61,9 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
+	// heldClaim is the receiver's own claim on a held delivery an inline
+	// reply took over, restored if the reply's tool round is abandoned.
+	heldClaim *delegateDeliveryClaim
 }
 
 type delegateDeliveryClaimToken struct {
@@ -64,6 +77,9 @@ type delegateDeliveryClaim struct {
 	ownerID    string
 	waiter     *delegateInlineWaiter
 	cold       bool
+	// held marks a plan its receiver deferred to its next round because it
+	// was mid-turn.
+	held bool
 }
 
 type delegateDeliveryPlan struct {
@@ -77,6 +93,13 @@ type delegateDeliveryPlan struct {
 	claim           delegateDeliveryClaimToken
 	receiver        delegateDeliveryReceiver
 	callerCommitted bool
+	// carried is every delivery queued ahead of this waiter-bearing plan's own,
+	// oldest first, which its reply carries (#3906, #3951): the delegate's head,
+	// which its receiver is holding for its next round, and any behind it.
+	// heldClaim is the receiver's claim on the head, which this plan's claim
+	// replaces until it is admitted or refused.
+	carried   []delegatestore.PendingDelivery
+	heldClaim *delegateDeliveryClaim
 }
 
 type delegateDeliveryReceiver interface {
@@ -161,7 +184,7 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 	return <-waiter.resolution
 }
 
-func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error) {
+func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ delegateDeliveryToken, admitted bool, _ error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return delegateDeliveryToken{}, false, err
@@ -169,6 +192,22 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() {
+		// A refused carrier gives its held delivery back to the receiver's
+		// claim and drops its own, which would otherwise keep its delivery
+		// from ever being planned once the held one is acknowledged.
+		if admitted || len(plan.carried) == 0 {
+			return
+		}
+		if claim := c.deliveryClaims[plan.carried[0].DeliveryID]; claim != nil && claim.token == plan.claim {
+			c.restoreHeldClaimLocked(plan.heldClaim)
+			c.evidenceVersion++
+		}
+		if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+			delete(c.deliveryClaims, plan.deliveryID)
+			c.evidenceVersion++
+		}
+	}()
 	if plan.controller != c || plan.deliveryID == "" || plan.claim.deliveryID != plan.deliveryID {
 		return delegateDeliveryToken{}, false, errDelegateStaleLease
 	}
@@ -193,49 +232,75 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		return delegateDeliveryToken{}, false, nil
 	}
 	head := aggregate.PendingDeliveries[0]
+	if len(plan.carried) > 0 {
+		if len(aggregate.PendingDeliveries) <= len(plan.carried) || !reflect.DeepEqual(aggregate.PendingDeliveries[:len(plan.carried)], plan.carried) {
+			return delegateDeliveryToken{}, false, nil
+		}
+		head = aggregate.PendingDeliveries[len(plan.carried)]
+	}
 	if head.DeliveryID != plan.deliveryID || head.OwnerDelegateID != plan.ownerDelegateID || !reflect.DeepEqual(head.Packet, plan.packet) {
 		return delegateDeliveryToken{}, false, nil
 	}
-	if c.closing || aggregate.PendingStopSeq != 0 {
-		delete(c.deliveryClaims, plan.deliveryID)
-		c.evidenceVersion++
-		return delegateDeliveryToken{}, false, nil
-	}
-	if plan.ownerDelegateID != "" {
-		owner := c.durable[plan.ownerDelegateID]
-		if owner == nil || owner.PendingStopSeq != 0 {
-			delete(c.deliveryClaims, plan.deliveryID)
-			c.evidenceVersion++
-			return delegateDeliveryToken{}, false, nil
-		}
-	}
-	if c.stop != nil {
-		_, senderCovered := c.stop.members[plan.delegateID]
-		_, ownerCovered := c.stop.members[plan.ownerDelegateID]
-		if senderCovered || ownerCovered {
-			delete(c.deliveryClaims, plan.deliveryID)
-			c.evidenceVersion++
-			return delegateDeliveryToken{}, false, nil
-		}
-	}
-	if plan.ownerDelegateID != "" && c.hasAttentionStartReservationLocked(plan.ownerDelegateID) {
+	if c.deliveryStoppedLocked(plan.delegateID, plan.ownerDelegateID) || plan.ownerDelegateID != "" && c.hasAttentionStartReservationLocked(plan.ownerDelegateID) {
 		delete(c.deliveryClaims, plan.deliveryID)
 		c.evidenceVersion++
 		return delegateDeliveryToken{}, false, nil
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
-	c.nextToken++
-	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: plan.deliveryID}
-	c.deliveries[token.processID] = &delegateDeliveryAdmission{
-		token:      token,
-		delegateID: plan.delegateID,
-		ownerID:    plan.ownerDelegateID,
-		claim:      plan.claim,
-		cold:       claim.cold,
-		inline:     plan.waiter != nil || plan.callerCommitted,
+	cold := claim.cold
+	admit := func(claim delegateDeliveryClaimToken) *delegateDeliveryAdmission {
+		c.nextToken++
+		receipt := &delegateDeliveryAdmission{
+			token:      delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
+			delegateID: plan.delegateID,
+			ownerID:    plan.ownerDelegateID,
+			claim:      claim,
+			cold:       cold,
+			inline:     plan.waiter != nil || plan.callerCommitted,
+		}
+		c.deliveries[receipt.token.processID] = receipt
+		return receipt
 	}
+	if len(plan.carried) > 0 {
+		delete(c.deliveryClaims, plan.carried[0].DeliveryID)
+		// The held head is admitted under the receiver's own claim token, so
+		// a retry of it is planned as that delivery's. The deliveries behind
+		// it were never planned, so each gets a claim token of its own.
+		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
+		for _, behind := range plan.carried[1:] {
+			c.nextToken++
+			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
+		}
+	}
+	token := admit(plan.claim).token
 	c.evidenceVersion++
 	return token, true, nil
+}
+
+// deliveryStoppedLocked reports whether closing or a stop refuses
+// delegateID's deliveries to ownerID for good.
+func (c *delegateTreeController) deliveryStoppedLocked(delegateID, ownerID string) bool {
+	if aggregate := c.durable[delegateID]; c.closing || aggregate == nil || aggregate.PendingStopSeq != 0 {
+		return true
+	}
+	if owner := c.durable[ownerID]; ownerID != "" && (owner == nil || owner.PendingStopSeq != 0) {
+		return true
+	}
+	return c.stopCoversLocked(delegateID) || c.stopCoversLocked(ownerID)
+}
+
+// restoreHeldClaimLocked gives a held delivery a reply took over back to its
+// receiver's claim, so the plan the receiver holds delivers it as before,
+// while it is still its delegate's head and no closing or stop refuses it for
+// good; otherwise the claim is dropped, since it would outlive the delivery
+// and block the owner. A transient attention start reservation is left to the
+// held plan's own retry.
+func (c *delegateTreeController) restoreHeldClaimLocked(held *delegateDeliveryClaim) {
+	id := held.token.deliveryID
+	delete(c.deliveryClaims, id)
+	if !c.deliveryStoppedLocked(held.delegateID, held.ownerID) && len(c.durable[held.delegateID].PendingDeliveries) != 0 && c.durable[held.delegateID].PendingDeliveries[0].DeliveryID == id {
+		c.deliveryClaims[id] = held
+	}
 }
 
 func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
@@ -248,6 +313,10 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	}
 	if !committed {
 		delete(c.deliveries, token.processID)
+		if receipt.heldClaim != nil && c.deliveryClaims[token.deliveryID] == nil {
+			// The reply carrying this held result was abandoned.
+			c.restoreHeldClaimLocked(receipt.heldClaim)
+		}
 		if c.stop != nil {
 			if _, tracked := c.stop.deliveries[token]; tracked {
 				delete(c.stop.deliveries, token)
@@ -333,19 +402,20 @@ func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 		if aggregate == nil || len(aggregate.PendingDeliveries) == 0 {
 			continue
 		}
-		if receipt := c.deliveryReceiptLocked(aggregate.PendingDeliveries[0].DeliveryID); receipt != nil {
-			if receipt.retryable {
-				if plan := c.retryDeliveryPlanLocked(receipt); plan != nil {
-					plans = append(plans, *plan)
-				}
-			}
-			continue
-		}
-		if plan := c.newHeadDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
+		if plan := c.headDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
 			plans = append(plans, *plan)
 		}
 	}
 	return plans
+}
+
+// headDeliveryPlanLocked plans delegateID's head delivery: a retry when it is
+// admitted and left retryable, otherwise a new plan.
+func (c *delegateTreeController) headDeliveryPlanLocked(delegateID, deliveryID string) *delegateDeliveryPlan {
+	if receipt := c.deliveryReceiptLocked(deliveryID); receipt != nil {
+		return c.retryDeliveryPlanLocked(receipt)
+	}
+	return c.newHeadDeliveryPlanLocked(delegateID, deliveryID)
 }
 
 func prepareColdDelegateDeliveryReplay(c *delegateTreeController, plans []delegateDeliveryPlan) ([]delegateDeliveryPlan, error) {
@@ -450,14 +520,18 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	}
 	if plan.waiter != nil {
 		packet := cloneDelegateTerminalPacket(plan.packet)
-		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{
+		resolution := delegateInlineResolution{
 			packet: &packet,
-			commit: &delegateToolResultCommit{
-				controller: plan.controller,
-				token:      token,
-				deliveryID: plan.deliveryID,
-			},
-		})
+			commit: &delegateToolResultCommit{controller: plan.controller, token: token, deliveryID: plan.deliveryID},
+		}
+		for _, earlier := range plan.carried {
+			earlierToken := plan.controller.admittedDeliveryToken(earlier.DeliveryID)
+			resolution.earlier = append(resolution.earlier, delegateInlineEarlier{
+				packet: cloneDelegateTerminalPacket(earlier.Packet),
+				commit: &delegateToolResultCommit{controller: plan.controller, token: earlierToken, deliveryID: earlierToken.deliveryID},
+			})
+		}
+		resolveDelegateInlineClaim(plan.waiter, resolution)
 		return delegateMutationPlans{}, nil
 	}
 	if plan.controller.deliveryReceiptIsInline(token) {
@@ -497,6 +571,38 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
+// completeDelegateDeliveryCommits acknowledges one tool call's delivery
+// commits in order. A reply carrying earlier results acknowledges them, oldest
+// first, ahead of its own (#3906, #3951), and the store takes them only in
+// queue order, so after one fails the rest are left for the same retry rather
+// than abandoned: they are already in the reply and must never come back as
+// notifications.
+func completeDelegateDeliveryCommits(commits []*delegateToolResultCommit) ([]delegateMutationPlans, error) {
+	var completed []delegateMutationPlans
+	for i, commit := range commits {
+		plans, err := commit.Complete(true)
+		if err != nil {
+			for _, rest := range commits[i+1:] {
+				rest.controller.leaveDeliveryForRetry(rest.token)
+			}
+			return completed, err
+		}
+		completed = append(completed, plans)
+	}
+	return completed, nil
+}
+
+// leaveDeliveryForRetry marks an admitted inline delivery retryable without
+// acknowledging it, as a failed acknowledgment does.
+func (c *delegateTreeController) leaveDeliveryForRetry(token delegateDeliveryToken) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.retryable = true
+		c.evidenceVersion++
+	}
+}
+
 func (commit *delegateToolResultCommit) Complete(committed bool) (delegateMutationPlans, error) {
 	if commit == nil || commit.controller == nil || commit.deliveryID != commit.token.deliveryID {
 		return delegateMutationPlans{}, errDelegateStaleLease
@@ -513,21 +619,21 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		return nil
 	}
 	head := aggregate.PendingDeliveries[0]
+	var carried []delegatestore.PendingDelivery
+	var heldClaim *delegateDeliveryClaim
 	if head.DeliveryID != deliveryID {
+		var at int
+		if heldClaim, at = c.carriableHeldClaimLocked(delegateID, aggregate.PendingDeliveries, deliveryID); heldClaim == nil {
+			return nil
+		}
+		for _, pending := range aggregate.PendingDeliveries[:at] {
+			pending.Packet = cloneDelegateTerminalPacket(pending.Packet)
+			carried = append(carried, pending)
+		}
+		head = aggregate.PendingDeliveries[at]
+	}
+	if c.deliveryStoppedLocked(delegateID, head.OwnerDelegateID) {
 		return nil
-	}
-	if head.OwnerDelegateID != "" {
-		owner := c.durable[head.OwnerDelegateID]
-		if owner == nil || owner.PendingStopSeq != 0 {
-			return nil
-		}
-	}
-	if c.stop != nil {
-		_, senderCovered := c.stop.members[delegateID]
-		_, ownerCovered := c.stop.members[head.OwnerDelegateID]
-		if senderCovered || ownerCovered {
-			return nil
-		}
 	}
 	if _, claimed := c.deliveryClaims[deliveryID]; claimed || c.hasDeliveryReceiptLocked(deliveryID) {
 		return nil
@@ -542,13 +648,24 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	}
 	c.nextToken++
 	claimToken := delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: deliveryID}
-	waiter := c.claimDelegateWaiterLocked(delegateID, head.Generation)
-	c.deliveryClaims[deliveryID] = &delegateDeliveryClaim{
+	// An update never answers an inline wait: the waiting caller wants the
+	// generation's report, so the waiter stays registered for it.
+	var waiter *delegateInlineWaiter
+	if head.Packet.Kind != delegatestore.PacketUpdate {
+		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
+	}
+	claim := &delegateDeliveryClaim{
 		token:      claimToken,
 		delegateID: delegateID,
 		ownerID:    head.OwnerDelegateID,
 		waiter:     waiter,
 		cold:       cold,
+	}
+	c.deliveryClaims[deliveryID] = claim
+	if len(carried) > 0 {
+		// The held head's claim moves to this plan, so the plan its receiver
+		// holds is no longer admitted and no new one is made.
+		c.deliveryClaims[carried[0].DeliveryID] = claim
 	}
 	c.evidenceVersion++
 	return &delegateDeliveryPlan{
@@ -561,7 +678,42 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		packet:          cloneDelegateTerminalPacket(head.Packet),
 		claim:           claimToken,
 		receiver:        receiver,
+		carried:         carried,
+		heldClaim:       heldClaim,
 	}
+}
+
+// carriableHeldClaimLocked returns the receiver's claim on the delegate's head
+// delivery, and deliveryID's place in the queue, when deliveryID's inline
+// reply may carry every delivery ahead of it: its generation has an inline
+// waiter, every delivery ahead of it goes to the same owner, the owner is
+// holding the head for its next round, and none behind the head was planned.
+// That waiter's caller is the owner, mid-tool-round, so without the reply the
+// held result waits on the round, the round on the wait, and the wait sits
+// out its ceiling (#3906); results queued behind the held one wait on it
+// (#3951).
+func (c *delegateTreeController) carriableHeldClaimLocked(delegateID string, pending []delegatestore.PendingDelivery, deliveryID string) (*delegateDeliveryClaim, int) {
+	at := slices.IndexFunc(pending, func(p delegatestore.PendingDelivery) bool { return p.DeliveryID == deliveryID })
+	if at < 1 {
+		return nil, 0
+	}
+	if live := c.live[delegateID]; live == nil || live.waiters[pending[at].Generation] == nil {
+		return nil, 0
+	}
+	for _, ahead := range pending[:at] {
+		if ahead.OwnerDelegateID != pending[at].OwnerDelegateID {
+			return nil, 0
+		}
+	}
+	for _, behind := range pending[1:at] {
+		if c.deliveryClaims[behind.DeliveryID] != nil || c.hasDeliveryReceiptLocked(behind.DeliveryID) {
+			return nil, 0
+		}
+	}
+	if claim := c.deliveryClaims[pending[0].DeliveryID]; claim != nil && claim.held {
+		return claim, at
+	}
+	return nil, 0
 }
 
 func (c *delegateTreeController) hasColdDeliveryWorkForOwnerLocked(ownerDelegateID string) bool {
@@ -636,6 +788,25 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 	}
 }
 
+func (c *delegateTreeController) admittedDeliveryToken(deliveryID string) delegateDeliveryToken {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveryReceiptLocked(deliveryID); receipt != nil {
+		return receipt.token
+	}
+	return delegateDeliveryToken{}
+}
+
+// holdDeliveryClaim marks plan's claim as held by its receiver for its next
+// round, while the claim is still plan's.
+func (c *delegateTreeController) holdDeliveryClaim(plan delegateDeliveryPlan) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+		claim.held = true
+	}
+}
+
 func (c *delegateTreeController) deliveryReceiptIsInline(token delegateDeliveryToken) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -655,7 +826,7 @@ func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID 
 		if aggregate == nil || len(aggregate.PendingDeliveries) == 0 || aggregate.PendingDeliveries[0].OwnerDelegateID != ownerDelegateID {
 			continue
 		}
-		if plan := c.newHeadDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
+		if plan := c.headDeliveryPlanLocked(id, aggregate.PendingDeliveries[0].DeliveryID); plan != nil {
 			plans = append(plans, *plan)
 		}
 	}
@@ -851,6 +1022,9 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 		hook(s, deferred)
 	}
 	if deferred {
+		if plan.controller != nil {
+			plan.controller.holdDeliveryClaim(plan)
+		}
 		s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
 		shouldWake := !s.delegateDeliveryWake && !s.delegateDeliveryRetry.active
 		if shouldWake {
@@ -944,6 +1118,22 @@ func (c *delegateTreeController) claimDelegateWaiterLocked(delegateID string, ge
 	return waiter
 }
 
+// dropStoppedDelegateWaiter removes the generation's inline waiter when its
+// delegate carries a pending subtree stop, reporting whether it did. That is
+// the durable half of the coverage newHeadDeliveryPlanLocked refuses an inline
+// delivery plan on, so the waiter is never handed a packet and can only be
+// answered by the wait's ceiling. Dropping it lets the send answer with the
+// stopped outcome as soon as the stop has closed its start (#3502).
+func (c *delegateTreeController) dropStoppedDelegateWaiter(lease delegateLease) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[lease.delegateID]
+	if aggregate == nil || aggregate.PendingStopSeq == 0 {
+		return false
+	}
+	return c.claimDelegateWaiterLocked(lease.delegateID, lease.generation) != nil
+}
+
 func resolveDelegateInlineClaim(waiter *delegateInlineWaiter, resolution delegateInlineResolution) {
 	if waiter == nil {
 		return
@@ -953,16 +1143,42 @@ func resolveDelegateInlineClaim(waiter *delegateInlineWaiter, resolution delegat
 	})
 }
 
-func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
-	packet, err := json.Marshal(plan.packet)
-	if err != nil {
-		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+// delegateUpdateMessage decodes the delegate's own words from an update
+// packet, whose Message holds a JSON string.
+func delegateUpdateMessage(packet delegatestore.TerminalPacket) (string, error) {
+	var message string
+	if err := json.Unmarshal(packet.Message, &message); err != nil {
+		return "", fmt.Errorf("decode delegate update message: %w", err)
 	}
+	return message, nil
+}
+
+func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	// The name attribute is display-only: the frame stays addressable by
 	// delegate_id alone, and an unnamed delegate renders no name attribute.
 	attrs := []string{notificationAttr("delegate_id", plan.delegateID)}
 	if plan.name != "" {
 		attrs = append(attrs, notificationAttr("name", plan.name))
 	}
-	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), packet), nil
+	kind, body := "report", ""
+	if plan.packet.Kind == delegatestore.PacketUpdate {
+		message, err := delegateUpdateMessage(plan.packet)
+		if err != nil {
+			return "", err
+		}
+		// An update's body is the delegate's own words, with "<" escaped so
+		// they can neither close this frame nor open another. Like a job
+		// output excerpt, only "<" is escaped: a literal entity the delegate
+		// types (say "&amp;") decodes once on clients, a known remainder that
+		// issue #4245 tracks for every notification body.
+		kind, body = "update", escapeNotificationBody(message)
+	} else {
+		packet, err := json.Marshal(plan.packet)
+		if err != nil {
+			return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+		}
+		body = string(packet)
+	}
+	attrs = append(attrs, notificationAttr("kind", kind))
+	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), body), nil
 }

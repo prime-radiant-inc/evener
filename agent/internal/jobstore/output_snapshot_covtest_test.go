@@ -74,7 +74,7 @@ func TestReadOutputRawSnapshotWindow_ShortRead(t *testing.T) {
 // in readOutputSnapshotWindow (line 329-330).
 func TestReadOutputSnapshotWindow_OpenError(t *testing.T) {
 	fs := afero.NewMemMapFs()
-	_, err := readOutputSnapshotWindow(fs, "/nonexistent", 10, 100, false)
+	_, err := readOutputSnapshotWindow(fs, "/nonexistent", 10, 0, 100, false)
 	if err == nil {
 		t.Fatal("expected error for opening non-existent file")
 	}

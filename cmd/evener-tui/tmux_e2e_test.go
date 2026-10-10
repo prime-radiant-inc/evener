@@ -421,23 +421,16 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
-	app.WaitFor("Select a user message, then press f to fork.", "f: fork selected user message")
+	app.WaitFor("Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.", "ctrl+f: fork selected user message")
 	// The browse→compose transition must be synced on the DISAPPEARANCE of
 	// the browse action bar, not on "enter send": the browse footer keeps the
 	// composer panel — and with it the compose-mode "enter send" hint — on
-	// screen (hub_session_view.go's scrollMode branch), so a plain
-	// WaitFor("enter send") returns while the "i" can still be sitting
-	// unread in the pty. If "/help" is then written before the TUI's input
-	// reader consumes "i", tmux coalesces the two writes into one pty read,
-	// bubbletea reports "i/help" as a single KeyMsg, and browse mode drops
-	// it into the composer as draft text (kata fazd; fall-through pinned by
-	// kata 7hh0) — the TUI never leaves browse mode and /help never runs,
-	// which is the issue #540 flake. A frame showing "enter send" WITHOUT
-	// the browse action bar can only have been rendered from the post-"i"
-	// model, so this wait is a real happens-before edge: the "i" is provably
-	// consumed before "/help" is written.
-	app.SendKeys("i")
-	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
+	// screen (hub_session_view.go's scrollMode branch), so "enter send" alone
+	// cannot prove the exit was consumed. Browse is text-first (kata 7hh0), so
+	// the exit key is Escape, an escape sequence immune to the pty coalescing
+	// that made the old printable exit key unreliable (kata fazd, issue #540).
+	app.SendKeys("Escape")
+	app.WaitForWithout([]string{"esc: compose"}, "enter send")
 
 	// /help lists the slash commands and the browse keybindings.
 	app.TypeLine("/help")
@@ -573,8 +566,9 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	requireTmux(t)
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
-	// Browse-mode fork: k/j move the selection cursor across rows (auto-
-	// scrolling to keep it visible) so a user message can be reached and forked.
+	// Browse-mode fork: ctrl+up/ctrl+down move the selection cursor across rows
+	// (auto-scrolling to keep it visible) so a user message can be reached and
+	// forked; browse is text-first (kata 7hh0), so the chords are non-printable.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	registerTUIE2EHubCleanup(t, hub)
@@ -585,8 +579,8 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user message", "▶ ▍ initial answer")
-	app.SendKeys("f")
+	app.WaitFor("esc: compose", "ctrl+f: fork selected user message", "▶ ▍ initial answer")
+	app.SendKeys("C-f")
 	app.WaitFor("Select a user message to fork.")
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
@@ -594,18 +588,18 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	// Same sync rule as the /fork exit in SessionCommandsAndNavigation:
 	// "enter send" is visible in browse mode, so sync the transition on the
 	// action bar's disappearance, not on the hint text.
-	app.SendKeys("i")
-	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose")
-	// These k presses must move the browse cursor up to the user message.
-	app.SendKeys("k")
+	app.WaitForWithout([]string{"esc: compose"}, "enter send")
+	app.SendKeys("Escape")
+	app.WaitFor("esc: compose")
+	// These ctrl+up presses must move the browse cursor up to the user message.
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ initial answer")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ ✓ exec")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ┃  > initial question")
-	app.SendKeys("f")
+	app.SendKeys("C-f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 
 	app.SendKeys("Enter")
@@ -638,18 +632,16 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
+	app.WaitFor("esc: compose", "ctrl+f: fork selected user message")
 	// Await each selection render before the next press, the way
-	// TestTUITmuxE2E_BrowseAndFork does: consecutive printable command keys
-	// sent back-to-back can coalesce into one pty read on a loaded machine
-	// and arrive as a single batched KeyMsg, which browse mode reads as
-	// composer text rather than three commands (kata fazd — this test's CI
-	// failure pane had "kk" sitting in the composer).
-	app.SendKeys("k")
+	// TestTUITmuxE2E_BrowseAndFork does. Browse is now text-first (kata 7hh0),
+	// so these are ctrl+up escape sequences rather than printable command keys;
+	// awaiting the render still keeps the pane's cursor moves observable.
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ ✓ exec")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ┃  > initial question")
-	app.SendKeys("f")
+	app.SendKeys("C-f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 	app.TypeText(" with edit")
 	app.SendKeys("Enter")

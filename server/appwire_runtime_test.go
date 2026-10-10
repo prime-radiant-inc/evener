@@ -530,11 +530,11 @@ func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
 	}
 }
 
-func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
+func TestAppDiagnosticsFromDetailedStatus_DelegateRosterKeepsClientFields(t *testing.T) {
 	valid := true
 	message := json.RawMessage("null")
 	input := DelegateStatusInfo{
-		DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		RunGeneration: 3, DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "completed",
 		Resumable: true, NeedsAttention: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
 		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.EvenerUsage{InputTokens: 3, TotalTokens: 3},
@@ -545,8 +545,8 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 		t.Fatalf("delegates = %+v", got.Delegates)
 	}
 	delegate := got.Delegates[0]
-	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
-		!bytes.Equal(delegate.Message, message) || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
+	if delegate.RunGeneration != input.RunGeneration || delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
+		len(delegate.Message) != 0 || len(delegate.StructuredResult) != 0 || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
 		!reflect.DeepEqual(delegate.Warnings, input.Warnings) || !reflect.DeepEqual(delegate.Diagnostics, input.Diagnostics) {
 		t.Fatalf("app delegate diagnostics = %+v", delegate)
 	}
@@ -889,4 +889,32 @@ func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
 	if !root.Thread.Evener.MutationStateAuthoritative {
 		t.Fatal("root durable projection lost authority")
 	}
+}
+
+// A subagent's thread lists its subtree, so a delegate update emitted on its
+// stream for a delegate below it is published to that thread, still naming
+// the tree's root as the delegate's owner.
+func TestDescendantThreadPublishesSubtreeDelegateUpdates(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	serveRootWithoutHistory(t, srv, "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "middle", Data: events.SessionStartData{}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: "middle", Data: events.DelegateUpdatedData{
+		DelegateID: "dlg_grandchild", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "grandchild", ParentDelegateID: "dlg_middle",
+		AncestorSessionIDs: []string{"middle"}, Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", ProjectionRevision: 3,
+	}})
+	for _, notification := range srv.AppNotificationsAfter(0, "middle") {
+		if notification.Notification.Method != appwire.NotifyEvenerDelegateUpdated {
+			continue
+		}
+		var params appwire.EvenerDelegateParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.ThreadID != "middle" || params.Delegate.DelegateID != "dlg_grandchild" || params.Delegate.OwnerSessionID != "root" {
+			t.Fatalf("middle thread delegate update = %+v", params)
+		}
+		return
+	}
+	t.Fatal("the grandchild's update was not published to the middle subagent's thread")
 }

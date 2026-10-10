@@ -113,6 +113,12 @@ func TestFormatAuthStatusSummarySpeaksTheRegistryVocabulary(t *testing.T) {
 		// use it, so the expired access token genuinely needs a fresh login
 		// (issue #2483).
 		{"status/oauth-login-required", "openai-codex auth: OAuth expired (bot@example.com)"},
+		// The stored record's refresh token was permanently refused by the
+		// issuer while the access token is still valid: NeedsLogin is true so
+		// the user is told to sign in again, but the token has not expired, so
+		// "OAuth expired" would misreport a session that works until its next
+		// refresh (issue #2785).
+		{"status/oauth-refused", "openai-codex auth: OAuth refresh rejected (bot@example.com)"},
 		{"status/oauth-none", "openai-codex auth: not configured"},
 		{"status/adc", "vertexish auth: application default credentials"},
 		{"status/store-credential-json", "vertexish auth: stored credential JSON"},

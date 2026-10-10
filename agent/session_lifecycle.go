@@ -586,17 +586,17 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			if retirement {
 				jobManagerCloseErr = s.jobManager.releaseQuiescentRuntime()
 			} else {
-				jobManagerCloseErr = s.jobManager.closeRuntimeState()
+				jobManagerCloseErr = s.jobManager.closeRuntimeState(budgetCtx)
 			}
 		}
 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of that env (step 4), so a child's teardown never
-		// runs it; what a child owns is its scratch, retained for the handoff.
+		// runs it; what a child owns is its scratch, which its teardown ends.
 		if !retirement {
 			for _, sub := range subs {
-				teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
+				teardownChildSession(budgetCtx, sub.sess)
 			}
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
@@ -642,11 +642,13 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			}
 		}
 
-		// Retirement releases the live scratch leases without signalling any
-		// process or deleting a required directory, keeping Released:false.
+		// Retirement ends the parked and abandoned environments' scratch
+		// without signalling any process; the current environment's goes at the
+		// end of close, after MCP shutdown.
 		if retirement {
-			s.releaseRetirementScratch()
+			s.endRetirementScratch()
 		}
+		s.closeMemoryEnvironments()
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if options.cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
@@ -659,19 +661,13 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// child's teardown skips (not its own) and the current clone's
 			// Cleanup never reaches. The parked environment shares the current
 			// clone's process table, which was just reaped, so only its scratch
-			// is left: retained, never a second Cleanup.
-			s.retainParkedWorktreeEnvironmentScratch()
+			// is left: removed, never a second Cleanup.
+			s.disposeParkedWorktreeEnvironmentScratch()
 			// And every environment a later enter dropped, which the parked one
 			// does not cover: worktreeRestoreEnv holds only the launch
 			// environment, so a switch leaves the clone it came from reachable
 			// from nothing.
-			s.settleAbandonedEnvironmentScratch(retainChildScratch)
-		}
-
-		// A terminal root close has committed: write the retention tombstone
-		// for this root's own manifest. Retirement never reaches here.
-		if !retirement && cleanupEnv {
-			s.releaseTerminalScratchRetention()
+			s.disposeAbandonedEnvironmentScratch()
 		}
 
 		if !retirement {
@@ -716,6 +712,12 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
+		}
+
+		// Scratch goes last: SessionEnd hooks and MCP servers above still run with
+		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
+		if cleanupEnv || retirement {
+			s.endOwnedCurrentScratch()
 		}
 
 		if retirement {
@@ -793,48 +795,55 @@ func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExe
 	s.abandonedEnvs = append(s.abandonedEnvs, prior)
 }
 
-// settleAbandonedEnvironmentScratch settles the scratch every environment this
-// session swapped away from still owns, under the same disposition as the
-// environment the session holds now: a handoff releases the leases and keeps
-// the directories, a discard drops both. Neither settlement runs Cleanup, so
-// no process table is touched.
+// disposeAbandonedEnvironmentScratch removes the scratch every environment this
+// session swapped away from still owns. It never runs Cleanup, so no process
+// table is touched.
 //
-// close calls it (always a handoff) after the current environment's Cleanup,
-// for the same reason the parked environment's retain runs there: an abandoned
+// close calls it after the current environment's Cleanup: an abandoned
 // environment shares the current clone's process table, so its processes are
 // already reaped and running Cleanup on it would reap that table a second
 // time. What is left on it is what a shared child minted after the session
-// moved on, which nothing else will ever release. teardownChildSession also
+// moved on, which nothing else will ever remove. teardownChildSession also
 // calls it: a session whose environment is its live parent's own never runs
 // cleanupEnv at all, so this is the only place that ever drains a worktree
-// clone such a child built for itself and then swapped away from. It passes
-// its own disposition for symmetry with the current environment — the scratch
-// of a child being dropped is dropped wherever it sits. No production caller
-// reaches the discard side with a swapped child today: only a manage_worktree
-// op records an abandoned environment, which takes a turn, and every teardown
-// that discards fires before the child's run loop starts.
-func (s *Session) settleAbandonedEnvironmentScratch(scratch childScratchDisposition) {
+// clone such a child built for itself and then swapped away from.
+func (s *Session) disposeAbandonedEnvironmentScratch() {
 	s.mu.Lock()
 	abandoned := s.abandonedEnvs
 	s.abandonedEnvs = nil
 	s.mu.Unlock()
 	for _, env := range abandoned {
-		releaseOwnedChildEnvironment(env, scratch)
+		releaseOwnedChildEnvironment(env)
 	}
 }
 
-// retainParkedWorktreeEnvironmentScratch releases the leases of every scratch
-// the environment parked by a worktree enter (worktreeRestoreEnv) still owns,
-// keeping the directories for the handoff. Only close calls it, after the
-// current environment's Cleanup: the parked environment shares that process
-// table, so its processes are already reaped and running Cleanup on it would
-// reap the table a second time.
-func (s *Session) retainParkedWorktreeEnvironmentScratch() {
+// disposeParkedWorktreeEnvironmentScratch removes every scratch the environment
+// parked by a worktree enter (worktreeRestoreEnv) still owns. Only close calls
+// it, after the current environment's Cleanup: the parked environment shares
+// that process table, so its processes are already reaped and running Cleanup
+// on it would reap the table a second time.
+func (s *Session) disposeParkedWorktreeEnvironmentScratch() {
 	s.mu.Lock()
 	parked := s.worktreeRestoreEnv
 	s.mu.Unlock()
 	if parked != nil {
-		parked.RetainSessionScratch()
+		_ = parked.EndSessionScratch()
+	}
+}
+
+// endOwnedCurrentScratch ends the current environment's scratch when this
+// session owns that environment (EndSessionScratch). A child still holding its
+// live parent's own environment owns none of it; the parent's close ends it.
+func (s *Session) endOwnedCurrentScratch() {
+	s.mu.Lock()
+	current, parentShared := s.env, s.parentSharedEnv
+	s.mu.Unlock()
+	local, ok := current.(*execenv.LocalExecutionEnvironment)
+	if !ok || sameEnvironment(current, parentShared) {
+		return
+	}
+	if err := local.EndSessionScratch(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
 	}
 }
 
@@ -873,18 +882,10 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// A discarded candidate was never adopted by anything, so unlike a normal
-		// teardown (which RETAINS both scratch dirs for the human handoff), there
-		// is no one left to retain them for: both go, the same decision the
-		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		// The one exception is an allocation this candidate ADOPTED from the
-		// root's durable retention manifest: that directory is referenced on
-		// disk and a later resume reacquires it, so it is retained (lease
-		// released) instead of removed with the mint a fresh restore allocated.
-		// The settle is per kind, so an adopted allocation never holds its
-		// sibling fresh mint open with it (round 83).
+		// A discarded candidate is an ordinary end for its scratch: a named one
+		// is kept for the session's next restore, a disposable one removed.
 		env := s.environmentOwnedAtTeardown()
-		s.settleOwnedScratchByManifest(env)
+		endEnvironmentScratch(env)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -986,7 +987,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any notification work is pending, and
+// (its text plus image and selection counts), whether notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -995,6 +996,7 @@ type drainInputs struct {
 	QueuedText           string
 	QueuedImages         int
 	QueuedSkills         int
+	QueuedCommands       int
 	NotificationsPending bool
 	Awaiting             bool
 	// QueuedCarrier reports that the queued entry is the steering carrier
@@ -1065,7 +1067,7 @@ const (
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
 	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked
-	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCarrier
+	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCommands > 0 || in.QueuedCarrier
 	if in.Awaiting {
 		if queued {
 			return runQueued, skipGoalGate
@@ -1149,16 +1151,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// must reach the model rather than wait behind a question the user has
 	// already moved past.
 	//
-	// Gated on the pending set, not raw state (attention-status-model v5
-	// reconciliation): SessionAwaiting used to imply "a question is pending" —
-	// the only producer of the state before the merge — but the general
-	// inbox-semantics upgrade (armAwaitingAtSettle) now also rests a session
-	// awaiting after any clean, output-producing turn with nothing else in
-	// flight, no ask involved. Their spec's own consequence for that case is
-	// the opposite of a hold: "async wakes re-arm by design." Only a genuine
+	// Gated on the pending set, not raw state: armAwaitingAtSettle also rests
+	// a session awaiting after a turn that ended on needs_response, no ask
+	// involved, and an async wake may move that session on. Only a genuine
 	// pending question is a stronger stop than the wake (a delegate finishing
 	// while the user reads a QUESTION must not silently resolve it out from
-	// under them); a general re-arm has nothing pending to protect.
+	// under them); a needs_response rest has nothing pending to protect.
 	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
@@ -1356,8 +1354,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.mu.Unlock()
 					if emitEnd {
 						s.emit(events.EventSessionEnd, events.SessionEndData{
-							Reason:      "interrupted",
-							State:       string(SessionIdle),
+							Reason: "interrupted",
+							// The boundary above settled the session; WireState says
+							// whether queued work will move it on.
+							State:       s.WireState(),
 							Turns:       turns,
 							Interrupted: true,
 						})
@@ -1403,7 +1403,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 							err = errors.Join(err, refusal)
 						} else if queued, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
 							err = errors.Join(err, claimRefusal)
-						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
+						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
@@ -1530,7 +1530,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// which goes on and completes -- is one attempt per external
 			// wake, and this rung is not one. The selector sees the park too
 			// and takes goIdle ahead of the autonomous rungs.
-			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
+			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
 				carrier, carrierRefusal := s.claimSteeringCarrierInput()
 				if carrierRefusal != nil {
 					return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
@@ -1544,7 +1544,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			}
 		}
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			!inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !queued.SteeringCarrier
+			!inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1563,6 +1563,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			QueuedSkills:         len(queued.SkillNames),
+			QueuedCommands:       len(queued.CommandNames),
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
@@ -1928,7 +1929,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if kind == EntryNotification && !rootAttentionAccepted {
 			return
 		}
-		finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err)
+		finishErr := s.finishAttentionTurn(rootAttentionIDs, err)
 		if finishErr == nil {
 			return
 		}
@@ -2015,14 +2016,34 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
+	// restMu: a needs_response rest arming right now announces first.
+	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
+		hook()
+	}
+	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.delegateDeliveryMu.Unlock()
+		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
+	s.restBeforeInput = s.state
+	// The generation match is what keeps a rest owed only until the next turn
+	// or settle: a turn that accepted needs_response and then failed or was
+	// interrupted before its settle leaves the end reason set but owes nothing.
+	s.quietRestBeforeInput = s.restOwedGeneration != 0 && s.restStillPendingLocked(s.restOwedGeneration)
+	s.endReasonBeforeInput = s.comm.endReason
+	// A resume the last settle never consumed (it returned early for a
+	// pending question, or the drain loop returned before settling) must not
+	// carry into this input's settle.
+	s.resumeQuietRest = false
 	s.setStateIfOpenLocked(SessionProcessing)
+	// A turn starting ends any needs_response quiet period still running:
+	// whichever boundary this turn rests on, the older rest no longer applies.
+	s.restGeneration++
+	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
@@ -2032,14 +2053,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// failed MaxTurns, environment, or transcript admission must leave the
 	// pending ask available for the next real reply and for restore.
 	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
-		s.askPending = nil
+		s.setAskPendingLocked(nil)
 	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
 	// Attention coverage credits only what this turn's requests present.
 	// Clear a previous turn's marks before any path below can finish this one.
-	s.resetRootDelegateAttentionCoverage()
+	s.resetAttentionCoverage()
 
 	select {
 	case <-ctx.Done():
@@ -2086,8 +2107,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
-			// it the session reports itself busy with nothing running, and the
-			// serve loop republishes that from WireState.
+			// it the session reports itself busy with nothing running.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
 			// that got us here is consumed, and the drain loop deliberately does
@@ -2183,6 +2203,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.acceptDelegateAttentionInput()
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
+			// A carrier that stood down ran no model turn. Record it so the
+			// claim's caller can report ran=false truthfully (issue #185 item 3).
+			s.markSteeringCarrierStoodDown(queuedIdentity.StableTurnID)
 			return "", false, nil
 		}
 		return "", false, err
@@ -2274,7 +2297,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(events.EventWarning, warningDataFromError(
-					"Local context admission failed; compacting context and retrying: "+prepareErr.Error(), prepareErr))
+					"Local context admission failed; compacting context and retrying", prepareErr))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
@@ -2302,7 +2325,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if err != nil {
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(events.EventWarning, warningDataFromError(
-					"Local context admission failed; compacting context and retrying: "+err.Error(), err))
+					"Local context admission failed; compacting context and retrying", err))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
@@ -2318,8 +2341,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				if failedModel == "" {
 					failedModel = profile.Model()
 				}
-				s.emit(events.EventWarning, warningDataFromError(
-					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying: "+err.Error(), err))
+				s.emit(events.EventWarning, bareWarningDataFromError(
+					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying", err))
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
@@ -2335,7 +2358,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// that failed — or was retried after compaction folded the steering
 		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
-		s.promoteStagedRootDelegateAttention()
+		s.promoteStagedAttentionCoverage(req)
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
@@ -2725,6 +2748,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
+				turn.CommandInput = selected.CommandInput
+				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
+			}
 			if skillInput != nil {
 				turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 			}
@@ -2737,6 +2764,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
+			turn.CommandInput = selected.CommandInput
+			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
+		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
 		if skillInput != nil {
@@ -3009,6 +3040,14 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // next external wake to carry.
 func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queuedClientMutationIdentity) error {
 	turnID := identity.StableTurnID
+	// A steering carrier is a top-level accept path like every sibling
+	// accept*Input: reset active/completed provenance up front so the carrier
+	// turn never inherits the previous turn's lineage. It runs before the
+	// stand-down check too, so a carrier that does not proceed still does not
+	// leave a stale completed set for subagent.followUpProvenance to read
+	// (issue #185 item 2). The drain below re-unions the carried steer's own
+	// provenance, so nothing legitimate is erased.
+	s.replaceActiveProvenance(nil)
 	if !s.hasPendingUserSteering() {
 		s.finishNotificationNoop()
 		return errSteeringCarrierStoodDown
@@ -3096,7 +3135,20 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 }
 
 func (s *Session) finishNotificationNoop() {
-	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	// No turn ran, so a needs_response rest the wake interrupted still stands,
+	// and the drain loop then treats the input as awaiting, holding follow-ups
+	// as that rest did. A rest still owed was cancelled by the wake's turn
+	// start; the drain-loop settle arms it again, from the end reason the
+	// turn start reset.
+	rest := SessionIdle
+	s.mu.Lock()
+	if s.restBeforeInput == SessionAwaiting {
+		rest = SessionAwaiting
+	}
+	s.comm.endReason = s.endReasonBeforeInput
+	s.resumeQuietRest = s.quietRestBeforeInput
+	s.mu.Unlock()
+	s.finishProcessingAtBoundary(context.Background(), rest)
 	s.mu.Lock()
 	s.sessionEndEmitted = true
 	s.mu.Unlock()

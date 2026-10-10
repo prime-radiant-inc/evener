@@ -296,6 +296,7 @@ func seedStableReadonlyFinish(t *testing.T, s *Session, id string, descriptor de
 	t.Helper()
 	deliveryID := delegateDeliveryID(id, 1)
 	finished := delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 1}, finish.outcome, finish.disposition, finish.reason, finish.endedAt, deliveryID, finish.packet)
+	finished.RunFinished.Outcome.Error = finish.errorText
 	finished.RunFinished.Outcome.ExhaustionBudget = finish.exhaustionBudget
 	finished.RunFinished.Outcome.ExhaustionLimit = finish.exhaustionLimit
 	if finish.exhaustionResumable != nil {

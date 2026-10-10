@@ -15,8 +15,8 @@ test("renders source and snippet", () => {
 });
 
 test("renders meta when given", () => {
-  render(<ContextCard source="agent-notes.md" snippet="s" meta="1.2k chars" />);
-  expect(screen.getByText("1.2k chars")).toBeTruthy();
+  render(<ContextCard source="agent-notes.md" snippet="s" meta="1.2K chars" />);
+  expect(screen.getByText("1.2K chars")).toBeTruthy();
 });
 
 test("omits meta when not given", () => {

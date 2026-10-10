@@ -10,6 +10,7 @@ import {
 	modelChipLabel,
 	notesSummary,
 	pluginsLine,
+	sessionHosts,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,
@@ -39,6 +40,38 @@ describe("where a session runs (spec 8.6)", () => {
 			host: "paradise-park",
 			directory: "/srv/app",
 		});
+	});
+});
+
+// Spec 8.6: the host with its connection dot. The hub calls its own machine
+// "this host" in the manifest; the phone names it for the hub, as Hub > Hosts
+// does (audit N6).
+describe("the host a session runs on", () => {
+	const sources = [
+		{ id: "local", label: "this host", kind: "local", online: true },
+		{ id: "paradise-park", label: "paradise-park", kind: "appwire", online: false },
+	];
+
+	it("names the hub's own machine for the hub, and any other host by its manifest label", () => {
+		const host = sessionHosts(sources, "Work hub", true);
+		expect(host("local")).toEqual({ label: "Work hub", online: true });
+		expect(host("paradise-park")).toEqual({ label: "paradise-park", online: false });
+	});
+
+	it("reads every host as offline while the hub is away, whatever the manifest last said", () => {
+		const host = sessionHosts(
+			sources.map((source) => ({ ...source, online: true })),
+			"Work hub",
+			false,
+		);
+		expect(host("local")).toEqual({ label: "Work hub", online: false });
+		expect(host("paradise-park")).toEqual({ label: "paradise-park", online: false });
+	});
+
+	it("reads the hub's own machine as online while the hub is, and a host the manifest doesn't list by its id", () => {
+		const host = sessionHosts(undefined, null, false);
+		expect(host("local")).toEqual({ label: "local", online: false });
+		expect(host("studio")).toEqual({ label: "studio", online: null });
 	});
 });
 
@@ -139,6 +172,25 @@ describe("the model chip (spec 8.5)", () => {
 				catalog,
 			),
 		).toBe("GLM 5.3 Vision · XHigh");
+	});
+	it("names the model as the hub's session row does while the catalog is away (S17)", () => {
+		// The catalog clears while it reloads, and after a failed load; the
+		// Board row's model_name is the same name model/list gives.
+		const session = {
+			modelProvider: "deepseek/deepseek-4.1-flash",
+			reasoningEffort: "xhigh",
+			reasoningEffortLevels: ["high", "xhigh"],
+			supportsReasoning: true,
+		};
+		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe("DeepSeek 4.1 Flash · XHigh");
+		// The catalog, when it has the model, still wins.
+		expect(
+			modelChipLabel(
+				session,
+				[{ provider: "deepseek", model: "deepseek-4.1-flash", displayName: "DS Flash" }],
+				"Stale",
+			),
+		).toBe("DS Flash · XHigh");
 	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(

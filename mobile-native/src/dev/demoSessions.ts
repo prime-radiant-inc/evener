@@ -19,6 +19,7 @@
 // - 11: s-retry, whose last turn failed on a sign-in error;
 // - 12: s-jobdisp, with an edit and a 60-line command output to open at Tools;
 // - 13a: s-pr2138's notes, and s-roster, shut down with read-only notes.
+// s-tools replays the recorded wire corpora: one step of every tool family.
 // s-stumble queues five messages, more than the Session shows inline, so its
 // "2 more queued" opens the Queue sheet.
 import type {
@@ -51,6 +52,9 @@ import {
 	type ProtoState,
 	type RawSubagent,
 } from "./demoFleet";
+import { NOTE_STEER_CLEARED, NOTE_STEER_PREFIX } from "../projectedRows";
+import { demoRunStartedAt } from "./demoSubagents";
+import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -82,11 +86,23 @@ type Entry =
 	// A subagent the session started, by its id in the session's subagent tree.
 	| { subagent: string }
 	| { thinking: true }
-	| { ask: Question[] };
+	| { ask: Question[] }
+	// A daemon steering item of kind "notification": a job or delegate
+	// notification as the daemon delivers it.
+	| { notice: string }
+	// An item recorded from a real run (demoToolFamilies.ts), served as it
+	// was, with its own id, on the demo turn and clock.
+	| { recorded: ThreadItem }
+	// A daemon warning, as the hub's overlay announces one
+	// (internal/appoverlay/notices.go warningAnnouncement): a systemMessage
+	// with eventKind "warning" and its title and hint on raw.warning.
+	| { warning: { text: string; title: string; hint: string } };
 
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
 	entries?: Entry[];
+	// The directory the session sits in, when it isn't its project's.
+	cwd?: string;
 	error?: TurnError;
 	model?: string;
 	effort?: string;
@@ -96,7 +112,7 @@ interface SessionContent {
 	humanNote?: string;
 	agentNote?: string;
 	links?: Omit<SessionURL, "addedBy">[];
-	escalation?: Pick<SandboxEscalationRequested, "tool" | "kind" | "mode" | "deniedPath">;
+	escalation?: Pick<SandboxEscalationRequested, "tool" | "kind" | "mode" | "deniedPath" | "partiallyRan">;
 	usage?: Usage;
 }
 
@@ -218,7 +234,13 @@ const CONTENT: Record<string, SessionContent> = {
 			},
 		],
 		queued: ["When CI is green, post a summary on the PR."],
-		tasks: { total: 7, done: 3, remaining: 4, current: { id: 4, description: "Fix the settle/drain race" } },
+		tasks: {
+			total: 7,
+			done: 3,
+			cancelled: 1,
+			remaining: 3,
+			current: { id: 4, description: "Fix the settle/drain race" },
+		},
 		goal: { objective: "PR 2138 green on CI without skipped tests", status: "active", iterations: 3 },
 		usage: {
 			inputTokens: 46_100_000,
@@ -390,6 +412,13 @@ const CONTENT: Record<string, SessionContent> = {
 			{ subagent: "r-1" },
 			{ subagent: "r-2" },
 			{
+				warning: {
+					text: "inspect delegate attention: open delegates.jsonl: permission denied",
+					title: "Evener error",
+					hint: "Check that the session's state directory is writable.",
+				},
+			},
+			{
 				agent:
 					"The loop is in `llm/retry.go`: a 429 resets the attempt counter instead of incrementing it, so it never gives up. The test reproduces it. Now capping retries at 5 with exponential backoff.",
 			},
@@ -470,6 +499,187 @@ const CONTENT: Record<string, SessionContent> = {
 	},
 };
 
+// EVENER_DEMO_LONG: content longer than any Appendix A frame, so a
+// screenshot pass exercises what real sessions carry: a long question with
+// five long options among four, an approval with a deep path, and a working
+// session with long messages from each side, many steps and daemon
+// notifications (content from the 2026-09-29 device audit).
+const LONG_AGENT = [
+	"## Where the race lives",
+	"",
+	"The flaky tests all trace back to one ordering problem between the **tree settle pass** and the **retirement drain**. Both take `t.mu`, but settle releases it between phases, and the drain can observe a half-settled tree in that window. On a quiet machine the window is a few microseconds; under `-race` and on the CI runners it widens to milliseconds, which is why the failure rate jumps from 1 in 400 locally to 1 in 6 on CI.",
+	"",
+	"What I checked, in order:",
+	"",
+	"1. Every caller of `settle` in `agent/retirement.go`, `agent/subagents.go` and `agent/session_lifecycle.go` (eleven call sites).",
+	"2. Whether the drain ever runs without the tree lock (it doesn't, except in `drainForTest`, which the failing tests don't use).",
+	"3. The three failing tests' timelines, reconstructed from `-v` output with nanosecond timestamps.",
+	"4. Whether the fix changes any public behavior (it doesn't: settle already promised to finish after drain; it just didn't enforce it).",
+	"",
+	"> The drain now waits for settle, and settle never waits on the drain. That keeps the lock order one-way and removes the window entirely.",
+	"",
+	"| Test | Local failures | CI failures | After fix |",
+	"|---|---|---|---|",
+	"| TestRetirementTreeSettleDrainsPendingRootAttention | 1/400 | 1/6 | 0/2000 |",
+	"| TestFoldPublicationMarkersLandInOrder | 0/400 | 1/11 | 0/2000 |",
+	"| TestQueueRetirementCancelsQueued | 2/400 | 1/4 | 0/2000 |",
+	"",
+	"```go",
+	"func (t *tree) settle(ctx context.Context) error {",
+	"\tif err := t.drain.wait(ctx); err != nil {",
+	'\t\treturn fmt.Errorf("settle: wait for drain: %w", err)',
+	"\t}",
+	"\tt.mu.Lock()",
+	"\tdefer t.mu.Unlock()",
+	"\treturn t.settleLocked(ctx)",
+	"}",
+	"```",
+	"",
+	"I'll keep the subagents running the -race matrix until every package has 2,000 clean runs, then open the follow-up PR. If any package still flakes after that, I'll stop and show you the timeline before changing anything else.",
+].join("\n");
+
+const jobNotification = (id: string, desc: string, status: string, reason: string, excerpt: string) =>
+	`<job-notification job_id="${id}" event="${status}" job_type="delegate" description="${desc}" status="${status}" reason="${reason}" intent="" output_bytes="${excerpt.length}" transcript_ref="magic-kingdom:${id}">\nJob ${id} ${status}. Output is available through read_transcript(transcript_ref="magic-kingdom:${id}") if needed.\nexcerpt:\n${excerpt}\n</job-notification>`;
+
+const LONG_NOTICES: Entry[] = [
+	{
+		notice: jobNotification(
+			"dlg_settle",
+			"Fix race in tree settle",
+			"failed",
+			"go test exited 1 (3 times)",
+			"--- FAIL: TestRetirementTreeSettleDrainsPendingRootAttention (0.44s)\n    retirement_test.go:212: settle finished before drain: got state idle, want draining\nFAIL\nexit status 1",
+		),
+	},
+	{
+		notice: jobNotification(
+			"dlg_run0",
+			"Run agent tests under -race on Linux",
+			"completed",
+			"",
+			'{"message":"All 2,000 runs of the three tests passed under -race on magic-kingdom (linux/amd64). No new failures in agent/..., cmd/evener-hub/... or internal/....","concerns":[]}',
+		),
+	},
+	{
+		notice: `<delegate-notification delegate_id="dlg_drain" name="Check drain ordering in tests">{"kind":"reported","message":"Drain ordering is correct in every test except TestQueueRetirementCancelsQueued, which asserts on an intermediate state that the fix removes. I rewrote its assertion to check the final state instead.","warnings":["TestQueueRetirementCancelsQueued's assertion changed"]}</delegate-notification>`,
+	},
+	{
+		notice: `${jobNotification("dlg_macos", "Run flaky tests 200 times on macOS", "completed", "", "200/200 passed")}\n${jobNotification("dlg_fold", "Verify fold publication markers", "failed", "context deadline exceeded", "panic: test timed out after 10m0s")}`,
+	},
+	{
+		notice: `<job-notification job_id="dlg_watch" event="watch" job_type="delegate" description="Watch CI for PR 2138" status="running" reason="" intent="">\nJob dlg_watch running. 4 of 7 checks finished; lint and race-modules/agent still running.\n</job-notification>`,
+	},
+];
+
+const LONG_STEPS: Entry[] = Array.from({ length: 24 }, (_, index) => ({
+	step: shell(
+		`Ran package ${index + 1} of 24 under -race`,
+		`go test -race -count=200 ./agent/internal/pkg${index + 1}/...`,
+		15 + index,
+		`ok  \tgithub.com/prime-radiant-inc/evener/agent/internal/pkg${index + 1}\t${(index * 1.7 + 3).toFixed(1)}s`,
+	),
+}));
+
+const LONG_USER =
+	"Some more context, since last time this went sideways: the three tests that fail are all in the retirement path, and two of them only fail under -race. Please don't quarantine them, don't add retries, and don't raise any timeouts. If you find the fix touches the lock order anywhere else, stop and tell me before you change it. I'd also like a short write-up of the root cause in the plan so the next person who touches retirement understands why the drain waits on settle and never the other way round.";
+
+// s-audit's ask, long: its first question grows long, its second stays, and
+// two more follow.
+function longAsk(questions: Question[]): Question[] {
+	const [, second] = questions;
+	return [
+		{
+			header: "Implied options",
+			question:
+				"Fourteen tool descriptions mention options their tools don't accept, and models keep trying them: should I drop the implied options from the descriptions, implement the missing flags so the descriptions become true, or split the difference tool by tool depending on how often each option is attempted in last week's transcripts?",
+			why: "Fourteen descriptions mention flags the tools don't accept, like --force on read_file, timeout_ms on job_watch and priority on delegate. Models try them and fail, which costs a retry each time and sometimes derails a whole turn. In last week's transcripts I found 212 attempts at these options across 61 sessions; 140 of them were --force on read_file alone. Dropping the text is quick and safe but loses the hint for the three options that would be genuinely useful. Implementing the flags is about 400 lines plus tests and changes tool behavior, which means the web and the TUI need matching help text. A per-tool pass is slower but lets you decide each case on its merits.",
+			multi_select: false,
+			options: [
+				{
+					label: "Drop them",
+					detail:
+						"Remove the implied options from all 14 descriptions, and add a lint that fails when a description names an argument the schema doesn't declare",
+					recommended: true,
+				},
+				{
+					label: "Keep them and add the flags",
+					detail:
+						"Implement the 9 missing flags; about 400 lines, with tests, plus matching help text in the web and the TUI",
+				},
+				{
+					label: "Implement only the three useful ones",
+					detail:
+						"Add --force to read_file, timeout_ms to job_watch and priority to delegate; drop the other eleven from the descriptions",
+				},
+				{
+					label: "Ask me per tool",
+					detail: "I'll list each of the 14 with its attempt count from last week's transcripts for a yes or no",
+				},
+				{
+					label: "Leave the descriptions alone for now",
+					detail: "Log each attempt instead, and revisit once we have a month of data",
+				},
+			],
+		},
+		...(second ? [second] : []),
+		{
+			header: "Report",
+			question: "How should I report what I changed?",
+			why: "The PR will touch 14 descriptions across 6 files.",
+			multi_select: false,
+			options: [
+				{ label: "One PR with a table", detail: "Every tool, before and after, in the PR body", recommended: true },
+				{ label: "One PR per tool group", detail: "Smaller reviews, more PRs" },
+				{ label: "Just the diff", detail: "No write-up" },
+			],
+		},
+		{
+			header: "Tests",
+			question: "Should the lint run in CI?",
+			why: "It adds about 2 seconds to make lint.",
+			multi_select: false,
+			options: [
+				{ label: "Yes, as part of make lint", detail: "Fails the build on a new mismatch", recommended: true },
+				{ label: "No, run it by hand", detail: "A script under scripts/ with help text" },
+			],
+		},
+	];
+}
+
+function withLongEntries(slug: string, change: (entries: Entry[]) => Entry[]): SessionContent {
+	const content = CONTENT[slug];
+	if (!content?.entries) throw new Error(`${slug} has no entries to lengthen`);
+	return { ...content, entries: change(content.entries) };
+}
+
+const mirror = CONTENT["s-mirror"];
+const LONG_CONTENT: Record<string, SessionContent> = {
+	"s-pr2138": withLongEntries("s-pr2138", ([first, ...rest]) => [
+		...(first ? [first] : []),
+		{ user: LONG_USER },
+		{ agent: LONG_AGENT },
+		...LONG_STEPS,
+		...LONG_NOTICES,
+		...rest,
+	]),
+	"s-audit": withLongEntries("s-audit", (entries) =>
+		entries.map((entry) => ("ask" in entry ? { ask: longAsk(entry.ask) } : entry)),
+	),
+	"s-mirror": {
+		...mirror,
+		...(mirror?.escalation
+			? {
+					escalation: {
+						...mirror.escalation,
+						deniedPath:
+							"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+						partiallyRan: true,
+					},
+				}
+			: {}),
+	},
+};
+
 // data.js's `generic` transcript: the prompt, a first reply, a read, and the
 // row's activity as the step still running while the session works.
 function genericEntries(session: FleetSession): Entry[] {
@@ -482,6 +692,10 @@ function genericEntries(session: FleetSession): Entry[] {
 	if (session.state === "idle") entries.push({ agent: "Finished. Summary is above." });
 	return entries;
 }
+
+// What a live thought has streamed so far: enough for the tray's estimate
+// ("Thinking… · 17 tokens").
+const DEMO_THOUGHT = "Weighing where the settle and drain passes each take the tree lock.";
 
 // A working row's activity line as the step it describes.
 function liveStep(activity = "Thinking"): Entry {
@@ -516,8 +730,6 @@ const THREAD_STATUS: Record<ProtoState, string> = {
 };
 
 const SUBAGENT_STATUS = { running: "running", failed: "failed", done: "completed" } as const;
-const SUBAGENT_ITEM_STATUS = { running: "inProgress", failed: "failed", done: "completed" } as const;
-
 function flatten(subagents: RawSubagent[], parent?: string): { subagent: RawSubagent; parent?: string }[] {
 	return subagents.flatMap((subagent) => [
 		{ subagent, ...(parent ? { parent } : {}) },
@@ -529,29 +741,37 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const callId = (subagentId: string) => `call-${subagentId}`;
 
 // The session's whole subagent tree as the delegates its diagnostics carry,
-// each tied to the transcript's delegate call by its tool call id.
+// each tied to the transcript's delegate call by its tool call id. A daemon
+// owns every delegate in a tree by its root (agent/delegate_tree_start.go);
+// parentDelegateId marks the nesting.
 function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
+	const rootSessionId = demoSessionId(session.slug);
 	return flatten(session.subagents).map(({ subagent, parent }) => {
 		const running = subagent.state === "running";
 		const lastActive = now - subagent.ago * 1000;
 		return {
+			runGeneration: 1,
 			delegateId: subagent.id,
-			ownerSessionId: demoSessionId(parent ?? session.slug),
-			rootSessionId: demoSessionId(session.slug),
+			ownerSessionId: rootSessionId,
+			rootSessionId,
 			childSessionId: demoSessionId(subagent.id),
 			transcriptRef: hostSessionRef(session.hostId, subagent.id),
 			...(parent ? { parentDelegateId: parent } : {}),
 			type: "delegate",
 			lifecycle: "stable",
-			phase: running ? "running" : "idle",
+			// The hub closes a finished delegate that can't be resumed.
+			phase: running ? "running" : "closed",
 			status: SUBAGENT_STATUS[subagent.state],
 			terminal: !running,
+			// The activity tree carries the same outcome (demoSubagents.ts), so the
+			// chip and the Subagents list classify this delegate alike (issue #2684).
+			...(running ? {} : { outcome: subagent.state === "failed" ? "failed" : "completed" }),
 			resumable: false,
 			needsAttention: subagent.state === "failed",
 			projectionRevision: 1,
 			description: subagent.title,
 			originToolCallId: callId(subagent.id),
-			runStartedAt: iso(lastActive - 5 * 60_000),
+			runStartedAt: iso(demoRunStartedAt(subagent, now)),
 			...(running ? { latestActivityAt: iso(lastActive) } : { runEndedAt: iso(lastActive) }),
 			...(subagent.state === "failed" ? { reason: FAILURE_REASONS[subagent.id] ?? GENERIC_FAILURE } : {}),
 		};
@@ -573,12 +793,36 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user, status: "completed" };
 		if ("steer" in entry) return { ...item, type: "steering", source: "user", text: entry.steer, status: "completed" };
 		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
-		// A thought with no text yet: the encoder leaves the empty text out.
-		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
+		// A live thought as the hub's overlay serves it: opened by a delta
+		// with text, and with no startedAt, which the wire never carries for
+		// reasoning.
+		if ("thinking" in entry) return { id: item.id, type: "reasoning", text: DEMO_THOUGHT, status: "inProgress" };
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
+		if ("notice" in entry)
+			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
+		if ("warning" in entry) {
+			const { text, title, hint } = entry.warning;
+			return {
+				...item,
+				type: "systemMessage",
+				eventKind: "warning",
+				text,
+				raw: { warning: { source: "evener", title, hint } },
+				status: "completed",
+			};
+		}
+		if ("recorded" in entry) {
+			const recorded: ThreadItem = { ...entry.recorded, startedAt: item.startedAt, turnId: id };
+			return recorded.status === "inProgress" || !("completedAt" in recorded)
+				? recorded
+				: { ...recorded, completedAt: at };
+		}
 		if ("subagent" in entry) {
 			const subagent = subagents.get(entry.subagent);
 			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
+			// The call settles as soon as its launch receipt returns, whatever
+			// the subagent goes on to do, as agent's stableDelegateCreateTool
+			// answers it; the row reads the subagent's state from its delegate.
 			return {
 				...item,
 				type: "commandExecution",
@@ -586,8 +830,16 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 				callId: callId(subagent.id),
 				description: subagent.title,
 				argumentsJson: JSON.stringify({ description: subagent.title }),
-				status: SUBAGENT_ITEM_STATUS[subagent.state],
-				...(subagent.state === "running" ? {} : { completedAt: at }),
+				status: "completed",
+				completedAt: at,
+				output: JSON.stringify({
+					delegate_id: subagent.id,
+					child_session_id: demoSessionId(subagent.id),
+					type: "delegate",
+					status: "running",
+					name: subagent.title,
+					transcript_ref: hostSessionRef(session.hostId, subagent.id),
+				}),
 			};
 		}
 		const { step } = entry;
@@ -782,8 +1034,26 @@ function askItem(
 }
 
 // `parentRef` names the session a subagent's thread belongs to.
-function sessionThread(session: FleetSession, now: number, parentRef?: string): Thread {
-	const content = CONTENT[session.slug] ?? {};
+// Every tool family the phone summarizes, replayed from the recorded wire
+// corpora rather than written by hand, to see and screenshot each one. Built
+// only when served, so the usual sessions never read agent/testdata.
+function toolFamiliesContent(): SessionContent {
+	return {
+		// The recorded shell calls cd here first, as a session's own directory.
+		cwd: recordedToolCwd(),
+		entries: [
+			{ user: "Show me one step of every tool family." },
+			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
+			{ agent: "That's one of each: the core tools, subagents, the task list, notifications and system events." },
+		],
+	};
+}
+
+function sessionThread(session: FleetSession, now: number, parentRef?: string, long = false): Thread {
+	const content =
+		(long ? LONG_CONTENT[session.slug] : undefined) ??
+		(session.slug === "s-tools" ? toolFamiliesContent() : CONTENT[session.slug]) ??
+		{};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";
@@ -804,7 +1074,7 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string): 
 		createdAt: Math.floor((turn.startedAt ?? now) / 1000),
 		updatedAt,
 		status: { type: status },
-		cwd: session.workingDir,
+		cwd: content.cwd ?? session.workingDir,
 		projectPath: session.workingDir,
 		gitInfo: { branch: "main" },
 		cliVersion: "demo",
@@ -816,7 +1086,13 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string): 
 			instanceId: `demo-instance-${session.slug}`,
 			queue: queueOf(session.slug, content.queued),
 			capabilities: NO_CAPABILITIES,
-			...(active ? { activeTurnId: turn.id, activeTurnStartedAt: turn.startedAt } : {}),
+			...(active
+				? {
+						activeTurnId: turn.id,
+						// A running subagent's turn is its run, timed as its row is.
+						activeTurnStartedAt: session.runStartedAt ?? turn.startedAt,
+					}
+				: {}),
 			...(turn.completedAt === undefined ? {} : { lastTurnEndedAt: turn.completedAt }),
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
 			reasoningEffortLevels: ALL_EFFORTS,
@@ -879,18 +1155,26 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string): 
 export interface DemoSessionsOptions {
 	// The instant the fleet's "ago" is measured from, as DemoFleetOptions.now.
 	now?: number;
+	// Mirrors EVENER_DEMO_LONG: LONG_CONTENT in place of the usual content.
+	long?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_TOOLS: a thread for the tool families session.
+	toolFamilies?: boolean;
 }
 
 // A thread for every fleet session, in the fleet's order, then one for every
 // subagent in their trees, so every transcript ref a delegate names reads.
 export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] {
 	const now = options.now ?? Date.now();
-	const sessions = fleetSessions();
+	const sessions = fleetSessions(options.toolFamilies);
 	return [
-		...sessions.map((session) => sessionThread(session, now)),
+		...sessions.map((session) => sessionThread(session, now, undefined, options.long)),
 		...sessions.flatMap((session) =>
 			flatten(session.subagents).map(({ subagent, parent }) =>
-				sessionThread(subagentSession(session, subagent), now, hostSessionRef(session.hostId, parent ?? session.slug)),
+				sessionThread(
+					subagentSession(session, subagent, now),
+					now,
+					hostSessionRef(session.hostId, parent ?? session.slug),
+				),
 			),
 		),
 	];
@@ -898,7 +1182,7 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 
 // A subagent as a session of its own on its parent's host and folder, in the
 // state its Board row shows, served with the generic transcript.
-function subagentSession(owner: FleetSession, subagent: RawSubagent): FleetSession {
+function subagentSession(owner: FleetSession, subagent: RawSubagent, now: number): FleetSession {
 	return {
 		slug: subagent.id,
 		ref: hostSessionRef(owner.hostId, subagent.id),
@@ -908,6 +1192,7 @@ function subagentSession(owner: FleetSession, subagent: RawSubagent): FleetSessi
 		workingDir: owner.workingDir,
 		ago: subagent.ago,
 		subagents: subagent.children ?? [],
+		runStartedAt: demoRunStartedAt(subagent, now),
 	};
 }
 
@@ -922,7 +1207,7 @@ const DEMO_OUT_OF_DATE_DAEMON_PID = 48213;
 // retry of the same mutation.
 function restartRequiredError(clientMutationId: string): WireError {
 	return new WireError(
-		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v6. Stop the daemon, then resume this session. Stopping interrupts active work.`,
+		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v7. Stop the daemon, then resume this session. Stopping interrupts active work.`,
 		-32013,
 		{
 			evenerErrorInfo: "conflict",
@@ -952,22 +1237,50 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle", now);
 }
 
-// The steering text a changed note opens with (agent/session_notes_rpc.go's
-// humanNoteSteerPrefix).
-const HUMAN_NOTE_STEER_PREFIX = "human updated their whiteboard:";
 // The daemon's cap on a stored note, in runes (agent/session_notes.go).
 const NOTE_MAX_RUNES = 1000;
 
-// A note as the daemon stores it (agent/session_notes.go's normalizeNote):
-// control characters other than whitespace dropped, whitespace runs collapsed
-// to one space, and the whole cut to NOTE_MAX_RUNES.
-function normalizeNote(text: string): string {
-	const collapsed = text
-		.replace(/[^\P{Cc}\s]/gu, "")
-		.split(/\s+/)
-		.filter(Boolean)
-		.join(" ");
-	return [...collapsed].slice(0, NOTE_MAX_RUNES).join("");
+// Go's unicode.IsSpace set, which the daemon's strings.Fields splits on; JS's \s
+// differs (it adds U+FEFF and omits U+0085). Line feeds are split on first.
+const NOTE_LINE_WHITESPACE = /[\t\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u;
+// A control character Go's unicode.IsSpace does not also call whitespace.
+const NOTE_CONTROL = /[^\P{Cc}\t\n\v\f\r\u0085]/gu;
+
+// A note as the daemon stores it (agent/session_notes.go's normalizeWhiteboard):
+// control characters other than whitespace dropped, CRLF and CR turned into LF,
+// each line's whitespace runs collapsed to one space and the line trimmed,
+// blank lines at the start and end dropped and a run of blank lines kept as
+// one, and the whole cut to NOTE_MAX_RUNES without a trailing space or line
+// break.
+function normalizeWhiteboard(text: string): string {
+	const lines: string[] = [];
+	let blankPending = false;
+	for (const raw of text.replace(NOTE_CONTROL, "").replace(/\r\n?/g, "\n").split("\n")) {
+		const line = raw.split(NOTE_LINE_WHITESPACE).filter(Boolean).join(" ");
+		if (line === "") {
+			// Only a blank line between two text lines survives.
+			blankPending = lines.length > 0;
+			continue;
+		}
+		if (blankPending) {
+			lines.push("");
+			blankPending = false;
+		}
+		lines.push(line);
+	}
+	return [...lines.join("\n")]
+		.slice(0, NOTE_MAX_RUNES)
+		.join("")
+		.replace(/[ \n]+$/, "");
+}
+
+// The steer text for a changed note, as the daemon renders it
+// (agent/session_notes_rpc.go's formatNotesField): continuation lines indented
+// two spaces under the prefix, blank lines left empty. noteFromSteer reads it
+// back.
+export function humanNoteSteerText(note: string): string {
+	if (note === "") return `${NOTE_STEER_PREFIX}${NOTE_STEER_CLEARED}`;
+	return `${NOTE_STEER_PREFIX}${note.replace(/\n(?=[^\n])/g, "\n  ")}`;
 }
 
 // notes/human/set: your note replaces the session's. A changed note steers
@@ -976,7 +1289,7 @@ function normalizeNote(text: string): string {
 // (agent/session_notes_rpc.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
-	const note = normalizeNote(params.note ?? "");
+	const note = normalizeWhiteboard(params.note ?? "");
 	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
 	let turnId: string | undefined;
@@ -988,7 +1301,7 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: n
 			type: "steering",
 			source: "user",
 			steeringKind: "human-note",
-			text: `${HUMAN_NOTE_STEER_PREFIX} ${note || "(whiteboard cleared)"}`,
+			text: humanNoteSteerText(note),
 			clientMutationId: params.clientMutationId,
 			status: "completed",
 		};
@@ -1062,6 +1375,37 @@ const WORKING_SESSION_QUESTION: Question[] = [
 		],
 	},
 ];
+
+// A staged event (demoFleet.ts's steps) as the session's thread shows it, so
+// a banner opens a session that agrees with its Board row: a failure ends the
+// running turn in an error, an approval waits on a sandbox escalation inside
+// it, and a finish ends it without asking, so it rests idle (as
+// THREAD_STATUS says).
+export function stageFleetState(thread: Thread, state: "failed" | "approval" | "yourmove", now: number): void {
+	if (state === "approval") {
+		thread.evener.pendingEscalations = [
+			{
+				threadId: thread.id,
+				ref: thread.evener.ref,
+				escalationId: `${thread.evener.ref}-staged-escalation`,
+				tool: "write_file",
+				kind: "file_tool",
+				mode: "workspace-write",
+				deniedPath: "/home/jesse/sites/index.html",
+			},
+		];
+		refreshCapabilities(thread);
+		return;
+	}
+	const turn = thread.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+	if (turn) endTurn(thread, turn, "completed", now);
+	restFleetSession(thread, "idle", now);
+	if (state === "failed") {
+		thread.status = { type: "systemError" };
+		thread.evener.failure = { title: "The turn stopped on an error" };
+		refreshCapabilities(thread);
+	}
+}
 
 // The working session asks its question: its turn ends on the ask, as a
 // daemon's does, and the session waits on you, matching its Board row.

@@ -26,8 +26,7 @@ func TestCheckGateFlagsRefusesWhatTheGateCannotCarry(t *testing.T) {
 		{name: "-args as a value is fine", args: []string{"-run", "-args"}, want: 0},
 		{name: "-- as a value is fine", args: []string{"-ldflags", "--"}, want: 0},
 		// -tags is a value-taking flag the selection walker handles by name, so
-		// the shared consumesValue leaves it out; this walker must still consume
-		// its value.
+		// the shared walkFlags still consumes its value here.
 		{name: "-C as a -tags value is fine", args: []string{"-tags", "-C"}, want: 0},
 		{name: "a terminator after a -tags value is still refused", args: []string{"-tags", "-run", "-args"}, want: 2},
 		{name: "-C in argv", args: []string{"-C", "x"}, want: 2},
@@ -84,6 +83,15 @@ func TestRootTestFlagsRemovesOnlyTheRealShortFlag(t *testing.T) {
 		{name: "and its other spellings", args: []string{"-short=true", "--short", "-test.short", "-race"}, want: []string{"-race"}},
 		{name: "keeps a value that spells short", args: []string{"-run", "-short", "-count=1"}, want: []string{"-run", "-short", "-count=1"}},
 		{name: "keeps a value with a space", args: []string{"-tags", "a b", "-short"}, want: []string{"-tags", "a b"}},
+		// After a terminator everything is the test binary's argument list, so
+		// a word that spells -short is that argument and must survive.
+		{name: "keeps a post -args flag", args: []string{"-args", "-short"}, want: []string{"-args", "-short"}},
+		{name: "keeps a post -- flag", args: []string{"--", "-short"}, want: []string{"--", "-short"}},
+		{name: "strips only before the terminator", args: []string{"-short", "-args", "-short"}, want: []string{"-args", "-short"}},
+		// A value-taking-looking word after the terminator is a test-binary
+		// argument, not a `go test` flag: it must not be classified or refused.
+		{name: "passes a post -args value-taking word through", args: []string{"-args", "-run"}, want: []string{"-args", "-run"}},
+		{name: "passes a post -- value-taking pair through", args: []string{"--", "-count", "5"}, want: []string{"--", "-count", "5"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

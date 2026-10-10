@@ -1,26 +1,27 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { NavigationPages } from "./navigationPages";
+import { ArchivedPages } from "./archivedPages";
+import { NavigationPages, type PageSource, type PageState } from "./navigationPages";
 
 /** The hub's three project catalogs, one per Board section: Projects,
  * Archived and Test runs. */
 export type ProjectCatalog = "projects" | "archived_projects" | "test_runs";
 /** A project's session tiers: current (the last 24 hours, the Board's
- * "Today"), recent, and archived. */
+ * "Today"), recent, and archived. Navigation serves the first two; archived
+ * rows come from the archived list of the browser's catalog. */
 export type ProjectSessionTier = "current" | "recent" | "archived";
 const TIERS: readonly ProjectSessionTier[] = ["current", "recent", "archived"];
-type PageSnapshot<T> = ReturnType<NavigationPages<T>["getSnapshot"]>;
 export interface ProjectBrowserGroup {
 	project: NavigationProjectSummary;
 	expanded: boolean;
-	current: PageSnapshot<NavigationSessionSummary>;
-	recent: PageSnapshot<NavigationSessionSummary>;
-	archived: PageSnapshot<NavigationSessionSummary>;
+	current: PageState<NavigationSessionSummary>;
+	recent: PageState<NavigationSessionSummary>;
+	archived: PageState<NavigationSessionSummary>;
 	/** The current and recent rows, without duplicates. */
 	sessions: NavigationSessionSummary[];
 }
 export interface ProjectBrowserSnapshot {
-	projects: PageSnapshot<NavigationProjectSummary>;
+	projects: PageState<NavigationProjectSummary>;
 	groups: ProjectBrowserGroup[];
 }
 export interface ProjectBrowserController {
@@ -42,7 +43,7 @@ export interface ProjectBrowserController {
 	dispose(): void;
 }
 
-type Page = NavigationPages<NavigationSessionSummary>;
+type Page = PageSource<NavigationSessionSummary>;
 type Group = {
 	project: NavigationProjectSummary;
 	expanded: boolean;
@@ -118,7 +119,7 @@ export function createProjectBrowserController(
 	const groupFor = (project: NavigationProjectSummary): Group => {
 		const existing = groups.get(project.key);
 		if (existing) return existing;
-		const make = (tier: ProjectSessionTier) =>
+		const make = (tier: Exclude<ProjectSessionTier, "archived">) =>
 			new NavigationPages<NavigationSessionSummary>(
 				client,
 				{ resource: "project_page", projectKey: project.key, tier },
@@ -131,13 +132,14 @@ export function createProjectBrowserController(
 			expanded: false,
 			current: make("current"),
 			recent: make("recent"),
-			archived: make("archived"),
+			archived: new ArchivedPages(client, catalogName, project.key),
 		};
 		groups.set(project.key, group);
 		for (const page of tierPages(group)) {
 			unsubs.add(page.subscribe(publish));
-			unsubs.add(page.watch());
+			// Paused first, so a page holds any read it owes on watch.
 			if (paused) page.cancel();
+			unsubs.add(page.watch());
 		}
 		return group;
 	};

@@ -24,9 +24,9 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
 import { openInNewTab } from "../openInNewTab";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
-import { cadenceStateFor } from "../rail/RailRow";
 import { displayState } from "../rail/railNodes";
 import { navigate } from "../routing";
+import { cadenceStateFor } from "../SessionStatusIndicator";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
 import {
@@ -128,8 +128,7 @@ const HELP_ROWS: HelpRow[] = [
 
 // Live-row status dot: the search API's normalized state (hubcore.
 // NormalizeState) mapped onto the StatusDot widget's CadenceState via the
-// canonical mapping (shell/rail/RailRow.tsx's own cadenceStateFor - this
-// used to be a second, hand-duplicated copy of the exact same switch).
+// shared SessionStatusIndicator's cadenceStateFor mapping.
 // Pulsing alive/attention/danger dots read as "live" for
 // active/awaiting/errored, the exact set the legacy pulsed
 // (search.js:1007-1009); past rows are always "ended" (neutral). The state
@@ -576,13 +575,15 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       }
       // Slash fallthrough: forward the raw text to the session (TUI parity) -
       // reached only when NOTHING in the registry, global or session-scoped,
-      // recognizes this text at all. The send's rejection is handled like the
-      // composer handles a refused send: on a recovery-fenced local session
-      // the store's shared admission refuses it (as it does for every direct
-      // caller), and a refusal means the text went NOWHERE - so the reason
-      // surfaces as a toast (the admission's own refusal text among them) and
-      // the palette stays open with the typed input instead of silently
-      // closing over a lost message. Only a durably accepted send closes.
+      // recognizes this text at all. The send's outcome is handled like the
+      // composer handles it. A durable accept closes the palette: on the
+      // Send-resumes face that accept is the PARKED row (the store drives the
+      // resume and the dispatch tails drain it afterwards), so the palette
+      // closes while the message is still on its way. A refusal - a draining
+      // Stop, a restartRequired daemon, a non-local blocked shape - means the
+      // text went NOWHERE, so its reason surfaces as a toast (the admission's
+      // own refusal text among them) and the palette stays open with the typed
+      // input instead of silently closing over a lost message.
       if (firstToken !== "" && ctx.sessionRef) {
         void threadsStore
           .getState()
@@ -1002,17 +1003,9 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      {/* SearchResult has no `kind`, so every hit is passed as a "session":
-          displayState's turn-ended-subagent rule, which presents such a
-          subagent as idle in the rail, never applies to a search hit. */}
       <StatusDot
         state={cadenceStateFor(
-          displayState({
-            kind: "session",
-            state: item.result.state,
-            ask_pending: item.result.askPending,
-            approval_pending: item.result.approvalPending,
-          }),
+          displayState({ state: item.result.state, approval_pending: item.result.approvalPending }),
         )}
       />
       <span className={CLASS.title}>

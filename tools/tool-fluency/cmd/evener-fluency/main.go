@@ -41,6 +41,35 @@ import (
 
 var exitProcess = os.Exit
 
+// configureHermeticRunEnv hides the operator's user-global sources from every
+// run: it sets EVENER_NO_USER_SKILLS so neither an in-process live session
+// nor a spawned evener child advertises the operator's home skills, user
+// config skills, global MCP config, or evener-wide commands. A round that
+// measures tool or skill use then depends only on the revision under test,
+// not on who runs it (#3227, #3487). This is still only half of
+// hermeticity: the operator's installed, enabled plugins (hooks, agents,
+// commands, and plugin-sourced skills) load in full whenever plugin
+// resolution reaches its default root, which EVENER_NO_USER_SKILLS does not
+// touch; cliProbeArgs closes that gap for the CLI harness by passing
+// --enabled-plugins with an explicit empty selection.
+//
+// inheritOperatorEnv (--inherit-operator-env, default false) restores
+// today's pre-#3227 behavior for debugging: it clears the variable instead
+// of setting it, so a run sees the operator's real skills again.
+//
+// run sets the hermetic default before dispatching any subcommand, so every
+// session evener-fluency builds (catalog's too) hides the operator's skills.
+// runSuite and runMatrixCommand then apply their own flag once, after
+// parsing and before running any probe, so concurrent matrix cells share one
+// setting instead of racing on a per-cell set/restore.
+func configureHermeticRunEnv(inheritOperatorEnv bool) {
+	if inheritOperatorEnv {
+		_ = envvars.EVENERNoUserSkills.Unsetenv()
+		return
+	}
+	_ = envvars.EVENERNoUserSkills.Setenv("1")
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "evener-fluency:", err)
@@ -53,6 +82,7 @@ func run(args []string) error {
 		usage()
 		return flag.ErrHelp
 	}
+	configureHermeticRunEnv(false)
 	switch args[0] {
 	case "catalog":
 		return runCatalog(args[1:])
@@ -70,6 +100,8 @@ func run(args []string) error {
 		return runRankScore(args[1:])
 	case "matrix":
 		return runMatrixCommand(args[1:])
+	case "respond":
+		return runRespond(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -92,6 +124,7 @@ USAGE
   evener-fluency rank-score --key FILE --reviews FILE [...] [--detail] [--json]
   evener-fluency matrix --version LABEL=BIN [...] --models M1,M2 --out DIR [--max-concurrent N] [run flags]
   evener-fluency matrix --version-manifest FILE --version-cache DIR --models M1,M2 --out DIR [run flags]
+  evener-fluency respond --brief-file FILE --model provider/model [--log FILE]
 
 `)
 }
@@ -165,7 +198,7 @@ func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error
 	if err != nil {
 		return nil, err
 	}
-	defer sess.Close()
+	defer sess.CloseDiscardingScratch()
 	defs := sess.ToolDefinitions()
 	out := make([]catalogTool, 0, len(defs))
 	for _, def := range defs {
@@ -195,6 +228,24 @@ type probeFile struct {
 	// Reference is a shell script that solves the task. Only the offline
 	// task test runs it, to prove the checks can pass; the runner ignores it.
 	Reference string `yaml:"reference,omitempty"`
+	// Person, when set, makes the CLI harness point the probe's evener run at
+	// --ask-responder: an evener-fluency respond invocation that plays this
+	// person's part when the agent calls ask_user.
+	Person *personSpec `yaml:"person,omitempty"`
+}
+
+// personSpec is a task manifest's optional "person:" block. When present,
+// cliProbeArgs wires the probe's evener run to --ask-responder, pointed at
+// this same binary's own "respond" subcommand: the model plays Person from
+// Brief alone, in its own voice, and says "I don't know" for anything the
+// brief does not cover (see respond in respond.go).
+type personSpec struct {
+	// Brief is who the person is and the facts only they know, passed to
+	// `respond --brief-file` verbatim.
+	Brief string `yaml:"brief"`
+	// Model is the provider/model that plays the person; empty defaults to
+	// the run's --fast-cheap-model.
+	Model string `yaml:"model,omitempty"`
 }
 
 // metricsSpec is the validated form of a probe manifest's `metrics:` block
@@ -301,6 +352,7 @@ type runConfig struct {
 	clearOpenAIAPIKey  bool
 	sandbox            string
 	sandboxNet         string
+	inheritOperatorEnv bool // --inherit-operator-env: debugging escape hatch, restores the operator's real skills and plugins (#3227)
 }
 
 // holdsResults reports whether dir exists with anything in it. A run reuses
@@ -327,6 +379,9 @@ func runSuite(args []string) error {
 		return err
 	}
 	cfg.systemPromptAppend = []string(systemPromptAppend)
+	// Decide the process-wide hermetic setting once, right after parsing and
+	// before any probe runs (#3227). See configureHermeticRunEnv.
+	configureHermeticRunEnv(cfg.inheritOperatorEnv)
 	return runSuiteWithConfig(cfg)
 }
 
@@ -348,6 +403,43 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
 	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
 	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
+}
+
+// enabledPluginsFlagLine matches the flag's own definition line in evener's
+// --help output, not a mention of it in another flag's description.
+var enabledPluginsFlagLine = regexp.MustCompile(`(?m)^\s+--enabled-plugins(\s|$)`)
+
+// evenerHelpListsEnabledPlugins reports whether the evener at bin accepts
+// --enabled-plugins, which a hermetic CLI run needs to hide the operator's
+// plugins (#3227). Evener gained the flag on 2026-08-25, so a matrix version
+// older than that lacks it. A --help that fails or times out proves nothing
+// either way, so it is an error.
+func evenerHelpListsEnabledPlugins(bin string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("run %s --help: %w", bin, err)
+	}
+	return enabledPluginsFlagLine.Match(out), nil
+}
+
+// evenerSupportsEnabledPlugins is evenerHelpListsEnabledPlugins behind a seam:
+// the tests' fake evener scripts print one line for every invocation.
+var evenerSupportsEnabledPlugins = evenerHelpListsEnabledPlugins
+
+// requireHermeticEvener refuses an evener that cannot run hermetic, and names
+// the way to run it anyway.
+func requireHermeticEvener(bin string) error {
+	ok, err := evenerSupportsEnabledPlugins(bin)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s predates --enabled-plugins, so a hermetic run cannot hide the operator's plugins from it; pass --inherit-operator-env to run it with them", bin)
+	}
+	return nil
 }
 
 func runSuiteWithConfig(cfg runConfig) error {
@@ -381,12 +473,26 @@ func runSuiteWithConfig(cfg runConfig) error {
 		}
 		cfg.evenerBin = bin
 	}
+	if cfg.harness == "cli" && !cfg.inheritOperatorEnv {
+		if err := requireHermeticEvener(cfg.evenerBin); err != nil {
+			return err
+		}
+	}
 	probes, err := loadProbes(cfg.probesDir, cfg.probeFilter)
 	if err != nil {
 		return err
 	}
 	if len(probes) == 0 {
 		return errors.New("no probes selected")
+	}
+	// Only the CLI harness's cliProbeArgs wires --ask-responder from a
+	// person: block; the live harness (runLiveProbe) never does, so a
+	// person-carrying task under --harness live would silently never ask.
+	// Fail up front rather than run the whole suite for nothing to answer.
+	for _, probe := range probes {
+		if cfg.harness == "live" && probe.Person != nil {
+			return fmt.Errorf("probe %q has a person: block, which --harness live does not support (it never asks); use --harness cli", probe.ID)
+		}
 	}
 	// Report the actual selected set, honestly, before any live request is
 	// launched (including the catalog session below). "--probe all" always
@@ -483,6 +589,12 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if probe.ID == "" {
 			return fmt.Errorf("%s: missing id", path)
 		}
+		// A person: block with no brief cannot play anyone: respond would
+		// answer "I don't know." to everything, silently. Reject it at load
+		// time, naming the task.
+		if probe.Person != nil && strings.TrimSpace(probe.Person.Brief) == "" {
+			return fmt.Errorf("%s: task %s: person.brief must not be empty", path, probe.ID)
+		}
 		if filter == "all" || filter == probe.ID {
 			probes = append(probes, probe)
 		}
@@ -518,6 +630,7 @@ type probeResult struct {
 	FastCheapModel      string         `json:"fast_cheap_model,omitempty"`
 	Repetition          int            `json:"repetition"`
 	Status              string         `json:"status"`
+	EnvMode             string         `json:"env_mode"`
 	SessionID           string         `json:"session_id,omitempty"`
 	WorkDir             string         `json:"work_dir"`
 	StateDir            string         `json:"state_dir"`
@@ -532,6 +645,11 @@ type probeResult struct {
 	Findings            []finding      `json:"findings"`
 	DurationMS          int64          `json:"duration_ms"`
 	Error               string         `json:"error,omitempty"`
+	// AskUserCalls is how many times the session called ask_user (only set
+	// for a task with a person: block); Asks is every question/answer pair
+	// the --ask-responder logged (readAskLog, applyAskExchanges).
+	AskUserCalls int           `json:"ask_user_calls,omitempty"`
+	Asks         []askExchange `json:"asks,omitempty"`
 }
 
 // probeMetrics holds the phase-discipline metrics the runner computes from
@@ -786,6 +904,16 @@ type finding struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// envModeLabel names, for result.json, which environment mode a probe ran
+// under (#3227): "hermetic" (today's default, operator skills and plugins
+// hidden) or "inherit_operator_env" (--inherit-operator-env, debugging only).
+func envModeLabel(inheritOperatorEnv bool) string {
+	if inheritOperatorEnv {
+		return "inherit_operator_env"
+	}
+	return "hermetic"
+}
+
 func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
 	slug := safeName(probe.ID)
@@ -802,6 +930,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		FastCheapModel:      strings.TrimSpace(cfg.fastCheapModel),
 		Repetition:          rep,
 		Status:              "failed",
+		EnvMode:             envModeLabel(cfg.inheritOperatorEnv),
 		WorkDir:             workDir,
 		StateDir:            stateDir,
 		StdoutPath:          stdoutPath,
@@ -846,6 +975,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	res.CanonicalToolCounts, res.ToolErrors, res.CommunicateMessages = parseEvents(stderr.Bytes())
 	if id, err := rootSessionID(stateDir); err == nil {
 		res.SessionID = id
+		// The probe session's scratch outlives it, and no hub ever archives a
+		// probe, so the harness removes the session's tree once it is done.
+		_ = sandbox.RemoveSessionScratchTree(id)
 	}
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
@@ -854,6 +986,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	// rather than through the enumeration the counts above walk, and reported
 	// per the probe's metrics block.
 	applyProbeMetrics(&res, probe, stateDir, wireNames)
+	applyAskExchanges(&res, probe)
 	if err != nil {
 		res.Error = err.Error()
 		category, status := classifyProbeError(err, ctx.Err(), stderr.String())
@@ -912,6 +1045,25 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, er
 			netName = "off"
 		}
 		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
+	}
+	if probe.Person != nil {
+		askResponder, err := personAskResponderCommand(cfg, probe, res)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--ask-responder", askResponder)
+	}
+	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides the operator's
+	// user-global sources — home/user-config skills, global MCP config, and
+	// evener-wide commands. Their installed, enabled plugins would still
+	// load in full — hooks, agents, commands, and plugin-sourced skills —
+	// because a bare `evener run` resolves plugins against its default root
+	// (internal/plugins.ResolveForLaunch with no explicit selection). An
+	// explicit empty selection makes that resolution pick nothing, whatever the
+	// operator has installed (#3227). --inherit-operator-env restores today's
+	// behavior for debugging by omitting the flag entirely.
+	if !cfg.inheritOperatorEnv {
+		args = append(args, "--enabled-plugins", "")
 	}
 	args = append(args,
 		"--dir", res.WorkDir,
@@ -1059,6 +1211,11 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		return err
 	}
 	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
+	// The session's ID names its scratch tree, so it is picked before the
+	// sandbox mints the scratch; runProbe removes the tree after the probe.
+	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
+		return err
+	}
 	// Engage enforcement before the session exists so a declared mode the host
 	// cannot serve fails closed here, before any provider call, rather than
 	// silently running the worker native and unsandboxed.
@@ -1068,10 +1225,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
 		// The session that would have owned whatever this env provisioned was
-		// never built; settle its scratch against the root retention manifest
-		// the way the production launch path does, rather than removing a
-		// directory a durable manifest may still reference.
-		agent.DisposeRootScratchAfterFailure(sessCfg.StateDir, env)
+		// never built, so its scratch goes here, as on the production launch path.
+		_ = env.DisposeSessionScratch()
 		return err
 	}
 	res.SessionID = sess.ID()
@@ -1295,14 +1450,25 @@ func writeFixtureFiles(workDir string, files map[string]string) error {
 // global git setup belongs to their own work and stays out: the repository
 // starts from no template, so no template hooks land in it; it never signs;
 // it uses its own empty hooks directory; and it reads no global ignore file.
+//
+// maintenance.auto=false keeps the commit from leaving a detached writer
+// behind. Since git 2.5x, `git commit` runs `git maintenance run --auto
+// --detach` (run-command.c:prepare_auto_maintenance), and that background
+// process outlives the commit and writes into .git — recreating it if
+// t.TempDir() cleanup already removed it, which makes cleanup fail with
+// "directory not empty". The same quiescent-commit rule the worktree tools
+// use keeps the fixture's commits from racing a cleanup.
 func commitFixture(workDir string) error {
 	for _, args := range [][]string{
 		{"init", "-q", "-b", "main", "--template="},
 		{"config", "user.name", "Evener Fixture"},
 		{"config", "user.email", "fixture@evener.test"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgSign", "false"},
+		{"config", "tag.forceSignAnnotated", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
 		{"config", "core.excludesFile", os.DevNull},
+		{"config", "maintenance.auto", "false"},
 		{"add", "-A"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {

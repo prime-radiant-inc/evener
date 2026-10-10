@@ -4,9 +4,10 @@ package server
 // per-message counterpart of turn/drainAsSteer. The daemon removes the queued
 // follow-up at the requested index and injects it as user-sourced steering
 // into the in-flight turn; other queued messages stay queued. Failures are
-// honest: idle/closed → Conflict, negative index → InvalidParams, no callback
-// → Unavailable, and a session-side rejection (e.g. the queue shifted under
-// the client so the index is now out of range) propagates.
+// honest: closed → Conflict, negative index → InvalidParams, no callback →
+// Unavailable, and a session-side rejection (e.g. the queue shifted under the
+// client so the index is now out of range) propagates. No turn in flight is
+// required — a Stop-parked queue still promotes.
 
 import (
 	"context"
@@ -218,11 +219,11 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 
 	// Everything below assumes the turn is still parked in the adapter, and
 	// nothing used to check it. That assumption is the whole test: promote has
-	// no session-state precondition of its own (unlike PromoteQueuedAsSteer,
-	// agent/session_queue.go), so a turn that ended early leaves every
-	// assertion here passing or failing for reasons that have nothing to do
-	// with promote. And the drain loop that runs when a turn ends is the ONLY
-	// place in the codebase that takes the queue head away and puts it back:
+	// no session-state precondition of its own, so a turn that ended early
+	// leaves every assertion here passing or failing for reasons that have
+	// nothing to do with promote. And the drain loop that runs when a turn
+	// ends is the ONLY place in the codebase that takes the queue head away
+	// and puts it back:
 	// the interrupted-turn recovery in agent/session_lifecycle.go pops, and
 	// pushes back when it cannot run what it popped. adapter.done is buffered,
 	// so the wait at the end of this test cannot tell an early end from a

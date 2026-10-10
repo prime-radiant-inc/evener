@@ -31,11 +31,34 @@
   flex-direction: row;
   min-height: 0;
   min-width: 0;
+  /* The activity sidebar enters from translateX(320px). Unclipped, that
+   * overhang overflows the desktop document, and classic scrollbars (Linux,
+   * Windows) then shift the whole shell 15px and can linger until the next
+   * layout. clip, unlike hidden, makes no scroll container focus could scroll. */
+  overflow-x: clip;
 }
 
-.content > :last-child {
-  /* The workspace host (DockHost/StackHost/NotFound) takes all remaining
-   * width beside the rail. */
+/* The workspace column gives the dock host a bounded flex-height chain. These
+ * bare-class rules precede the .content > rule below:
+ * noDescendingSpecificity. */
+.workspaceColumn {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workspaceHost {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The workspace column takes all remaining width beside the rail. Keyed by
+ * class (the activity sidebar mounts as a LATER sibling in .content, so a bare
+ * :last-child rule would jump to it when open); the :last-child fallback keeps
+ * the mobile StackHost and the NotFound page, which never share the row with
+ * the aside. */
+.content > .workspaceColumn,
+.content > :last-child:not(aside) {
   flex: 1 1 auto;
   min-width: 0;
 }

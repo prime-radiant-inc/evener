@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -797,5 +798,67 @@ func TestReconnect_ClearsReconnectingFlagOnFailure(t *testing.T) {
 	c.mu.Unlock()
 	if stuck {
 		t.Fatal("reconnecting flag left set after a failed reconnect — a future call would wedge")
+	}
+}
+
+func TestReconnectNoticePrecedesFailedRetry(t *testing.T) {
+	t.Parallel()
+	for _, rpcError := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rpc-error-%v", rpcError), func(t *testing.T) {
+			ctx := context.Background()
+			ss1, ct1 := newReconnectTestServer(t, "s", "probe", "initial")
+			t.Cleanup(func() { _ = ss1.Close() })
+			var notices, retries atomic.Int32
+			server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s", Version: "v1"}, nil)
+			server.AddTool(&mcpsdk.Tool{Name: "probe", InputSchema: map[string]any{"type": "object"}},
+				func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+					if notices.Load() != 1 {
+						t.Error("retry reached the server before the connection recovery notice")
+					}
+					retries.Add(1)
+					if rpcError {
+						return nil, errors.New("retry-failure-sentinel")
+					}
+					return &mcpsdk.CallToolResult{IsError: true, Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "retry-failure-sentinel"}}}, nil
+				})
+			st2, ct2 := mcpsdk.NewInMemoryTransports()
+			ss2, err := server.Connect(ctx, st2, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss2.Close() })
+			var dials atomic.Int32
+			mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+				[]func(context.Context) (mcpsdk.Transport, error){func(context.Context) (mcpsdk.Transport, error) {
+					if dials.Add(1) == 1 {
+						return ct1, nil
+					}
+					return ct2, nil
+				}})
+			if len(outcomes) != 0 {
+				t.Fatal(outcomes)
+			}
+			t.Cleanup(mgr.Close)
+			mgr.OnReconnect = func(name string) {
+				if name != "s" {
+					t.Errorf("recovered server = %q", name)
+				}
+				notices.Add(1)
+			}
+			reg := tool.NewRegistry()
+			if outcomes := mgr.RegisterTools(reg); len(outcomes) != 0 {
+				t.Fatal(outcomes)
+			}
+			if err := ss1.Close(); err != nil {
+				t.Fatal(err)
+			}
+			out, isError := execProbe(ctx, reg, t)
+			if !isError || !strings.Contains(out, "retry-failure-sentinel") {
+				t.Fatalf("failed retry lost: IsError=%v Output=%q", isError, out)
+			}
+			if dials.Load() != 2 || notices.Load() != 1 || retries.Load() != 1 {
+				t.Fatalf("dials=%d notices=%d retries=%d, want 2/1/1", dials.Load(), notices.Load(), retries.Load())
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -39,7 +40,7 @@ func seed100JobsRangeA(t *testing.T) {
 		done: closedDone,
 	}
 	jm.running[closing.rec.JobID] = closing
-	if err := jm.closeRuntimeState(); err != nil {
+	if err := jm.closeRuntimeState(context.Background()); err != nil {
 		t.Fatalf("closeRuntimeState: %v", err)
 	}
 	if closing.stopStatus != jobstore.StatusCancelled || closing.stopReason != "stopped_by_parent" {

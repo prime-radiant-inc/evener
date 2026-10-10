@@ -1,6 +1,6 @@
 // The Commands and skills sheet route (spec 8.5; rulings 15 and 37), rendered
 // with a host in commandHosts the way ConversationScreen provides one. The
-// catalog comes from a fake client answering the two reads
+// catalog comes from a fake client answering the owning thread/read
 // createSessionCommandCatalog makes; only native edges are mocked.
 import type { AnyNotification, CommandDescriptor, EvenerSkillInfo } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { ComposerCommandSession } from "../composerCommand";
-import { pressable, render, screenConnection, textOf } from "../renderNative.testkit";
+import { pressable, render, screenConnection, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type CommandsHost, CommandsSheet, commandHosts, insertInvocation } from "./CommandsSheet";
@@ -57,13 +57,16 @@ function catalogClient({ hold = false, fail = false } = {}) {
 		request: async (method: string) => {
 			if (hold) return new Promise(() => {});
 			if (fail) throw new Error("refused");
-			if (method === "evener/command/list") return { commands: COMMANDS };
 			if (method === "thread/read")
 				return {
 					thread: {
 						evener: {
 							ref: REF,
-							diagnostics: { plugins: [{ name: "shepherd-pr" }, { name: "superpowers" }], skills: SKILLS },
+							diagnostics: {
+								plugins: [{ name: "shepherd-pr" }, { name: "superpowers" }],
+								commands: COMMANDS,
+								skills: SKILLS,
+							},
 						},
 					},
 				};
@@ -82,7 +85,6 @@ function session(capabilities: Partial<ComposerCommandSession["capabilities"]>):
 }
 
 let owner: object | undefined;
-const mounted: ReactTestRenderer[] = [];
 
 function provide(over: Partial<CommandsHost> = {}) {
 	const calls: string[] = [];
@@ -105,7 +107,6 @@ async function sheet(client: unknown = catalogClient()): Promise<ReactTestRender
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "CommandsSheet">;
 	const tree = render(<CommandsSheet {...props} />);
-	mounted.push(tree);
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
@@ -129,7 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	if (owner) commandHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });

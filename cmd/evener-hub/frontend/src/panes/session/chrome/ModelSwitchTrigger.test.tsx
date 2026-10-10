@@ -355,3 +355,132 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
     restoreViewport();
   }
 });
+
+// A picker open while the hub refreshes its model list (the caller's
+// refreshKey changes: the hub announced a changed list) updates in place: the
+// list it shows stays up while the new one loads, and the new one replaces it
+// when it lands (#3539). A scope change still reloads from scratch; this is
+// the same scope with newer data.
+test("a refresh key change under an open picker reloads the list in place", async () => {
+  const user = userEvent.setup();
+  let resolveRefresh: (value: ModelCatalog) => void = () => {};
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (!refresh) return catalog();
+    return new Promise<ModelCatalog>((resolve) => {
+      resolveRefresh = resolve;
+    });
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(loadCatalog).toHaveBeenLastCalledWith(true));
+  // The list the picker was showing stays up while the refresh loads.
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+
+  await act(async () => {
+    resolveRefresh({
+      models: [...catalog().models, { provider: "anthropic", model: "claude-opus-5", displayName: "Opus 5" }],
+      recent: [],
+    });
+  });
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+});
+
+test("a refresh key change under a closed picker loads nothing", async () => {
+  const loadCatalog = vi.fn(async () => catalog());
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  expect(loadCatalog).not.toHaveBeenCalled();
+});
+
+// A refresh that fails says nothing new about the list: the picker keeps the
+// one it has rather than replacing it with an error.
+test("a refresh that fails keeps the list the picker shows", async () => {
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (refresh) throw new WireError("hub unavailable", -32000);
+    return catalog();
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(loadCatalog).toHaveBeenLastCalledWith(true));
+  await act(async () => {});
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+});
+
+// Spawn changes both at once: a credential or model-list change moves its
+// refresh key and, with it, its loader's identity. That is still newer data
+// for the same scope, so it too reloads in place.
+test("a loader change that comes with a refresh key change reloads in place", async () => {
+  const user = userEvent.setup();
+  const first = vi.fn(async () => catalog());
+  let resolveNext: (value: ModelCatalog) => void = () => {};
+  const next = vi.fn(
+    async () =>
+      new Promise<ModelCatalog>((resolve) => {
+        resolveNext = resolve;
+      }),
+  );
+  const { props, rerender } = renderTrigger({ loadCatalog: first, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+
+  rerender(<ModelSwitchTrigger {...props} loadCatalog={next} refreshKey={1} />);
+  await waitFor(() => expect(next).toHaveBeenCalled());
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  await act(async () => {
+    resolveNext({
+      models: [...catalog().models, { provider: "anthropic", model: "claude-opus-5", displayName: "Opus 5" }],
+      recent: [],
+    });
+  });
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+});
+
+// A picker whose last load failed shows the error, not a list, so newer data
+// is a full load that can replace the error with the list.
+test("a refresh after a failed load replaces the error with the list", async () => {
+  const user = userEvent.setup();
+  let failing = false;
+  const loadCatalog = vi.fn(async () => {
+    if (failing) throw new WireError("hub unavailable", -32000);
+    return catalog();
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  await user.keyboard("{Escape}");
+  failing = true;
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByText(/Couldn't load models/);
+
+  failing = false;
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+});
+
+// Newer data arriving while the first load is still out cannot keep a list
+// that is not on screen yet; it loads again, bypassing the caller's cache.
+test("a refresh key change while the first load is out reloads bypassing the cache", async () => {
+  const user = userEvent.setup();
+  let resolveFirst: (value: ModelCatalog) => void = () => {};
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (refresh) return catalog();
+    return new Promise<ModelCatalog>((resolve) => {
+      resolveFirst = resolve;
+    });
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(loadCatalog).toHaveBeenLastCalledWith(true));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  await act(async () => resolveFirst({ models: [], recent: [] }));
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+});

@@ -68,6 +68,22 @@ func TestThreadListRootRowCarriesTheWholeTreesActivity(t *testing.T) {
 	}
 }
 
+// The row's intent is the root session's own words. The meter counts a
+// descendant's motion toward the root's bars, but a subagent's tool call must
+// never word the root's row, so only RecordAppEvent notes an intent.
+func TestThreadListRootRowIntentIsTheRootsOwn(t *testing.T) {
+	srv, _ := activityTestServer(t, "root")
+	srv.RecordAppEvent(toolCallStart("Running the suite."))
+	srv.RecordDescendantAppEvent("root", threadEvent("child-1", events.ToolCallStartData{
+		ToolName: "read_file", ArgumentsJSON: "{}", Description: "Reading the child's notes.",
+	}))
+
+	activity, _ := listedRootActivity(t, srv)
+	if activity == nil || activity.LatestIntent != "Running the suite." {
+		t.Fatalf("root row activity = %+v, want the root's own words", activity)
+	}
+}
+
 // A replaced identity is a different session: its meter starts empty, its
 // quiet clock starts when it is installed, and a late event from the replaced
 // tree counts for nothing.
@@ -84,5 +100,23 @@ func TestReplacedIdentityStartsAFreshMeter(t *testing.T) {
 	}
 	if activity.LastActivityAt != clock.now.UnixMilli() {
 		t.Fatalf("new identity's quiet clock starts at %d, want its install time %d", activity.LastActivityAt, clock.now.UnixMilli())
+	}
+	if activity.LastMovedAt != 0 {
+		t.Fatalf("new identity's moved time = %d, want none: the old session's motion is not its own", activity.LastMovedAt)
+	}
+}
+
+// A session the daemon just began serving lists no moved time, so a client
+// comparing it with a seen mark finds nothing new after a restart; its first
+// transcript motion sets it.
+func TestThreadListReportsNoMovedTimeUntilTheSessionMoves(t *testing.T) {
+	srv, clock := activityTestServer(t, "th_fresh_serve")
+	if activity, _ := listedRootActivity(t, srv); activity.LastMovedAt != 0 {
+		t.Fatalf("moved at serve start = %d, want none", activity.LastMovedAt)
+	}
+	clock.now = clock.now.Add(time.Minute)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_fresh_serve", Data: events.AssistantTextDeltaData{Delta: "x"}})
+	if activity, _ := listedRootActivity(t, srv); activity.LastMovedAt != clock.now.UnixMilli() {
+		t.Fatalf("moved after motion = %d, want %d", activity.LastMovedAt, clock.now.UnixMilli())
 	}
 }

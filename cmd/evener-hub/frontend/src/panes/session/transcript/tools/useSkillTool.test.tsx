@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./useSkillTool";
 import type { ItemModel } from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -53,4 +54,15 @@ test("the skill name reads straight from a settled item's own argumentsJSON (the
   const d = toolRendererFor("use_skill");
   const settled = item({ toolName: "use_skill", argumentsJSON: JSON.stringify({ skill_name: "brainstorming" }) });
   expect(d.summary(settled)).toBe("Activated skill: brainstorming");
+});
+
+// What use_skill really returns (agent/testdata/toolwire): a <skill-context>
+// block of JSON. The body shows the skill's instructions as markdown, never
+// the JSON around them.
+test("body shows the loaded skill's instructions, not its <skill-context> JSON", () => {
+  const Body = toolRendererFor("use_skill").body!;
+  render(<Body item={toolWireStep("call_use_skill")} live={false} />);
+  expect(screen.getByRole("heading", { name: "Systematic debugging" })).toBeTruthy();
+  expect(screen.getByText("Find the root cause first.")).toBeTruthy();
+  expect(screen.queryByText(/skill-context|"instructions"/)).toBeNull();
 });

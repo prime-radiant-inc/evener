@@ -1,8 +1,15 @@
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { SyncStringStorage } from "../syncStringStorage";
-import { NOTE_LIMIT, NotesController, notesBarPreview, noteStatusLine, SAVE_AFTER_BLUR_MS } from "./sessionNotes";
+import { memoryStorage } from "../syncStringStorageTestUtils";
+import {
+	DRAFT_WRITE_DEBOUNCE_MS,
+	NOTE_LIMIT,
+	NotesController,
+	notesBarPreview,
+	noteStatusLine,
+	SAVE_AFTER_BLUR_MS,
+} from "./sessionNotes";
 
 const sharedNotes = { sharedNotes: true } as ThreadCapabilities;
 const url = (id: string, label?: string): SessionURL => ({ id, url: `https://example.com/${id}`, label });
@@ -49,25 +56,24 @@ describe("the editor's status line", () => {
 	});
 });
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
-
 function harness(
-	over: { fail?: Error; projectionState?: "pending" | "removed"; working?: boolean; instanceId?: string } = {},
+	over: {
+		fail?: Error;
+		projectionState?: "pending" | "removed";
+		working?: boolean;
+		instanceId?: string;
+		beforeRequest?: (call: number) => void;
+	} = {},
 ) {
 	let writable = true;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	let saved = "";
 	let failure = over.fail ?? null;
+	let call = 0;
 	const client = {
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
+			over.beforeRequest?.(++call);
 			if (failure) throw failure;
 			if (method === "urls/remove") return {};
 			return {
@@ -207,6 +213,173 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		hub.setSaved("Someone else's later note");
 		notes.sync();
 		expect(notes.getSnapshot()).toEqual({ text: "Someone else's later note", phase: "clean" });
+	});
+
+	it("adopts a hub note that changed while its own save was in flight, rather than showing its own as Saved (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("first");
+		const notes = hub.make();
+		notes.edit("mine");
+		const saving = notes.flush();
+		// The web or another device writes a third value while ours is in flight.
+		hub.setSaved("third");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		// Showing "mine" as Saved would hide "third" and let the next edit
+		// overwrite it; the hub's newer note wins and reads clean.
+		expect(notes.getSnapshot()).toEqual({ text: "third", phase: "clean" });
+	});
+
+	it("does not mistake its own earlier save's echo for a third writer during a chained save (RoboRev #2769)", async () => {
+		const calls: number[] = [];
+		const hub = harness({
+			beforeRequest: (call) => {
+				calls.push(call);
+				if (call === 2) hub.setSaved("First");
+			},
+		});
+		const notes = hub.make();
+		notes.edit("First");
+		const saving = notes.flush();
+		notes.edit("First and more");
+		// "First" is this controller's own earlier save; its echo arriving while
+		// the second save is in flight must not be adopted over "First and more".
+		expect(await saving).toEqual({ saved: true, woke: true });
+		// The chain really did issue a second request (RoboRev #2769 round 4).
+		expect(calls).toEqual([1, 2]);
+		expect(notes.getSnapshot()).toEqual({ text: "First and more", phase: "saved" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("does not adopt a late echo of an earlier save during a chained burst (RoboRev #2769)", async () => {
+		let notes!: NotesController;
+		const hub = harness({
+			beforeRequest: (call) => {
+				if (call === 1) notes.edit("B");
+				else if (call === 2) notes.edit("C");
+				// The first save's own broadcast arrives late, during the third.
+				else if (call === 3) hub.setSaved("A");
+			},
+		});
+		notes = hub.make();
+		notes.edit("A");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "saved" });
+	});
+
+	it("does not keep a draft the hub already holds when the controller is torn down (RoboRev #2769)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		hub.setSaved("B");
+		notes.dispose();
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("adopts a remote write that restores a value an earlier save already sent (RoboRev #2769 round 5)", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("ok");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		notes.edit("new text");
+		const saving = notes.flush();
+		// Another device writes "ok" again while our newer save is in flight: it
+		// is a third writer's note, not this save chain's own echo.
+		hub.setSaved("ok");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "ok", phase: "clean" });
+	});
+
+	it("forgets a written draft when the hub catches up to the editing text on a sync (RoboRev #2769 round 5)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		// The debounce fires while the hub is still on "A", so the draft lands.
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(true);
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("forgets a scheduled draft when the hub catches up to it before the delayed save (RoboRev #3160)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		notes.blur();
+		expect(notes.getSnapshot().phase).toBe("scheduled");
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(true);
+		// The hub catches up to the same text before the ten seconds elapse;
+		// the scheduled draft must not survive to resurface or resend.
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("reads clean on flush when the hub already holds the edited text, before any blur (RoboRev #3160)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		// The hub catches up while still editing: there is nothing left to save,
+		// so the controller must not stay visibly editing.
+		hub.setSaved("B");
+		expect(notes.getSnapshot().phase).toBe("editing");
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("leaves no live save timer behind when a scheduled sync goes clean (RoboRev #3160)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		notes.blur();
+		// The hub catches up to the scheduled text before the ten seconds elapse.
+		hub.setSaved("B");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "B", phase: "clean" });
+		// Typing again before the original ten seconds cancels the pending save,
+		// so the stale timer cannot flush the new text prematurely.
+		notes.edit("B and more");
+		await vi.advanceTimersByTimeAsync(SAVE_AFTER_BLUR_MS);
+		expect(hub.requests).toEqual([]);
+		expect(notes.getSnapshot()).toEqual({ text: "B and more", phase: "editing" });
+	});
+
+	it("keeps the whole chain's sent notes, so an early echo is not evicted (RoboRev #2769 round 6)", async () => {
+		let notes!: NotesController;
+		const hub = harness({
+			beforeRequest: (call) => {
+				// Nine edits keep the chain going; on the tenth save the first
+				// save's own echo arrives, after nine later values were sent.
+				if (call <= 9) notes.edit(`v${call}`);
+				else hub.setSaved("v0");
+			},
+		});
+		notes = hub.make();
+		notes.edit("v0");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "v9", phase: "saved" });
+	});
+
+	it("forgets the draft for newer text the hub already holds when an in-flight save settles (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		const saving = notes.flush();
+		notes.edit("C");
+		hub.setSaved("C");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "clean" });
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
 	});
 
 	it("saves at once on flush and says whether it woke the agent", async () => {
@@ -355,10 +528,72 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		const second = make("local:s2");
 		first.edit("From the first session");
 		second.edit("From the second session");
+		// The write is debounced now, so nothing reaches the store until the
+		// typing pauses (RoboRev #2769): advance to that point.
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
 		expect(JSON.parse(storage.values.get("evener.native.note-draft.hub-1") ?? "{}")).toEqual({
 			"local:s1": "From the first session",
 			"local:s2": "From the second session",
 		});
+	});
+
+	it("writes the draft once the typing pauses, not on every keystroke (RoboRev #2769)", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("a");
+		notes.edit("ab");
+		notes.edit("abc");
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "abc" }));
+	});
+
+	it("keeps the draft at once when you leave the field, before the debounce fires", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		notes.blur();
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
+	});
+
+	it("forgets the draft once the hub catches up to the edited text, on blur (RoboRev #2769)", () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("A and more");
+		// Another device (or the web) wrote the same text; the hub now holds it.
+		hub.setSaved("A and more");
+		notes.blur();
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("forgets the draft once the hub catches up to the edited text, on flush (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("A and more");
+		hub.setSaved("A and more");
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("keeps the draft at once on flush, which backgrounding and closing the sheet both call", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		// The session ends before the flush: nothing is sent, so only the
+		// pre-save draft write can keep the text on this phone.
+		hub.setWritable(false);
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
+	});
+
+	it("keeps a draft still inside the debounce window when the controller is torn down (RoboRev #2769)", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		notes.dispose();
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
 	});
 });
 

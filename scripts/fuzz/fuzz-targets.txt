@@ -89,13 +89,14 @@ native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigDecode
 native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigResolve
 native:.:./cmd/evener-fuzzregistry:FuzzParseRegistry
 native:.:./cmd/evener-fuzzregistry:FuzzRegistryProgram
+native:.:./cmd/evener-dev:FuzzParseGoTestJSON
 native:agent:./plugin:FuzzPluginManifestParse
 native:agent:./plugin:FuzzPluginLoaderProgram
 native:agent:./plugin:FuzzDiscoverEvenerwideFrontmatter
 native:.:./internal/credentials:FuzzCredentialsStoreDecode
 native:agent:./plugin:FuzzPluginLoad
 native:agent:./transcript:FuzzTranscriptWriterRoundTrip
-native:agent:.:FuzzTranscriptRangeSpec
+native:agent:.:FuzzTranscriptRangeSpec:./internal/turnwindow
 native:agent:./doctor:FuzzParseRunbook
 native:agent:./transcript:FuzzToolFailureRule
 native:agent:./transcript:FuzzFailureCounterAttribution
@@ -444,7 +445,6 @@ native:.:./cmd/evener-hub/internal/fspaths:FuzzResolveInRoot
 native:.:./cmd/evener-hub/internal/fspaths:FuzzSanitizeDirPrefix
 native:.:./cmd/evener-hub/internal/fspaths:FuzzFSPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/fspaths:FuzzAppPathsBehaviorProgram
-native:.:./cmd/evener-hub/internal/hostfence:FuzzHostfenceDecode
 native:.:./cmd/evener-hub/internal/hostlock:FuzzAcquireLock
 native:.:./cmd/evener-hub/internal/hostlock:FuzzHostLockBehaviorProgram
 native:.:./cmd/evener-hub/internal/hostops:FuzzLoadStore

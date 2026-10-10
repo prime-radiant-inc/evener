@@ -1,11 +1,13 @@
 import { useRef, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, ScrollView, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { addFallback, assertLaunchListCurrent, collectFallbacks } from "./launchLists";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchFallbackEditor({
 	option,
@@ -38,7 +40,7 @@ export function LaunchFallbackEditor({
 		}
 	}
 	return (
-		<Modal
+		<HoldingModal
 			visible
 			presentationStyle="pageSheet"
 			animationType="slide"
@@ -46,8 +48,8 @@ export function LaunchFallbackEditor({
 		>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Action onPress={() => (choosing ? setChoosing(false) : close())}>{choosing ? "Back" : "Cancel"}</Action>
-					{!choosing && <Action onPress={done}>Done</Action>}
+					<Button text label={choosing ? "Back" : "Cancel"} onPress={() => (choosing ? setChoosing(false) : close())} />
+					{!choosing && <Button text label="Done" onPress={done} />}
 				</View>
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -122,28 +124,30 @@ export function LaunchFallbackEditor({
 											{index + 1}. {model}
 										</Copy>
 									</View>
-									<Action
-										label={`Remove fallback ${model}`}
+									<Button
+										text
+										label="Remove"
+										accessibilityLabel={`Remove fallback ${model}`}
 										onPress={() => setItems(items.filter((item) => item !== model))}
-									>
-										Remove
-									</Action>
+									/>
 								</View>
 							))}
-							<Action
+							<Button
+								text
+								label="Add model"
 								disabled={!client}
 								onPress={() => {
 									setError(null);
 									setChoosing(true);
 								}}
-							>
-								Add model
-							</Action>
-							{!client && <Copy muted>Reconnect to browse this hub's models. Your fallbacks are kept here.</Copy>}
+							/>
+							{!client && (
+								<Copy muted>You can browse this hub's models once it's back. Your fallbacks are kept here.</Copy>
+							)}
 						</ScrollView>
 					)}
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

@@ -309,7 +309,7 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if strings.TrimSpace(input) == "" {
 		return
 	}
-	release, err := s.beginRetirementMutation("autonomous")
+	release, err := s.beginNamingRetirementMutation()
 	if err != nil {
 		return
 	}
@@ -420,7 +420,7 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 	if !s.shouldNameFromCompaction() {
 		return
 	}
-	release, err := s.beginRetirementMutation("autonomous")
+	release, err := s.beginNamingRetirementMutation()
 	if err != nil {
 		return
 	}
@@ -509,6 +509,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// change gate must forget the last projected block and re-emit the current
 		// state (see resetNotesProjectionAfterCompaction).
 		s.resetNotesProjectionAfterCompaction()
+		s.resetMemoryProjectionAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {

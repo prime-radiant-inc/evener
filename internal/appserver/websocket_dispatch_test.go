@@ -354,6 +354,11 @@ func TestServeWebSocketBurstOfConcurrentRequestsAllPairCorrectly(t *testing.T) {
 // silently acquire (or lose) a member.
 func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 	slowReads := map[string]bool{
+		appwire.MethodEvenerThreadActivityRead:  true,
+		appwire.MethodEvenerThreadDelegatesList: true,
+		appwire.MethodEvenerThreadJobsList:      true,
+		appwire.MethodEvenerThreadWatchesList:   true,
+
 		appwire.MethodThreadRead:            true,
 		appwire.MethodThreadTurnsList:       true,
 		appwire.MethodEvenerSubagentPreview: true,
@@ -376,6 +381,10 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// megabytes for a delegate-heavy session
 		// (TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests).
 		appwire.MethodEvenerJobsList: true,
+		// evener/plugin/checkUpdates waits on every plugin's git remote,
+		// each under its own timeout; it changes nothing installed, and each
+		// answer replaces the last.
+		appwire.MethodEvenerPluginCheckUpdates: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
@@ -846,4 +855,19 @@ func TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured(t *testing.T) 
 	if !strings.Contains(buf.String(), "panic handling thread/list: boom") {
 		t.Fatalf("standard logger output = %q, want the panic line", buf.String())
 	}
+}
+
+func TestSessionActivityReadsDoNotHoldOrderedRequests(t *testing.T) {
+	t.Run("summary", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadActivityRead, appwire.SessionActivityReadParams{Ref: "local:child"}, appwire.SessionActivitySummary{})
+	})
+	t.Run("delegates", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadDelegatesList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionDelegatesResponse{})
+	})
+	t.Run("jobs", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadJobsList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionJobsResponse{})
+	})
+	t.Run("watches", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadWatchesList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionWatchesResponse{})
+	})
 }

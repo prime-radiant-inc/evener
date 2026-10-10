@@ -25,7 +25,7 @@ function setNeedsYou(count: number): void {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   const rows = Array.from({ length: count }, (_, i) => needsYouNode(i));
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [

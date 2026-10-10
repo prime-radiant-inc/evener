@@ -1,6 +1,7 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
@@ -48,8 +49,8 @@ const EMPTY_NAVIGATION_MANIFEST = {
 
 function scriptNavigationManifest(client: FakeClient): void {
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
-    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
-    return wireV2(params, EMPTY_NAVIGATION_MANIFEST, '"test"', 1, "test-generation");
+    expect(params).toEqual({ resource: "manifest", representationVersion: 3 });
+    return wireSnapshot(params, EMPTY_NAVIGATION_MANIFEST, '"test"', 1, "test-generation");
   });
 }
 
@@ -110,10 +111,10 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   scriptNavigationManifest(client);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [3] },
   }));
   render(<AppShell client={client} />);
   await chunk.reject(new Error(CHUNK_ERROR));
@@ -137,7 +138,9 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   // before the await is stale and its contains() check flakes.
   await screen.findByTestId("rail-search");
   const failure = screen.getByText("Couldn't load the workspace").closest("[data-testid='empty-state']");
-  const workspaceRow = failure?.parentElement;
+  // AppShell wraps DockRegion in a workspace column so the activity sidebar
+  // can stand beside the host; ascend through both to the rail's content row.
+  const workspaceRow = failure?.closest("[data-testid='workspace-column']")?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
 });
 
@@ -240,7 +243,7 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
   // check flakes.
   await screen.findByTestId("rail-search");
   const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
-  const workspaceRow = loading?.parentElement;
+  const workspaceRow = loading?.closest("[data-testid='workspace-column']")?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
   // The rail chunk arrives with its own empty-state Retry (a bare
   // FakeClient("ready") scripts no navigation manifest, so the rail shows

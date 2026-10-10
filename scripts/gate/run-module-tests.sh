@@ -175,7 +175,9 @@ fi
 # it prints anything. That is heavier than the `go list` those flags feed, so it
 # gets its own, larger bound: enough for a cold build cache on a busy host, but
 # still finite, so a stalled cache fails with the diagnostic instead of hanging
-# the gate before its own timeout can speak.
+# the gate before its own timeout can speak. The agent wave's prebuild of the
+# shard runner compiles the same package, so it shares this bound rather than
+# carrying a second copy.
 LIST_BUILD_FLAGS_TIMEOUT=${EVENER_LIST_BUILD_FLAGS_TIMEOUT:-300}
 if [[ ! "$LIST_BUILD_FLAGS_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_LIST_BUILD_FLAGS_TIMEOUT must be a positive integer in seconds (got %q)\n' "$LIST_BUILD_FLAGS_TIMEOUT" >&2
@@ -449,13 +451,24 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		# `go run` collapses its child's exit code to 1 and reports the real
-		# one as an "exit status N" line on stderr, so the runner's 129/130/143
-		# signal exits survive in the binary but not through this call. Only
-		# zero-vs-nonzero is read below, so nothing here depends on them.
+		# The shards used to run through `go run ./cmd/evener-dev/bin`, whose
+		# compile of cmd/evener-dev/bin is a tree the go list enumeration never
+		# warmed: on a stalled cache that compile was the one discovery-adjacent
+		# step still unbounded. Build the runner first under run_bounded, then run
+		# the built binary unbounded -- a fixed bound on the test suite itself
+		# could manufacture a flake on a loaded runner.
+		local agent_shards_bin="$logdir/agent-shards.bin"
+		if ! run_bounded_build "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev agent-shards build' "$m" \
+			"$logdir/agent-shards-build" "$agent_shards_bin" "$repo_root" ./cmd/evener-dev/bin; then
+			printf 'run-module-tests.sh: could not build the agent-shards runner\n' >&2
+			return 1
+		fi
+		# The built binary inherits the environment `go run` handed its child, so
+		# the runner's 129/130/143 signal exits reach the gate here (only
+		# zero-vs-nonzero is read below, so nothing depends on them).
 		# The shards get the gate's fuzz-owned skip like every other module;
 		# coverage-floor.sh already measures agent without those tests.
-		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" "$agent_shards_bin" dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list

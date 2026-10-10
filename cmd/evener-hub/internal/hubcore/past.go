@@ -111,9 +111,16 @@ type PastIndex struct {
 	// onChange, when set via SetOnChange, is fired by Rebuild only when the
 	// indexed content's fingerprint actually changes.
 	onChange func()
+	// onRootChange is fired, under the same generation gating as onChange, only
+	// when a root's shown fields change or the set of subagents changes (see
+	// rootFingerprint).
+	onRootChange func()
 	// fingerprint is the content hash from the most recent Rebuild (see
 	// contentFingerprint), used to gate onChange against no-op rebuilds.
 	fingerprint uint64
+	// rootFingerprint is the rootFingerprint hash from the most recent publish,
+	// gating onRootChange the way fingerprint gates onChange.
+	rootFingerprint uint64
 	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
 	// foldOne folds the row. Instance-scoped test seam for interleaving a
 	// concurrent writer that indexes a newer row first; nil in production.
@@ -122,6 +129,15 @@ type PastIndex struct {
 	// findCached miss and before the first probe. Instance-scoped test seam for
 	// interleaving a Rebuild swap in that window; nil in production.
 	afterFindCacheMiss func()
+	// searchProbe, when non-nil, observes each Search call's limit and offset.
+	// Instance-scoped test seam so a caller can pin that its fetch stays
+	// bounded however the index grows; nil in production.
+	searchProbe func(limit, offset int)
+
+	// rootIndex caches RootIndex's build for generation rootIndexGen. Guarded
+	// by mu.
+	rootIndex    *RootIndex
+	rootIndexGen uint64
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -185,6 +201,20 @@ func (i *PastIndex) StateGlob() string {
 // on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
+// SetOnRootChange registers a callback fired only when what a navigation row
+// shows can have changed: a root's shown fields moved, or a subagent appeared
+// or disappeared. A running subagent's autosave or rename does not fire it, so
+// consumers that read a roots-only projection stay quiet through delegate
+// writes. It shares SetOnChange's ordering hazard: call it after the initial
+// Rebuild.
+func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
+
+// SetSearchProbeForTest installs an observer for the limit and offset of each
+// Search call. It is a test-only seam: a caller can pin that its past fetch
+// stays bounded (never math.MaxInt32) however the index grows. nil in
+// production.
+func (i *PastIndex) SetSearchProbeForTest(fn func(limit, offset int)) { i.searchProbe = fn }
+
 // contentFingerprint hashes the consumer-visible fields of the sorted entries so
 // a publish can detect a genuine content delta without a deep compare. It
 // deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
@@ -212,9 +242,10 @@ func contentFingerprint(all []PastEntry) uint64 {
 
 // Rebuild scans every project under stateGlob and reloads the index. The
 // bool return reports whether the reload's content actually differed from
-// what was already indexed AND a registered onChange callback fired for it
-// (false on a no-op reload, a glob error, or when SetOnChange was never
-// called) — so a caller relying on that hook to signal the change elsewhere
+// what was already indexed AND a registered hook (onChange or onRootChange)
+// fired for it (false on a no-op reload, a glob error, or when neither
+// SetOnChange nor SetOnRootChange was called; production subscribes with
+// SetOnRootChange) — so a caller relying on that hook to signal the change elsewhere
 // (e.g. a broadcast) can tell whether that already happened, or whether it
 // needs to compensate.
 //
@@ -451,9 +482,9 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 // Rebuild may still be reading, which is a data race.
 //
 // The bool return reports whether the edit actually differed from what was
-// already indexed AND a registered onChange callback fired for it (false on
-// the untracked-id no-op, a no-op edit, or when SetOnChange was never
-// called) — see Rebuild's return for why a caller needs this.
+// already indexed AND a registered hook (onChange or onRootChange) fired for
+// it (false on the untracked-id no-op, a no-op edit, or when neither was
+// registered) — see Rebuild's return for why a caller needs this.
 func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
 	old, ok := i.byID[id]
@@ -504,7 +535,7 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // the lock (publishFTS and contentFingerprint run unlocked), and gen the
 // generation that snapshot belongs to (see PastIndex.gen). The bool is
 // Rebuild/UpdateMeta's contract: whether content changed AND a registered
-// onChange fired for it.
+// hook (onChange or onRootChange) fired for it.
 //
 // A newer mutation (a fold or update landing after this snapshot was taken)
 // bumps i.gen. This publisher then abandons its tail entirely: the newer
@@ -517,18 +548,24 @@ func (i *PastIndex) publishAndSignal(all []PastEntry, gen uint64) bool {
 		i.publishFTS(all, gen)
 	}
 	fp := contentFingerprint(all)
+	rootFP := rootFingerprint(all)
 	i.mu.Lock()
 	if i.gen != gen {
 		i.mu.Unlock()
 		return false
 	}
 	changed := fp != i.fingerprint
+	rootChanged := rootFP != i.rootFingerprint
 	i.fingerprint = fp
+	i.rootFingerprint = rootFP
 	i.mu.Unlock()
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
-	return changed && i.onChange != nil
+	if rootChanged && i.onRootChange != nil {
+		i.onRootChange()
+	}
+	return changed && i.onChange != nil || rootChanged && i.onRootChange != nil
 }
 
 // RefreshOne re-reads one already-indexed session's on-disk meta and folds it
@@ -579,28 +616,101 @@ func (i *PastIndex) snapshot() ([]PastEntry, uint64) {
 // matches q. SQLite FTS contributes token-prefix matches when available; the
 // in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
+	i.searchProbeNotify(limit, offset)
 	if strings.TrimSpace(q) != "" {
-		// Search is FTS's only consumer, so a stale mirror (a fold's or
-		// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
-		// briefly unwritable) is observable only here — and this is the
-		// repair point: re-publish the current snapshot so the FTS path
-		// serves every indexed id again. While the mirror stays broken
-		// every Search re-attempts the full FTS write; the first success
-		// flips i.fts and the repair stops. The fingerprint gate keeps
-		// the redundant publish from firing onChange.
-		i.mu.RLock()
-		ftsStale := i.dbPath != "" && !i.fts
-		i.mu.RUnlock()
-		if ftsStale {
-			all, gen := i.snapshot()
-			i.publishAndSignal(all, gen)
-		}
+		i.ensureFTSFresh()
 		if fts, ok := i.searchFTS(q); ok {
 			mem := i.searchMemoryMatches(q)
 			return i.mergeSearchResults(fts, mem, limit, offset)
 		}
 	}
 	return i.searchMemory(q, limit, offset)
+}
+
+// SearchAdmitted returns the newest up-to-limit entries that match q and
+// satisfy admit, in the Hub session ordering. Unlike Search it applies admit
+// before the limit cuts, so the whole match set never lands in the caller's
+// hands: hubSearch uses it so the Past group's scope filter runs over the whole
+// index while the returned page stays bounded to limit entries (#2873). The FTS
+// path resolves only the FTS match id set (not the substring set, which it
+// re-checks per entry while streaming); fully bounding that last set is the
+// indexed-query design pass #2873 calls for. A nil admit admits everything.
+// admit runs under the index's read lock and must not call back into the index;
+// it may collect its own side effects.
+func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bool) []PastEntry {
+	if limit <= 0 {
+		return nil
+	}
+	if admit == nil {
+		admit = func(PastEntry) bool { return true }
+	}
+	i.searchProbeNotify(limit, 0)
+	if strings.TrimSpace(q) != "" {
+		i.ensureFTSFresh()
+		if fts, ok := i.searchFTS(q); ok {
+			lower := strings.ToLower(strings.TrimSpace(q))
+			ftsIDs := make(map[string]struct{}, len(fts))
+			for _, e := range fts {
+				ftsIDs[e.ID] = struct{}{}
+			}
+			i.mu.RLock()
+			defer i.mu.RUnlock()
+			out := make([]PastEntry, 0, limit)
+			for _, e := range i.all {
+				if len(out) == limit {
+					break
+				}
+				if _, ok := ftsIDs[e.ID]; ok {
+					if admit(e) {
+						out = append(out, e)
+					}
+					continue
+				}
+				if matches(e, lower) && admit(e) {
+					out = append(out, e)
+				}
+			}
+			return out
+		}
+	}
+	lower := strings.ToLower(strings.TrimSpace(q))
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make([]PastEntry, 0, limit)
+	for _, e := range i.all {
+		if len(out) == limit {
+			break
+		}
+		if (lower == "" || matches(e, lower)) && admit(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// searchProbeNotify reports a query bound to the test probe, if installed.
+func (i *PastIndex) searchProbeNotify(limit, offset int) {
+	if i.searchProbe != nil {
+		i.searchProbe(limit, offset)
+	}
+}
+
+// ensureFTSFresh re-publishes the FTS mirror from the current snapshot when it
+// is stale (or was never published). The FTS path's readers (Search,
+// SearchAdmitted, MatchIDs) call this before querying it. A stale mirror (a
+// fold's or rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
+// briefly unwritable) is repaired here so the FTS path serves every indexed id
+// again. While the mirror stays broken every caller re-attempts the full FTS
+// write; the first success flips i.fts and the repair stops. The fingerprint
+// gate keeps the redundant publish from firing onChange.
+func (i *PastIndex) ensureFTSFresh() {
+	i.mu.RLock()
+	ftsStale := i.dbPath != "" && !i.fts
+	i.mu.RUnlock()
+	if ftsStale {
+		all, gen := i.snapshot()
+		i.publishAndSignal(all, gen)
+	}
 }
 
 func (i *PastIndex) searchMemory(q string, limit, offset int) []PastEntry {
@@ -1015,13 +1125,22 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	return out, true
 }
 
+// IsIndexWordRune reports whether r is a word rune: a letter or a digit, the
+// boundary the FTS5 unicode61 tokenizers of the past_sessions and messages
+// indexes draw in practice. Everything else, "_" included, separates words.
+// SearchTokens and the search snippet's word split share this one rule, so the
+// words a query looks for are exactly the words the snippet can mark.
+func IsIndexWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
 // SearchTokens splits a search into the lowercased words it looks for: the
-// runs of letters, digits and underscores. Everything else, FTS5's own query
-// syntax included, separates words, so no search can be read as an FTS5
-// operator.
+// runs of letters and digits the index tokenizer keeps. Everything else, "_"
+// and FTS5's own query syntax included, separates words, so no search can be
+// read as an FTS5 operator.
 func SearchTokens(q string) []string {
 	return strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+		return !IsIndexWordRune(r)
 	})
 }
 
@@ -1052,6 +1171,95 @@ func matches(e PastEntry, lowerQ string) bool {
 		return true
 	}
 	return false
+}
+
+// MatchIDs returns the subset of ids whose indexed entry matches q by the same
+// rules Search applies — the in-memory substring scan unioned with SQLite FTS —
+// resolved for all ids in one pass. hubSearch uses it to answer every live
+// session's own prompt match with a single lookup, rather than fetching the
+// whole match set or querying once per session (#2873). An id absent from the
+// index cannot appear in Search's results, so it never matches. A nil index
+// matches nothing.
+func (i *PastIndex) MatchIDs(ids []string, q string) map[string]bool {
+	out := map[string]bool{}
+	if i == nil || len(ids) == 0 {
+		return out
+	}
+	lower := strings.ToLower(strings.TrimSpace(q))
+	var ftsCandidates []string
+	for _, id := range ids {
+		e, ok := i.Find(id)
+		if !ok {
+			continue
+		}
+		if lower == "" || matches(e, lower) {
+			out[id] = true
+			continue
+		}
+		ftsCandidates = append(ftsCandidates, id)
+	}
+	if ftsIDs, ok := i.ftsMatchIDs(lower, ftsCandidates); ok {
+		for _, id := range ftsIDs {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// ftsMatchIDs returns the ids among ids the FTS mirror holds as matches for q,
+// the same token-prefix rule Search's FTS path applies. It chunks the id list
+// the way writeFTSTx chunks deletes, so a large live roster cannot exceed
+// SQLite's bound-parameter ceiling. A partial read is not authoritative — it
+// would silently drop live sessions whose match is discoverable only through
+// FTS — so any error reports ok=false and MatchIDs falls back to the substring
+// scan alone.
+func (i *PastIndex) ftsMatchIDs(q string, ids []string) ([]string, bool) {
+	query := ftsQuery(q)
+	if query == "" || len(ids) == 0 {
+		return nil, false
+	}
+	i.ensureFTSFresh()
+	i.mu.RLock()
+	available := i.fts
+	i.mu.RUnlock()
+	if !available || i.dbPath == "" {
+		return nil, false
+	}
+	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = db.Close() }()
+	var out []string
+	for start := 0; start < len(ids); start += ftsDeleteChunk {
+		end := min(start+ftsDeleteChunk, len(ids))
+		chunk := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, query)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
+		rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id IN (`+placeholders+`)`, args...) //nolint:noctx
+		if err != nil {
+			return nil, false
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, false
+			}
+			out = append(out, id)
+		}
+		rowErr := rows.Err()
+		_ = rows.Close()
+		if rowErr != nil {
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // SeedForTest replaces the in-memory index with the given metas (StateDir left
@@ -1189,6 +1397,38 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 // miss rather than a stale probe.
 const pastFindProbeAttempts = 3
 
+// Lookup returns the indexed entry for sessionID. Unlike Find it is a pure map
+// read: it never probes the disk on a miss and never changes the index, so an
+// id that is on disk but not yet folded in is reported absent.
+func (i *PastIndex) Lookup(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
+}
+
+// RootIndex returns the lineage index over the current entries, rebuilt only
+// when the index has changed since the last call.
+func (i *PastIndex) RootIndex() *RootIndex {
+	i.mu.RLock()
+	if i.rootIndex != nil && i.rootIndexGen == i.gen {
+		cached := i.rootIndex
+		i.mu.RUnlock()
+		return cached
+	}
+	metas := make([]schema.SessionMeta, 0, len(i.all))
+	for _, e := range i.all {
+		metas = append(metas, e.Meta)
+	}
+	gen := i.gen
+	i.mu.RUnlock()
+
+	built := NewRootIndex(metas)
+	i.mu.Lock()
+	if i.gen == gen {
+		i.rootIndex, i.rootIndexGen = built, gen
+	}
+	i.mu.Unlock()
+	return built
+}
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1320,6 +1560,13 @@ func (i *PastIndex) evict(id string, expectedRebuildGen, expectedIDGen uint64) b
 	i.mu.Unlock()
 	i.publishAndSignal(all, gen)
 	return true
+}
+
+// FindIndexed returns the entry the index already holds for sessionID. Unlike
+// Find it never probes the disk, so a caller that may be asked about unknown ids
+// repeatedly (a navigation read) does no I/O on a miss.
+func (i *PastIndex) FindIndexed(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {

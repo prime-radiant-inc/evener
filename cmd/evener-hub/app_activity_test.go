@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -39,8 +40,7 @@ func quietMillis(d time.Duration) *int64 {
 // has been silent.
 func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 	waiting := liveActivityEntry(2, "01WAITING", appwire.ThreadStatusActive, silentFor(15*time.Minute))
-	waiting.RunningSubagentIDs = []string{"child-running", "child-settled", "child-unknown"}
-	waiting.RunningSubagentStates = map[string]string{"child-running": appwire.ThreadStatusActive, "child-settled": appwire.ThreadStatusIdle}
+	waiting.Subagents = appwire.SubagentTally{Running: 1}
 	crashed := liveActivityEntry(5, "01CRASHED", "errored", silentFor(time.Minute))
 	crashed.Crashed = true
 	roster := hubcore.NewRosterWithEntries(
@@ -61,6 +61,32 @@ func TestActivityReadWithholdsQuietWhileASubagentRuns(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Sessions, want) {
 		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
+	}
+}
+
+// One session's running subagents are one number wherever the hub reports
+// them: the activity read counts what its Live row's subagent tally counts
+// (open runs, at every depth), not the listed children whose own status is
+// active. The case that split them: a running subagent waiting on the user
+// reports "awaiting", and a listed subagent may have no status reported yet,
+// but both still have a run open. With them counted, the session is waiting
+// on subagents, so its quiet time is withheld rather than read as stuck.
+func TestActivityReadCountsRunningSubagentsAsTheRowTallyDoes(t *testing.T) {
+	root := liveActivityEntry(1, "01ROOT", appwire.ThreadStatusActive, silentFor(15*time.Minute))
+	root.RunningSubagentIDs = []string{"child-asking", "child-unreported"}
+	root.RunningSubagentStates = map[string]string{"child-asking": appwire.ThreadStatusAwaiting}
+	root.Subagents = appwire.SubagentTally{Running: 2, Failed: 1}
+	roster := hubcore.NewRosterWithEntries(root)
+
+	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].RunningSubagents != root.Subagents.Running {
+		t.Fatalf("sessions = %+v, want runningSubagents %d, the row tally's running count", got.Sessions, root.Subagents.Running)
+	}
+	if got.Sessions[0].QuietForMS != nil {
+		t.Fatalf("quietForMS = %d, want none while subagents run", *got.Sessions[0].QuietForMS)
 	}
 }
 
@@ -197,5 +223,108 @@ func TestActivityReadSkipsAFailingOrUnattachedHost(t *testing.T) {
 	got, err = hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", idle, false), appwire.ActivityReadParams{}, activityReadNow)
 	if reads := activityHostReads(t, idleCalls()); err != nil || len(got.Sessions) != 1 || len(reads) != 0 {
 		t.Fatalf("read with an unattached host = %+v (%v), %d host calls; want only the local session and no call", got, err, len(reads))
+	}
+}
+
+// A Working row says what the session last set out to do, so the read carries
+// each daemon's latest tool intent, cut again here: a row carries the words its
+// own daemon sent and no more, whatever a remote host or an older daemon
+// claimed.
+func TestActivityReadCarriesTheLatestToolIntent(t *testing.T) {
+	named := silentFor(time.Minute)
+	named.LatestIntent = "Reading the board's row tests."
+	shouty := silentFor(time.Minute)
+	shouty.LatestIntent = strings.Repeat("界", appwire.MaxIntentRunes+50)
+	roster := hubcore.NewRosterWithEntries(
+		liveActivityEntry(1, "01NAMES", appwire.ThreadStatusActive, named),
+		liveActivityEntry(2, "01SHOUTY", appwire.ThreadStatusActive, shouty),
+		liveActivityEntry(3, "01SILENT", appwire.ThreadStatusActive, silentFor(time.Minute)),
+	)
+	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "local:01NAMES", Minutes: activityReadMinutes, QuietForMS: quietMillis(time.Minute), LatestIntent: "Reading the board's row tests."},
+		{Ref: "local:01SHOUTY", Minutes: activityReadMinutes, QuietForMS: quietMillis(time.Minute), LatestIntent: appwire.Excerpt(shouty.LatestIntent, appwire.MaxIntentRunes)},
+		{Ref: "local:01SILENT", Minutes: activityReadMinutes, QuietForMS: quietMillis(time.Minute)},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("read = %+v, want %+v", got.Sessions, want)
+	}
+	if got := got.Sessions[1].LatestIntent; utf8.RuneCountInString(got) > appwire.MaxIntentRunes {
+		t.Fatalf("intent runs %d runes, want at most %d", utf8.RuneCountInString(got), appwire.MaxIntentRunes)
+	}
+}
+
+// A remote host's answer is relayed, not trusted: its rows are cut to the same
+// bound a local one's are, so a host running older or different code cannot
+// widen a row through this controller.
+func TestActivityReadBoundsARemoteHostsIntent(t *testing.T) {
+	long := strings.Repeat("界", appwire.MaxIntentRunes+50)
+	client, _ := newScriptedRemoteHub(t, activityHost(appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{
+		{Ref: "local:r1", Minutes: activityReadMinutes, LatestIntent: long},
+	}}))
+	cfg := hubcore.WebConfig{
+		RemoteHosts:                []hostreg.Host{{Name: "h1"}},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) { return client, host == "h1" },
+	}
+	got, err := hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", client, true), appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{{Ref: "h1:r1", Minutes: activityReadMinutes, LatestIntent: appwire.Excerpt(long, appwire.MaxIntentRunes)}}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
+	}
+}
+
+// The read carries when a session's tree last moved, for a client comparing it
+// with the session's seen-through mark, and nothing for a session that hasn't
+// moved since its daemon began serving it.
+func TestActivityReadCarriesWhenTheSessionLastMoved(t *testing.T) {
+	moved := silentFor(time.Minute)
+	moved.LastMovedAt = moved.LastActivityAt
+	roster := hubcore.NewRosterWithEntries(
+		liveActivityEntry(1, "01MOVED", appwire.ThreadStatusIdle, moved),
+		liveActivityEntry(2, "01STILL", appwire.ThreadStatusIdle, silentFor(time.Minute)),
+	)
+	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "local:01MOVED", Minutes: activityReadMinutes, LastMovedAt: moved.LastMovedAt},
+		{Ref: "local:01STILL", Minutes: activityReadMinutes},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("read = %+v, want %+v", got.Sessions, want)
+	}
+}
+
+// A remote host's moved time is relayed only when a seen mark could echo it:
+// a negative one, or one further ahead of this hub's clock than seen/set
+// accepts, is dropped while the row stays.
+func TestActivityReadBoundsARemoteHostsMovedTime(t *testing.T) {
+	client, _ := newScriptedRemoteHub(t, activityHost(appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{
+		{Ref: "local:r1", Minutes: activityReadMinutes, LastMovedAt: -5},
+		{Ref: "local:r2", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.Add(48 * time.Hour).UnixMilli()},
+		{Ref: "local:r3", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.UnixMilli()},
+	}}))
+	cfg := hubcore.WebConfig{
+		RemoteHosts:                []hostreg.Host{{Name: "h1"}},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) { return client, host == "h1" },
+	}
+	got, err := hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", client, true), appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "h1:r1", Minutes: activityReadMinutes},
+		{Ref: "h1:r2", Minutes: activityReadMinutes},
+		{Ref: "h1:r3", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.UnixMilli()},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
 	}
 }

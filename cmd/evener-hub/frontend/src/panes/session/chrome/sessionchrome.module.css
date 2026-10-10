@@ -1,13 +1,14 @@
 /* One quiet status-bar row with exactly two direct children:
  *
- *   .body  - cadence slot + StatusRow + GoalControl's chip. Owns compression
- *            through inline-size container queries when the pane narrows.
+ *   .body  - cadence slot + StatusRow. Owns compression through inline-size
+ *            container queries when the pane narrows.
  *   .right - Details/Tasks/Jobs triggers + the session "⋯" menu. A
  *            flex:none sibling of a row that never wraps.
  *
  * The split exists because the flat-sibling layout it replaced let the
- * menu overflow onto a line of its own: with StatusRow, the goal chip and
- * .right as direct items of a flex-wrap:wrap row, .right was the item the
+ * menu overflow onto a line of its own: with StatusRow, the goal chip
+ * (since deleted) and .right as direct items of a flex-wrap:wrap row,
+ * .right was the item the
  * wrap pushed down whole whenever the status facts plus the triggers
  * exceeded the chrome width - growing the footer by a full row just to
  * hold the "⋯" (and reflowing the pane every time a long model name, a
@@ -25,7 +26,7 @@
 }
 
 /* Composer placement is the same single-owner status/actions run without the
- * footer-only cadence and goal. Its StatusRow stays inside a .body sibling of
+ * footer-only cadence. Its StatusRow stays inside a .body sibling of
  * the non-shrinking menu trigger, so the existing meter/percent thresholds
  * measure only the space actually available to status content. */
 .inline {

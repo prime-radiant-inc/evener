@@ -435,17 +435,12 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
-// kata zq7g: shell/rail/RailRow.module.css tints a signal row's gloss text
-// with its own state family (working/needs-you/failed - see RailRow.tsx's
-// ACTIVITY_FAMILY_CLASS) so the rail's "waiting on you" signal is no longer
-// carried by a 6px dot alone. RailRow.module.css is a shell stylesheet, not a
-// widget (it lives under shell/rail/, not widgets/<name>/), so it can never
-// match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
-// extended - this is a deliberate, exact-path exception, the same shape as
-// the dockview-theme.css naming exception above, scoped to this one file so
-// a same-named stylesheet elsewhere can't ride along on it. (The rail's
-// signal hues live with the row content in RailRow.module.css; Rail.module.
-// css itself carries none.)
+// shell/SessionStatusIndicator.module.css renders the session-list and cascade
+// needs-you and broken glyphs with their semantic families; running uses a
+// neutral grey ring. shell/rail/RailRow.module.css uses the same families for
+// context-card status text. Both are shell stylesheets, so they cannot match
+// WIDGET_STYLESHEET_RE. Exact-path exceptions keep same-named stylesheets
+// elsewhere from inheriting permission to use semantic colors.
 //
 // kata 3h80: panes/session/transcript/tools/subagentmodule.module.css earns
 // the same exception for the same structural reason - it lives under
@@ -494,6 +489,15 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // specs/2026-08-09-task-list-ui-design.md): position already marks the
 // latest note, the hue is a glyph-level accent, and all panel text stays
 // on the ink scale.
+//
+// zoom-activity-surfaces PR 1: shell/activitybar/activitybar.module.css earns
+// the same exception for the same structural reason - it lives under
+// shell/activitybar/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its semantic reaches are the row glyphs' state
+// hues (.glyphAlive/.glyphAttention/.glyphDanger): the sidebar's agent and
+// job rows carry the same working/needs-you/failed glyph grammar
+// RailRow.module.css established for the rail's own activity rows - the hue
+// IS the state signal, and all text stays on the ink scale.
 //
 // reviewed-ux-fixes fix 1: panes/session/transcript/tools/sandboxescalation.
 // module.css earns the same exception for the same structural reason - it
@@ -565,6 +569,7 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // keybindings.module.css's .rowError and marketplacesPlugins.module.css's
 // .sheetError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
+  "shell/SessionStatusIndicator.module.css",
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
   "panes/session/chrome/notespanel.module.css",
@@ -587,6 +592,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
   "panes/settings/sections/hosts.module.css",
   "panes/session/transcript/entityref.module.css",
+  "shell/activitybar/activitybar.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -605,6 +611,18 @@ test("the RailRow.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
+});
+
+test("the SessionStatusIndicator.module.css semantic-var exception is scoped to its exact path", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/SessionStatusIndicator.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/SessionStatusIndicator.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/SessionStatusIndicator.module.css")).toBe(false);
+});
+
+test("the activitybar.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/activitybar/activitybar.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/activitybar.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/activitybar.module.css")).toBe(false);
 });
 
 test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

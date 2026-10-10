@@ -180,6 +180,23 @@ it("lets go when the connection drops before the interrupt lands", async () => {
 	await runtime.stop();
 });
 
+it("keeps a Stop whose read fence fails: the interrupt is already durable, and the fence failure is logged, not thrown", async () => {
+	const { runtime, client, stops } = setup();
+	client.on("turn/interrupt", applied);
+	const fault = new Error("storage fault");
+	const fence = vi.spyOn(runtime, "reconcileAuthoritativeRead").mockRejectedValue(fault);
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await expect(stops.stop(client, "ref-1")).resolves.toBe("stopped");
+		expect(fence).toHaveBeenCalled();
+		expect(logged).toHaveBeenCalledWith(expect.stringContaining("read fence failed"), fault);
+	} finally {
+		fence.mockRestore();
+		logged.mockRestore();
+	}
+	await runtime.stop();
+});
+
 it("sends one interrupt for two Stops at once", async () => {
 	const { runtime, client, stops } = setup();
 	client.on("turn/interrupt", applied);
@@ -200,7 +217,33 @@ it("dispose lets go of every Stop still being delivered and refuses new ones", a
 	await runtime.stop();
 });
 
+it("sends a held Stop's interrupt once while its guard passes (phase 6 ruling 18)", async () => {
+	const { runtime, client, stops } = setup("active", { instanceId: "instance-1", activeTurnId: "turn-2" });
+	client.on("turn/interrupt", applied);
+	const seen: unknown[] = [];
+	expect(
+		await stops.stop(client, "ref-1", (thread) => {
+			seen.push(thread.activeTurnId);
+			return true;
+		}),
+	).toBe("stopped");
+	await vi.waitFor(() => expect(calls(client, "turn/interrupt")).toHaveLength(1));
+	expect(seen).toEqual(["turn-2"]);
+	await runtime.stop();
+});
+
+it("drops a held Stop whose guard fails: nothing sent, and nothing left registered", async () => {
+	const { runtime, client, stops, targetKey } = setup();
+	expect(await stops.stop(client, "ref-1", () => false)).toBe("dropped");
+	expect(calls(client, "turn/interrupt")).toEqual([]);
+	expect(stops.stopping("ref-1")).toBe(false);
+	expect(unregistered(runtime, client)).toBe(true);
+	expect((await runtime.read(targetKey)).outbox).toEqual([]);
+	await runtime.stop();
+});
+
 it("says in the toast what a Stop from the Board did", () => {
+	expect(stopToast("dropped", "Build docs")).toBe("The turn you stopped ended before you were back online");
 	expect(stopToast("stopped", "Build docs")).toBe("Stopped");
 	expect(stopToast("notWorking", "Build docs")).toBe("Nothing to stop: its turn had already ended.");
 	expect(stopToast("unavailable", "Build docs")).toBe("Couldn't stop “Build docs”. Open it to stop it there.");

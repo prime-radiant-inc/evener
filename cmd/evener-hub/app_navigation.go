@@ -35,10 +35,10 @@ func navigationReadWithFields(ctx context.Context, server *appserver.Server, nav
 	if err := ctx.Err(); err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	if params.RepresentationVersion != 2 {
+	if params.RepresentationVersion != 3 {
 		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
 	}
-	result, err := navigation.readV2(ctx, key, params.Base)
+	result, err := navigation.readV3(ctx, key, params.Base)
 	if err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
@@ -102,16 +102,9 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 		if err := rejectNavigationReadFields(params, fields, "catalog"); err != nil {
 			return navigationResourceKey{}, err
 		}
-		var kind navigationResourceKind
-		switch params.Catalog {
-		case "projects":
-			kind = navigationResourceProjects
-		case "archived_projects":
-			kind = navigationResourceArchivedProjects
-		case "test_runs":
-			kind = navigationResourceTestRuns
-		default:
-			return navigationResourceKey{}, fmt.Errorf("invalid catalog %q", params.Catalog)
+		kind, err := parseNavigationCatalog(params.Catalog)
+		if err != nil {
+			return navigationResourceKey{}, err
 		}
 		offset, limit, err := navigationReadPage(params, maxNavigationCatalogRows)
 		if err != nil {
@@ -119,18 +112,26 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 		}
 		return navigationResourceKey{Kind: kind, Offset: offset, Limit: limit}, nil
 	case "project":
-		if err := rejectNavigationReadFields(params, fields, "projectKey"); err != nil {
+		if err := rejectNavigationReadFields(params, fields, "projectKey", "catalog"); err != nil {
 			return navigationResourceKey{}, err
 		}
 		if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
 			return navigationResourceKey{}, err
 		}
-		return navigationResourceKey{Kind: navigationResourceProject, ProjectKey: params.ProjectKey}, nil
+		catalog, err := parseOptionalNavigationCatalog(params.Catalog)
+		if err != nil {
+			return navigationResourceKey{}, err
+		}
+		return navigationResourceKey{Kind: navigationResourceProject, ProjectKey: params.ProjectKey, Catalog: catalog}, nil
 	case "project_page":
-		if err := rejectNavigationReadFields(params, fields, "projectKey", "tier"); err != nil {
+		if err := rejectNavigationReadFields(params, fields, "projectKey", "tier", "catalog"); err != nil {
 			return navigationResourceKey{}, err
 		}
 		if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
+			return navigationResourceKey{}, err
+		}
+		catalog, err := parseOptionalNavigationCatalog(params.Catalog)
+		if err != nil {
 			return navigationResourceKey{}, err
 		}
 		if params.Tier != "current" && params.Tier != "recent" && params.Tier != "archived" {
@@ -140,7 +141,7 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 		if err != nil {
 			return navigationResourceKey{}, err
 		}
-		return navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: params.ProjectKey, Tier: params.Tier, Offset: offset, Limit: limit}, nil
+		return navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: params.ProjectKey, Catalog: catalog, Tier: params.Tier, Offset: offset, Limit: limit}, nil
 	case "location":
 		if err := rejectNavigationReadFields(params, fields, "ref"); err != nil {
 			return navigationResourceKey{}, err
@@ -236,6 +237,29 @@ func navigationReadResourceIsPaged(resource string) bool {
 	}
 }
 
+// parseNavigationCatalog maps a wire catalog name to its resource kind.
+func parseNavigationCatalog(name string) (navigationResourceKind, error) {
+	switch name {
+	case "projects":
+		return navigationResourceProjects, nil
+	case "archived_projects":
+		return navigationResourceArchivedProjects, nil
+	case "test_runs":
+		return navigationResourceTestRuns, nil
+	default:
+		return "", fmt.Errorf("invalid catalog %q", name)
+	}
+}
+
+// parseOptionalNavigationCatalog is parseNavigationCatalog for a read that may
+// leave the catalog out (the zero kind).
+func parseOptionalNavigationCatalog(name string) (navigationResourceKind, error) {
+	if name == "" {
+		return "", nil
+	}
+	return parseNavigationCatalog(name)
+}
+
 func navigationReadPage(params appwire.NavigationReadParams, maximum uint32) (uint32, uint32, error) {
 	offset := uint32(0)
 	if params.Offset != nil {
@@ -262,4 +286,21 @@ func navigationReadError(server *appserver.Server, err error) error {
 	}
 	server.Logf("navigation read failed: %v", err)
 	return appwire.InternalError("navigation read failed")
+}
+
+func registerArchivedListHandler(server *appserver.Server, navigation *NavigationService) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerArchivedList, func(ctx context.Context, params appwire.ArchivedListParams) (appwire.ArchivedListResponse, error) {
+		if navigation == nil {
+			return appwire.ArchivedListResponse{}, appwire.Unavailable("navigation unavailable")
+		}
+		request, err := parseNavigationArchivedListParams(params)
+		if err != nil {
+			return appwire.ArchivedListResponse{}, appwire.InvalidParams(err.Error())
+		}
+		response, err := navigation.ArchivedList(ctx, request)
+		if err != nil {
+			return appwire.ArchivedListResponse{}, navigationReadError(server, err)
+		}
+		return response, nil
+	})
 }

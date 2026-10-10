@@ -22,7 +22,7 @@ import { type CadenceState, StatusDot } from "../widgets";
 import styles from "./PaneTab.module.css";
 import type { PanePanelParams } from "./workspace";
 
-// The three states worth spending a dot on, mirroring shell/rail/RailRow.tsx's
+// The three states worth spending a dot on, mirroring shell/SessionStatusIndicator.tsx's
 // own SIGNAL_STATES: a session is working, needs a human, or failed. idle/
 // ended stay dot-less - a quiet tab needs no glyph asserting that.
 const DOT_STATES: ReadonlySet<CadenceState> = new Set(["working", "needs-you", "failed"]);

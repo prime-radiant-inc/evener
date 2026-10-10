@@ -1,6 +1,9 @@
+import { acquireSessionActivity } from "./sessionActivity";
+import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
+  CachedSessionRecord,
   ConnectionState,
   InitializeResponse,
   MethodName,
@@ -19,20 +22,29 @@ import type {
   TurnStartResponse,
 } from "@evener/appwire-client";
 import {
+  AppwireClient,
+  acquireThreadSubscription,
   applyNotification,
   ClientNotReadyError,
   errorKind,
   hydrateThread,
   notificationTargetsThread,
   RequestTimeoutError,
+  type ThreadSubscriptionLease,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBVersionChangeEvent } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  pendingTurnEntries,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
@@ -44,28 +56,53 @@ import {
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
+import { IDBUpgradeError } from "./idbConnection";
 import { MutationDispatcher } from "./mutationDispatcher";
+import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
+import {
+  blockedUpgradeRequest,
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  neverSettlingRequest,
+} from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
+  discardRecoveryMutation,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
+  hasBlockedUnknown,
+  hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
+  notifyReadyForMutationDispatch,
   putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeOnlyLocalDispatchable,
+  resumeOnlyLocalModel,
   resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
+  sendResumesLocalModel,
   setMutationStorageForTests,
+  setSessionCacheAdapterForTests,
   subscribeMutationPersistence,
   threadRoutingIndexesForTests,
   threadsStore,
   useThreadsStore,
 } from "./threads";
+
+const establishedMemberships: ThreadSubscriptionLease[] = [];
+async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
+  fake.on("thread/read", () => readResponse(ref));
+  const lease = acquireThreadSubscription(fake, ref);
+  establishedMemberships.push(lease);
+  await lease.ensure();
+  fake.calls.length = 0;
+}
 
 // flushUntil drains microtask turns until `done()` reports true (or a bounded
 // number of turns elapse, so a genuine hang fails fast instead of silently).
@@ -73,6 +110,68 @@ import {
 // because the two test files share no test-utils module.
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+}
+
+// flushMicrotasks drains a bounded number of microtask turns without waiting on
+// any condition - for a caller that only wants pending continuations to run
+// before its next assertion. (A predicate that is never true would cost at most
+// the same 20 hops; this makes that intent explicit rather than reading as a
+// wait on the impossible.)
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
+}
+
+// A storage failure on the outbox's read path: while armed, every per-ref
+// listOutbox read rejects - by default with the adapter's watchdog error, the
+// same shape a never-answering IndexedDB open produces. The bound real read
+// is returned so a test can still inspect rows while the fault is armed.
+function wedgeOutboxReads(
+  storage: MutationOutboxIndexedDB,
+  storageError: () => unknown = () => new MutationStorageTimeoutError(),
+) {
+  let armed = false;
+  const readOutbox = storage.listOutbox.bind(storage);
+  vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+    if (armed && ref) throw storageError();
+    return readOutbox(ref);
+  });
+  return {
+    arm: () => {
+      armed = true;
+    },
+    lift: () => {
+      armed = false;
+    },
+    readOutbox,
+  };
+}
+
+// Parks the ref's reconcile read forever: its listOutbox never settles, so
+// the ref sits in pendingMutationReconciliations until the test ends. The
+// store registers the pending entry before awaiting the read, so the probe
+// turning true means the fence is already visible to currentDispatchClient.
+function parkRefReconcileRead(storage: MutationOutboxIndexedDB, ref: string) {
+  let readOpened = false;
+  const listOutbox = storage.listOutbox.bind(storage);
+  vi.spyOn(storage, "listOutbox").mockImplementation((parkedRef?: string) => {
+    if (parkedRef === ref) {
+      readOpened = true;
+      return new Promise<never>(() => {});
+    }
+    return listOutbox(parkedRef);
+  });
+  return {
+    opened: () => readOpened,
+  };
+}
+
+// The durable write cannot be made: every enqueue attempt rejects with the
+// adapter's watchdog error, the wedge shape the retry ladder retries before
+// the send fallback answers it.
+function timeOutDurableEnqueues(storage: MutationOutboxIndexedDB): void {
+  storage.enqueueIntent = async () => {
+    throw new MutationStorageTimeoutError();
+  };
 }
 
 function nextHandledRequest<M extends MethodName>(
@@ -335,6 +434,27 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
+// The load seam's lookup runs before a cold read is armed, and this suite's
+// deferred-read fixtures flush microtasks only — a real IndexedDB lookup
+// settles on macrotasks, which would shift every fixture's read past its
+// flush window. This suite never tests the cache (threads.sessionCache
+// .test.ts does), so its beforeEach swaps in an adapter whose lookups miss
+// synchronously: the cold path keeps today's microtask arming timing exactly.
+class MissCacheAdapter extends SessionCacheIndexedDB {
+  override get(_ref: string, _now: number): Promise<undefined> {
+    return Promise.resolve(undefined);
+  }
+  // The write seam (Task 6) fires debounced writes through this same adapter
+  // whenever a publication passes its fire-time gates. The connection gate
+  // already refuses them here — the sync-miss get above never opens the
+  // adapter — but the shim says "no storage" outright rather than relying on
+  // that, so no fixture in this suite can ever write a record or leave one
+  // behind in the shared fake database.
+  override put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
+    return Promise.resolve({ outcome: "failed" });
+  }
+}
+
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
   for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
@@ -378,6 +498,10 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // The store-wide resume-only predicate reads the pending-turns projection
+  // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
+  // rows a prior test left before this one hydrates.
+  resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
@@ -389,9 +513,11 @@ beforeEach(async () => {
     };
   });
   await deleteMutationDatabase();
+  setSessionCacheAdapterForTests(new MissCacheAdapter());
 });
 
 afterEach(() => {
+  for (const lease of establishedMemberships.splice(0)) lease.release();
   cleanup();
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
@@ -1474,6 +1600,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a thread resync supersedes an initial same-epoch open hydration", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
 
@@ -1508,6 +1635,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("an initial open hydration rejection follows its same-epoch resync replacement", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -1553,6 +1681,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("an open lifecycle follows a newest resync after its failed predecessor already cleared ownership", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -1606,6 +1735,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a published newest open resync survives later superseded rejections", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -2327,6 +2457,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
 
@@ -2366,6 +2497,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a retired ensure rejection does not consume a replacement lifecycle claim", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -3856,9 +3988,7 @@ describe("reconnect resubscribe", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
 
     reconnectRead.resolve?.(authoritativeSnapshot);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.activeTurnId === undefined);
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.activeTurnId).toBeUndefined();
     expect(model?.turns[0]?.status).toBe("completed");
@@ -5173,7 +5303,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const record = await act(async () => {
         const submitted = await threadsStore.getState().setHumanNote("ref_a", "B");
         await firstRequest;
-        await waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
+        // vitest's wait: Testing Library's turns the act environment off while
+        // it polls, and these publishes would then warn inside this act() (#3928).
+        await vi.waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
         return submitted;
       });
       expect(result.current?.text).toBe("B");
@@ -5647,6 +5779,146 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
+  // UI-01: a durable deletion fence is terminal for the ref's hydration
+  // lifecycle. A pane retains its claim, but the hub has proven the ref gone,
+  // so the retry loop must not keep reading an unrecoverable target and the
+  // acquisition promise must settle instead of hanging forever.
+  test("a durably deleted ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    // The acquisition settles rather than awaiting a retry that can never
+    // publish into this owner generation.
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    // Nothing is left to advance: the fence armed no retry.
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
+  // UI-01's cached-model half: a fence that lands after the ref hydrated must
+  // still expose the deletion. The store deliberately keeps the (now stale)
+  // model, so the deleted surface has to be read from deletedRefs rather than
+  // from "no model".
+  test("a deletion fence recorded after hydration exposes the deletion while the cached model remains", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+    await threadsStore.getState().ensureThread("ref_gone");
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_gone")).rejects.toThrow(/deleted/);
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    // The stale model is retained, so the deletion is observable independently
+    // of it, and no retry is armed against the unrecoverable target.
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+  });
+
+  // Control: the terminal deleted path must not swallow ordinary transient
+  // failures - a transport rejection still schedules exactly one retry that
+  // recovers the ref.
+  test("a transient read failure still schedules one retry and recovers", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) throw new Error("transport hiccup");
+      return readResponse("ref_a", { name: "Recovered" });
+    });
+
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(false);
+
+    runScheduledHydrationRetry();
+    await expect(acquisition).resolves.toBeUndefined();
+    await waitFor(() => {
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    });
+    expect(reads).toBe(2);
+  });
+
+  // RoboRev on #3010 (Medium): a fence must retire an already-scheduled retry
+  // immediately, not leave it to fire. Both hydrate paths call
+  // scheduleOwnedHydrationRetry right after recording the fence, and its
+  // deleted branch retires the lifecycle - so the timer is cancelled before the
+  // rejection even propagates.
+  test("a deletion fence cancels an already-scheduled retry immediately and settles the acquisition", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => {
+      throw new Error("transport hiccup");
+    });
+    const acquisition = threadsStore.getState().ensureThread("ref_a");
+    await waitFor(() => {
+      expect(scheduledHydrationRetries).toHaveLength(1);
+    });
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+
+    // The thread is deleted before the retry timer fires: the next read is
+    // fenced, and the live retry must be retired there and then.
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_a", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow(/deleted/);
+
+    // No timer advance: the fence retired the lifecycle synchronously.
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(threadsStore.getState().deletedRefs.has("ref_a")).toBe(true);
+  });
+
+  // RoboRev on #3010 (Low): the watched (subagent/delegate card) path needs the
+  // same terminal coverage as the pane path - a watcher that failed to settle
+  // would hang its caller indefinitely.
+  test("a durably deleted watched ref's hydration is terminal: no retry and a settled acquisition", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    const acquisition = threadsStore.getState().watchThread("local:ref_gone");
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("local:ref_gone")).toBe(true);
+    });
+    await expect(acquisition).resolves.toBeUndefined();
+    expect(reads).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
   // One representative Conflict-mapping test standing in for every
   // thread-level action above - each wraps its client.request in the exact
   // same mapConflict try/catch as send/steer/queue/interrupt (proven
@@ -6046,26 +6318,51 @@ describe("useThreadsStore.listModels", () => {
   });
 });
 
-test.each([false, true])(
-  "a failed enqueue preserves only durable pins (existing mutation: %s)",
-  async (existingMutation) => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await threadsStore.getState().ensureThread("ref_a");
-    fake.on("turn/start", () => new Promise<never>(() => undefined));
-    if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
-    const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
-    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
-      throw new DOMException("storage full", "QuotaExceededError");
-    });
-    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
-    expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
-    threadsStore.getState().releaseThread("ref_a");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
-    await unsubscribed;
-  },
-);
+// A full origin is not a wedge: IndexedDB refuses the write at once with
+// QuotaExceededError. The outbox is local persistence only, so the send still
+// goes out as a plain RPC, exactly as it does through a wedge; the refusal is
+// final, so the ladder does not retry it. Nothing durable pins the ref.
+test("a send whose durable write the browser refuses for quota goes out directly and pins nothing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+  const unsubscribed = nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
+  const add = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await threadsStore.getState().send("ref_a", "sent from a full origin");
+  expect(add).toHaveBeenCalledTimes(1);
+  const sent = fake.calls.filter((call) => call.method === "turn/start");
+  expect(sent, "the send from a full origin never reached the daemon").toHaveLength(1);
+  expect((sent[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+  expect(await storage.listOutbox()).toEqual([]);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  await unsubscribed;
+});
+
+// Behind an undelivered durable send the fallback refuses rather than jump
+// it, and only that earlier durable row keeps the ref pinned.
+test("a refused write behind an undelivered durable send fails and preserves only the durable pin", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await threadsStore.getState().send("ref_a", "already saved");
+  vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+  expect(await storage.listOutbox()).toHaveLength(1);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+});
 
 test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
   const storage = new MutationOutboxIndexedDB();
@@ -6288,11 +6585,7 @@ test("reset retires a ready scan before it can pin refs in the next runtime", as
 });
 
 describe("useThreadsStore.listTasks", () => {
-  // Wire-true shape: TaskListResponse.Data is `any` on the catalog
-  // (appwire/types.go:896-898) - server/server.go's SetTasksFunc doc
-  // comment says the registered function "should return a JSON-serializable
-  // slice (typically []task.Task)"; agent/task/task_store.go:54-74 is that
-  // struct. This fixture mirrors its real JSON field names verbatim.
+  // Fixtures use the task row's persisted snake_case wire fields.
   const TASKS_DATA = [
     { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
     {
@@ -6366,9 +6659,8 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
-  // `any` in appwire/types.go. The replacement jobs-list payload is the
-  // recursive activity tree, while job output stays JobOutputTail. These
+  // JobsListResponse.Data is the legacy untyped recursive activity tree;
+  // JobsOutputResponse.Data is the concrete JobOutputTail. These
   // fixtures mirror the current wire JSON field names verbatim.
   const JOBS_DATA = {
     revision: 5,
@@ -6426,7 +6718,32 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
       branch: {},
     },
   };
-  const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
+  const OUTPUT_DATA = {
+    offsetBytes: 6,
+    bytesReturned: 4,
+    totalBytes: 10,
+    retainedStartBytes: 0,
+    encoding: "utf8",
+    data: "6789",
+  };
+  // The single-job read carries the activity-job shape verbatim (appwire/types.go's
+  // JobActivityJob), including the untruncated command.
+  const JOB_DATA = {
+    jobId: "job_1",
+    ownerSessionId: "sess_root",
+    ownerRef: "ref_a",
+    type: "shell",
+    status: "completed",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "run tests",
+    command: "go test ./... -run Foo -count=1",
+    startedAt: "2026-07-31T12:00:00Z",
+    endedAt: "2026-07-31T12:01:00Z",
+    exitCode: 0,
+    outputBytes: 123,
+  };
 
   test("listJobs sends evener/jobs/list with {ref} and returns the raw data field", async () => {
     const fake = connectFakeClient();
@@ -6463,7 +6780,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     expect(result).toEqual(OUTPUT_DATA);
   });
 
-  test("jobOutput passes beforeBytes and maxBytes through only when positive", async () => {
+  test("jobOutput preserves an explicit zero selector and omits a default page limit", async () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
 
@@ -6473,12 +6790,24 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     const calls = fake.calls.filter((c) => c.method === "evener/jobs/output");
     expect(calls).toHaveLength(2);
     expect(calls[0]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 64, maxBytes: 256 });
-    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 0 });
   });
 
-  test("both throw when no client has been connected yet", async () => {
+  test("jobGet sends evener/jobs/get with {ref, jobId} and returns the raw data field", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/get", () => ({ data: JOB_DATA }));
+
+    const result = await threadsStore.getState().jobGet("ref_a", "job_1");
+
+    const call = fake.calls.find((c) => c.method === "evener/jobs/get");
+    expect(call?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(result).toEqual(JOB_DATA);
+  });
+
+  test("each job read throws when no client has been connected yet", async () => {
     await expect(threadsStore.getState().listJobs("ref_a")).rejects.toThrow(/no client connected/i);
     await expect(threadsStore.getState().jobOutput("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
+    await expect(threadsStore.getState().jobGet("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
   });
 
   // Issue #195's RCA: both are read-only, so they wait out a reconnect (via
@@ -7449,6 +7778,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7503,6 +7833,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a rich watched hydration rejection follows its same-epoch resync replacement", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7550,6 +7881,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a rich watched lifecycle follows a newest resync after its failed predecessor cleared ownership", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7605,6 +7937,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a published newest rich watched resync survives later superseded rejections", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7707,6 +8040,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a concurrent rich watch does not share an in-flight lean hydrate or lose its turns", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const pending: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7800,6 +8134,8 @@ describe("useThreadsStore.watchThread", () => {
     await flushUntil(() => pending.length === 1);
 
     const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    expect(pending).toHaveLength(1); // Rich demand waits for the reconnect membership barrier.
+    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
     await flushUntil(() => pending.length === 2);
     expect(pending.map((request) => request.includeTurns)).toEqual([false, true]);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
@@ -7809,7 +8145,6 @@ describe("useThreadsStore.watchThread", () => {
         turns: [{ id: "turn_reconnect_rich", status: "completed", itemsView: "full", items: [] }],
       }),
     );
-    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
     await rich;
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
@@ -7822,6 +8157,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a new watcher starts a fresh hydrate after the previous lifecycle is released", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const pending: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => pending.push(resolve)));
 
@@ -8535,6 +8871,60 @@ describe("retry-safe mutation outbox integration", () => {
 
     response.reject(new RequestTimeoutError("response lost"));
   });
+
+  test.each([true, false])(
+    "activity and a pending outbox replay share alias membership; release activity first %s",
+    async (activityFirst) => {
+      const ref = "remote:workspace";
+      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-activity-alias" });
+      await storage.enqueueIntent({
+        targetRef: ref,
+        method: "turn/queue",
+        payload: { ref, input: [{ type: "text", text: "retained intent" }] },
+        attachments: [],
+        optimisticDisplay: { text: "retained intent" },
+      });
+      storage.close();
+      const fake = connectFakeClient("connecting");
+      const response = deferred<TurnQueueResponse>();
+      fake.on("thread/read", () => readResponse(ref));
+      fake.on("evener/thread/activity/read", ({ scope }) => activitySummary(ref, scope));
+      fake.on("thread/unsubscribe", () => ({}));
+      fake.on("turn/queue", () => response.promise);
+      const activity = acquireSessionActivity(fake, ref);
+      try {
+        fake.emitReady();
+        await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+        expect(
+          fake.calls.filter(
+            (call) => call.method === "thread/read" && (call.params as { subscribe: boolean }).subscribe,
+          ),
+        ).toHaveLength(1);
+        expect(
+          fake.calls
+            .filter((call) => call.method === "thread/read")
+            .every((call) => (call.params as { ref: string }).ref === ref),
+        ).toBe(true);
+        if (activityFirst) {
+          activity.release();
+          expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+        }
+        response.resolve({ receipt: mutationReceipt("mutation-activity-alias") });
+        const probe = new MutationOutboxIndexedDB();
+        await waitFor(async () => expect(await probe.listTargetRefs()).toEqual([]));
+        probe.close();
+        if (!activityFirst) {
+          expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+          activity.release();
+        }
+        await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1));
+        expect(fake.calls.find((call) => call.method === "thread/unsubscribe")?.params).toEqual({ ref });
+      } finally {
+        activity.release();
+        response.resolve({ receipt: mutationReceipt("mutation-activity-alias") });
+      }
+    },
+  );
 
   test("hydrates a pinned outbox ref before replaying it", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
@@ -9652,15 +10042,209 @@ test("periodic discovery recovers failed compatible reconciliation after storage
     expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
     expect(failures).toBeGreaterThan(1);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// A reconciliation that storage unavailability fails is not a mutation-state
+// fact: the same wedge that fences the durable write also fails the reconcile
+// read. Recording it as a genuine failure would fence the direct-dispatch
+// fallback and strand every send behind a page reload, so a storage-unavailable
+// reconcile records the ref as storage-blocked - the slice the send fallback
+// may admit - while every other failure keeps its old, fencing meaning. A
+// retired connection fails the read at once instead of timing out, and is
+// just as much a storage failure.
+test.each([
+  { failure: "a storage timeout", storageError: () => new MutationStorageTimeoutError() },
+  { failure: "a retired connection", storageError: () => new DOMException("closing", "InvalidStateError") },
+  { failure: "an aborted transaction", storageError: () => new DOMException("aborted", "AbortError") },
+])("a reconciliation that $failure fails records the ref as storage-blocked, not failed", async ({ storageError }) => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-reconcile" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  const wedge = wedgeOutboxReads(storage, storageError);
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await settleCallerContinuations();
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+});
+
+// A genuine reconcile failure must survive a later storage-timeout reconcile:
+// the timeout adds the storage-blocked record but does not supersede the real
+// failure, so the failures fence - and the fallback refusal it carries - hold
+// through the wedge until a successful reconcile clears both.
+test("a storage-timeout reconcile does not erase a genuine reconciliation failure", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await ensureActiveMutationTarget(fake, "ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+
+  // The genuine failure: a blocked shared record or a real reconcile conflict.
+  threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) });
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+
+  timeOutDurableEnqueues(storage);
+  await expect(threadsStore.getState().send("ref_a", "sent while both fences hold")).rejects.toBeInstanceOf(
+    MutationStorageTimeoutError,
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The storage-blocked fence must self-heal, not stick: discovery retries the
+// ref on every pass, and once storage answers the reconcile succeeds, the
+// slice clears, and the durable dispatcher resumes the ref's queued row - so a
+// transient wedge costs a wedge-long dispatch pause, not a reload. The
+// sentinel row parks behind the restart fence while the wedge is armed, so
+// the healthy hydrate can never race its dispatch out first.
+test("periodic discovery recovers a storage-blocked reconciliation after storage returns", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-recovery" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    const wedge = wedgeOutboxReads(storage);
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    // Hydrate behind the restart fence: the healthy reconcile runs, but the
+    // sentinel row stays parked, so no healthy window can dispatch it before
+    // the wedge lands.
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    wedge.arm();
+    status = "idle";
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+    // The sentinel row is still parked: nothing left while the reconcile was
+    // wedged.
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+
+    wedge.lift();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
     expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
   } finally {
     vi.useRealTimers();
   }
+});
+
+// The union clause: a storage-blocked ref with NO durable row is invisible to
+// every row-driven discovery trigger, so only the storage-blocked slice's own
+// membership in the discovery pass can retry its reconcile. Without that
+// clause the slice would stick until a manual refresh or a reload.
+test("periodic discovery retries a storage-blocked ref that has no durable row", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    const wedge = wedgeOutboxReads(storage);
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    wedge.arm();
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+    wedge.lift();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The record-level gate: a storage-blocked ref cannot answer the ordering
+// questions a Retry press asks, so the press refuses and the canceled row
+// stays put until discovery's retry reconciles. The press is otherwise
+// admissible here - idle, authoritative, nothing pending - so the refusal
+// isolates the storage-blocked clause.
+test("a storage-blocked ref refuses a queued record's Retry press", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-storage-blocked-retry";
+  const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const record = await seeder.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  await seeder.cancelUnattempted("ref_a");
+  seeder.close();
+
+  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  const wedge = wedgeOutboxReads(storage);
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await settleCallerContinuations();
+
+  wedge.arm();
+  await threadsStore
+    .getState()
+    .refreshThread("ref_a")
+    .catch(() => undefined);
+  expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+
+  expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+  // The row is untouched: still canceled, and nothing reached the daemon.
+  expect((await wedge.readOutbox("ref_a")).map((row) => row.state)).toEqual(["canceled"]);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
 });
 
 test("periodic discovery recovers reconciliation after the final durable record settles", async () => {
@@ -9705,11 +10289,11 @@ test("periodic discovery recovers reconciliation after the final durable record 
       .refreshThread("ref_a")
       .catch(() => undefined);
     expect(await storage.listTargetRefs()).toEqual([]);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
-    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationFailures.has("ref_a"));
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
   } finally {
     vi.useRealTimers();
@@ -10921,6 +11505,1671 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
   expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
 });
 
+// RoboRev Medium (PR 2862): the fence a Stop arms was set only AFTER the
+// forceStop RPC settled, so the drain window itself - the hub's Stopping > 0,
+// for which sessionActionRecoveryError refuses even turn/start - was unfenced
+// at the store. A send pressed while the stop RPC was still in flight enqueued
+// and dispatched into the hub's refusal, parking the intent in recovery, which
+// is exactly what the fence above exists to keep from happening. The obligation
+// must be armed when the drain begins, not when it ends; the two tests above
+// seed the obligation directly and so could not see this gap.
+test("a Stop in flight arms the recovery fence for the drain window", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "stop-drain" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:draining";
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  const stop = deferred<void>();
+  const requested = nextHandledRequest(fake, "evener/thread/forceStop", () => stop.promise);
+  // Hold the cancellation write open. The drain window begins at the click,
+  // and this is the window BEFORE that write completes - the write is an await,
+  // and the in-flight Stop is not itself a fence, so a send offered here must
+  // still be refused rather than enqueued and dispatched.
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().forceStop(ref);
+    await hold.reached;
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    hold.release();
+    await requested;
+    // Mid-drain: the hub holds Stopping > 0 and refuses even turn/start, so the
+    // store's own admission must refuse the send here rather than dispatch it.
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // The obligation a stale thread refresh could clear mid-drain must not
+    // re-open the fence: the in-flight Stop is its own fence. Clear it exactly
+    // as a superseded hydration would, then press Send again.
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+    // Admission still refuses the send with only stopInFlight standing.
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // Dispatch is fenced for every method while Stopping > 0: turn/interrupt is
+    // exempt at admission but must still never reach the wire here.
+    await threadsStore.getState().interrupt(ref);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
+    stop.resolve();
+    await pending;
+  } finally {
+    hold.release();
+  }
+});
+
+// RoboRev Medium (all three reviewers): the store-wide resume-only predicate
+// must read the delivery-uncertain rows the composer's blockedMutations
+// selector fences on, not merely stopInFlight. A direct caller that bypasses
+// the composer - the palette's slash fallthrough, the ask dock's batch send, a
+// failed turn's Retry - reaches enqueueMutationIntent with no such read, so a
+// blockedUnknown row must keep turn/start refused there exactly as the surfaces
+// render it (the fence-refusal test above).
+test("a local session with a blockedUnknown row takes the Send-resumes face and parks the send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:stopped-uncertain";
+  fake.on("thread/read", (params) =>
+    readResponse(params.ref ?? ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: params.ref ?? ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  // The resume-only shape the hub admits turn/start for, obligation armed.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // A delivery-uncertain row for the ref: exactly the shape the composer's
+  // useBlockedMutationEntries selector fences on. Without the store-level read
+  // the predicate would fold the resume into a send ahead of reconciling it.
+  const uncertain = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  await refreshPendingTurnsProjection(ref);
+  // R09: the delivery-uncertain row no longer keeps Send refused - this shape
+  // is the Send-resumes face. The send is admitted and PARKS (dispatch stays
+  // closed while the obligation stands); the store drives the resume, and while
+  // it is in flight nothing reaches the wire.
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await threadsStore.getState().send(ref, "text");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.method)).toContain("turn/start");
+  // Only turn/start is carved out: every other fenced verb still refuses with
+  // its own message on the new face.
+  await expect(threadsStore.getState().steer(ref, "steer text")).rejects.toThrow(
+    "Steer isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().queue(ref, "queue text")).rejects.toThrow(
+    "Queue isn't available until this session is resumed",
+  );
+});
+
+// Reviewer B finding 3: the recovery-resend branch (a failed turn's Retry,
+// QueueStrip's retry) bypasses the send funnel and would otherwise park on the
+// Send-resumes face with no driver. The resend now runs resumeFencedForSend
+// after its durable write, exactly as the send funnel does.
+test("a recovery resend on a Send-resumes ref parks and drives the resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:resend-fenced";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  const outbox = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const recovery = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  expect(recovery).toBeDefined();
+  if (!recovery) throw new Error("expected the recovery row to be durable");
+  await refreshPendingTurnsProjection(ref);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await resendRecoveryMutation(recovery.clientMutationId, ref, "send", "retry me", []);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The drive is idempotent per ref: a second send landing while the first
+// resume is in flight parks its row and rides the first drive's reconciliation
+// rather than starting a second thread/resume (which AppwireClient would reject
+// anyway). Both rows stay parked while the obligation stands.
+test("a second send while the Send-resumes drive is in flight parks and rides the first resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:drive-idempotent";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  await refreshPendingTurnsProjection(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await Promise.all([threadsStore.getState().send(ref, "one"), threadsStore.getState().send(ref, "two")]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.filter((record) => record.method === "turn/start")).toHaveLength(2);
+});
+
+// The parked rows keep their FIFO order when the resume drains them: the ref's
+// sequence allocations are re-used in the order they were made, so the first
+// pressed message is the first turn/start on the wire.
+test("the parked Send-resumes rows drain in FIFO order after the resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:fifo-rows";
+  let resumed = false;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => (resumed ? idle() : fenced()));
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof idle>>((resolve) => {
+    releaseResume = () => {
+      resumed = true;
+      resolve(idle());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  const texts: string[] = [];
+  fake.on("turn/start", (params) => {
+    const input = params.input as Array<{ text?: string }> | undefined;
+    texts.push(input?.[0]?.text ?? "");
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().send(ref, "one");
+  await threadsStore.getState().send(ref, "two");
+  await flushIndexedDBUntil(() => false);
+  expect(texts).toEqual([]);
+  releaseResume();
+  await flushIndexedDBUntil(() => texts.length >= 2);
+  expect(texts).toEqual(["one", "two"]);
+});
+
+// The admission carve-out is turn/start for the Send-resumes face only. A
+// restartRequired daemon still refuses: Send cannot start it at all, so the
+// pressed row must not park.
+test("a restartRequired local ref still refuses the Send-resumes admission", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:restart-required";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "restartRequired" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  expect(await storage.listOutbox(ref)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The parked Send-resumes row is drained by whichever dispatch trigger releases
+// last: the resume path's own refresh tail, the outbox's resync scan, or a ready
+// discovery. Every trigger re-reads the outbox and re-arms the ref, so the row
+// must reach the wire exactly once: one turn/start total, no matter how many
+// triggers fire around it, and nothing once it is gone.
+test("the parked Send-resumes row drains exactly once across the resume tail, a resync, and a ready discovery", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:exactly-once-tails";
+  let resumed = false;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => (resumed ? idle() : fenced()));
+  // The resume is held so the parked window is the one under test.
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof idle>>((resolve) => {
+    releaseResume = () => {
+      resumed = true;
+      resolve(idle());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await threadsStore.getState().send(ref, "hello");
+  // The row parks while the resume is held: nothing has dispatched.
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(0);
+  // Two more triggers fire while the row is parked: neither may send it.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(0);
+  // Release the resume: its refresh tail reconciles the ref and dispatches once.
+  releaseResume();
+  await flushIndexedDBUntil(() => sends >= 1);
+  expect(sends).toBe(1);
+  // Fire both other triggers again: the row is gone, so neither dispatches a
+  // second send.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(1);
+});
+
+// A send enqueued WHILE an identity-changing resume is in flight rides the same
+// in-flight drive (one resumeThread), so it parks under the superseded ref after
+// the drive's first snapshot. The final re-target pass must move it too, or it
+// strands on the dead ref forever.
+test("a send enqueued during a held identity-changing resume follows the resumed ref", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:late-from";
+  const toRef = "local:late-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toShape = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // Hold the resumed ref's hydration read, so a second send can land while the
+  // drive is between its first snapshot and its final pass.
+  let holdToRead = false;
+  let toReadHeld = false;
+  let releaseToRead!: () => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toShape>>((resolve) => {
+        releaseToRead = () => resolve(toShape());
+      });
+    }
+    return toShape();
+  });
+  let resolveResume!: (response: ReturnType<typeof toShape>) => void;
+  const heldResume = new Promise<ReturnType<typeof toShape>>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/resume", () => heldResume);
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  // First send parks and starts the drive, which is held at the resume RPC.
+  await threadsStore.getState().send(fromRef, "one");
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([]);
+  // Release the resume but hold the resumed ref's hydration read, so the drive
+  // is in flight when the second send lands.
+  holdToRead = true;
+  resolveResume(toShape());
+  await flushIndexedDBUntil(() => toReadHeld);
+  // The first row moved in the drive's first snapshot and drains under the new
+  // ref while the resumed hydration is held.
+  await flushIndexedDBUntil(() => starts.length >= 1);
+  expect(starts).toEqual([toRef]);
+  await threadsStore.getState().send(fromRef, "two");
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([toRef]);
+  // Release the hydration: the final pass moves the late row to the new ref and
+  // both drain there.
+  releaseToRead();
+  await flushIndexedDBUntil(() => starts.length >= 2);
+  expect(starts).toEqual([toRef, toRef]);
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+});
+
+// Two concurrent resume triggers (the notice's Resume press racing a send) share
+// the ONE in-flight drive, so there is exactly one thread/resume and both
+// callers await the same hydration and publication.
+test("two concurrent resumeSession drives share one thread/resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:concurrent-resume";
+  let resolved = false;
+  const shape = () =>
+    readResponse(ref, {
+      status: { type: resolved ? "idle" : "notLoaded" },
+      evener: {
+        ref,
+        capabilities: resolved ? CAPABILITIES : { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: resolved,
+        resumeRequired: !resolved,
+        queue: { revision: resolved ? 1 : 0 },
+      },
+    });
+  fake.on("thread/read", () => shape());
+  let releaseResume!: () => void;
+  const heldResume = new Promise<ReturnType<typeof shape>>((resolve) => {
+    releaseResume = () => {
+      resolved = true;
+      resolve(shape());
+    };
+  });
+  fake.on("thread/resume", () => heldResume);
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  const first = threadsStore.getState().resumeSession(ref);
+  const second = threadsStore.getState().resumeSession(ref);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/resume"));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  releaseResume();
+  await Promise.all([first, second]);
+  // Both callers resolved on the same one drive.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
+// An identity change with ONLY an optimistic row to move (its outbox row already
+// settled to accepted) must still run the per-ref bookkeeping: the resumed ref
+// is pinned and notified, and its projection shows the row. The any-moved
+// condition is what decides this, so a check that only counted outbox rows would
+// leave the optimistic row showing under the dead ref.
+test("an optimistic-only identity change still pins, notifies, and projects under the resumed ref", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:optimistic-from";
+  const toRef = "local:optimistic-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  // Seed an accepted-but-unreflected row: settleReceipt moves it out of the
+  // outbox into the optimistic store, so the retarget finds ONLY optimistic
+  // rows of the old ref.
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/queue",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "accepted" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "accepted" }] },
+  });
+  await storage.settleReceipt(seeded.clientMutationId, "pending");
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+  expect(await storage.listOptimistic(fromRef)).toHaveLength(1);
+  const persisted: string[] = [];
+  const unsubscribe = subscribeMutationPersistence((refs) => persisted.push(...refs));
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+  } finally {
+    unsubscribe();
+  }
+  expect(await storage.listOptimistic(fromRef)).toEqual([]);
+  expect((await storage.listOptimistic(toRef)).map((record) => record.clientMutationId)).toEqual([
+    seeded.clientMutationId,
+  ]);
+  expect(persisted).toContain(toRef);
+  await refreshPendingTurnsProjection(toRef);
+  expect(pendingTurnEntries(toRef)).toHaveLength(1);
+  expect(pendingTurnEntries(fromRef)).toHaveLength(0);
+});
+
+// The superseded ref's projection still holds the rows retargetOutbox moved out
+// of its storage, so the drive must refresh BOTH projections: the destination's
+// shows the rows, and the old ref's re-reads and clears to the honest state.
+test("an identity-changing drive clears the superseded ref's projection", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:projection-from";
+  const toRef = "local:projection-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  // The moved row stays in flight under the destination, so its projection keeps
+  // showing it while we assert the old ref's projection cleared.
+  fake.on("turn/start", () => new Promise<never>(() => {}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  await refreshPendingTurnsProjection(fromRef);
+  expect(pendingTurnEntries(fromRef)).toHaveLength(1);
+  // The drive's persistence notification must name BOTH refs: the destination so
+  // its projection shows the moved row, and the superseded ref so its projection
+  // re-reads and drops the rows retargetOutbox took out of its storage.
+  const persisted: string[] = [];
+  const unsubscribe = subscribeMutationPersistence((refs) => persisted.push(...refs));
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+  } finally {
+    unsubscribe();
+  }
+  expect(persisted).toContain(fromRef);
+  expect(persisted).toContain(toRef);
+  await flushPendingTurnsProjectionForTests();
+  expect(pendingTurnEntries(fromRef)).toHaveLength(0);
+  expect(pendingTurnEntries(toRef)).toHaveLength(1);
+});
+
+// The drain's in-line cap is not a silent exit: a row that arrives after each
+// real pass (up to the cap) is still moved by the scheduled follow-up pass, and
+// every moved row dispatches under the resumed ref.
+test("a row arriving after the drain cap is still moved by the follow-up pass", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:drain-from";
+  const toRef = "local:drain-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  await seedRow("seed");
+  // Stage one more arrival AFTER each real pass, so the third pass still moves a
+  // row and the in-line cap is reached with the work unfinished.
+  let staged = 0;
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    const moved = await realRetarget.call(this, from, to, identity);
+    if (staged < 4) {
+      staged += 1;
+      await seedRow(`late ${staged}`);
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => starts.length >= 5);
+    expect(staged).toBe(4);
+    expect(starts).toEqual([toRef, toRef, toRef, toRef, toRef]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// A row committed inside the CONVERGENCE pass's own read window - the pass that
+// moves nothing and ends the inline loop - must still be moved by the trailing
+// pass, which is now scheduled unconditionally. The probe also pins the ordering
+// the trailing pass relies on: the inline passes run before the drive publishes
+// the resumed identity, and the trailing pass runs after that publication.
+test("a row committed after the inline loop's empty pass is moved by the trailing pass", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:converge-from";
+  const toRef = "local:converge-to";
+  fake.on("thread/read", (params) =>
+    params.ref === toRef
+      ? readResponse(toRef, {
+          status: { type: "idle" },
+          evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+        })
+      : readResponse(fromRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: fromRef,
+            capabilities: { ...CAPABILITIES, send: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+  );
+  fake.on("thread/resume", () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    }),
+  );
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  await seedRow("seed");
+  // Stage after the first two real passes, then stop, so the next pass finds
+  // nothing (the convergence pass); stage the straggler right after that empty
+  // pass, inside its own read window.
+  let realCalls = 0;
+  let stagedAfterEmpty = false;
+  const publishedAtPass: boolean[] = [];
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    publishedAtPass.push(threadsStore.getState().resumedIdentities.has(fromRef));
+    const moved = await realRetarget.call(this, from, to, identity);
+    realCalls += 1;
+    if (realCalls <= 2) {
+      await seedRow(`late ${realCalls}`);
+    } else if (moved.outbox.length === 0 && !stagedAfterEmpty) {
+      stagedAfterEmpty = true;
+      await seedRow("straggler");
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => starts.length >= 4);
+    expect(stagedAfterEmpty).toBe(true);
+    expect(starts).toEqual([toRef, toRef, toRef, toRef]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+    // The inline passes (the first four calls) ran before the publication; the
+    // trailing pass saw it.
+    expect(publishedAtPass.slice(0, 4)).toEqual([false, false, false, false]);
+    expect(publishedAtPass[4]).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// A Stop that lands after the drive's retarget but before the identity fence:
+// the Stop's own durable cancel names the OLD ref, where the row no longer is,
+// so without the swap registration (the Stop site's second cancel) AND the
+// drive's own compensation the UI says canceled while the moved row still
+// delivers under the resumed ref.
+test("a Stop after the retarget cancels the moved row and never sends it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:stop-swap-from";
+  const toRef = "local:stop-swap-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The first toRef read (ensureThread's) arms its restart obligation, so the
+  // moved row's dispatch parks until the held hydration below clears it.
+  let toReads = 0;
+  let holdToRead = false;
+  let toReadHeld = false;
+  let releaseToRead!: () => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    toReads += 1;
+    if (toReads === 1) return toFenced();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toIdle>>((resolve) => {
+        releaseToRead = () => resolve(toIdle());
+      });
+    }
+    return toIdle();
+  });
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  holdToRead = true;
+  const drive = threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => toReadHeld);
+  // The retarget already moved the row to toRef; the Stop lands before the fence
+  // runs, so only the swap registration can reach it.
+  await threadsStore.getState().shutdown(fromRef);
+  await flushIndexedDBUntil(() => false);
+  releaseToRead();
+  await drive;
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+    { id: seeded.clientMutationId, state: "canceled" },
+  ]);
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
+});
+
+// The non-stop asymmetry: a transport/hydration failure after the retarget must
+// NOT cancel the moved rows. They stay preserved and unattempted under the
+// resumed identity, to deliver when it recovers; canceling them there would lose
+// the user's message. Pinned so the failure lands while the moved row is still
+// unattempted - the only state a durable cancel could reach.
+test("a non-stop failure after the retarget preserves the moved rows", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:preserve-from";
+  const toRef = "local:preserve-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The first toRef read (ensureThread's) arms its restart obligation, so the
+  // moved row's dispatch parks under the resumed ref. The held hydration below is
+  // the read that would clear it, and it fails - so the row never dispatches.
+  let toReads = 0;
+  let holdToRead = false;
+  let toReadHeld = false;
+  let rejectToRead!: (error: Error) => void;
+  fake.on("thread/read", (params) => {
+    if (params.ref !== toRef) return fromShape();
+    toReads += 1;
+    if (toReads === 1) return toFenced();
+    if (holdToRead) {
+      holdToRead = false;
+      toReadHeld = true;
+      return new Promise<ReturnType<typeof toIdle>>((_resolve, reject) => {
+        rejectToRead = reject;
+      });
+    }
+    return toIdle();
+  });
+  fake.on("thread/resume", () => toIdle());
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(fromRef)).toBe(true);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "keep me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "keep me" }] },
+  });
+  holdToRead = true;
+  const drive = threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => toReadHeld);
+  rejectToRead(new Error("hydrate failed"));
+  await drive;
+  await flushIndexedDBUntil(() => false);
+  // Not canceled and not sent: the preserved row waits, unattempted, under the
+  // resumed ref.
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(
+    outbox.map((record) => ({ id: record.clientMutationId, state: record.state, attempted: record.attempted })),
+  ).toEqual([{ id: seeded.clientMutationId, state: "submitting", attempted: false }]);
+});
+
+// The swap registration's OWN reach, past the drive: the straggler is staged
+// after the inline loop's empty pass, so only the trailing drain - which runs
+// once the drive has settled and no fence or catch remains - moves it. A Stop
+// during that pass must still cancel the moved row: the trailing drain's
+// registration is the only thing that can reach it.
+test("a Stop during the trailing drain cancels the row the drain moved", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:drain-stop-from";
+  const toRef = "local:drain-stop-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", (params) => (params.ref === toRef ? toIdle() : fromShape()));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  const seedRow = (text: string) =>
+    storage.enqueueIntent({
+      targetRef: fromRef,
+      threadId: `thr_${fromRef}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+  // No row for the drive's first retarget or its inline loop: the loop's first
+  // pass moves nothing and ends it, so the straggler staged right after that
+  // empty pass is moved by the trailing drain alone - after the drive has
+  // published the resumed identity and returned.
+  let realCalls = 0;
+  let stagedAfterEmpty = false;
+  let stopped = false;
+  let stragglerId = "";
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    const published = threadsStore.getState().resumedIdentities.has(fromRef);
+    const moved = await realRetarget.call(this, from, to, identity);
+    realCalls += 1;
+    if (published && moved.outbox.length > 0 && !stopped) {
+      // The drive has settled; nothing but the swap registration can cancel the
+      // row this pass just moved.
+      stopped = true;
+      await threadsStore.getState().shutdown(fromRef);
+    } else if (realCalls === 2 && moved.outbox.length === 0 && !stagedAfterEmpty) {
+      stagedAfterEmpty = true;
+      stragglerId = (await seedRow("straggler")).clientMutationId;
+    }
+    return moved;
+  });
+  try {
+    await threadsStore.getState().resumeSession(fromRef);
+    await flushIndexedDBUntil(() => stopped);
+    await flushIndexedDBUntil(() => false);
+    expect(stopped).toBe(true);
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+      { id: stragglerId, state: "canceled" },
+    ]);
+    expect(await storage.listOutbox(fromRef)).toEqual([]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// The registration carries a per-drive token: two drives can target the SAME
+// (old ref -> resumed ref) pair. inFlightResumes drops the first drive when its
+// promise resolves while its trailing drain still awaits storage, so a second
+// press starts a second drive that registers the same pair and moves a row. The
+// first drive's empty pass must NOT settle the second drive's registration, or a
+// subsequent Stop's sweep finds nothing and the moved row survives.
+test("a stale drain pass does not clear a later drive's swap registration", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:token-from";
+  const toRef = "local:token-to";
+  const fenced = (target: string) =>
+    readResponse(target, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: target,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", (params) => (params.ref === toRef ? fenced(toRef) : fenced(ref)));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  // Hold each drive's TRAILING drain pass. The first hold keeps drive 1's
+  // registration from settling while drive 2 registers the same pair; both
+  // drives only reach the trailing pass after they publish.
+  let realCalls = 0;
+  let firstHeld = false;
+  let secondHeld = false;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    realCalls += 1;
+    if (realCalls === 3) {
+      firstHeld = true;
+      await firstGate;
+    } else if (realCalls === 6) {
+      secondHeld = true;
+      await secondGate;
+    }
+    return realRetarget.call(this, from, to, identity);
+  });
+  try {
+    await threadsStore.getState().resumeSession(ref);
+    await flushIndexedDBUntil(() => firstHeld);
+    const late = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      instanceId: "instance-old",
+      method: "turn/start",
+      payload: { ref, expectedInstanceId: "instance-old", input: [{ type: "text", text: "late" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "late" }] },
+    });
+    await threadsStore.getState().resumeSession(ref);
+    await flushIndexedDBUntil(() => secondHeld);
+    // Both drains are held and drive 2 has moved its row onto the resumed ref.
+    const parked = await storage.listOutbox(toRef);
+    expect(parked.some((record) => record.clientMutationId === late.clientMutationId)).toBe(true);
+    // Release drive 1's empty pass: its settle must leave drive 2's registration
+    // (same pair) in place.
+    releaseFirst();
+    await flushIndexedDBUntil(() => false);
+    await threadsStore.getState().shutdown(ref);
+    await flushIndexedDBUntil(() => false);
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    expect(outbox.find((record) => record.clientMutationId === late.clientMutationId)?.state).toBe("canceled");
+  } finally {
+    releaseFirst();
+    releaseSecond();
+    spy.mockRestore();
+  }
+});
+
+// The harder order of the same property: the resume's OWN post-resume hydration
+// is held open, and the resync tail and a ready discovery each run first. Either
+// may send the parked row; releasing the held refresh afterwards must not send a
+// second. One turn/start total, whatever order the three triggers release in.
+test("the parked Send-resumes row dispatches exactly once when the resync and ready tails release before the resume's own refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const ref = "local:exactly-once-held-refresh";
+  let resumed = false;
+  let holdRefreshRead = false;
+  let refreshReadHeld = false;
+  let releaseRefreshRead!: () => void;
+  const fenced = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idle = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  fake.on("thread/read", () => {
+    if (holdRefreshRead) {
+      holdRefreshRead = false;
+      refreshReadHeld = true;
+      return new Promise<ReturnType<typeof idle>>((resolve) => {
+        releaseRefreshRead = () => resolve(resumed ? idle() : fenced());
+      });
+    }
+    return resumed ? idle() : fenced();
+  });
+  fake.on("thread/resume", () => {
+    resumed = true;
+    // The resume's own refresh hydration is the read the driver issues next;
+    // hold exactly that one.
+    holdRefreshRead = true;
+    return idle();
+  });
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await threadsStore.getState().send(ref, "hello");
+  await flushIndexedDBUntil(() => refreshReadHeld);
+  // The parked row cannot dispatch while the resume's refresh is held.
+  expect(sends).toBe(0);
+  // The other two tails release first; each may clear the obligation and send.
+  fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => sends >= 1);
+  expect(sends).toBe(1);
+  // Release the held refresh: its reconciliation must not send a second.
+  releaseRefreshRead();
+  await flushIndexedDBUntil(() => false);
+  expect(sends).toBe(1);
+});
+
+// RoboRev Medium: the dispatch gate exempted EVERY queued mutation once the
+// session matched resumeOnlyLocalModel, but the hub's carve-out admits only
+// turn/start. A queued turn/queue/turn/steer/turn/interrupt from before the
+// fence would therefore dispatch into a refusal and be parked in recovery
+// instead of staying parked in the outbox. The dispatcher now names the
+// record's method (dispatcher.ts's method-aware lookup), and the gate exempts
+// only turn/start, so a queued non-send method never reaches the wire.
+test("a merely-resumable local session's queued non-send method stays parked", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "queued-method" });
+  await storage.enqueueIntent({
+    targetRef: "local:stopped-queued",
+    threadId: "thr_local:stopped-queued",
+    method: "turn/queue",
+    payload: { ref: "local:stopped-queued", input: [{ type: "text", text: "queued before recovery" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued before recovery" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse("local:stopped-queued", {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: "local:stopped-queued",
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let queued = 0;
+  fake.on("turn/queue", (params) => {
+    queued += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // Hydrate the pinned ref (arming the obligation), then let the recovery
+  // window's dispatch pass run: the turn/queue must never leave the outbox.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  await flushIndexedDBUntil(() => false);
+  expect(threadsStore.getState().restartBlockingObligations.has("local:stopped-queued")).toBe(true);
+  expect(queued).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// RoboRev Medium: the queued-non-send fence was order-blind at dispatch. The
+// admission question ("may a NEW send be minted behind this queue?") and the
+// dispatch question ("is this exact head record admissible?") genuinely
+// differ: hasQueuedNonSend answers the first, but at dispatch the head record
+// may itself be the turn/start with nothing ahead of it. With this outbox
+// [turn/start, turn/queue] on a foldable ref, the head turn/start must
+// dispatch; before the fix the whole ref was refused before the gate could
+// inspect the head's method, so the session could neither resume nor drain.
+// The queued turn/queue behind it stays parked, and a NEW send is still
+// refused at admission while that queued row stands.
+test("a merely-resumable local session's head turn/start dispatches ahead of a queued non-send", async () => {
+  const ref = "local:head-send-queued-tail";
+  const storage = new MutationOutboxIndexedDB();
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "resume and send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "resume and send" },
+  });
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued behind the send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued behind the send" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  let queuedCalls = 0;
+  fake.on("turn/queue", (params) => {
+    queuedCalls += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // The head turn/start dispatches even though a non-send row sits behind it.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toBe(1);
+  // The queued non-send row behind it stays parked: the hub admits only
+  // turn/start under the resume-only carve-out.
+  expect(queuedCalls).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  await refreshPendingTurnsProjection(ref);
+  // The two readings the fix splits: the head record is dispatchable even
+  // though a new send behind it is not (the queued row still stands).
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  expect(resumeOnlyLocalDispatchable(ref)).toBe(true);
+  // R09: a NEW send minted behind the queued non-send row is still not the fold,
+  // but it is the Send-resumes face: admitted and parked while the store drives
+  // the resume. Before R09 this admission refused it outright.
+  expect(sendResumesLocalModel(ref)).toBe(true);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  await threadsStore.getState().send(ref, "another");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
+// Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at
+// the target's FIFO ahead of a folded send (the dispatcher is strictly FIFO per
+// target and the hub's carve-out admits only turn/start), so the store-wide
+// predicate must not fold while one stands. The read answers from the durable
+// outbox, and a queued turn/start - the send itself - does not block it.
+test("the queued-non-send projection read blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Not ready: no dispatch pass runs, so a "submitting" row stays queued and
+  // the read observes exactly the durable state under test.
+  connectFakeClient("connecting");
+
+  const ref = "local:queued-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued turn/start is the send itself: it does not make the ref unfolable.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued non-send row does: folding a send behind it would starve the send.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// The merely-resumable snapshot the three tests below drive: ResumeRequired with
+// no send capability, and optionally the hub's foldable bit. A ref that is not
+// foldable is the one whose fence a status fold must NOT clear - the hub stamped
+// ResumeRequired for a cause whose turn/start it still refuses.
+function resumeOnlySnapshot(ref: string, foldable = false): ThreadReadResponse {
+  return readResponse(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...CAPABILITIES, send: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      ...(foldable ? { resumeOnlyFoldable: true } : {}),
+      queue: { revision: 0 },
+    },
+  });
+}
+
+// RoboRev Medium (round 13): the off-shut-down clear ends only the
+// merely-resumable window a genuinely resume-only snapshot opened. A ref that
+// was never resume-only - a restart-required daemon, an unconfirmed force-stop
+// exit, connection recovery - carries no resumeOnlyFoldable bit, so a status
+// fold off the shut-down set is not evidence the hub resumed it. Clearing that
+// ref's recovery obligation would admit mutations the hub still rejects.
+test("an off-shut-down status fold keeps the fence for a ref that was never resume-only", async () => {
+  const ref = "local:not-resume-only-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    // No foldable bit: the hub stamped ResumeRequired for a cause whose
+    // turn/start it still refuses, so this fold is no evidence it resumed.
+    resumeOnlySnapshot(ref),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+  // The bit was never set, so the fold is not evidence the hub resumed it: the
+  // recovery obligation the snapshot armed must survive.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+});
+
+// RoboRev Medium (round 13): a status fold must not drop a fence an in-flight
+// Stop this page started owns. The Stop's group holds the obligation on purpose
+// until its RPC settles, and the hub holds Stopping > 0 (refusing even
+// turn/start) for that whole window, so the off-shut-down clear skips it.
+test("an off-shut-down status fold leaves a stop-owned fence armed", async () => {
+  const ref = "local:stop-owned-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => resumeOnlySnapshot(ref, true));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  const stop = deferred<void>();
+  fake.on("evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  await flushUntil(() => threadsStore.getState().stoppingRefs.has(ref));
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  // The stop group still owns the obligation: the fold did not drop its fence.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+
+  stop.resolve();
+  await pending;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 13): the resumeOnlyFoldable bit is the PREVIOUS
+// connection's answer (applyThreadResumeRequirement stamped it on a snapshot
+// that connection produced). After the connection generation changes the hub's
+// connection-recovery fence can refuse a folded turn/start on the new
+// connection, so the retained bit must not fold a send. A connection change
+// invalidates it (invalidateHeldHistoriesForReconnect, the store's single
+// reconnect hook), and only a fresh read on the current connection re-stamps
+// folding.
+test("a connection generation change invalidates a retained resumeOnlyFoldable bit", async () => {
+  const ref = "local:resume-only-reconnect";
+  const snapshot = (threadRef: string) => resumeOnlySnapshot(threadRef, true);
+  const first = connectFakeClient("ready");
+  first.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  await threadsStore.getState().ensureThread(ref);
+  await flushPendingTurnsProjectionForTests();
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // The connection that produced the snapshot is replaced by a fresh one.
+  const next = new FakeClient("ready");
+  next.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  connectionStore.getState().connect(next);
+
+  // Synchronously after the rewire the outgoing connection's bit is gone: no
+  // folded send is admitted from a bit the previous connection produced.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+
+  // A fresh read on the current connection, still carrying the bit, restores
+  // folding.
+  await waitFor(() => expect(resumeOnlyLocalModel(ref)).toBe(true));
+});
+
+// RoboRev Medium (round 8): an ATTEMPTED non-send row survives a force stop
+// (cancelUnattemptedMutations keeps attempted rows) and still parks at the
+// target's FIFO. The method-aware dispatcher parks any non-turn/start head of a
+// resume-only ref BEFORE markAttempted, so such a row is both attempted and
+// still "submitting". The queued-non-send read must count it as blocking: a new
+// send is otherwise admitted, enqueued behind the parked head, and never
+// dispatched - while the Resume notice/button is already removed for a
+// resume-only session, leaving no UI path out.
+test("an attempted non-send row blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:attempted-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "parked non-send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  // Dispatched once, then parked by the resume-only fence: attempted, still
+  // "submitting", never settled.
+  expect(await storage.markAttempted(row.clientMutationId)).toBe(true);
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 8): the projection answers from an empty outbox until
+// its first durable read resolves. Failing closed only on a never-installed
+// projection left an installed-but-not-yet-refreshed one reporting "no
+// uncertainty", so a resume could fold ahead of an unreconciled blockedUnknown
+// row in the window between hydration and the refresh completing. Readiness is
+// per ref: an unloaded ref is not foldable, and folds only once its own durable
+// outbox has loaded.
+test("a foldable ref whose outbox has not loaded is not foldable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:not-yet-loaded";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  // The module's own subscription started a refresh for this ref, but it has
+  // not resolved: the projection holds no durable rows for it yet, so the
+  // predicate must fail closed rather than fold a resume ahead of a row it has
+  // not read.
+  // The two direct reads the store-wide predicate folds in fail closed too
+  // (the readiness seam), before any durable read has loaded.
+  expect(hasBlockedUnknown(ref)).toBe(true);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  // Only once the durable outbox has loaded is the ref foldable.
+  await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
+  expect(hasBlockedUnknown(ref)).toBe(false);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+});
+
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
   const fake = new FakeClient();
   connectionStore.setState({ client: fake, state: "ready" });
@@ -11056,6 +13305,187 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
 });
 
+// RoboRev Medium (PR 2862, round 9): stoppingRefs is a boolean Set with no
+// ownership or generation. Two overlapping forceStop calls therefore cleared
+// the fence when the FIRST completed, while the second stop was still
+// draining - and a stale thread/read refresh could then clear the restart
+// obligation too, reopening mutation dispatch for the rest of the stop
+// window. A per-ref in-flight count keeps the fence armed until the last stop
+// returns, whichever order they finish in.
+test("an earlier forceStop completion cannot clear the fence while a second stop still drains", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const stops = [deferred<void>(), deferred<void>()];
+  let stopCalls = 0;
+  fake.on("evener/thread/forceStop", () => stops[stopCalls++]?.promise ?? Promise.resolve());
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // The first stop resolves while the second is still in flight.
+  stops[0]?.resolve();
+  await first;
+  // The fence must stay armed: the second stop has not returned.
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // A stale refresh clearing the obligation must not reopen dispatch while
+  // the second stop still drains: stoppingRefs is the independent fence.
+  threadsStore.setState((state) => {
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    restartBlockingObligations.delete(ref);
+    return { restartBlockingObligations };
+  });
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // Only when the last stop returns does the fence clear.
+  stops[1]?.resolve();
+  await second;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Low (PR 2862, round 9, a regression from the round's own Stop
+// fence): the restart obligation forceStop arms is restored only when the
+// cancellation write fails. A requireClient() lookup failure (offline, no
+// ready client) throws before any signal reaches a daemon, so the armed
+// obligation must be restored exactly as the storage failure does - and
+// refreshThread must NOT be kicked, since while offline it cannot clear the
+// fence and only leaves a live session's recovery fenced.
+test("forceStop with no connected client leaves the obligation untouched and does not refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("forceStop with no connected client restores a pre-existing obligation exactly", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+// RoboRev Medium (PR 2862, round 11): each forceStop captured the obligation
+// map's value and restored it unconditionally when it aborted, so overlapping
+// stops clobbered the one shared recovery obligation. The obligation now lives
+// in the refcounted stop group: captured once on the 0 -> 1 transition and
+// restored on the 1 -> 0 transition only when no member ever signalled a
+// daemon. An aborting member never writes back its own captured value over an
+// entry another still-active member owns.
+test("an aborted forceStop cannot clear the obligation a second stop owns", async () => {
+  // Only the first stop's cancellation write fails; the second proceeds.
+  let cancels = 0;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation === "cancelUnattempted" && ++cancels === 1) throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("storage unavailable");
+  await second;
+
+  // The second stop reached the daemon, so the fence must stay armed even
+  // though the aborted first stop's restore ran while it was still draining.
+  expect(forceStopRpc).toHaveBeenCalledTimes(1);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 12): endStop restored the group's captured obligation
+// on the no-signal 1 -> 0 transition unconditionally, so an aborting stop
+// deleted (or overwrote) a recovery fence a CONCURRENT hydration had armed
+// during its cancellation await. publishAndReconcileThreadHydration arms a fresh
+// Symbol() on any read reporting resumeRequired, and such a read can resolve
+// while the stop is still in that await; the abort then clobbered the newer
+// fence, leaving the client unfenced while the hub still held ResumeRequired.
+// The group now owns the exact symbol it armed and settles the ref's obligation
+// only while the ref still holds it, so the hydration's fence survives.
+test("an aborted forceStop leaves a concurrently armed recovery fence in place", async () => {
+  const ref = "local:abort-hydration";
+  const freshFence = Symbol("hydrated-fence");
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation !== "cancelUnattempted") return;
+      // A hydration arms a fresh obligation while the stop's cancellation write
+      // is still in flight (publishAndReconcileThreadHydration's own setState),
+      // then the write fails and aborts the stop before it signals a daemon.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, freshFence),
+      }));
+      throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("storage unavailable");
+
+  // The aborted stop must not delete the hydration's newer fence.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(freshFence);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+test("two overlapping aborted forceStops leave the obligation at its pre-group value", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+
+  // Neither stop reached a daemon: the obligation is exactly the pre-group
+  // value, never a sibling stop's arming symbol.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(threadsStore.getState().restartBlockingObligations.size).toBe(1);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("two overlapping aborted forceStops leave no stale obligation when none existed", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+});
+
 test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {
   const stale = new FakeClient("connecting");
   const current = new FakeClient("ready");
@@ -11174,6 +13604,9 @@ describe("Stop cancellation as durable outbox state", () => {
 
     await expect(threadsStore.getState().forceStop("ref_a")).rejects.toThrow("storage unavailable");
     expect(forceStopRpc).not.toHaveBeenCalled();
+    // The abort touched no daemon and leaves the user free to retry: the fence
+    // armed with the drain is restored to its captured state (none was armed).
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
 
     failWrites = false;
     await threadsStore.getState().forceStop("ref_a");
@@ -11519,6 +13952,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // during this tab's connection setup leaves its bump where the enqueue's own
   // comparison reads it.
   test("an enqueue whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    // "Drop the live connection" uses the adapter's own versionchange path:
+    // dispatch versionchange on the live connection and the adapter's retire
+    // listener drops it (the adapter stays usable).
+    const indexedDB = globalThis.indexedDB;
+    const open = indexedDB.open.bind(indexedDB);
+    const connections: IDBDatabase[] = [];
+    vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      const request = open(name, version);
+      request.addEventListener("success", () => connections.push(request.result));
+      return request;
+    });
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
@@ -11533,7 +13977,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The cold tab: THIS store's connection is closed at the click, so the
     // capture read must reopen it before it can run — the finding's opening
     // wait, however long the engine takes to satisfy it.
-    storage.close();
+    connections[connections.length - 1]?.dispatchEvent(new IDBVersionChangeEvent("versionchange"));
+    await nextMacrotask();
 
     // The click. queue()'s synchronous prefix must request the capture read —
     // and with it the reopen — before yielding to the event loop.
@@ -11619,14 +14064,18 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
   // RoboRev PR #1873 Low, the fresh review: the click-time capture was
   // awaited OUTSIDE the try whose catch disarms the ref when the durable
-  // enqueue fails, so a capture that rejects - a stalled read's
-  // MutationStorageTimeoutError, a VersionError from a versionchange, a
-  // retired connection - aborted the submission AND left the ref armed in
-  // dispatchableMutationRefs with no durable row behind it. A later
-  // discovery pass that names the ref then ran its dispatch work anyway,
-  // for a ref with nothing of its own to dispatch. The failed capture must
-  // be treated exactly like the failed enqueue it precedes: disarmed on the
-  // way out.
+  // enqueue fails, so a capture that rejects - a VersionError from a
+  // versionchange, a retired connection - aborted the submission AND left the
+  // ref armed in dispatchableMutationRefs with no durable row behind it. A
+  // later discovery pass that names the ref then ran its dispatch work anyway,
+  // for a ref with nothing of its own to dispatch. The failed capture must be
+  // treated exactly like the failed enqueue it precedes: disarmed on the way
+  // out.
+  //
+  // A composer send whose capture fails does not abort: it takes the
+  // direct-dispatch fallback (pinned by "a send whose storage never answers
+  // still reaches the daemon" and the quota variant). A Promote has no
+  // fallback, so it keeps the abort-and-disarm contract this test pins.
   test("a rejecting stop-epoch capture aborts the submission without leaving the ref's dispatch bookkeeping armed", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -11644,15 +14093,15 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       await storage.cancelUnattempted("ref_a");
       expect((await storage.getOutbox(seeded.clientMutationId))?.state).toBe("canceled");
 
-      // The capture fails the way a stalled or retired connection does.
+      // The capture fails the way a versionchange or a retired connection does.
       storage.readStopEpoch = async () => {
-        throw new MutationStorageTimeoutError();
+        throw new Error("Mutation outbox upgrade is blocked");
       };
 
       // The submission aborts and leaves nothing durable behind.
-      await expect(threadsStore.getState().queue("ref_a", "past a stalled capture")).rejects.toThrow(
-        MutationStorageTimeoutError,
-      );
+      await expect(
+        threadsStore.getState().promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "past a failed capture" }),
+      ).rejects.toThrow("Mutation outbox upgrade is blocked");
       expect((await storage.listOutbox("ref_a")).filter((record) => record.state === "submitting")).toEqual([]);
 
       // A later discovery pass names the ref (its canceled row). What the
@@ -11671,7 +14120,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
         await vi.advanceTimersByTimeAsync(2000);
         await flushUntilArrived("the discovery pass to name the ref", () => discoveredRefA);
         expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
-        // And nothing reached the wire for the ref's dead row either.
+        // And nothing reached the wire for the failed click or the ref's dead row.
+        expect(fake.calls.filter((call) => call.method === "turn/promoteQueuedAsSteer")).toEqual([]);
         expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
       } finally {
         dispatchTargets.mockRestore();
@@ -11680,6 +14130,2316 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The durable outbox exists so a send survives a reload, but it must not
+  // become a hard dependency: when storage never answers, the send goes out as
+  // a plain RPC (like setModel/rename/compact) with no durable row, instead of
+  // failing closed after the 10s watchdog and dispatching nothing. This is the
+  // adapter's open never answering - the wedged shape PR #2983 stopped
+  // aborting upgrades for.
+  test("a send whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on working storage first: the mutation runtime is created and its
+    // connection opened here, so it is the SEND that meets the wedge below
+    // rather than the hydration's own reconciliation reads.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Retire the connection, then make the factory's next open never answer:
+    // storage is wedged for every call the send makes.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "sent while storage is wedged");
+      // The click-time capture's open never answers; the watchdog is the only
+      // thing that ends it, and the send must survive it.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the wedged send never reached the daemon").toBeDefined();
+      const sentParams = sent?.params as { clientMutationId?: string; input?: unknown } | undefined;
+      expect(sentParams?.clientMutationId).toBeTruthy();
+      expect(sentParams?.input).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // No durable row was written for it: the durable store holds nothing.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // An outbox schema bug fails the send closed: it never goes out without its
+  // durable row (see IDBUpgradeError).
+  test("a send whose outbox schema upgrade throws stays fail-closed", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // The send's open lands on a database that needs its schema again, and the
+    // upgrade's first store creation throws.
+    storage.close();
+    await deleteMutationDatabase();
+    const schemaBug = new TypeError("schema bug");
+    vi.spyOn(IDBDatabase.prototype, "createObjectStore").mockImplementation(() => {
+      throw schemaBug;
+    });
+    const send = threadsStore.getState().send("ref_a", "not sent past a schema bug");
+    await expect(send).rejects.toBeInstanceOf(IDBUpgradeError);
+    await expect(send).rejects.toMatchObject({ cause: schemaBug });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  });
+
+  // A browser that denies this origin IndexedDB (a privacy mode, blocked site
+  // data) refuses the open with SecurityError: a storage policy, not a verdict
+  // on the send, so the send goes out directly.
+  test("a send whose browser denies IndexedDB access still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-denied";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      if (name === databaseName) throw new DOMException("The operation is insecure.", "SecurityError");
+      return open(name, version);
+    });
+    try {
+      await threadsStore.getState().send("ref_a", "sent while storage is denied");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  // Another tab still holding the previous schema blocks the outbox's upgrade,
+  // and the adapter refuses the open at once rather than wait. That refusal is
+  // the storage's, not the send's, so the send goes out directly.
+  test("a send whose outbox upgrade another tab blocks still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-blocked";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? blockedUpgradeRequest() : open(name, version),
+      );
+    try {
+      await threadsStore.getState().send("ref_a", "sent while the upgrade is blocked");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  // The fallback send's RPC is its only transport, so a failure on the wire
+  // must be retried rather than surfaced. The id is minted once and reused
+  // across the attempts, so a reply lost after the daemon applied the mutation
+  // is deduped on the retry instead of applied twice. The composer stays in its
+  // "Sending" state through the ladder (the submission wraps the whole enqueue).
+  test("a fallback send retries a wire failure under the same clientMutationId", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-retry";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // The first attempt fails on the wire; the second answers.
+    let attempts = 0;
+    fake.on("turn/start", (params) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("FakeClient: socket closed");
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+
+    // Retire the connection, then make the factory's next open never answer:
+    // storage is wedged for every call the send makes.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "retried while storage is wedged");
+      // The capture's open never answers; the watchdog ends it and the send
+      // takes the direct-dispatch fallback, whose first RPC then fails. The
+      // client stays ready, so the retry is issued at once.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent).toHaveLength(2);
+      const ids = sent.map((call) => (call.params as { clientMutationId?: string }).clientMutationId);
+      expect(ids[0]).toBeTruthy();
+      expect(ids[1]).toBe(ids[0]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A settled WireError is the daemon's own answer, so it is surfaced at once:
+  // an identical retry cannot succeed. Pinned by call count - a retry would
+  // show a second turn/start.
+  test("a fallback send does not retry a settled WireError refusal", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-conflict";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("turn is not active", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(ConflictError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The wedge this fallback exists for also fails the ref's reconciliation
+  // (its outbox read never answers), and that failure must not undo the
+  // fallback: a storage-blocked ref is admissible to the send, whose own
+  // in-memory ordering guards carry the ordering responsibility, while the
+  // durable dispatcher stays fenced until discovery's retry reconciles. Before
+  // the split, the reconcile failure fenced the fallback and every send died
+  // with the watchdog's error until a page reload.
+  test("a send survives a reconciliation that the same storage wedge failed", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-reconcile-wedge";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Retire the connection and wedge every open on the outbox database, then
+    // fail a reconciliation through it: its outbox read meets the same
+    // never-answering open the send's capture will.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      void threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      // The reconcile read's watchdog is the only thing that ends it.
+      await vi.advanceTimersByTimeAsync(11_000);
+      await flushMicrotasks();
+
+      const send = threadsStore.getState().send("ref_a", "sent while the wedge also failed the reconcile");
+      // The assertion attaches before the advance: the watchdog's rejection
+      // fires inside it, across an Immediate boundary, and a promise still
+      // without a handler there would surface as an unhandled rejection.
+      const delivered = expect(send).resolves.toBeUndefined();
+      // The click-time capture's open never answers either; the watchdog ends
+      // it and the send must survive both the wedge and the reconcile failure
+      // it caused.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await delivered;
+
+      // The ref really was recorded storage-blocked by the failed reconcile -
+      // the premise this journey exists for, not an incidental pass.
+      expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toBeDefined();
+      const sentParams = sent?.params as { clientMutationId?: string; input?: unknown } | undefined;
+      expect(sentParams?.clientMutationId).toBeTruthy();
+      expect(sentParams?.input).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // The wedged enqueue left no durable row, and neither did the fallback.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A wedged reconcile read never settles, so the ref can sit in
+  // pendingMutationReconciliations for exactly as long as the wedge holds -
+  // the one fence the storage-blocked admission must also skip, or the fallback
+  // would strand the send for the whole wedge anyway. The enqueue is wedged to
+  // the same storage timeout the fallback answers; the record path is pinned
+  // by the storage-blocked classification test, so the slice is set by hand
+  // here to isolate this fence.
+  test("a send survives a reconciliation still pending on the same storage wedge", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Hold a reconcile open forever: its outbox read never settles.
+    const parked = parkRefReconcileRead(storage, "ref_a");
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntil(parked.opened);
+    threadsStore.setState({ mutationReconciliationStorageBlocked: new Set(["ref_a"]) });
+
+    // The durable write cannot be made: both enqueue attempts time out. The
+    // capture read is a different storage method and still succeeds, so the
+    // fallback decision is the only seam this exercises.
+    timeOutDurableEnqueues(storage);
+
+    const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
+    await send;
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // A body that throws inside the adapter's real transaction rejects with its
+  // own error, never the AbortError its abort then reports: here the
+  // cross-store id guard meets a recovery record another ref holds. That is a
+  // record judgment, so the send fails closed with nothing sent.
+  test("a send whose write the outbox's own id guard refuses stays fail-closed", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-shared" });
+    const refused = await storage.enqueueIntent({
+      targetRef: "ref_b",
+      method: "turn/queue",
+      payload: { ref: "ref_b", input: [{ type: "text", text: "refused elsewhere" }] },
+      attachments: [],
+      optimisticDisplay: { text: "refused elsewhere" },
+    });
+    await storage.transferToRecovery(refused.clientMutationId, "rejected", "turn is not active");
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    await expect(threadsStore.getState().send("ref_a", "collides with the recovery record")).rejects.toThrow(
+      "clientMutationId is already active",
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  });
+
+  // A retired connection (or a VersionError) refuses the write at once and
+  // fails the reconcile's read the same way, so a reconcile still pending for
+  // the ref sits on the same broken storage: the fallback classifies it and
+  // sends rather than meet the pending fence.
+  test("a send survives a reconciliation still pending when the browser refuses its write", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    const parked = parkRefReconcileRead(storage, "ref_a");
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntilArrived("the reconcile read to park", parked.opened);
+    storage.enqueueIntent = async () => {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    };
+
+    await threadsStore.getState().send("ref_a", "sent while the connection is retired");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  });
+
+  // The fallback answers storage failures only. An error that is not one - the
+  // outbox's own validation, or a payload IndexedDB cannot clone - keeps the
+  // ordinary submission failure, with nothing sent.
+  test.each([
+    { failure: "a validation error", error: () => new Error("targetRef is required") },
+    { failure: "an uncloneable payload", error: () => new DOMException("could not be cloned", "DataCloneError") },
+    { failure: "a missing object store", error: () => new DOMException("no such store", "NotFoundError") },
+    {
+      failure: "a request on a finished transaction",
+      error: () => new DOMException("transaction finished", "TransactionInactiveError"),
+    },
+  ])("a send whose durable write fails with $failure stays fail-closed", async ({ error }) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const thrown = error();
+    storage.enqueueIntent = async () => {
+      throw thrown;
+    };
+    await expect(threadsStore.getState().send("ref_a", "not a storage failure")).rejects.toBe(thrown);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  });
+
+  // The classification must not wait for the reconcile's own watchdog. The
+  // send's fallback decision can land while the wedged reconcile is still
+  // pending - before the reconcile rejected and recorded the ref - and a send
+  // pressed in that window must still deliver: the fallback's own storage
+  // timeout is the same wedge, so it classifies the pending read itself
+  // instead of meeting the pending fence and dying with the wedge's error.
+  // (This replaces an earlier test that hand-injected the slice; a real
+  // MutationStorageTimeoutError IS storage unavailability, so "healthy
+  // pending reconcile plus a timeout-class enqueue failure" is not a state
+  // production can reach. The pending fence still holds every non-fallback
+  // caller, and a reconcile that later succeeds clears the record.)
+  test("a send survives a wedged reconcile that has not yet rejected", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-pending-wedge";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      // The send goes out first: its capture read parks on the wedge, and the
+      // shared open's watchdog ends it at +10s.
+      const send = threadsStore.getState().send("ref_a", "sent while the wedged reconcile is still pending");
+      const delivered = expect(send).resolves.toBeUndefined();
+      // Two seconds later a refresh starts a reconcile whose read parks on
+      // the same wedged open; its rejection - and the record it would write -
+      // lands only when the shared watchdog fires.
+      await vi.advanceTimersByTimeAsync(2_000);
+      void threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(9_000);
+      await delivered;
+
+      const sent = fake.calls.find((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toBeDefined();
+      // The reconcile's own rejection still records the ref afterwards - the
+      // attempt was never stolen from it.
+      expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // The fence this split must not widen: a GENUINE reconciliation failure (a
+  // mutation-state conflict, not a storage timeout) still refuses the fallback,
+  // exactly as before the storage-blocked slice existed.
+  test("a genuine reconciliation failure still refuses the send fallback", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) });
+    timeOutDurableEnqueues(storage);
+
+    await expect(threadsStore.getState().send("ref_a", "sent while a real reconcile failed")).rejects.toBeInstanceOf(
+      MutationStorageTimeoutError,
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  });
+
+  // The guard is `err instanceof WireError`, i.e. EVERY settled WireError -
+  // not only a conflict. A non-conflict refusal is surfaced unchanged, not
+  // mapped to ConflictError and not retried.
+  test("a fallback send does not retry a non-conflict WireError", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-invalid-params";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("bad params", -32602);
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(WireError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The ready wait is bounded: a client stuck "reconnecting" past the bound
+  // surfaces the original transport error after the single attempt, never
+  // hanging the send.
+  test("a fallback send surfaces when the ready wait times out", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-ready-timeout";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      fake.emitStateChange("reconnecting");
+      throw new Error("AppwireClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "stuck reconnecting while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("AppwireClient: socket closed");
+      // Reach the fallback; its first RPC fails with the client reconnecting.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The ready wait elapses with no reconnect: the original error surfaces.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The retry is bounded: a transport failure on both attempts is surfaced
+  // after exactly two, with nothing else left to try.
+  test("a fallback send surfaces a transport failure after both attempts", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-exhausted";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new Error("FakeClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "failed twice while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("FakeClient: socket closed");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A dropped connection leaves the client "reconnecting", where a retry fired
+  // now only meets the client's own synchronous not-ready rejection. The retry
+  // must wait out the reconnect and then go out under the same id.
+  test("a fallback send waits out a reconnect before retrying", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-reconnect";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // The first attempt drops the socket and fails; the second answers.
+    let attempts = 0;
+    fake.on("turn/start", (params) => {
+      attempts += 1;
+      if (attempts === 1) {
+        fake.emitStateChange("reconnecting");
+        throw new Error("AppwireClient: socket closed");
+      }
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "reconnecting while storage is wedged");
+      // Reach the fallback; its first RPC fails with the client reconnecting,
+      // so the send now waits for readiness instead of issuing a doomed retry.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The reconnect lands: the retry goes out under the same id and settles.
+      fake.emitReady();
+      await send;
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent).toHaveLength(2);
+      const ids = sent.map((call) => (call.params as { clientMutationId?: string }).clientMutationId);
+      expect(ids[1]).toBe(ids[0]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A manual retry (ConnectionBanner) can swap in a fresh, already-ready client
+  // while the failed one is closed. The fallback must retry against that
+  // replacement rather than surface, under the same id.
+  test("a fallback send retries against a replacement client after the failed one closes", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-rewire";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const replacement = new FakeClient("ready");
+    // The first attempt dies with the client closed and a healthy replacement
+    // wired in the same window, exactly what requireClient()'s rewire path is
+    // for.
+    fake.on("turn/start", () => {
+      fake.close();
+      connectionStore.getState().connect(replacement);
+      throw new Error("AppwireClient: socket closed");
+    });
+    replacement.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "rewired while storage is wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      const failedCalls = fake.calls.filter((call) => call.method === "turn/start");
+      const retriedCalls = replacement.calls.filter((call) => call.method === "turn/start");
+      expect(failedCalls).toHaveLength(1);
+      expect(retriedCalls).toHaveLength(1);
+      const firstId = (failedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      const retriedId = (retriedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      expect(firstId).toBeTruthy();
+      expect(retriedId).toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A manual retry can wire a replacement that is itself still connecting. A
+  // healthy destination exists, so the fallback must wait for it to become
+  // ready rather than surface.
+  test("a fallback send waits out a wired-but-connecting replacement client", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-connecting";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const replacement = new FakeClient("connecting");
+    fake.on("turn/start", () => {
+      fake.close();
+      connectionStore.getState().connect(replacement);
+      throw new Error("AppwireClient: socket closed");
+    });
+    replacement.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "replaced while storage is wedged");
+      // Reach the fallback; its first RPC dies with a connecting replacement
+      // wired, so the send now waits for that replacement to be ready.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The replacement connects: the retry goes out under the same id.
+      replacement.emitStateChange("ready");
+      await send;
+      const failedCalls = fake.calls.filter((call) => call.method === "turn/start");
+      const retriedCalls = replacement.calls.filter((call) => call.method === "turn/start");
+      expect(retriedCalls).toHaveLength(1);
+      const firstId = (failedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      const retriedId = (retriedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      expect(firstId).toBeTruthy();
+      expect(retriedId).toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // The fallback is not the ref's durable FIFO head. The dispatcher sends only
+  // nextDispatchable (the ref's head) and re-checks its admission before every
+  // attempt; the fallback must re-earn that admission and must not jump an
+  // earlier undelivered durable send. Here an earlier queued message A is stuck
+  // ("submitting") because no turn/queue handler ever delivers it, so it stays
+  // durable and pins the ref; B's enqueue then times out. B must fail closed
+  // rather than reach the daemon ahead of A.
+  test("a fallback send refuses to jump an earlier undelivered durable send for the ref", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-fallback-order";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // A enqueues durably and, with no handler, is attempted but never
+    // delivered: it stays a "submitting" row and keeps the ref pinned.
+    await threadsStore.getState().queue("ref_a", "A");
+    expect((await storage.listOutbox("ref_a")).filter((record) => record.method === "turn/queue")).toHaveLength(1);
+
+    // Storage wedges for B's enqueue.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const sendB = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(sendB).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // B must not reach the daemon ahead of A's undelivered queued send.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // A is untouched by B's refusal.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect((await reader.listOutbox("ref_a")).filter((record) => record.method === "turn/queue")).toHaveLength(1);
+    reader.close();
+  });
+
+  // pinnedMutationRefs is populated only after a durable enqueue COMMITS, so a
+  // concurrent enqueue for the same ref whose write is still in flight is
+  // invisible to it - and the fallback would dispatch past it. A's capture
+  // succeeds and its enqueue hangs in flight (arms the ref, never commits, so
+  // never pins); B's enqueue times out. B must refuse, not jump A.
+  test("a fallback send refuses to jump a concurrent in-flight durable send for the ref", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let enqueueAttempts = 0;
+    storage.enqueueIntent = async () => {
+      enqueueAttempts += 1;
+      // A: in flight forever (never commits, never pins). B and its retry:
+      // a storage timeout.
+      if (enqueueAttempts === 1) return new Promise<never>(() => {});
+      throw new MutationStorageTimeoutError();
+    };
+
+    // A's click arms the ref; let it reach its (hanging) enqueue.
+    const sendA = threadsStore.getState().send("ref_a", "A");
+    await flushUntil(() => enqueueAttempts === 1);
+
+    const sendB = threadsStore.getState().send("ref_a", "B");
+    await expect(sendB).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+    // B must not reach the daemon ahead of A's in-flight durable send.
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // A never settled; drop the handle so nothing is awaited.
+    void sendA;
+  });
+
+  // Round-7 Medium: the ordering guard must ask "does the ref have non-canceled
+  // durable work", not "is the ref retained". A canceled row leaves only on
+  // Retry or the thread going away, so it keeps the retention pin forever, and
+  // a guard reading that pin would refuse the fallback for a ref with nothing
+  // left to deliver - re-breaking the whole feature.
+  test("a canceled queued row does not block the send fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-canceled-fallback";
+    // Seed the canceled row on its own adapter, so the store's runtime never
+    // arms or dispatches it. cancelUnattempted is the Stop's own cancellation
+    // write (forceStop/shutdown's, and the one interruptAndCancel makes in the
+    // interrupt's transaction).
+    const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await seeder.enqueueIntent(queueIntent("queued"));
+    await seeder.cancelUnattempted("ref_a");
+    seeder.close();
+
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrating reconciles the store's view: the ref is retained (a canceled
+    // row) but has no undelivered work.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    await threadsStore.getState().refreshThread("ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    expect((await storage.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+
+    // Storage wedges; the send must still reach the daemon.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-12 Medium: the commit-time re-arm must read the hydrated-replay gate
+  // FRESH, not from a value captured before the write. A hydration pending at
+  // the commit keeps the gate closed, so the commit must NOT re-arm - re-arming
+  // there would dispatch during the replay. (A successful commit still re-arms
+  // when the gate is open - the code path is shared; this pins the closed case,
+  // whose pre-write capture is the stale one.)
+  test("a hydration pending at the commit keeps the dispatch gate closed", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-commit-rearm";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const realEnqueue = storage.enqueueIntent.bind(storage);
+    let releaseWrite: () => void = () => {};
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let writeReached: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      writeReached = resolve;
+    });
+    let held = false;
+    storage.enqueueIntent = async (intent, barrier) => {
+      if (!held) {
+        held = true;
+        writeReached();
+        await writeGate;
+      }
+      return realEnqueue(intent, barrier);
+    };
+
+    const send = threadsStore.getState().send("ref_a", "hello");
+    // Probe the arm at the commit's OWN persistence notify, which runs before
+    // its discovery could re-arm via a hydration. A listener consulting the
+    // store's scheduler here sees the arm only if the commit re-armed it.
+    const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+    let armedAtCommit: boolean | undefined;
+    const unsubscribe = subscribeMutationPersistence((refs, committed) => {
+      if (committed === undefined || !refs.includes("ref_a")) return;
+      const before = dispatchTargets.mock.calls.length;
+      notifyReadyForMutationDispatch(["ref_a"]);
+      armedAtCommit = dispatchTargets.mock.calls.length > before;
+    });
+    try {
+      await reached;
+      // A refresh during the in-flight write leaves a hydration in flight across
+      // the commit (its own resync is still reconciling), so the replay gate is
+      // closed at the commit.
+      await threadsStore.getState().refreshThread("ref_a");
+      await nextMacrotask();
+      releaseWrite();
+      await send;
+    } finally {
+      unsubscribe();
+      dispatchTargets.mockRestore();
+    }
+    // The gate was closed, so the commit did NOT re-arm.
+    expect(armedAtCommit).toBe(false);
+  });
+
+  // Round-8 Medium/Low: the arm is shared state, so ownership cannot clean it
+  // up - two clicks can each decline to remove it (A because B was still in
+  // flight, B because B never added it) and leave it stale with no durable row.
+  // The disarm is quiescence-based instead. A ref whose only row is canceled
+  // keeps the outbox non-empty (so no refresh clears the arm) but has no
+  // undelivered work; after A and B both fail, the arm must be gone.
+  test("the dispatch arm does not survive two concurrent failures on a ref with only a canceled row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-arm-quiescence";
+    const seeder = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await seeder.enqueueIntent(queueIntent("queued"));
+    await seeder.cancelUnattempted("ref_a");
+    seeder.close();
+
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    await threadsStore.getState().refreshThread("ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let aAttempts = 0;
+    let releaseA: () => void = () => {};
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let bStarted: () => void = () => {};
+    const bReached = new Promise<void>((resolve) => {
+      bStarted = resolve;
+    });
+    let releaseB: () => void = () => {};
+    const bGate = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    storage.enqueueIntent = async (intent) => {
+      if (intent.composerText === "A") {
+        aAttempts += 1;
+        if (aAttempts === 1) await aGate;
+      } else {
+        bStarted();
+        await bGate;
+      }
+      throw new MutationStorageTimeoutError();
+    };
+
+    // A clicks first and arms the ref; B clicks while A is in flight.
+    const sendA = threadsStore.getState().send("ref_a", "A");
+    await flushUntil(() => aAttempts === 1);
+    const sendB = threadsStore.getState().send("ref_a", "B");
+    await bReached;
+    releaseA();
+    // A's fallback refuses (B is in flight), so it must leave the arm.
+    await expect(sendA).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+    // B's fallback runs with nothing in flight and no undelivered work: it
+    // dispatches directly and must drop the now-idle arm.
+    releaseB();
+    await sendB;
+    // The ref is idle, so the arm must be gone: the scheduler acts only on
+    // armed refs, and it must not be asked to dispatch ref_a.
+    const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+    try {
+      notifyReadyForMutationDispatch(["ref_a"]);
+      expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
+    } finally {
+      dispatchTargets.mockRestore();
+    }
+    // B reached the daemon (A refused).
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+
+  // Round-7 Medium: the fallback re-runs the dispatcher's own admission, so a
+  // fenced ref must fail closed rather than reach the daemon directly. A
+  // restart-blocked thread is the fence this drives most directly:
+  // currentDispatchClient refuses it (threads.ts's restartRequired clause and
+  // the restart obligation).
+  test("a send on a restart-blocked ref fails closed instead of falling back", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-restart-fenced";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        status: { type: "restartRequired" },
+        evener: { ref: params.ref ?? "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "blocked");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      // The fenced ref must not reach the daemon.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-12 Low: the fallback set has four send verbs; behavior was pinned for
+  // turn/start and turn/steer, so pin the rest. Queue and Drain go out as plain
+  // RPCs with no durable row; Promote stays fail-closed.
+  test("a Queue whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-queue-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const queue = threadsStore.getState().queue("ref_a", "queued while wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await queue;
+      const sent = fake.calls.find((call) => call.method === "turn/queue");
+      expect(sent, "the wedged queue never reached the daemon").toBeDefined();
+      expect((sent?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a Drain whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-drain-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const drain = threadsStore.getState().drainAsSteer("ref_a", "drain while wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await drain;
+      const sent = fake.calls.find((call) => call.method === "turn/drainAsSteer");
+      expect(sent, "the wedged drain never reached the daemon").toBeDefined();
+      expect((sent?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a Promote whose storage never answers stays fail-closed with no wire call", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-promote-fenced";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const promote = threadsStore
+        .getState()
+        .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "promote while wedged" });
+      const rejection = expect(promote).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/promoteQueuedAsSteer")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-13 Medium: the guard must not disable the fallback for a row that is
+  // already delivered. A settled send's clearing refresh is fire-and-forget and
+  // swallows failures, so a row left counted with nothing undelivered behind it
+  // would refuse every later send for the ref once storage wedges - the outage
+  // this feature exists to cover. The cause is the settle: it resolves the
+  // row's id itself, so nothing here depends on this failed read clearing
+  // anything (the direct test of that cause is "a settle re-enables the
+  // fallback with no read involved" below).
+  test("a settled send whose clearing refresh cannot read does not block the fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stale-marker";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // After the durable send's row settles, make the clearing refresh's read
+    // fail. listOptimistic is the refresh's read that the dispatcher's own
+    // nextDispatchable does not use, so the drain still ends cleanly and the
+    // refresh runs - then fails.
+    let settled = false;
+    const realSettle = storage.settleReceipt.bind(storage);
+    storage.settleReceipt = async (id, state) => {
+      const result = await realSettle(id, state);
+      settled = true;
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return result;
+    };
+
+    await threadsStore.getState().send("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !settled; i += 1) await probe.listOutbox();
+    // Let the after-drain clearing refresh run (and fail).
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+    probe.close();
+    expect(settled).toBe(true);
+
+    // Storage wedges; the next send must still take the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      // A's settled dispatch plus B's fallback dispatch.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Follow-up Medium: the round-13 clearing refresh deleted the marker
+  // unconditionally. A durable commit that lands while the refresh's read is
+  // in flight writes the marker and bumps the generation, so the stale
+  // rejection must not erase the commit's own marker - that would let a later
+  // send jump the commit's undelivered row. The catch is guarded exactly as
+  // the success path guards its write-back. Here A's settled send leaves its
+  // clearing refresh parked on its read (generation captured before the read);
+  // B commits mid-read; the parked read then rejects (the wedge), and C must
+  // still refuse rather than jump B.
+  test("a stale refresh failure does not clobber a marker a commit wrote mid-read", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stale-read-clobber";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // Park the refresh's OWN read after A's row settles, then let it reject on
+    // demand - an explicit wrapper, not a stack sniff. listOptimistic is also
+    // read by the projection (readMutationPersistence), which the settle's own
+    // notify kicks off first, and by the dispatcher's listTargetRefs. The
+    // pins refresh reads only the outbox and optimistic stores, while the
+    // projection's read also reads recovery rows, so arming the hold on the
+    // recovery read lets the projection's optimistic read through and parks
+    // the refresh's.
+    let rejectRead: (error: unknown) => void = () => {};
+    const readGate = new Promise<never>((_resolve, reject) => {
+      rejectRead = reject;
+    });
+    let readReached: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      readReached = resolve;
+    });
+    const realListOptimistic = storage.listOptimistic.bind(storage);
+    let holdNextRead = false;
+    storage.listOptimistic = (ref) => {
+      if (holdNextRead) {
+        holdNextRead = false;
+        readReached();
+        return readGate;
+      }
+      return realListOptimistic(ref);
+    };
+
+    let settled = false;
+    const realListRecovery = storage.listRecovery.bind(storage);
+    let recoveryArmed = false;
+    storage.listRecovery = (ref) => {
+      const read = realListRecovery(ref);
+      if (settled && !recoveryArmed) {
+        recoveryArmed = true;
+        holdNextRead = true;
+      }
+      return read;
+    };
+    const realSettle = storage.settleReceipt.bind(storage);
+    storage.settleReceipt = async (id, state) => {
+      const result = await realSettle(id, state);
+      settled = true;
+      return result;
+    };
+
+    await threadsStore.getState().send("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !settled; i += 1) await probe.listOutbox();
+    await reached;
+    expect(settled).toBe(true);
+
+    // B's durable commit lands while that read is still parked: it marks the
+    // ref undelivered and bumps the generation past the parked read's capture.
+    // With no turn/queue handler bound, B is attempted but never delivered, so
+    // it stays a "submitting" row and keeps the ref undelivered.
+    await threadsStore.getState().queue("ref_a", "B");
+    expect((await storage.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+
+    // The parked, now-stale read rejects (the same failure a wedged storage
+    // produces). It must NOT clear the marker B's commit wrote, and the wedge
+    // follows before any later successful read could mask a clear.
+    rejectRead(new MutationStorageTimeoutError());
+    await nextMacrotask();
+    probe.close();
+
+    // Storage wedges; B is still undelivered, so C must fail closed rather
+    // than reach the daemon ahead of it.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const sendC = threadsStore.getState().send("ref_a", "C");
+      const rejection = expect(sendC).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // A's settled turn/start only: C refused, so it dispatched nothing.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Reviewers' Medium, PR #3397, direction one. The failed-read clear may fail
+  // a marker open only where no evidence backs it. scheduleMutationDispatch
+  // refreshes after dispatchTargets resolves even when the row was only
+  // ATTEMPTED (a turn/queue or turn/start with no receipt), so the commit
+  // generation is unchanged while a genuinely undelivered row stands - the old
+  // unconditional clear dropped the marker there, and a later storage-timeout
+  // send then dispatched directly, ahead of the committed row, inverting the
+  // user's order once storage recovered.
+  test("a failed refresh read retains the marker for a committed but undelivered row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-general-refresh";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // Arm the failing reads at the drain's own attempt: the drain's remaining
+    // work needs no list read, and the post-attempt clearing refresh is the
+    // first read after this point. Both halves fail, so nothing this read can
+    // observe backs the marker - only the commit that awaits its delivery does.
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      storage.listOutbox = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return marked;
+    };
+
+    // A's durable queued row: committed, attempted, and never delivered (no
+    // turn/queue handler), so it stays undelivered work.
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    expect((await probe.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+
+    // Storage wedges; the next send must fail closed rather than reach the
+    // daemon ahead of A.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A partially failed read proves nothing either, so it changes nothing: the
+  // ref's committed rows stand whatever the half-read returned. Only the
+  // optimistic half fails here, so the outbox half's row is what refuses the
+  // fallback.
+  test("a refresh that fails one read changes nothing about the ref's rows", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-partial-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      // Only the optimistic half of the post-attempt refresh fails; the outbox
+      // half still reads A's undelivered row.
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return marked;
+    };
+
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    expect((await probe.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A settle is a truth-changing event like a commit, so it must invalidate an
+  // in-flight refresh read the same way. Park the refresh's outbox read (armed
+  // at the drain's own attempt, which reads nothing after it), settle the id
+  // that read will return, then let the read land with its pre-settlement
+  // snapshot: the ref's generation moved under it, so the snapshot is discarded
+  // and the delivered id is not put back. Without the settle's bump the stale
+  // read reinserts the id and every later fallback send fails closed.
+  test("a settle that lands during a refresh read is not undone by its snapshot", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-settle-during-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // The refresh's outbox read parks on a gate; listOptimistic stays real, so
+    // the read's Promise.all waits on the outbox half alone.
+    let releaseRead: (rows: MutationOutboxRecord[]) => void = () => {};
+    const readGate = new Promise<MutationOutboxRecord[]>((resolve) => {
+      releaseRead = resolve;
+    });
+    let parked = false;
+    const realListOutbox = storage.listOutbox.bind(storage);
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      if (!parked) {
+        parked = true;
+        storage.listOutbox = () => readGate;
+      }
+      return marked;
+    };
+
+    await threadsStore.getState().queue("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !parked; i += 1) await probe.listOutbox("ref_a");
+    expect(parked).toBe(true);
+    // The pre-settlement snapshot the parked read will return.
+    const snapshot = await probe.listOutbox("ref_a");
+    expect(snapshot.map((record) => record.state)).toEqual(["submitting"]);
+
+    // The settle lands while that read is still in flight.
+    expect(await storage.settleReceipt(snapshot[0]!.clientMutationId, "pending")).toBe(true);
+    // Let the parked read land with its pre-settlement snapshot, then stop
+    // stubbing reads so nothing later re-serves it.
+    releaseRead(snapshot);
+    storage.listOutbox = realListOutbox;
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox("ref_a");
+    probe.close();
+
+    // Storage wedges; the delivered row must not refuse the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      // B's fallback dispatched: the settled id was not restored.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The rule is unconditional: ANY change to a ref's durable outbox state
+  // advances its read invalidation, not only changes to ids this tab happens to
+  // hold. Harness for the two tests below: a row written straight to storage
+  // (never committed here, so it is never an id the guard holds) and held
+  // non-dispatchable, so the drain attempts nothing; the post-drain refresh's
+  // outbox read then parks until the test releases it, so that read is in
+  // flight across whatever change the test lands.
+  function parkPostDispatchRefreshRead(storage: MutationOutboxIndexedDB): {
+    release: (rows: MutationOutboxRecord[]) => void;
+    held: () => number;
+    restore: () => void;
+  } {
+    let releaseRead: (rows: MutationOutboxRecord[]) => void = () => {};
+    const readGate = new Promise<MutationOutboxRecord[]>((resolve) => {
+      releaseRead = resolve;
+    });
+    const realOutbox = storage.listOutbox.bind(storage);
+    const realNextDispatchable = storage.nextDispatchable.bind(storage);
+    let armed = false;
+    let held = 0;
+    // The drain's own read is what precedes the refresh; arming here keeps the
+    // drain's other storage calls real.
+    storage.nextDispatchable = (ref) =>
+      realNextDispatchable(ref).then((record) => {
+        armed = true;
+        return record;
+      });
+    storage.listOutbox = (ref) => {
+      if (!armed) return realOutbox(ref);
+      held += 1;
+      return readGate;
+    };
+    return {
+      release: releaseRead,
+      held: () => held,
+      restore: () => {
+        storage.listOutbox = realOutbox;
+        storage.nextDispatchable = realNextDispatchable;
+      },
+    };
+  }
+
+  test("a settle of a row this tab never registered is not undone by a parked read", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-unregistered-settle";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // A store commit arms the ref for dispatch, then settles away, leaving the
+    // ref with nothing the guard holds.
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // A durable queued row this tab never committed and never registered, held
+    // non-dispatchable so the drain attempts nothing.
+    const persisted = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(persisted.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const preSettlement = await probe.listOutbox("ref_a");
+    expect(preSettlement.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    const parked = parkPostDispatchRefreshRead(storage);
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 20 && parked.held() === 0; i += 1) await nextMacrotask();
+    expect(parked.held()).toBeGreaterThan(0);
+
+    // The settled record is the authority on which ref's state changed.
+    expect(await storage.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    // The parked read lands with its pre-settlement snapshot.
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual([]);
+    parked.release(preSettlement);
+    parked.restore();
+
+    // Every later read fails from here, so only the parked read's snapshot can
+    // decide the guard - and it must not reinstate the row the change resolved.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the settle");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  test("a cancel that lands during a parked read is not undone by its snapshot", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-unregistered-cancel";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    fake.on("thread/shutdown", () => ({}));
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // The same unregistered, non-dispatchable row - and unattempted, so the
+    // Stop's cancel reaches it.
+    const persisted = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(persisted.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const preCancel = await probe.listOutbox("ref_a");
+    expect(preCancel.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    const parked = parkPostDispatchRefreshRead(storage);
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 20 && parked.held() === 0; i += 1) await nextMacrotask();
+    expect(parked.held()).toBeGreaterThan(0);
+
+    // The Stop's cancel write is a state change the guard must invalidate reads
+    // for, registered id or not.
+    await threadsStore.getState().shutdown("ref_a");
+    // The parked read lands with its pre-cancel snapshot.
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+    parked.release(preCancel);
+    parked.restore();
+
+    // Every later read fails from here, so only the parked read's snapshot can
+    // decide the guard - and it must not reinstate the row the change resolved.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The cancel path names the ids it cancels, so it must resolve them: the
+  // design leaves ids only for cancel paths that cannot name their rows.
+  test("a Stop that cancels a durably committed row does not refuse the next send", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stop-names-canceled-ids";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    fake.on("thread/shutdown", () => ({}));
+    // A store commit arms the ref and registers its row, which then settles
+    // away, leaving the guard empty and the arm in place.
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    // A durable row written after the hydration (so nothing reopens it) and
+    // held non-dispatchable, read into the guard by the dispatch's own trailing
+    // refresh - which attempts nothing behind a blockedUnknown head, so the
+    // Stop's cancel still reaches it.
+    const row = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const guarded = await probe.listOutbox("ref_a");
+    expect(guarded.map((record) => record.state)).toEqual(["blockedUnknown"]);
+    expect(guarded[0]!.attempted).toBe(false);
+
+    // The Stop cancels the row and the write names the id it canceled.
+    await threadsStore.getState().shutdown("ref_a");
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["canceled"]);
+
+    // Storage wedges. Nothing undelivered is left, so the send must dispatch
+    // rather than fail closed behind a row that never reached the daemon.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the stop");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A recovery row leaves the outbox with its id still registered; discarding
+  // it resolves that id, so later unreadable storage cannot keep refusing.
+  test("a discarded recovery row does not leave its id blocking the fallback", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-discard-recovery-id";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const ours = await storage.listOutbox("ref_a");
+    expect(ours).toHaveLength(1);
+    expect(await storage.settleReceipt(ours[0]!.clientMutationId, "pending")).toBe(true);
+
+    const row = await storage.enqueueIntent(queueIntent("persisted"));
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    notifyReadyForMutationDispatch(["ref_a"]);
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    expect((await probe.listOutbox("ref_a")).map((record) => record.state)).toEqual(["blockedUnknown"]);
+
+    // A terminal refusal moves the row to recovery, id and all.
+    expect(await storage.transferToRecovery(row.clientMutationId, "rejected")).toBeDefined();
+    expect(await probe.listOutbox("ref_a")).toEqual([]);
+    // The user discards it: the id is resolved with the row.
+    expect(await discardRecoveryMutation(row.clientMutationId, "ref_a")).toBe(true);
+
+    // Storage wedges; the row's id must not refuse the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the discard");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The rebuilt guard's seeding rule: a successful read is the authoritative
+  // snapshot of the ref, so the non-canceled rows it observes ARE the ref's
+  // committed rows - including a row this tab never committed, as a reload or
+  // another tab leaves behind. Without the seed such a row is invisible to the
+  // guard and a wedged send jumps it.
+  test("a successful read seeds the ref's committed rows from the outbox", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-seed-on-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    // A durable queued row written straight to storage: no commit of ours, no
+    // dispatch of ours.
+    const persisted = await storage.enqueueIntent(queueIntent("persisted"));
+    await threadsStore.getState().refreshThread("ref_a");
+    await nextMacrotask();
+    expect((await storage.listOutbox("ref_a")).map((record) => record.clientMutationId)).toEqual([
+      persisted.clientMutationId,
+    ]);
+
+    // Storage wedges; the row the read seeded still refuses the fallback.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the reload");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The rebuilt guard's delivery rule, and the settled case's cause: the settle
+  // write itself resolves the row, so the guard stands down with NO read
+  // involved. Both halves of every later read fail here, and the drain's next
+  // read fails too - so dispatchTargets rejects and the post-drain clearing
+  // refresh never even runs. The fallback still works, because the settle
+  // removed the id rather than a lucky read having cleared anything.
+  test("a settle re-enables the fallback with no read involved", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-settle-clears";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    let settled = false;
+    const realSettle = storage.settleReceipt.bind(storage);
+    storage.settleReceipt = async (id, state) => {
+      const result = await realSettle(id, state);
+      settled = true;
+      // Every read from here on fails, both halves included.
+      storage.listOutbox = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return result;
+    };
+
+    await threadsStore.getState().send("ref_a", "A");
+    const probe = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    for (let i = 0; i < 80 && !settled; i += 1) await probe.listOutbox();
+    // Let the rejected drain and its skipped clearing refresh settle out.
+    for (let i = 0; i < 10; i += 1) await probe.listOutbox();
+    probe.close();
+    expect(settled).toBe(true);
+
+    // Storage wedges; with the id resolved by the settle, B may take the
+    // fallback even though no read ever succeeded after the settle.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "B");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await send;
+      // A's settled dispatch plus B's fallback.
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The rebuilt guard's failed-read rule: a read that fails proves nothing, so
+  // it changes nothing - a row a reload left queued still refuses the fallback
+  // even when the store cannot read it back.
+  test("a failed read preserves a row a reload left queued", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-reload-failed-read";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    await storage.enqueueIntent(queueIntent("persisted"));
+    await threadsStore.getState().refreshThread("ref_a");
+    // Let the seeding read's own reconciliation settle before anything breaks
+    // reads: a reconcile left in flight across the failure would fence the ref
+    // and refuse the send for its own reason, hiding what the marker does.
+    for (let i = 0; i < 5; i += 1) await nextMacrotask();
+    // Break both halves of the post-attempt clearing refresh, so the read that
+    // fails is the one whose failure the old fail-open cleared the marker for.
+    let attempted = false;
+    const realMarkAttempted = storage.markAttempted.bind(storage);
+    storage.markAttempted = async (id) => {
+      const marked = await realMarkAttempted(id);
+      attempted = true;
+      storage.listOutbox = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      storage.listOptimistic = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+      return marked;
+    };
+    // Arm the ref through a store commit of its own: the persisted row is
+    // earlier in the FIFO, so it is the head the drain attempts.
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    expect(attempted).toBe(true);
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "after the reload");
+      const rejection = expect(send).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The fallback discards the RPC response. What projects the turn, then? The
+  // reducer's applyNotificationToThread (appwire-client/typescript/reducer.ts)
+  // has NO turn/started case; the only case that builds turns and items is
+  // history/updated (case at reducer.ts:3528 -> applyHistoryUpdated at 3068).
+  // The turn is therefore projected from the daemon's own read-model push,
+  // exactly as for a dispatched row - the receipt the dispatcher would have
+  // settled only settles the optimistic/pending copy, which the fallback never
+  // wrote. Pin it: after a fallback send, a history/updated push shows the
+  // turn, and nothing is left stuck optimistic.
+  test("a fallback-dispatched send is projected from the daemon's history/updated push, not stuck optimistic", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-fallback-projection";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on a versioned read so the live history/updated frame below
+    // merges into the same boot generation instead of being invalidated.
+    fake.on("thread/read", (params) => versionedReadResponse(params.ref ?? "ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "hello");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // Nothing is left stuck optimistic: the fallback wrote no durable or
+    // optimistic row for this send.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOptimistic("ref_a")).toEqual([]);
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+    // The daemon's read-model push is what projects the turn.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "", startedAt: 1000 }],
+      },
+    });
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_1"]);
+  });
+
+  // Round-3 High, contested. A readwrite timeout rejects ONLY when the
+  // watchdog's abort() succeeds - i.e. when rollback is proven. A write that is
+  // already committing when the watchdog fires makes abort() throw, and
+  // #runTransaction's stalledWrite path then leaves the promise pending rather
+  // than rejecting: enqueueDurableMutation does not retry and the direct
+  // fallback never runs, and the commit still lands. This pins that path
+  // mechanically (see the teeth proof in the commit message).
+  test("a readwrite timeout that cannot abort never rejects, retries or falls back, and the commit stands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    let enqueueAttempts = 0;
+    const realEnqueue = storage.enqueueIntent.bind(storage);
+    storage.enqueueIntent = (...args: Parameters<typeof realEnqueue>) => {
+      enqueueAttempts += 1;
+      return realEnqueue(...args);
+    };
+
+    // Hold the enqueue transaction's complete event: the write is durably done
+    // and committing when the watchdog fires, so transaction.abort() throws.
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    // Only the timer types the deadline and the retry delay use: the outbox
+    // interval stays real so no discovery fires mid-test.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let outcome: "resolved" | "rejected" | null = null;
+    try {
+      const send = threadsStore.getState().send("ref_a", "commit in flight");
+      void send.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        },
+      );
+      await hold.reached;
+      // The enqueue watchdog fires: abort() throws, so the deadline cannot
+      // reject and the retry delay is never scheduled. Advance past both the
+      // watchdog and the retry delay so a mutation that DOES reject would run
+      // its retry to completion and trip the assertions below.
+      await vi.advanceTimersByTimeAsync(11_000);
+      // Flush pending continuations so a wrongly-rejecting or retrying
+      // implementation would have settled before the assertions below. This
+      // does NOT wait for `outcome`: the correct path leaves it null forever,
+      // which is exactly what the next assertion pins.
+      await flushMicrotasks();
+      // Not rejected, not resolved, not retried, and nothing reached the wire.
+      expect(outcome).toBeNull();
+      expect(enqueueAttempts).toBe(1);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      hold.release();
+      vi.useRealTimers();
+    }
+    // The withheld commit lands: the send resolves and the outbox dispatches it.
+    await flushUntilArrived("the committing send to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/start"),
+    );
+    expect(enqueueAttempts).toBe(1);
+  });
+
+  // A Stop is the one durable write that must NOT take the direct fallback.
+  // Its enqueue is enqueueInterruptAndCancel: the ref's cancelable rows turn
+  // "canceled" in the same transaction that writes the turn/interrupt record,
+  // both land or neither does. A fallback that dispatched turn/interrupt while
+  // writing no cancels would interrupt the turn and leave the queued messages
+  // the click was cancelling still queued - to be dispatched later, exactly
+  // what the click meant to stop. So a Stop whose storage never answers must
+  // fail closed: nothing reaches the daemon and nothing is durably written.
+  test("a Stop whose storage never answers stays fail-closed: no interrupt reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stop-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on working storage first, exactly like the send case: the
+    // runtime's connection opens here, so it is the Stop that meets the wedge.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // Retire the connection, then make the factory's next open never answer.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const stop = threadsStore.getState().interrupt("ref_a");
+      const rejection = expect(stop).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      // Both enqueue attempts end on their own watchdog before the failure.
+      await vi.advanceTimersByTimeAsync(21_000);
+      await rejection;
+      // Stop must not fall back: the interrupt never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // thread/clear and notes/human/set carry their own durable contracts and must
+  // NOT take the direct fallback: a fallback clear would skip applyClearResponse
+  // (leaving stale local state until the next read) and a fallback note would
+  // never fire setHumanNote's onCommitted (so the note panel never marks the
+  // draft saved). Only the composer's four send verbs fall back; both of these
+  // stay fail-closed.
+  test("a Clear whose storage never answers stays fail-closed: no thread/clear reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-clear-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a")));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const clear = threadsStore.getState().clearThread("ref_a");
+      const rejection = expect(clear).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      // The click-time capture read is the clear's first storage call; its
+      // watchdog ends the attempt.
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // The clear must not fall back: it never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a note save whose storage never answers stays fail-closed: no notes/human/set reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-note-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("notes/human/set", (params) => ({ note: "a note", receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const save = threadsStore.getState().setHumanNote("ref_a", "a note");
+      const rejection = expect(save).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+      // The note save must not fall back: it never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "notes/human/set")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // §4's stop barrier is the click's OWN storage observation. When the durable
+  // write times out, the enqueue retries it - but the retry must reuse the
+  // capture taken at the click, never re-read the epoch, or a Stop landing
+  // between attempts would become the retry's baseline and be silently lost.
+  test("a durable write that times out is retried once and the retry never re-reads the click-time capture", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+    let captureReads = 0;
+    storage.readStopEpoch = async (targetRef: string) => {
+      captureReads += 1;
+      return realReadStopEpoch(targetRef);
+    };
+    let writeAttempts = 0;
+    storage.enqueueIntent = async () => {
+      writeAttempts += 1;
+      throw new MutationStorageTimeoutError();
+    };
+
+    await threadsStore.getState().send("ref_a", "retried then fallen back");
+
+    // Two total attempts - the original and one retry - then the fallback.
+    expect(writeAttempts).toBe(2);
+    // The click-time capture was read exactly once across the ladder.
+    expect(captureReads).toBe(1);
+    // The write never committed, so the send went out as a plain RPC.
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+  });
+
+  // The fallback must not change the healthy path: a send with working storage
+  // is committed durably and dispatched by the outbox, so the id on the wire is
+  // the committed row's own id - not a fresh one minted by a direct dispatch.
+  test("storage healthy: a send takes the durable path and is dispatched by the outbox, not directly", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const committedIds: string[] = [];
+    const unsubscribe = subscribeMutationPersistence((refs, commit) => {
+      if (refs.includes("ref_a") && commit) committedIds.push(commit.record.clientMutationId);
+    });
+    try {
+      await threadsStore.getState().send("ref_a", "durable send");
+      await flushUntilArrived("the durable send to dispatch", () =>
+        fake.calls.some((call) => call.method === "turn/start"),
+      );
+    } finally {
+      unsubscribe();
+    }
+
+    const sent = fake.calls.find((call) => call.method === "turn/start");
+    const sentParams = sent?.params as { clientMutationId?: string } | undefined;
+    expect(committedIds).toContain(sentParams?.clientMutationId);
   });
 
   // RoboRev PR #1873 medium, the fresh review's Retry-path gap: the stop-epoch
@@ -11775,6 +16535,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // equal, and the release resurrects the row into the session the other
   // tab just stopped.
   test("a Retry whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    // "Drop the live connection" uses the adapter's own versionchange path:
+    // dispatch versionchange on the live connection and the adapter's retire
+    // listener drops it (the adapter stays usable).
+    const indexedDB = globalThis.indexedDB;
+    const open = indexedDB.open.bind(indexedDB);
+    const connections: IDBDatabase[] = [];
+    vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      const request = open(name, version);
+      request.addEventListener("success", () => connections.push(request.result));
+      return request;
+    });
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
@@ -11791,7 +16562,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The cold tab: THIS store's connection is closed at the click, so the
     // capture read must reopen it before it can run — the finding's opening
     // wait, however long the engine takes to satisfy it.
-    storage.close();
+    connections[connections.length - 1]?.dispatchEvent(new IDBVersionChangeEvent("versionchange"));
+    await nextMacrotask();
 
     // The click. retryBlockedMutation's synchronous prefix must request the
     // capture read — and with it the reopen — before yielding to the event
@@ -12677,4 +17449,110 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     threadsStore.getState().releaseThread("ref_gone");
     expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
   });
+});
+
+describe("pending shared membership acquisition", () => {
+  test("a resync surviving a timed-out first acquisition retries in its current owner", async () => {
+    const fake = connectFakeClient();
+    const initial = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () =>
+      ++reads === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "turn_current", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.reject(new RequestTimeoutError("first acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    runScheduledHydrationRetry();
+    await first;
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_current");
+    expect(
+      fake.calls
+        .filter((call) => call.method === "thread/read")
+        .every((call) => (call.params as { subscribe: boolean }).subscribe),
+    ).toBe(true);
+    threadsStore.getState().releaseThread("ref_a");
+  });
+  test("a rich watcher surviving a failed lean acquisition retries with its required turns", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>();
+    const includes: boolean[] = [];
+    fake.on("thread/read", (params) => {
+      includes.push(params.includeTurns === true);
+      return includes.length === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "rich", status: "completed", itemsView: "full", items: [] }] });
+    });
+    const lean = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => includes.length === 1);
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushMicrotasks();
+    expect(includes).toEqual([false]);
+    initial.reject(new RequestTimeoutError("lean acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    runScheduledHydrationRetry();
+    await Promise.all([lean, rich]);
+    expect(includes).toEqual([false, true]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("rich");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+  test("release and reacquire waits for pending membership and fences the retired model", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>(),
+      replacement = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => (++reads === 1 ? initial.promise : replacement.promise));
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    threadsStore.getState().releaseThread("ref_a");
+    const second = threadsStore.getState().ensureThread("ref_a");
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.resolve(
+      readResponse("ref_a", { turns: [{ id: "old", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => reads === 2);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    replacement.resolve(
+      readResponse("ref_a", { turns: [{ id: "new", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await Promise.all([first, second]);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("new");
+    threadsStore.getState().releaseThread("ref_a");
+  });
+});
+
+test.each(["output", "metadata"] as const)("fences obsolete job %s after readiness returns", async (kind) => {
+  const peer = new JobOutputPeer();
+  const client = new AppwireClient({ url: "ws://job-output.test/rpc", socketFactory: () => peer });
+  connectionStore.getState().connect(client);
+  const connecting = client.connect();
+  let current = true;
+  const pending =
+    kind === "output"
+      ? threadsStore.getState().jobOutput("local:session_output", "job_output", 0, 1, () => current)
+      : threadsStore.getState().jobGet("local:session_output", "job_output", () => current);
+  const method = kind === "output" ? "evener/jobs/output" : "evener/jobs/get";
+  // A wrongly dispatched read gets a real wire response, so RED is a fulfilled
+  // obsolete call rather than a fixture timeout.
+  void peer.request(method).then((request) => peer.reply(request, {}));
+  current = false;
+  try {
+    const result = expect(pending).rejects.toThrow("job read is no longer current");
+    peer.open();
+    await connecting;
+    await result;
+    expect(peer.requests(method)).toEqual([]);
+  } finally {
+    client.close();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });

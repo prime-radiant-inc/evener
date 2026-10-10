@@ -149,8 +149,8 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 			"    Today",
 			"    paradise-park:b",
 		]);
-		expect(boardState(a, false, false)).toBe("working");
-		expect(boardState(b, false, false)).toBe("shutDown");
+		expect(boardState(a, false)).toBe("working");
+		expect(boardState(b, false)).toBe("shutDown");
 	});
 
 	it("the project's counts and its more rows read once, on the first host with loaded rows", () => {
@@ -179,16 +179,6 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 				"    local:d",
 			]);
 		}
-	});
-
-	it("places a cluster under its newest member's host", () => {
-		const cluster = session("cluster:x", "cluster", {
-			kind: "cluster",
-			children: [session("paradise-park:m", "paradise-park")],
-		});
-		// The project names no sources, so the one row it has decides its host.
-		const list = items({ projects: [project("docs")], pages: new Map([["docs", pages([cluster])]]) });
-		expect(outline(list)).toEqual(["host paradise-park", "  project docs", "    Today", "    cluster:x"]);
 	});
 
 	it("keeps a host's archived rows in that host's copy", () => {
@@ -497,7 +487,6 @@ describe("what the Board reads", () => {
 describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 	const pageState = (rows: NavigationSessionSummary[], loaded = true) => ({
 		loaded,
-		truncated: false,
 		rows,
 		remaining: 0,
 		loading: !loaded,

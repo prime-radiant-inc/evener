@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
@@ -6,16 +7,17 @@ import { createCredentialInstancesStore } from "@evener/appwire-client/state/cre
 import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { renderHook } from "./renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import { useProviderSurface } from "./providerSurface";
 
 // useProviderSurface holds the screen's write gate (one write at a time,
 // configuration refused while the listing refuses it or holds a replaced
 // connection's rows), its unmount lifetime guard, and its sanitized
 // single-flight credential probe. This suite drives those rules directly;
-// ProvidersScreen.test.tsx mounts the screen over the same render harness.
+// hub/ProvidersPage.test.tsx mounts the page over the same render harness.
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 
@@ -43,7 +45,7 @@ function boundary() {
 	const io: { request: (method: string, params: unknown) => Promise<unknown> } = {
 		request: async () => listing(["initial"]),
 	};
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return io.request(method, params);
@@ -54,7 +56,7 @@ function boundary() {
 				handlers.delete(handler);
 			};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const store = createCredentialInstancesStore({
 		ownClientId: () => "native-test",
 	});
@@ -77,13 +79,13 @@ function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>, provider
 // stale gate answers. It records its requests, so a re-read through it is
 // observable.
 function failingConnection(requests: { method: string; params: unknown }[]): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return Promise.reject(new Error("offline"));
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 }
 
 it("sanitizes a credential probe reply and never publishes the wire text", async () => {
@@ -190,7 +192,7 @@ it("does not echo a probe transport error and does not retry it", async () => {
 });
 
 it("treats a probe refused for a replaced connection's rows as a changed connection", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	store.connectionChanged(failingConnection(requests), "ready");
 	await vi.waitFor(() => expect(store.getState().loading).toBe(false));
@@ -266,7 +268,7 @@ it("refuses configuration writes while the listing refuses them", async () => {
 });
 
 it("refuses configuration writes on a replaced connection's rows", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	store.connectionChanged(failingConnection(requests), "ready");
 	await vi.waitFor(() => expect(store.getState().loading).toBe(false));
@@ -280,7 +282,7 @@ it("refuses configuration writes on a replaced connection's rows", async () => {
 });
 
 it("stops writing after the screen unmounts", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	const { result, unmount } = renderHook(() => useProviderSurface(store));
 	unmount();
@@ -289,7 +291,7 @@ it("stops writing after the screen unmounts", async () => {
 });
 
 it("asserts the endpoint fingerprint on credential writes, removal, and the probe", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	const { result } = renderHook(() => useProviderSurface(store));
 	await act(async () => {
@@ -518,13 +520,13 @@ it("does not start a second read while the store's restore read is in flight", a
 	await store.getState().fetch();
 	// A replacement connection starts the store's own restore read, still out.
 	const restore = deferred<InstanceListResponse>();
-	const later = {
+	const later = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return restore.promise;
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	store.connectionChanged(later, "ready");
 	expect(store.getState().loading).toBe(true);
 	const reads = requests.filter((request) => request.method === "evener/instance/list").length;
@@ -542,13 +544,13 @@ it("a refresh coalesces with an in-flight restore read and re-reads once it sett
 	io.request = async () => listing(["initial"]);
 	await store.getState().fetch();
 	const restore = deferred<InstanceListResponse>();
-	const later = {
+	const later = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return restore.promise;
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	store.connectionChanged(later, "ready");
 	expect(store.getState().loading).toBe(true);
 	const reads = requests.filter((request) => request.method === "evener/instance/list").length;

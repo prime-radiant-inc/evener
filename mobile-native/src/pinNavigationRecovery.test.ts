@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
@@ -45,7 +45,7 @@ function client(failLocations: number[] = []) {
 			if (params.resource === "location") {
 				locationReads++;
 				if (failLocations.includes(locationReads)) throw new Error("location unavailable");
-				return wireV2(
+				return wireSnapshot(
 					params as never,
 					{
 						top_level: true,
@@ -65,7 +65,7 @@ function client(failLocations: number[] = []) {
 					"g",
 				);
 			}
-			return wireV2(
+			return wireSnapshot(
 				params as never,
 				{
 					pin_sections: [{ id: "focus", name: "Focus", count: 1 }],

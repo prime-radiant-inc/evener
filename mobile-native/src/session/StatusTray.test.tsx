@@ -1,9 +1,10 @@
+import type { SessionActivity } from "@evener/appwire-client";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PulseMeter } from "../board/PulseMeter";
 import { palettes } from "../design/tokens";
-import { pressable, render, renderHook, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderHook, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { LiveStatusTray, StatusTray, useFrameCounter } from "./StatusTray";
 import { FrameCounter, type TraySource } from "./trayLine";
 
@@ -13,6 +14,10 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const light = palettes.light;
+
+function rootRead(runningSubagents: number) {
+	return { ref: "local:root", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents };
+}
 
 function tray(overrides: Partial<Parameters<typeof StatusTray>[0]> = {}) {
 	const props = {
@@ -122,13 +127,17 @@ describe("LiveStatusTray", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.useRealTimers();
+	});
 
-	function live(source: TraySource | null, frames = new FrameCounter()) {
+	function live(source: TraySource | null, frames = new FrameCounter(), activity?: SessionActivity) {
 		return (
 			<LiveStatusTray
 				session={source}
 				frames={frames}
+				activity={activity}
 				connected
 				canStop
 				stopping={false}
@@ -154,6 +163,13 @@ describe("LiveStatusTray", () => {
 
 		act(() => tree.update(live(null)));
 		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("names the running count from the activity read it is given", () => {
+		const tree = render(live(session(true, Date.now()), new FrameCounter(), rootRead(3)));
+		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
+		act(() => tree.update(live(session(true, Date.now()), new FrameCounter(), rootRead(5))));
+		expect(renderedText(tree)).toContain("Waiting on 5 subagents");
 	});
 
 	it("shows the one-bar fallback until a frame arrives, then this phone's counts", () => {

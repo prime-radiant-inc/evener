@@ -82,7 +82,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			launchPaths = append(launchPaths, joined)
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -164,7 +164,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(link + "\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
@@ -248,10 +248,11 @@ func TestRound8IgnoredGoFileRefusedInBuildSource(t *testing.T) {
 }
 
 // TestRound8InstallerVersionMismatchIsTerminal pins the round-eight Medium that a
-// snapshot-channel installer ref is the mutable `snapshot` tag: once main moves
-// past the controller's commit the fetched artifact no longer matches, and the
-// mismatch was wrapped in ErrDeploy (non-terminal), so the supervisor re-fetched
-// and re-rejected it forever. It must be a terminal ErrVersionMismatch instead.
+// snapshot-channel installer ref is the mutable `snapshot` channel: once the
+// channel serves a build past the controller's commit the fetched artifact no
+// longer matches, and the mismatch was wrapped in ErrDeploy (non-terminal), so
+// the supervisor re-fetched and re-rejected it forever. It must be a terminal
+// ErrVersionMismatch instead.
 func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 	origSHA, origDirty, origChannel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() {
@@ -268,7 +269,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit.
-			return []byte(`{"protocol":"evener-appwire-v6","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -277,7 +278,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 
 	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
 	if !errors.Is(err, ErrVersionMismatch) {
-		t.Fatalf("err = %v, want ErrVersionMismatch (a moved snapshot tag must not be retried as ErrDeploy)", err)
+		t.Fatalf("err = %v, want ErrVersionMismatch (a moved snapshot channel must not be retried as ErrDeploy)", err)
 	}
 	if errors.Is(err, ErrDeploy) {
 		t.Fatalf("err = %v still wraps ErrDeploy, so the supervisor would retry forever", err)

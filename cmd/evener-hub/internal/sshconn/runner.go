@@ -8,11 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -102,33 +100,13 @@ func (execRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (S
 // Run executes a one-shot command with the two streams kept apart: success
 // returns stdout only, so ssh's stderr chatter cannot corrupt a parse; failure
 // returns both, so whatever explains the exit status is in hand.
-//
-// A context carrying a spawn scope runs the child inside §3's pre-created
-// boundary and drives the pending-spawn lifecycle around it
-// (spawnfence.go); every other context spawns exactly as before, which is what
-// keeps the read-only preflight (§6's exemption) and every spawn no operation
-// record owns unarmed.
 func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-	if scope, ok := SpawnScopeFrom(ctx); ok {
-		return scope.runFenced(ctx, argv, stdin)
-	}
-	return runOneShot(ctx, argv, stdin, nil, nil, nil)
+	return runOneShot(ctx, argv, stdin)
 }
 
-// runOneShot runs one local one-shot child. attr, when non-nil, is applied to
-// the child (it is what places it inside a pre-created boundary); release, when
-// non-nil, is called once the start attempt has returned, successfully or not.
-// afterStart, when non-nil, is called with the child's pid right after a
-// successful Start: a non-nil return means the caller could not take ownership
-// of the process, so the child is killed and the error is joined into this
-// call's error.
-func runOneShot(ctx context.Context, argv []string, stdin io.Reader, attr *syscall.SysProcAttr, release func(), afterStart func(pid int) error) ([]byte, error) {
+// runOneShot runs one local one-shot child.
+func runOneShot(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 	if len(argv) == 0 {
-		// The documented contract: a caller that handed a release sees it called
-		// once this call returns, whether or not a child was ever started.
-		if release != nil {
-			release()
-		}
 		return nil, errors.New("empty argv")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -138,36 +116,10 @@ func runOneShot(ctx context.Context, argv []string, stdin io.Reader, attr *sysca
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = runWaitDelay
-	if attr != nil {
-		cmd.SysProcAttr = attr
-		// A boundary spawn's attributes carry Pdeathsig on Linux, and Go
-		// documents that signal as delivered on the spawning OS thread's
-		// termination, not necessarily the process's (see Boundary.SpawnAttr):
-		// the thread that starts the child must outlive it, so lock the calling
-		// goroutine to its thread until Wait has returned.
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-	}
 	if err := cmd.Start(); err != nil {
-		if release != nil {
-			release()
-		}
 		return nil, err
 	}
-	if release != nil {
-		release()
-	}
-	var markErr error
-	if afterStart != nil {
-		if err := afterStart(cmd.Process.Pid); err != nil {
-			markErr = err
-			_ = cmd.Process.Kill()
-		}
-	}
 	err := orphanpipe.ChildErr(cmd, cmd.Wait())
-	if markErr != nil {
-		err = errors.Join(markErr, err)
-	}
 	switch {
 	case err != nil:
 		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
@@ -450,25 +402,6 @@ func (d *diagSink) tail() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return string(d.buf)
-}
-
-// syncWriter serializes writes to one underlying writer. The manager builds one
-// over Options.Stderr and hands it to every attach: os/exec copies each ssh
-// child's stderr on its own goroutine, and each attach owns a separate diagSink,
-// so without a writer shared across hosts a caller-supplied sink that is not safe
-// for concurrent use (bytes.Buffer, as tests use) would be corrupted or raced by
-// concurrent attaches.
-type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func newSyncWriter(w io.Writer) *syncWriter { return &syncWriter{w: w} }
-
-func (s *syncWriter) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.w.Write(p)
 }
 
 // appendTail appends p to buf while retaining at most limit trailing bytes.

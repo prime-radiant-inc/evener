@@ -1,27 +1,25 @@
-import type { ConnectionState } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { type LayoutChangeEvent, Pressable, type StyleProp, Text, View, type ViewStyle } from "react-native";
+import { BarFrame } from "../design/BarFrame";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useConnectionStatusText } from "./connectionStatus";
 
+/** Where the Board lays its bar (over the Board's end) and how it learns
+ * the bar's height. */
+export type ToolbarPlacement = {
+	style?: StyleProp<ViewStyle>;
+	testID?: string;
+	onLayout?: (event: LayoutChangeEvent) => void;
+};
+
 /** The bar under the Board, above the home indicator: the toolbar, or the
  * select bar in its place. */
-export function ToolbarFrame({ children }: { children: ReactNode }) {
-	const { palette } = useColors();
-	const { bottom } = useSafeAreaInsets();
+export function ToolbarFrame({ children, ...placement }: { children: ReactNode } & ToolbarPlacement) {
 	return (
-		<View
-			style={{
-				paddingBottom: bottom,
-				borderTopWidth: 0.5,
-				borderColor: palette.edge,
-				backgroundColor: palette.page,
-			}}
-		>
+		<BarFrame {...placement}>
 			<View style={{ height: 50, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>{children}</View>
-		</View>
+		</BarFrame>
 	);
 }
 
@@ -66,29 +64,30 @@ export function BarButton({
  * the Board shows a session (`onSelect`), the connection status in the
  * middle, and New session on the trailing side. */
 export function BoardToolbar({
-	state,
-	fatal,
 	newSessionDisabled,
 	onNewSession,
 	onSelect,
+	...placement
 }: {
-	state: ConnectionState;
-	fatal: boolean;
 	newSessionDisabled: boolean;
 	onNewSession: () => void;
 	onSelect?: () => void;
-}) {
+} & ToolbarPlacement) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const status = useConnectionStatusText(state, fatal);
+	const status = useConnectionStatusText();
 	return (
-		<ToolbarFrame>
+		<ToolbarFrame {...placement}>
 			<View style={{ flex: 1, alignItems: "flex-start" }}>
 				{onSelect ? <BarButton label="Select" onPress={onSelect} /> : null}
 			</View>
 			{status ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					// Android reads this live region; iOS has none, and this
+					// connection status stays unannounced there on purpose: it is
+					// ambient and changes on every reconnect and offline-age tick,
+					// so speaking each one would talk over the reader (#2903).
 					accessibilityLiveRegion="polite"
 					style={{ fontSize: 13 * scale, color: palette.inkMid }}
 				>

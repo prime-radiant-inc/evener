@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -755,7 +756,7 @@ func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	if err := jm.closeRuntimeState(); err != nil {
+	if err := jm.closeRuntimeState(context.Background()); err != nil {
 		t.Fatalf("close runtime state: %v", err)
 	}
 	t.Cleanup(func() { _ = jm.closeStoreOnly() })

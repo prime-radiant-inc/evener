@@ -5,6 +5,7 @@
 // expo-sqlite's kv-store under per-hub keys that ConnectionProvider.removeHub
 // clears.
 import { isPlainObject } from "@evener/appwire-client";
+import type { FileReference } from "@evener/appwire-client/docContent";
 import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 
@@ -47,10 +48,10 @@ export interface LastRead {
 export interface ContinueReading {
 	sessionRef: string;
 	path: string;
+	reference: FileReference;
 	title: string;
-	/** The session the Reader sits over: the document's own, or a subagent's coordinator. */
-	reviewRef: string;
-	reviewTitle: string;
+	/** The document's session title, where Open session and the review go (ruling 16). */
+	sessionTitle: string;
 	progress: number;
 	leftAt: number;
 	updatedAt?: string;
@@ -58,10 +59,11 @@ export interface ContinueReading {
 
 export interface Leaving {
 	title: string;
+	/** Unbound historical callers may still record reading, never a shortcut. */
+	reference?: FileReference;
 	blocks: readonly string[];
 	position: ReadingPosition | null;
-	reviewRef: string;
-	reviewTitle: string;
+	sessionTitle: string;
 	updatedAt?: string;
 }
 
@@ -140,15 +142,29 @@ function parseDocuments(value: unknown): Record<string, DocumentRecord> {
 
 function parseTrail(value: unknown): ContinueReading | null {
 	if (!isPlainObject(value)) return null;
-	const { sessionRef, path, title, reviewRef, reviewTitle, progress, leftAt, updatedAt } = value;
-	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(reviewRef) || !isText(reviewTitle)) return null;
+	// A trail written before #2871 named its session twice (reviewRef and
+	// reviewTitle); it is dropped rather than migrated. The row is a two-hour
+	// convenience, and this store drops any shape it doesn't recognize rather
+	// than carrying a migration for it.
+	const { sessionRef, path, title, sessionTitle, progress, leftAt, updatedAt, reference } = value;
+	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(sessionTitle)) return null;
+	if (
+		!isPlainObject(reference) ||
+		reference.path !== path ||
+		!isText(reference.cwd) ||
+		!reference.cwd ||
+		!isText(reference.readTarget) ||
+		!reference.readTarget.startsWith("/") ||
+		(reference.provenance !== "relative" && reference.provenance !== "absolute")
+	)
+		return null;
 	if (!isTime(progress) || !isTime(leftAt)) return null;
 	return {
 		sessionRef,
 		path,
+		reference: { path, cwd: reference.cwd, readTarget: reference.readTarget, provenance: reference.provenance },
 		title,
-		reviewRef,
-		reviewTitle,
+		sessionTitle,
 		progress,
 		leftAt,
 		...(isText(updatedAt) ? { updatedAt } : {}),
@@ -204,13 +220,13 @@ export class DocumentMemory {
 			lastRead: { blocks: [...leaving.blocks], readAt: now, ...updatedAt },
 		}));
 		const progress = leaving.position?.progress ?? 1;
-		if (progress < FINISHED_PROGRESS)
+		if (progress < FINISHED_PROGRESS && leaving.reference)
 			this.setTrail({
 				sessionRef: key.sessionRef,
 				path: key.path,
+				reference: leaving.reference,
 				title: leaving.title,
-				reviewRef: leaving.reviewRef,
-				reviewTitle: leaving.reviewTitle,
+				sessionTitle: leaving.sessionTitle,
 				progress,
 				leftAt: now,
 				...updatedAt,

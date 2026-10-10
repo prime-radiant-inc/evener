@@ -1,27 +1,88 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { CONTINUE_READING_MS, DocumentMemory, type DocumentKey, forgetDocuments } from "./documentMemory";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const plan: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/superpowers/plans/settle.md" };
 const other: DocumentKey = { sessionRef: "local:s-pr2138", path: "docs/design/flake-triage.md" };
+const reference = {
+	path: "docs/superpowers/plans/settle.md",
+	cwd: "/work/owner",
+	readTarget: "/work/owner/docs/superpowers/plans/settle.md",
+	provenance: "relative" as const,
+};
 const leaving = (progress: number) => ({
+	reference,
 	title: "Fix the settle/drain race",
 	blocks: ["h1", "p1", "p2"],
 	position: { blockIndex: 1, blockHash: "p1", offset: 12, progress },
-	reviewRef: "local:s-pr2138",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 	updatedAt: "2026-09-26T11:39:00.000Z",
 });
 
 describe("what the phone remembers about a document", () => {
+	it("hides an old unbound shortcut without losing records or unrelated work", () => {
+		const position = { blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 };
+		const lastRead = { blocks: ["h1", "p1"], readAt: 2000, updatedAt: "version-a" };
+		const comments = [{ id: "c1", blockIndex: 1, blockHash: "p1", quote: "words", text: "unsent", createdAt: 1000 }];
+		const old = JSON.stringify({
+			sessionRef: plan.sessionRef,
+			path: plan.path,
+			title: "Plan",
+			sessionTitle: "Owner",
+			progress: 0.62,
+			leftAt: 10000,
+		});
+		const storage = memoryStorage(
+			new Map([
+				["evener.native.continue-reading.hub-1", old],
+				[
+					"evener.native.documents.hub-1",
+					JSON.stringify({
+						[JSON.stringify([plan.sessionRef, plan.path])]: { position, lastRead, comments, touchedAt: 2000 },
+					}),
+				],
+				["draft", "unsent draft"],
+				["queue", "queued work"],
+				["location", "saved navigation"],
+			]),
+		);
+		const before = new Map(storage.values);
+		const reopened = new DocumentMemory(storage, "hub-1", () => 10000);
+		expect(reopened.continueReading()).toBeNull();
+		expect(reopened.position(plan)).toEqual(position);
+		expect(reopened.lastRead(plan)).toEqual(lastRead);
+		expect(reopened.comments(plan)).toEqual(comments);
+		expect(storage.values).toEqual(before);
+	});
+
+	it("round-trips the literal captured raw-space reference after leaving and restart", () => {
+		const storage = memoryStorage();
+		const key = { sessionRef: "remote:owner", path: "docs/a raw.md" };
+		const reference = {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative" as const,
+		};
+		new DocumentMemory(storage, "hub-1", () => 10000).left(key, { ...leaving(0.62), reference });
+		expect(new DocumentMemory(storage, "hub-1", () => 10000).continueReading()).toEqual({
+			sessionRef: "remote:owner",
+			path: "docs/a raw.md",
+			title: "Fix the settle/drain race",
+			sessionTitle: "Get PR 2138 Test Clean",
+			progress: 0.62,
+			leftAt: 10000,
+			updatedAt: "2026-09-26T11:39:00.000Z",
+			reference: {
+				path: "docs/a raw.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/a raw.md",
+				provenance: "relative",
+			},
+		});
+	});
+
 	it("keeps your place and the version you last read across a relaunch", () => {
 		const storage = memoryStorage();
 		let now = 1_000;
@@ -47,10 +108,10 @@ describe("what the phone remembers about a document", () => {
 			sessionRef: "local:s-pr2138",
 			path: "docs/superpowers/plans/settle.md",
 			title: "Fix the settle/drain race",
-			reviewRef: "local:s-pr2138",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Get PR 2138 Test Clean",
 			progress: 0.62,
 			leftAt: 10_000,
+			reference,
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		});
 		now = 10_000 + CONTINUE_READING_MS - 1;
@@ -70,7 +131,16 @@ describe("what the phone remembers about a document", () => {
 		memory.opened(plan);
 		expect(memory.continueReading()).toBeNull();
 		memory.left(plan, leaving(0.5));
-		memory.left(other, { ...leaving(0.2), title: "Flake triage" });
+		memory.left(other, {
+			...leaving(0.2),
+			reference: {
+				path: other.path,
+				cwd: "/work/owner",
+				readTarget: `/work/owner/${other.path}`,
+				provenance: "relative",
+			},
+			title: "Flake triage",
+		});
 		expect(memory.continueReading()?.title).toBe("Flake triage");
 	});
 
@@ -160,6 +230,43 @@ describe("what the phone remembers about a document", () => {
 		expect(offline.continueReading()?.path).toBe(plan.path);
 		expect(() => offline.opened(plan)).not.toThrow();
 		expect(offline.continueReading()).toBeNull();
+	});
+
+	it("drops a pre-#2871 Continue reading trail but still reads the document's own records", () => {
+		// A trail the previous version wrote: its session named twice, no
+		// sessionTitle. It is dropped, not migrated (see parseTrail), while the
+		// per-document position and lastRead data from the same store still parse.
+		const key = JSON.stringify([plan.sessionRef, plan.path]);
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.continue-reading.hub-1",
+					JSON.stringify({
+						sessionRef: plan.sessionRef,
+						path: plan.path,
+						title: "Fix the settle/drain race",
+						reviewRef: plan.sessionRef,
+						reviewTitle: "Get PR 2138 Test Clean",
+						progress: 0.62,
+						leftAt: 10_000,
+					}),
+				],
+				[
+					"evener.native.documents.hub-1",
+					JSON.stringify({
+						[key]: {
+							position: { blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 },
+							lastRead: { blocks: ["h1", "p1", "p2"], readAt: 2_000 },
+							touchedAt: 2_000,
+						},
+					}),
+				],
+			]),
+		);
+		const memory = new DocumentMemory(storage, "hub-1", () => 10_000);
+		expect(memory.continueReading()).toBeNull();
+		expect(memory.position(plan)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 });
+		expect(memory.lastRead(plan)?.blocks).toEqual(["h1", "p1", "p2"]);
 	});
 
 	it("keeps hubs apart, and forgets a removed hub", () => {

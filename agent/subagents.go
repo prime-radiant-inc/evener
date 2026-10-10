@@ -120,6 +120,21 @@ type subagent struct {
 	// or resume that raced ahead wins and the gate is refused. Reversed on every
 	// pre-eviction dispose refusal/failure exit.
 	disposeGated bool
+	// attentionDriveRefused records that an attention drive was refused while
+	// another drive held this child's drive guard (driving), dropping its
+	// wake. The holder reads and clears it when it gives the guard back
+	// (releaseDriveGuard): an attention drive that launched no run, or a
+	// notification turn, then re-drives the child. A holder that hands the
+	// guard to a run clears it instead (resetSubagentForRunLocked), since that
+	// run drains the child. Guarded by sub.mu.
+	attentionDriveRefused bool
+}
+
+// startBlockedLocked reports whether the child can't take a new generation
+// now: a run, a drive or a finalizer is in flight, or worktree disposal holds
+// it. The caller holds a.mu.
+func (a *subagent) startBlockedLocked() bool {
+	return a.running || a.driving || a.finalizing || a.disposeGated
 }
 
 type preparedSubagentRun struct {
@@ -154,36 +169,17 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
-// disposeUnadoptedScratch drops every per-session scratch directory env
-// provisioned — the sandbox-owned one and the one an unsandboxed environment
-// mints on its first command — releasing each lease with its directory. Every
-// caller is a path that provisioned an environment and then failed before any
-// session adopted it: both releases belong to a session's own teardown, so
-// without this nothing ever runs them and each failure leaves a directory and a
-// live lease behind. A no-op for an environment with no scratch to drop,
-// including one that is not local. It must run only on an environment built for
-// the failed thing, never on a shared parent's, whose scratch the parent is
-// still working in.
-func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+// endEnvironmentScratch settles the scratch an environment owns when the
+// session or setup that owned it ends (EndSessionScratch): a session's named
+// scratch is kept for its root's archive, a disposable one is removed, and
+// every lease is released. A no-op for an environment that is not local. It
+// must run only on an environment built for the ending thing, never on a
+// shared parent's, whose scratch the parent is still working in.
+func endEnvironmentScratch(env execenv.ExecutionEnvironment) {
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		local.DisposeUnadoptedScratch()
+		_ = local.EndSessionScratch()
 	}
 }
-
-// childScratchDisposition says what becomes of the scratch a child's owned
-// environment provisioned when the child is torn down.
-type childScratchDisposition int
-
-const (
-	// retainChildScratch releases the leases and keeps the directories: the
-	// child finished something a human may still want to inspect, the handoff
-	// every normal session teardown makes.
-	retainChildScratch childScratchDisposition = iota
-	// disposeChildScratch drops the directories with their leases: the child
-	// was never adopted or is being discarded, so no one is left to hand
-	// anything to.
-	disposeChildScratch
-)
 
 // teardownChildSession closes a child session and settles what it owned. It is
 // the one teardown every child takes — the parent's own close, the eviction of
@@ -205,49 +201,35 @@ const (
 // child owns outright is its clone's scratch — the sandbox-provisioned dir, the
 // one an unsandboxed clone minted on its first command, and the one a
 // shared-environment child minted after entering a worktree — and that is
-// released here, both kinds together, per scratch: retained on a handoff,
-// disposed when the child is dropped. The parent's own environment is left
+// removed here, both kinds together. The parent's own environment is left
 // untouched in every respect: the parent is still working in it. Which
 // environment (if any) a teardown settles is two Session decisions:
 // Session.environmentOwnedAtTeardown's for the object the child still holds
 // and Session.ownedParkedWorktreeEnvironment's for the one an enter parked,
 // so a teardown reaching a child no parent bookkeeping names still settles
 // both correctly.
-func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
-	_ = teardownChildSessionWithPolicy(ctx, sess, scratch, releaseTerminal)
+func teardownChildSession(ctx context.Context, sess *Session) {
+	_ = teardownChildSessionWithPolicy(ctx, sess, releaseTerminal)
 }
 
 // teardownChildSessionWithPolicy is teardownChildSession under an explicit
 // release policy. Retirement uses it so a resident child runtime is released
 // non-terminally: its durable identity, descriptor, outcome and lanes stay
-// intact while its process-local resources and retained scratch are settled.
-func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch childScratchDisposition, policy runtimeReleasePolicy) error {
+// intact while its process-local resources and scratch are settled.
+func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, policy runtimeReleasePolicy) error {
 	if sess == nil {
 		return nil
 	}
 	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
-	// A child session never runs prepareRetainedScratch, so a pool its
-	// restore-adoption refresh seeded is process-local to this session alone:
-	// the root's terminal release detaches only the root's pool, and
-	// releaseRetirementScratch runs only under the retirement policy this
-	// teardown may not carry. Seal and detach it here so its reacquired
-	// leases cannot outlive the session pinning contended slots against every
-	// later cold restore (round 15). The seal rides the pool's own lock —
-	// the same contract the terminal, retirement, and release paths already
-	// keep — so a wrapper borrow holding the lock across its install either
-	// completes before the seal or declines inside its critical section
-	// instead of reporting success over it (rounds 30 and 34).
-	sess.sealRetainedScratch()
-	sess.detachRetainedScratch()
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
-	// reaches them. They take the same disposition as the environment the child
-	// still holds, and neither settlement touches a process table. The parent's
+	// reaches them. Their scratch is removed like the environment the child
+	// still holds, and neither removal touches a process table. The parent's
 	// own object can never be in this list (recordAbandonedEnvironmentLocked
 	// excludes it by construction).
-	sess.settleAbandonedEnvironmentScratch(scratch)
-	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
+	sess.disposeAbandonedEnvironmentScratch()
+	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown())
 	// The environment an enter parked (worktreeRestoreEnv) is a THIRD object a
 	// teardown can settle and the close above does not: a child that owned its
 	// spawn-built environment and entered a worktree parked that object while
@@ -256,7 +238,7 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch 
 	// it. ownedParkedWorktreeEnvironment excludes the one parked object this
 	// teardown must never touch: a child that started on its live parent's own
 	// environment parks THAT, and its scratch is the parent's to close.
-	releaseOwnedChildEnvironment(sess.ownedParkedWorktreeEnvironment(), scratch)
+	releaseOwnedChildEnvironment(sess.ownedParkedWorktreeEnvironment())
 	return releaseErr
 }
 
@@ -321,17 +303,11 @@ func (s *Session) ownedParkedWorktreeEnvironment() execenv.ExecutionEnvironment 
 // candidate's own resources and then makes exactly this decision for its env.
 // env is nil when the child is still holding its parent's own environment —
 // there is nothing for this teardown to settle.
-func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, scratch childScratchDisposition) {
+func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment) {
 	if env == nil {
 		return
 	}
-	if scratch == disposeChildScratch {
-		disposeUnadoptedScratch(env)
-		return
-	}
-	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		local.RetainSessionScratch()
-	}
+	endEnvironmentScratch(env)
 }
 
 // recordEnvironmentOwnership records whether env was built FOR this child
@@ -352,7 +328,25 @@ func (s *Session) recordEnvironmentOwnership(env execenv.ExecutionEnvironment, o
 // tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
 // No owner is left to hand anything to, so its owned scratch goes with it.
 func disposeUnadoptedSubagentSession(sess *Session) {
-	teardownChildSession(context.Background(), sess, disposeChildScratch)
+	// The delegation's durable artifacts directory is created at creation, so a
+	// child disposed before it was ever adopted must take its artifacts with it;
+	// the transcript and metadata are left for the resumability evidence the
+	// teardown below preserves. This runs before the teardown closes the event
+	// stream, so a cleanup failure can still be surfaced as a warning.
+	if sess != nil {
+		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
+			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+		}
+		// The child never became a delegate, so the scratch it was given — named
+		// or not — holds nothing anyone will come back for: remove it rather than
+		// keep it for its root's archive, as a session end would.
+		for _, env := range []execenv.ExecutionEnvironment{sess.environmentOwnedAtTeardown(), sess.ownedParkedWorktreeEnvironment()} {
+			if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+				_ = local.DisposeSessionScratch()
+			}
+		}
+	}
+	teardownChildSession(context.Background(), sess)
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
@@ -452,6 +446,9 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		return true, nil, nil
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
+		if agent.PluginName == "builtin" {
+			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
+		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
@@ -526,6 +523,10 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 		selected[resultToolName] = true
 	}
 	for _, name := range protectedGrantTools() {
+		delete(selected, name)
+	}
+	// No delegate saves memory (filterUnavailableMemoryTools).
+	for _, name := range memorySaveToolNames {
 		delete(selected, name)
 	}
 	if !canDelegate {
@@ -817,6 +818,9 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 // (a one-shot run's descriptor restored under serve, or the reverse).
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
+	subCfg.MemoryStateRoot = parentCfg.MemoryStateRoot
+	subCfg.DisableMemory = subCfg.DisableMemory || parentCfg.DisableMemory
+	subCfg.MemoryProjectID = parentCfg.MemoryProjectID
 	subCfg.Project = parentCfg.Project
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
@@ -1088,6 +1092,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 	} else {
 		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
+	// Frozen descriptors remember old allowances, never a live parent's revoked
+	// native capability. Apply this on all construction paths, even all-tools.
+	subCfg.spawn.deniedToolNames = appendUniqueStrings(subCfg.spawn.deniedToolNames, s.unavailableMemoryToolNames()...)
 
 	var reqSandbox *sandbox.SandboxPolicy
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
@@ -1105,7 +1112,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	ownsFreshEnv := preparedEnv.ownsFresh
 	if !hasPreparedEnv {
 		var err error
-		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironment(workingDir, reqSandbox)
+		subEnv, ownsFreshEnv, err = s.prepareSubagentEnvironmentFor(workingDir, reqSandbox, subCfg.spawn.sessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -1143,9 +1150,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// session cleanup path, so dispose every scratch it provisioned: the
 		// sandbox-owned one AND the one an unsandboxed environment mints on its
 		// first command, which the construction above reaches through its own git
-		// snapshot. A prepared environment belongs to whoever prepared it.
-		if ownsFreshEnv && !hasPreparedEnv {
-			disposeUnadoptedScratch(subEnv)
+		// snapshot. The child never existed, so its named scratch goes too
+		// rather than waiting for the root's archive. A prepared environment
+		// belongs to whoever prepared it.
+		if local, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok && ownsFreshEnv && !hasPreparedEnv {
+			_ = local.DisposeSessionScratch()
 		}
 		return nil, err
 	}
@@ -1219,7 +1228,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		for _, ev := range evicted {
-			teardownChildSession(context.Background(), ev.sess, retainChildScratch)
+			teardownChildSession(context.Background(), ev.sess)
 		}
 	}
 
@@ -1570,9 +1579,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
-			sub.mu.Lock()
-			sub.driving = false
-			sub.mu.Unlock()
+			if releaseDriveGuard(sub) {
+				s.redriveLiveChild(childSess.id)
+			}
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()
@@ -1675,6 +1684,9 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.endedAt = nil
 	sub.closed = false
 	sub.closeTimedOut = false
+	// The run drains the child's attention, so a refusal recorded on the guard
+	// it takes over is no longer owed a re-drive.
+	sub.attentionDriveRefused = false
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
@@ -1975,6 +1987,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if hook := a.sess.cfg.testOnly.subagentAfterFinalStatePublish; hook != nil {
 		hook(a)
 	}
+	// The finished generation's announcements (its idle snapshot, and its
+	// result to the parent and any waiting send) wait until the tail's end:
+	// see announceFinishedGeneration.
+	var announcements delegateMutationPlans
 	if stableRun && a.sess.delegateController != nil {
 		finish.endedAt = finalizeTime
 		var plans delegateMutationPlans
@@ -1984,6 +2000,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		} else {
 			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
 		}
+		announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
+		plans.updates, plans.deliveries = nil, nil
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
@@ -2000,6 +2018,19 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
+	if stableRun && a.sess.delegateController != nil {
+		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
+			hook(a)
+		}
+		a.announceFinishedGeneration(lease, announcements)
+	}
+	// Remaining attention is re-armed only once the finished generation is
+	// announced and released: a successor generation must not start ahead
+	// of its predecessor's result. With none remaining, the generation may
+	// have consumed attention it presented (finishAttentionTurn), which no
+	// attention reservation reported, so it lowers the controller's lingering
+	// needs-attention projection itself instead of leaving it for a parent
+	// drive that may never come.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
@@ -2007,16 +2038,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
 			}
+		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", clearErr))
 		}
 	}
-
 	if done != nil {
 		close(done)
 	}
 	if stableRun && a.sess.delegateController != nil {
-		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
-		}
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime
@@ -2031,6 +2060,23 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.scheduleIdleRuntimeRelease(lease.generation)
 		}
 	}
+}
+
+// announceFinishedGeneration is a stable run's last step for its finished
+// generation: it announces the generation (its idle snapshot, and its result
+// to the parent and to any waiting send), then releases the delegate for its
+// next start, whatever announcing did. Until then the delegate is refused a
+// start (a send waits for the release), so nothing hears the generation
+// finished before the delegate is ready for a send, and no successor starts
+// ahead of the result.
+func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements delegateMutationPlans) {
+	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
+		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
+	}
+	if hook := a.sess.cfg.testOnly.subagentBeforeGenerationReleased; hook != nil {
+		hook(a, lease)
+	}
+	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
 func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
@@ -2204,6 +2250,7 @@ type delegateTerminalRunInputs struct {
 type delegateTerminalPacketMetadata struct {
 	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
 	Reason            string                          `json:"reason,omitempty"`
+	Error             string                          `json:"error,omitempty"`
 	Name              string                          `json:"name,omitempty"`
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
@@ -2221,8 +2268,9 @@ type delegateTerminalPacketMetadata struct {
 	// ScratchPath is the delegate's absolute per-session scratch directory
 	// (SessionScratchDir), reported for the same reason Worktree is: it is
 	// partial evidence a parent needs to recover after an externally cancelled
-	// run (kata tpb0), retained on disk regardless of outcome. Empty when the
-	// delegate never provisioned one (unsandboxed and no tool spawned yet).
+	// run (kata tpb0). It is kept until the root session is archived or
+	// deleted. Empty when the delegate never
+	// provisioned one (unsandboxed and no tool spawned yet).
 	ScratchPath         string                         `json:"scratch_path,omitempty"`
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit     int                            `json:"exhaustion_limit,omitempty"`
@@ -2250,10 +2298,16 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		Message:  rawMessage,
 		Warnings: append([]string(nil), inputs.warnings...),
 	}
+	// A failure's reason says which failure it was; the branches below
+	// replace it for a run that reported, exhausted, or was cancelled.
+	reason := "ended_without_report"
+	if inputs.runErr != nil {
+		reason = "run_error"
+	}
 	finish := delegateFinish{
 		outcome:     delegatestore.OutcomeFailed,
 		disposition: delegatestore.DispositionTerminalError,
-		reason:      "failed",
+		reason:      reason,
 		packet:      &packet,
 		endedAt:     inputs.endedAt,
 	}
@@ -2281,8 +2335,13 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 			packet.Message, _ = json.Marshal(delegateUserStopMessage)
 		}
 	}
+	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
+		firstLine, _, _ := strings.Cut(strings.TrimSpace(inputs.runErr.Error()), "\n")
+		finish.errorText = boundedFinishText(firstLine)
+	}
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
+	metadata.Error = finish.errorText
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}
@@ -2317,9 +2376,12 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 	packet.StructuredResult = append(json.RawMessage(nil), raw...)
 	valid := true
 	packet.StructuredResultValid = &valid
+	// Name the capture source so a client can stop shape-matching (#3548).
 	if len(inputs.descriptor.ResultSchema) == 0 {
+		packet.StructuredResultSource = delegatestore.StructuredResultSourceDefaultEnvelope
 		return
 	}
+	packet.StructuredResultSource = delegatestore.StructuredResultSourceSchema
 	var schemaValue any
 	var structuredValue any
 	if err := json.Unmarshal(inputs.descriptor.ResultSchema, &schemaValue); err != nil || json.Unmarshal(raw, &structuredValue) != nil || validateStructuredResult(structuredValue, schemaValue) != nil {

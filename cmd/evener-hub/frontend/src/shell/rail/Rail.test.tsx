@@ -23,12 +23,26 @@ import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } 
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import {
+  archivedListKey,
+  archivedListStore,
+  refreshLoadedArchivedLists,
+  resetArchivedListStoreForTests,
+} from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { topNotesStore } from "../../stores/topNotes";
+import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
+import {
+  resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
+  setSessionCacheAdapterForTests,
+  threadsStore,
+} from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -95,8 +109,8 @@ function deferred<T>() {
 }
 function installState(resources: ResourceState[] = [], m = manifest()) {
   navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
+    mode: "v3",
+    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [3] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
@@ -377,7 +391,7 @@ describe("resource-backed Rail", () => {
           }),
         ]),
       ]);
-      const rowBody = vi.spyOn(railNodeExports, "activeWorkSummary");
+      const rowBody = vi.spyOn(railNodeExports, "displayState");
       render(<Rail />);
       const atRest = rowBody.mock.calls.length;
       // The spy was live for the initial render (the row really did render
@@ -742,6 +756,15 @@ describe("resource-backed Rail", () => {
     expect(body).toBeTruthy();
     expect(railStyles.parentScrollBody).toBeTruthy();
     expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
+
+    // The drawer's scroll ends at the visible viewport bottom, so parent-scroll
+    // mode pads its last row clear of the home indicator.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
+    expect(rule).toContain("padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom))");
   });
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
@@ -762,7 +785,7 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByText(/command line/i)).toBeNull();
     expect(screen.getByText("No sessions yet")).toBeTruthy();
   });
-  test.each(["v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
+  test.each(["v3"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
     const empty = emptyManifest();
     const pendingManifest = {
       ...resource({ kind: "manifest" }, empty),
@@ -788,7 +811,7 @@ describe("resource-backed Rail", () => {
       loading: true,
     } as ResourceState;
     installState([pendingSection], empty);
-    navigationStore.setState({ mode: "v2" });
+    navigationStore.setState({ mode: "v3" });
 
     render(<Rail />);
 
@@ -803,7 +826,7 @@ describe("resource-backed Rail", () => {
     const empty = emptyManifest();
     const staleEmpty = { ...sectionResource("live", []), stale: true };
     installState([staleEmpty], empty);
-    navigationStore.setState({ mode: "v2" });
+    navigationStore.setState({ mode: "v3" });
 
     render(<Rail />);
 
@@ -882,7 +905,7 @@ describe("resource-backed Rail", () => {
         return loaded;
       });
       installState([catalogPage as ResourceState]);
-      navigationStore.setState({ mode: "v2", loadProject });
+      navigationStore.setState({ mode: "v3", loadProject });
 
       render(<Rail />);
       await act(async () => undefined);
@@ -911,7 +934,7 @@ describe("resource-backed Rail", () => {
     };
     const loadProject = vi.fn().mockResolvedValue(undefined);
     installState([catalog, gone]);
-    navigationStore.setState({ mode: "v2", loadProject });
+    navigationStore.setState({ mode: "v3", loadProject });
 
     render(<Rail />);
     await act(async () => undefined);
@@ -1314,7 +1337,7 @@ describe("resource-backed Rail", () => {
     const lookupLocation = vi.fn().mockResolvedValue(gone);
     const consumed = vi.fn();
     installState([gone as ResourceState]);
-    navigationStore.setState({ mode: "v2", lookupLocation });
+    navigationStore.setState({ mode: "v3", lookupLocation });
 
     const view = render(<Rail revealTarget="local:gone-reveal" onRevealConsumed={consumed} />);
     await act(async () => undefined);
@@ -1751,148 +1774,189 @@ describe("resource-backed Rail", () => {
     expect(getToasts().some((toast) => /Couldn't update archive state/i.test(toast.text))).toBe(true);
   });
 
-  test("the rail's Notes action opens idempotently, matching its sibling panes", () => {
-    topNotesStore.getState().resetForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    try {
-      installState([
-        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
-      ]);
-      threadsStore.setState({
-        threads: new Map([
-          [
-            "local:notable",
-            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
-          ],
-        ]),
-      });
-      render(<Rail />);
-
-      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Notes" }));
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
-
-      // Re-selecting Notes (now labeled with the open checkmark) keeps it
-      // open: the rail NAVIGATES (idempotent, like its sibling pane openers) -
-      // toggling closed is the palette's deliberate job.
-      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Notes ✓" }));
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
-      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(true);
-    } finally {
-      restoreSessionPane();
-    }
-  });
-
-  test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
-    topNotesStore.getState().resetForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    try {
-      installState([
-        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
-      ]);
-      threadsStore.setState({
-        threads: new Map([
-          [
-            "local:notable",
-            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
-          ],
-        ]),
-      });
-      render(<Rail />);
-
-      // The menu opens while the capability is live...
-      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      const notesItem = screen.getByRole("menuitem", { name: "Notes" });
-
-      // ...and is revoked before the click lands - one act, so the click
-      // runs against the stale menu the user still sees.
-      act(() => {
-        threadsStore.setState({
-          threads: new Map([
-            [
-              "local:notable",
-              { ref: "local:notable", capabilities: { sharedNotes: false }, status: { type: "idle" } } as never,
-            ],
-          ]),
-        });
-        fireEvent.click(notesItem);
-      });
-
-      // The capability is gone, so the click must leave no trace: no
-      // expanded state, no focus request, nothing the session pane would
-      // surface if the capability ever came back.
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(false);
-      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(false);
-    } finally {
-      restoreSessionPane();
-    }
-  });
-  test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
-    window.history.replaceState({}, "", "/");
-    const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });
-    const cluster = summary({
-      ref: "local:cluster",
-      session_id: "cluster",
-      title: "Keyboard cluster",
-      kind: "cluster",
-      children: [child],
-    });
-    installState([sectionResource("live", [cluster])]);
+  test("the rail session menu omits Tasks and Notes", () => {
+    installState([
+      sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
+    ]);
     render(<Rail />);
 
-    const clusterRow = screen.getByRole("treeitem", { name: /keyboard cluster/i });
-    act(() => clusterRow.focus());
-    expect(document.activeElement).toBe(clusterRow);
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+  });
 
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("true");
+  test("a rail row's Overview action opens the session and the activity sidebar, never the old pane", async () => {
+    // The chrome menu's twin: desktop Activity everywhere is the sidebar (the
+    // zoom system's triage surface). The rail NAVIGATES, idempotently: open
+    // the session pane, open the sidebar scoped to it, never toggle closed.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Activity" })).toBeNull();
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(
+        workspaceStore
+          .getState()
+          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
+      ).toBe(true);
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
+    } finally {
+      restoreSessionPane();
+      // The reset updates a store the row subscribes to; unwrapped it lands
+      // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Overview action on desktop preserves a retained Details placement", async () => {
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreDetailsPane = registerPaneForTests({
+      id: "sessionDetails",
+      title: () => "details",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      const details = workspaceStore.getState().openPane("sessionDetails", { ref: "local:active" });
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === details)?.type).toBe("sessionDetails");
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["sessionDetails", "session"]);
+    } finally {
+      restoreSessionPane();
+      restoreDetailsPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Overview action on mobile opens the new activity sidebar", async () => {
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
+      await waitFor(() => expect(activitySidebarStore.getState().open).toBe(true));
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
+    } finally {
+      restoreViewport();
+      restoreSessionPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("the rail session menu omits Tasks and Notes on mobile", () => {
+    const restoreViewport = installMobileViewport();
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
+      ]);
+      render(<Rail />);
+      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+      expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
+    window.history.replaceState({}, "", "/");
+    // Session rows are leaves now: the tree's branch rows are projects (and
+    // host groups), so the keyboard contract - expand, descend, activate,
+    // return, collapse - plays out on a project and its flat session rows.
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 2 }]),
+      projectResource("p", [
+        summary({ ref: "local:parent", session_id: "parent", title: "Keyboard parent" }),
+        summary({ ref: "local:child", session_id: "child", title: "Keyboard child" }),
+      ]),
+    ]);
+    render(<Rail />);
+
+    const projectRow = screen.getByRole("treeitem", { name: /^project/i });
+    act(() => projectRow.focus());
+    expect(document.activeElement).toBe(projectRow);
+    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("true");
+    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(parentRow);
+    // A session row is a leaf: ArrowRight on it opens nothing and the row
+    // carries no expanded state at all.
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    expect(parentRow.getAttribute("aria-expanded")).toBeNull();
     const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
-    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
+    fireEvent.keyDown(parentRow, { key: "ArrowDown" });
     expect(document.activeElement).toBe(childRow);
 
     fireEvent.keyDown(childRow, { key: "Enter" });
     expect(window.location.pathname).toBe("/s/local%3Achild");
     fireEvent.keyDown(childRow, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(clusterRow);
-    fireEvent.keyDown(clusterRow, { key: "ArrowLeft" });
-    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(projectRow);
+    fireEvent.keyDown(projectRow, { key: "ArrowLeft" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
-  test("a watch row is passive: keyboard activation persists no expansion override", () => {
+  test("a loading row is passive: keyboard activation persists no expansion override", () => {
     window.history.replaceState({}, "", "/");
-    // A session starts collapsed, so expand it first to render its watch row.
-    const watched = summary({
-      title: "Watched",
-      watches: [{ id: "w1", source: "self", deliveries: 0, created_at: "2026-09-12T19:00:00Z", active: true }],
-    });
-    installState([sectionResource("live", [watched])]);
+    // An unloaded project starts collapsed, so expand it first to render its
+    // loading placeholder.
+    installState([catalogResource([{ key: "p", name: "Project", session_count: 2 }])]);
     render(<Rail />);
 
-    const sessionRow = screen.getByRole("treeitem", { name: /watched/i });
-    act(() => sessionRow.focus());
-    fireEvent.keyDown(sessionRow, { key: "ArrowRight" });
-    expect(sessionRow.getAttribute("aria-expanded")).toBe("true");
+    const projectRow = screen.getByRole("treeitem", { name: /^project/i });
+    act(() => projectRow.focus());
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("true");
 
-    const watchRow = screen.getByRole("treeitem", { name: /watch:/i });
-    act(() => watchRow.focus());
-    // A watch row is a leaf with nothing to disclose, so neither the
+    const loadingRow = screen.getByRole("treeitem", { name: /loading/i });
+    act(() => loadingRow.focus());
+    // A loading row is a leaf with nothing to disclose, so neither the
     // activation key nor the expand chord may persist an override for it.
-    fireEvent.keyDown(watchRow, { key: "ArrowRight" });
-    fireEvent.keyDown(watchRow, { key: "Enter" });
+    fireEvent.keyDown(loadingRow, { key: "ArrowRight" });
+    fireEvent.keyDown(loadingRow, { key: "Enter" });
 
     const persisted: Record<string, unknown> = JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}");
-    const watchOverrides = Object.keys(persisted).filter((id) => id.startsWith("watch:"));
-    expect(watchOverrides).toEqual([]);
+    const loadingOverrides = Object.keys(persisted).filter((id) => id.includes(":loading"));
+    expect(loadingOverrides).toEqual([]);
   });
   test("routes rename through the rendered session menu and dialog", async () => {
     installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
@@ -2054,9 +2118,78 @@ describe("resource-backed Rail", () => {
       params: { key: "p", workingDir: "/local/proj" },
     });
   });
+
+  test.each([
+    ["session", "resolve"],
+    ["session", "reject"],
+    ["project", "resolve"],
+    ["project", "reject"],
+  ])("fences a deleted %s before held navigation can %s", { timeout: 3_000 }, async (kind, outcome) => {
+    resetThreadsStoreForTests();
+    const convergence = deferred<void>();
+    const applyNavigationMutation = vi.fn(() => convergence.promise);
+    const adapter = new SessionCacheIndexedDB();
+    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
+    setSessionCacheAdapterForTests(adapter);
+    const postMessage = vi.fn();
+    setCacheChannelFactoryForTests(
+      () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
+    );
+    installState(
+      kind === "session"
+        ? [sectionResource("live", [summary({ title: "Delete target", state: "ended", live: false })])]
+        : [catalogResource([{ key: "p", name: "Delete target", session_count: 1, sources: ["local"] }])],
+    );
+    navigationStore.setState({ applyNavigationMutation });
+    const response = {
+      deleted: ["a", "local:a", "local:b"],
+      skipped: [{ id: "c", reason: "busy" }],
+      navigation: { generation_id: "g1", targets: [] },
+    };
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => response);
+    client.on("evener/project/delete", () => response);
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /actions for delete target/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: kind === "session" ? "Delete…" : "Delete project…" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+      await act(async () => undefined);
+      expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+      expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
+      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith(["local:a", "local:b"]);
+      expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ kind: "deletion", refs: ["local:a", "local:b"] }),
+      );
+      // A new pane can try to hydrate while navigation is still held. The
+      // shared action's response fence must stop it without a thread read.
+      await act(async () => {
+        await threadsStore.getState().ensureThread("local:b");
+      });
+      expect(threadsStore.getState().threads.has("local:b")).toBe(false);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toEqual([]);
+      await act(async () => {
+        if (outcome === "reject") convergence.reject(new Error("navigation unavailable"));
+        else convergence.resolve();
+      });
+      expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
+      expect(deleteRecords).toHaveBeenCalledTimes(1);
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      if (outcome === "reject")
+        expect(getToasts().some((toast) => toast.text.includes("navigation unavailable"))).toBe(true);
+    } finally {
+      await act(async () => {
+        convergence.resolve();
+      });
+      adapter.close();
+      resetThreadsStoreForTests();
+    }
+  });
+
   test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
-    const row = summary({ title: "Pinned delete" });
+    const row = summary({ title: "Pinned delete", state: "ended", live: false });
     installState([
       resource(
         { kind: "pin_catalog", offset: 0, limit: 100 },
@@ -2115,9 +2248,9 @@ describe("resource-backed Rail", () => {
     render(<Rail />, client);
     fireEvent.click(screen.getByText("Project"));
     fireEvent.click(screen.getByRole("button", { name: /actions for unresponsive/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref: "local:a" } },
@@ -2580,10 +2713,7 @@ describe("host grouping (organize by)", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
   });
 
-  // Live rows group under host subheaders in BOTH grouped modes, so a Live
-  // tier's root rows sit at depth 1 there: the project line and the pin-star
-  // rule must follow the row's tier, not its nesting depth.
-  test("grouped Live rows still name their project under the host subheaders", () => {
+  test("grouped Live rows keep project context in the hover card", () => {
     prefsStore.setState({ sidebarGrouping: "host-project" });
     installState(
       [
@@ -2596,10 +2726,11 @@ describe("host grouping (organize by)", () => {
     );
     render(<Rail />);
     const live = sectionRoot("Live");
-    // The subheader answers "which machine"; the row's second line still
-    // answers "which project" - the one fact a Live row exists to carry.
-    expect(within(live).getByText("Evener")).toBeTruthy();
-    expect(within(live).getByText("Radiant")).toBeTruthy();
+    expect(within(live).queryByText("Evener")).toBeNull();
+    expect(within(live).queryByText("Radiant")).toBeNull();
+
+    const panel = hoverForTooltip(within(live).getByText("Local live"));
+    expect(within(panel).getByText("Evener")).toBeTruthy();
   });
 
   test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {
@@ -2760,7 +2891,7 @@ describe("host grouping (organize by)", () => {
     }
   });
 
-  test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
+  test("a reveal of a subagent ref lands on its top-level carrier's row (host-first)", async () => {
     const restoreScroll = stubScrollIntoView();
     prefsStore.setState({ sidebarGrouping: "host-project" });
     const parent = summary({
@@ -2768,16 +2899,6 @@ describe("host grouping (organize by)", () => {
       session_id: "parent",
       title: "Parent run",
       host_id: "devbox",
-      children: [
-        summary({
-          ref: "devbox:child",
-          session_id: "child",
-          title: "Nested target",
-          host_id: "devbox",
-          kind: "subagent",
-          state: "active",
-        }),
-      ],
     });
     installState(
       [
@@ -2785,6 +2906,29 @@ describe("host grouping (organize by)", () => {
           { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
         ]),
         projectResource("p", [parent]),
+        // The location lookup's answer for a nested ref: the rail renders no
+        // row for it, so the reveal lands on the carrier top_level_ref names -
+        // the one row the subagent's work is summarized on.
+        resource(
+          { kind: "location", ref: "devbox:child" },
+          {
+            generation_id: "g1",
+            revision: 1,
+            ref: "devbox:child",
+            top_level_ref: "devbox:parent",
+            top_level: false,
+            tier: "current",
+            project_key: "p",
+            session: summary({
+              ref: "devbox:child",
+              session_id: "child",
+              title: "Nested target",
+              host_id: "devbox",
+              kind: "subagent",
+              state: "active",
+            }),
+          },
+        ),
       ],
       remoteManifest(),
     );
@@ -2792,9 +2936,10 @@ describe("host grouping (organize by)", () => {
     try {
       render(<Rail revealTarget="devbox:child" onRevealConsumed={consumed} />);
       await act(async () => undefined);
-      // The chain must open the carrier session's own row, or the nested
-      // target never renders and the reveal never consumes.
-      expect(within(sectionRoot("Hosts")).getByText("Nested target")).toBeTruthy();
+      expect(within(sectionRoot("Hosts")).getByText("Parent run")).toBeTruthy();
+      // No nested row renders for the subagent: the flat rail has no row for
+      // the target itself, only its carrier.
+      expect(within(sectionRoot("Hosts")).queryByText("Nested target")).toBeNull();
       expect(consumed).toHaveBeenCalledTimes(1);
     } finally {
       restoreScroll();
@@ -2896,5 +3041,509 @@ describe("the selected session's rail row", () => {
     for (const tree of trees) {
       expect(within(tree).queryAllByRole("treeitem", { selected: true })).toHaveLength(1);
     }
+  });
+});
+
+describe("archived rows come from evener/archived/list", () => {
+  const archivedRow = (index: number) =>
+    summary({ ref: `local:old-${index}`, session_id: `old-${index}`, title: `Old run ${index}`, live: false });
+  const archivedCatalog = (moreArchived: number) =>
+    resource(
+      { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
+      {
+        generation_id: "g1",
+        revision: 1,
+        projects: [{ key: "p", name: "Proj", session_count: moreArchived + 1, more_archived: moreArchived }],
+        remaining: 0,
+      },
+    );
+  function installList(rows: NavigationSessionSummary[], total: number, nextCursor?: string) {
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("projects", "p")]: { rows, total, nextCursor, loaded: true, loading: false, error: null },
+      },
+    });
+  }
+
+  beforeEach(() => resetArchivedListStoreForTests());
+
+  test("the summary path takes archived rows from the list and counts the rest as not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    const rows = Array.from({ length: 50 }, (_, i) => archivedRow(i));
+    installList(rows, 60, "cursor-1");
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    const archived = project?.sessions.filter((session) => session.tier === "archived") ?? [];
+    expect(archived.map((session) => session.ref)).toEqual(rows.map((row) => row.ref));
+    expect(archived[0]?.project_key).toBe("p");
+    expect(project?.more_archived).toBe(10);
+  });
+
+  test("once the list loads, its own total counts the rows not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList(
+      Array.from({ length: 50 }, (_, i) => archivedRow(i)),
+      61,
+      "cursor-1",
+    );
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(11);
+  });
+
+  test("before the list loads, the whole archived count is not yet loaded", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.some((session) => session.tier === "archived")).toBe(false);
+    expect(project?.more_archived).toBe(60);
+  });
+
+  test("the graph path ignores the navigation archived tier and reads the list", () => {
+    const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
+    const projectSummary = { key: "p", name: "Proj", session_count: 61, more_archived: 60 };
+    const projectSummaryKey = scopedEntityKey(catalogKey, "1");
+    const catalog = normalizedResource(
+      catalogKey,
+      { projects: [projectSummary] },
+      {
+        metadata: {},
+        entities: [{ key: projectSummaryKey, kind: "project", value: projectSummary }],
+        containers: [
+          {
+            key: navigationRootContainerKey(catalogKey, "projects"),
+            owner: { kind: "resource_root", slot: "projects" },
+            children: [projectSummaryKey],
+          },
+        ],
+      },
+    );
+    installState([catalog, graphProjectResource("p", "3", "4", summary({ ref: "local:now", title: "Now" }))]);
+    installList([archivedRow(0), archivedRow(1)], 60, "cursor-1");
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.filter((session) => session.tier === "archived").map((session) => session.ref)).toEqual([
+      "local:old-0",
+      "local:old-1",
+    ]);
+    expect(project?.more_archived).toBe(58);
+  });
+
+  test("the Archived sessions count is the project's archived total, not its loaded rows", () => {
+    installState([archivedCatalog(60), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList(
+      Array.from({ length: 50 }, (_, i) => archivedRow(i)),
+      60,
+      "cursor-1",
+    );
+    render(<Rail />);
+    expect(screen.getByRole("heading", { name: /Archived sessions \(60\)/ })).toBeTruthy();
+  });
+
+  test("a hydrated project with archived sessions fetches its archived list", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]));
+  });
+
+  test("a reveal of an archived session on a later page pages the list until its row renders", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const cursors: Array<string | undefined> = [];
+    client.on("evener/archived/list", (params) => {
+      cursors.push(params.cursor);
+      return params.cursor === "cursor-1"
+        ? { sessions: [archivedRow(1)], total: 2, nextCursor: "cursor-2" }
+        : { sessions: [archivedRow(2)], total: 2 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(3),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-2" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-2",
+          top_level_ref: "local:old-2",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(2),
+        },
+      ),
+    ]);
+    installList([archivedRow(0)], 3, "cursor-1");
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:old-2" onRevealConsumed={consumed} />, client);
+    await waitFor(() => expect(cursors).toEqual(["cursor-1", "cursor-2"]));
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-2"]')).not.toBeNull());
+    // The reveal scrolls in a passive effect that can lag the row's render;
+    // the stub cannot be restored until that effect has consumed the reveal.
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    restoreScroll();
+  });
+
+  test("a reveal of an archived session fetches the first page when navigation counts none", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(0),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:old-0" onRevealConsumed={consumed} />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    // The reveal scrolls in a passive effect that can lag the row's render;
+    // the stub cannot be restored until that effect has consumed the reveal.
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    restoreScroll();
+  });
+
+  // A counted project whose archived session is the reveal target. Folds start
+  // open, so the reveal reaches the list on the count effect's own commit
+  // rather than a re-run after it.
+  function installRevealIntoCountedProject() {
+    installState([
+      archivedCatalog(1),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:old-0" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:old-0",
+          top_level_ref: "local:old-0",
+          top_level: true,
+          tier: "archived",
+          project_key: "p",
+          session: archivedRow(0),
+        },
+      ),
+    ]);
+    localStorage.setItem(
+      EXPANSION_STORAGE_KEY,
+      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
+    );
+  }
+
+  test("a reveal of an archived session in a counted project fetches its list once", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
+  test("a reveal retries a failed first archived-list fetch and renders the row", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      if (requests === 1) throw new Error("hub busy");
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    restoreScroll();
+  });
+
+  test("a hub that keeps failing the archived list is asked once more per reveal", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      throw new Error("hub down");
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(requests).toBe(2));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe("hub down");
+    restoreScroll();
+  });
+
+  test("an archived continuation discloses only fork originals and preserves their action refs", () => {
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const delegate = summary({
+      ref: "local:delegate",
+      session_id: "delegate",
+      title: "Delegate",
+      kind: "subagent",
+      live: false,
+    });
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([{ ...archivedRow(0), children: [original, delegate] }], 1);
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:archived": true, "archivedgroup:p": true }));
+    render(<Rail />);
+    const continuation = screen.getByRole("treeitem", { name: /Old run 0/i });
+    expect(continuation.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Original")).toBeNull();
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(continuation.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Original")).toBeTruthy();
+    expect(screen.queryByText("Delegate")).toBeNull();
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(screen.queryByText("Original")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("a whole archived project's original reveals through the continuation disclosure", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const continuation = { ...archivedRow(0), children: [original] };
+    installState([
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "p", name: "Proj", session_count: 1, more_archived: 1 }],
+          remaining: 0,
+        },
+      ),
+      projectResource("p", []),
+      resource(
+        { kind: "location", ref: "local:orig" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:orig",
+          top_level_ref: "local:old-0",
+          top_level: false,
+          tier: "archived",
+          project_key: "p",
+          session: original,
+        },
+      ),
+    ]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("archived_projects", "p")]: {
+          rows: [continuation],
+          total: 1,
+          loaded: true,
+          loading: false,
+          error: null,
+        },
+      },
+    });
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    restoreScroll();
+  });
+
+  test("a reveal of a fork original under an archived row pages until its continuation loads", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const cursors: Array<string | undefined> = [];
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    client.on("evener/archived/list", (params) => {
+      cursors.push(params.cursor);
+      return { sessions: [{ ...archivedRow(2), children: [original] }], total: 3, nextCursor: "cursor-2" };
+    });
+    connectionStore.getState().connect(client);
+    installState([
+      archivedCatalog(2),
+      projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
+      resource(
+        { kind: "location", ref: "local:orig" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:orig",
+          top_level_ref: "local:old-2",
+          top_level: false,
+          tier: "archived",
+          project_key: "p",
+          session: original,
+        },
+      ),
+    ]);
+    installList([archivedRow(0)], 2, "cursor-1");
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(cursors).toEqual(["cursor-1"]);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    window.history.replaceState({}, "", "/");
+    restoreScroll();
+  });
+
+  test("a loaded list refetches when the navigation count moves past it", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]));
+    await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list whose total still disagrees with the navigation count is not refetched again", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toHaveLength(1));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list an action already refreshed is not refetched when the navigation count catches up", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await act(async () => {
+      await refreshLoadedArchivedLists();
+    });
+    expect(seen).toHaveLength(1);
+    act(() => installState([archivedCatalog(3), project]));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a project counts the navigation's archived total while its first page loads", () => {
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("projects", "p")]: { rows: [], total: 0, loaded: false, loading: true, error: null },
+      },
+    });
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    expect(adapted.projects.find((candidate) => candidate.key === "p")?.more_archived).toBe(3);
+  });
+
+  test("a count that moves while the list loads refetches once the stale answer lands", async () => {
+    const client = new FakeClient("ready");
+    const stale = { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    const fresh = { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    let release: () => void = () => undefined;
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      if (seen.length > 1) return fresh;
+      return new Promise((resolve) => {
+        release = () => resolve(stale);
+      });
+    });
+    connectionStore.getState().connect(client);
+    const project = projectResource("p", [summary({ ref: "local:now", title: "Now" })]);
+    installState([archivedCatalog(2), project]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    let refreshing: Promise<void> = Promise.resolve();
+    act(() => {
+      refreshing = refreshLoadedArchivedLists();
+    });
+    await waitFor(() => expect(seen).toHaveLength(1));
+    act(() => installState([archivedCatalog(3), project]));
+    await act(async () => {
+      release();
+      await refreshing;
+    });
+    await waitFor(() => expect(seen).toHaveLength(2));
+  });
+
+  test("a session in both navigation and the archived list renders once", () => {
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:old-0", title: "Old run 0" })])]);
+    installList([archivedRow(0)], 1);
+    const adapted = adaptNavigationResources(navigationStore.getState(), archivedListStore.getState().lists);
+    const project = adapted.projects.find((candidate) => candidate.key === "p");
+    expect(project?.sessions.filter((session) => session.ref === "local:old-0")).toHaveLength(1);
+  });
+
+  test("the archived fold's overflow row loads the list's next page", async () => {
+    const client = new FakeClient("ready");
+    const seen: Array<{ cursor?: string }> = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 3, "cursor-1");
+    render(<Rail />, client);
+    fireEvent.click(sectionDisclosure(/Archived sessions/));
+    const archived = sectionRoot(/Archived sessions/);
+    fireEvent.click(within(archived).getByText("Proj"));
+    fireEvent.click(within(archived).getByText(/1 older/));
+    await waitFor(() => expect(seen.some((params) => params.cursor === "cursor-1")).toBe(true));
+    await waitFor(() => expect(within(archived).getByText("Old run 2")).toBeTruthy());
   });
 });

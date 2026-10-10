@@ -16,9 +16,8 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { singleFlight } from "./singleFlight";
 
-interface PageState<T> {
+export interface PageState<T> {
 	loaded: boolean;
-	truncated: boolean;
 	rows: T[];
 	remaining: number;
 	loading: boolean;
@@ -34,11 +33,28 @@ interface PageState<T> {
 export function updating(page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">) {
 	return page.stale && !page.error;
 }
+/** What a page list reads and drives: NavigationPages for navigation's own
+ * resources, and ArchivedPages (archivedPages.ts) for a project's archived
+ * sessions, which navigation doesn't serve. */
+export interface PageSource<T> {
+	/** Whether navigation versions this list. A confirm step checks a change
+	 * against the version it read; an unversioned source has none to check. */
+	readonly navigationVersioned: boolean;
+	getSnapshot(): PageState<T>;
+	getResourceVersion(): NormalizedResource["version"] | null;
+	subscribe(listener: () => void): () => void;
+	watch(owner?: () => void): () => void;
+	refresh(): Promise<unknown>;
+	refreshAfter(receipt: NavigationMutation): Promise<unknown>;
+	more(): Promise<unknown>;
+	cancel(): void;
+	resume(): void;
+}
 type NativeNavigationParams = Omit<NavigationReadParams, "representationVersion">;
-export class NavigationPages<T> {
+export class NavigationPages<T> implements PageSource<T> {
+	readonly navigationVersioned = true;
 	private state: PageState<T> = {
 		loaded: false,
-		truncated: false,
 		rows: [],
 		remaining: 0,
 		loading: false,
@@ -75,7 +91,7 @@ export class NavigationPages<T> {
 	) {
 		this.resourceKey = navigationParamsToResourceKey({
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 	}
 	/** Follow hub invalidations. Newer data is re-read here without user
@@ -174,7 +190,7 @@ export class NavigationPages<T> {
 		this.mutationGeneration = receipt.generation_id;
 		this.mutationFloor = Math.max(this.mutationFloor, requiredRevision(this.resourceKey, receipt.targets));
 		if (!(await this.load(true, receipt)))
-			throw new Error("The change was accepted, but the updated list could not be loaded. Refresh the list.");
+			throw new Error("The change was accepted, but the updated list could not be loaded. Try again.");
 	}
 	private async load(
 		reset: boolean,
@@ -190,7 +206,7 @@ export class NavigationPages<T> {
 			const offset = reset ? 0 : this.offset,
 				params = {
 					...this.params,
-					representationVersion: 2,
+					representationVersion: 3,
 					offset,
 					limit: this.limit,
 				},
@@ -207,7 +223,7 @@ export class NavigationPages<T> {
 			} catch (cause) {
 				if (!recovered && cause instanceof Error && cause.message.includes("installed base"))
 					return this.load(true, receipt, { recovered: true, retried });
-				throw new Error("Could not read this navigation page. Refresh to try again.");
+				throw new Error("Could not read this navigation page. Try again.");
 			}
 			const receiptRevision = receipt ? requiredRevision(this.resourceKey, receipt.targets) : 0;
 			if (reset && epoch === this.notificationEpoch && decoded.version.generationId !== this.notifiedGeneration) {
@@ -251,7 +267,6 @@ export class NavigationPages<T> {
 					loaded: true,
 					rows: [],
 					remaining: 0,
-					truncated: false,
 					loading: false,
 					stale: false,
 					error: null,
@@ -277,7 +292,7 @@ export class NavigationPages<T> {
 					: this.normalized
 						? applyDelta(this.normalized, decoded.delta, decoded.version)
 						: null;
-			if (!incoming) throw new Error("Could not read this navigation page. Refresh to try again.");
+			if (!incoming) throw new Error("Could not read this navigation page. Try again.");
 			if (reset && offset === 0) this.normalized = incoming;
 			const data = materializeNavigationResource(incoming) as Record<string, unknown>,
 				raw = data[this.field];
@@ -287,7 +302,7 @@ export class NavigationPages<T> {
 				Number(data.remaining) < 0 ||
 				(!raw.length && Number(data.remaining) > 0)
 			)
-				throw new Error("The hub returned an invalid navigation page. Refresh to try again.");
+				throw new Error("The hub returned an invalid navigation page. Try again.");
 			if (
 				!reset &&
 				(this.version?.generationId !== decoded.version.generationId ||
@@ -300,7 +315,7 @@ export class NavigationPages<T> {
 			const unique = new Map((reset ? [] : this.state.rows).map((row) => [this.key(row), row]));
 			for (const row of raw) {
 				const identity = this.key(row as T);
-				if (!identity) throw new Error("The hub returned an invalid destination. Refresh to try again.");
+				if (!identity) throw new Error("The hub returned an invalid destination. Try again.");
 				unique.set(identity, row as T);
 			}
 			this.offset = offset + raw.length;
@@ -309,7 +324,6 @@ export class NavigationPages<T> {
 			this.rereads.settle();
 			this.publish({
 				loaded: true,
-				truncated: data.truncated === true || (!reset && this.state.truncated),
 				rows: [...unique.values()],
 				remaining: Number(data.remaining),
 				loading: false,

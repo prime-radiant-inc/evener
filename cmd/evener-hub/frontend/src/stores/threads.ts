@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -10,25 +11,34 @@
 import type {
   AnyNotification,
   AppwireClientLike,
+  CachedSessionRecord,
   GoalSetResponse,
+  JobActivityJob,
+  JobOutputPage,
   ModelListResponse,
   SnapshotIdentity,
+  TaskListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
+  ThreadItemPosition,
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  TurnModel,
   UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
+  acquireThreadSubscription,
   applyHistoryReadFailure,
   applyNotification,
   applyReadResponse,
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
+  cachedSessionRecord,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
+  comparePositions,
   errorText,
   hydrateThread,
   type InputAttachment,
@@ -37,22 +47,26 @@ import {
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   mergeOlderItemPage,
+  mergeTailTurns,
   mutationErrorData,
   notificationRoutingKey,
+  readDisposition,
+  readWindowBounds,
   resolvePendingEscalation,
+  SHUT_DOWN_STATUSES,
+  type ThreadSubscriptionLease,
+  threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
-import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
-  type MutationClientLookup,
   type MutationCommit,
   type MutationIntent,
   type MutationOptimisticRecord,
@@ -62,10 +76,17 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import {
+  MutationOutboxIndexedDB,
+  MutationStorageError,
+  MutationStorageTimeoutError,
+  type RetargetedMutations,
+} from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
+import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
 export type { InputAttachment } from "@evener/appwire-client";
 
@@ -121,14 +142,62 @@ export class ConflictError extends Error {
 export interface PromoteDisplayInput {
   text: string;
   skillNames?: readonly string[];
+  commandNames?: readonly string[];
+}
+
+interface CacheLifetime {
+  /** The current model is an unverified cached shell: actions, paging and
+   * writes wait for its first authoritative publish. */
+  shell?: true;
+  /** The newest recorded item position, fixed before any live shell merge. */
+  anchor?: ThreadItemPosition;
+  /** Clear/deletion write suppression, re-checked at write-fire time. */
+  suppressed?: true;
+  /** The owned ref's captured epoch, including misses and deadline fallbacks. */
+  leaseEpoch?: number;
 }
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
+  // Reconciliation failures this page attributes to unavailable storage rather
+  // than a mutation-state conflict: the same wedge that fences the durable
+  // write also fails the reconcile read, and treating that as a real failure
+  // fences the direct-dispatch fallback too, re-breaking the promise that a
+  // send survives a storage wedge. Storage-blocked refs stay fenced for the
+  // durable dispatcher; the send fallback is the one caller that may admit
+  // them. Recorded at the reconcile's rejection, or classified earlier by the
+  // send fallback's own storage-timeout observation while the reconcile is
+  // still pending. Cleared by a successful reconciliation; retried by every
+  // discovery pass.
+  mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
+  // The resumed identity when a store-driven resume (resumeFencedForSend)
+  // returned a different ref than it started with, keyed by the ref the pane
+  // was showing. The pane reads this and follows the new identity (Session.tsx)
+  // then clears it: a store cannot navigate, so this slice is the one seam
+  // between the resume driver and the pane that started it. An entry that
+  // survives (the pane closed before it could follow) is read by the next pane
+  // opened on that ref, which then follows the identity itself, so a resume is
+  // never lost to a closed pane.
+  resumedIdentities: ReadonlyMap<string, string>;
+  // The most recent store-driven resume failure per ref, for the composer to
+  // toast (a store cannot push a toast). Keyed by ref with a monotonic seq so
+  // the observer toasts each failure exactly once; cleared when a drive
+  // succeeds, and the composer seeds its dedup from the seq on mount so a
+  // remount never re-toasts a failure that predates it.
+  resumeFailures: ReadonlyMap<string, { seq: number; message: string }>;
+  clearResumedIdentity(ref: string): void;
+  // Refs with a Force stop RPC this page started still in flight. The hub holds
+  // Stopping > 0 for exactly that window and refuses even turn/start for the
+  // drain (cmd/evener-hub's sessionActionRecoveryError), so a notLoaded snapshot
+  // taken mid-drain must not be read as the merely-resumable shape
+  // (isResumeOnlyLocal). Cleared when the RPC settles. A stop another client
+  // started is not observable here (no wire signal carries Stopping), so that
+  // rare window degrades to the same bounded refusal the normal fence covers.
+  stoppingRefs: ReadonlySet<string>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -154,18 +223,39 @@ export interface ThreadsStoreState {
   // lands here it stays - unlike `threads`, this is not cleared on a
   // re-hydration attempt, because a deleted ref never gets one that
   // succeeds. A consumer (Session.tsx) reads this to tell "still loading" a
-  // ref apart from "gone", which ensureThread's own retry-forever contract
-  // (scheduleOwnedHydrationRetry has no terminal state - a rejection here is
-  // always presumed transport, never a proof the ref itself is gone) cannot
-  // otherwise distinguish: its returned promise never settles for a deleted
-  // ref, since nothing about that loop treats this error as different from
-  // an ordinary transient one.
+  // ref apart from "gone". It is also the terminal marker for that ref's
+  // hydration lifecycle: scheduleOwnedHydrationRetry retires the lifecycle
+  // (settling any awaiting owner, cancelling its retry) and arms no further
+  // read once this is set, and ensureThread/watchThread return on it - see
+  // markThreadDeletedIfFenced. An ordinary transient rejection is still
+  // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
+  /** Cache state follows the owned model through its final release, including
+   * mutation pins. A sibling deletion can create a suppression-only record
+   * before a claim captures its lease; that record must not block a cold read.
+   * Verification clears only shell/anchor, never the lease or suppression. */
+  cacheLifetimes: Map<string, CacheLifetime>;
+  /** The epoch this tab's in-flight clear armed (spec, "The
+   * clear-cached-sessions setting"): while set, the write seam refuses every
+   * open lease whose captured epoch predates it. The clear's arm lives here,
+   * never in the lifetime's suppression — the commit marks the old leases, the abort
+   * just drops the marker — so no abort can touch another source's
+   * suppression (a sibling deletion message, the aborted-write backstop)
+   * that arrived while the clear was in flight. undefined when no clear is
+   * in flight. */
+  clearInFlight: number | undefined;
   ensureThread(ref: string): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
   refreshThread(ref: string, beforePublish?: () => void): Promise<void>;
+  // One entry point for the R09 resume sequence (resumeStopBaseline +
+  // client.resumeThread + the identity fence + refreshThread), so every trigger
+  // - the composer/palette/ask-dock send, the recovery resend, and the session
+  // notice's own Resume button - runs the same copy. Resolves when the drive
+  // settles; a failure is published to resumeFailures rather than thrown, and
+  // the identity-follow effect carries the draft and navigates.
+  resumeSession(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -180,9 +270,30 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
-  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  send(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  steer(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  queue(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
   // (if any) to the input queue, then drains the whole queue into the
@@ -195,6 +306,8 @@ export interface ThreadsStoreState {
     text: string,
     attachments?: InputAttachment[],
     skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -224,7 +337,11 @@ export interface ThreadsStoreState {
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   // Durably enqueues the human shared-note (an empty note clears it). Returns
   // the committed outbox record, not the daemon acknowledgment. Receipt
-  // responses and evener/notes/updated publish canonical note state.
+  // responses and evener/notes/updated publish canonical note state. A note
+  // save is never a composer send, so it never takes enqueueMutationIntent's
+  // direct fallback (DIRECT_FALLBACK_METHODS) and always resolves with the
+  // committed record; enqueueCommittedMutation asserts that a non-send method
+  // never returns undefined rather than casting the type.
   setHumanNote(
     ref: string,
     note: string,
@@ -260,27 +377,28 @@ export interface ThreadsStoreState {
   // force a fresh request. A failed request never poisons the cache with a
   // rejected promise - the next call (with or without refresh) retries.
   listModels(refresh?: boolean): Promise<ModelListResponse>;
-  // Lists the session's tasks (evener/tasks/list). TaskListResponse.Data is
-  // `any` on the wire catalog (appwire/types.go:896-898) - this returns
-  // that raw field verbatim, never wrapped, so the store stays shape-
-  // agnostic; the caller owns interpreting it (the chrome stream's own
-  // parseTaskListData). A source that omits the capability rejects this call
-  // (appwire.Unavailable, "actionUnavailable") - that typed error
-  // propagates unchanged, same as every other read-only action here; the
-  // caller renders the empty/unsupported state for it.
-  listTasks(ref: string): Promise<unknown>;
-  // Lists the session's activity tree (evener/jobs/list) and fetches one job's
-  // output tail (evener/jobs/output). Both Data fields are `any` on the wire
-  // catalog (appwire/types.go) - these return the raw field verbatim, never
-  // wrapped, so the store stays shape-agnostic; the caller owns interpreting
-  // them (the chrome stream's parseActivityTree / parseJobOutputData).
+  // Lists the session's task rows. Null is unavailable; [] is an authoritative
+  // empty list. The caller adapts the wire fields with parseTaskListData.
+  listTasks(ref: string): Promise<TaskListResponse["data"]>;
+  // Explicit retained tree reader for callers of evener/jobs/list. Browser
+  // activity views use SessionActivityStore; this method returns the wire's
+  // untyped data field unchanged and owns no background refresh or retry.
   listJobs(ref: string, continuation?: string): Promise<unknown>;
-  // beforeBytes > 0 pages backwards: the window ending at that lifetime
-  // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
+  // An explicit beforeBytes pages backwards, ending at that lifetime byte
+  // offset. Omission selects the latest page; explicit zero stays zero.
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
+  jobOutput(
+    ref: string,
+    jobId: string,
+    beforeBytes?: number,
+    maxBytes?: number,
+    isCurrent?: () => boolean,
+  ): Promise<JobOutputPage>;
+  // Reads one job's metadata (evener/jobs/get): the activity-job shape,
+  // including the untruncated command.
+  jobGet(ref: string, jobId: string, isCurrent?: () => boolean): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -343,6 +461,85 @@ function isFallbackInvalidatingPush(method: string): boolean {
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
+
+// The session-history cache's singleton storage adapter (web session-history
+// cache spec, "The load seam"). One per tab: the lookup, the write seam
+// (Task 6) and the clear (Task 10) all ride currentSessionCache() so tests
+// can swap the whole storage for a wedged or gated instance.
+const sessionCacheAdapter = new SessionCacheIndexedDB();
+let sessionCacheAdapterOverride: SessionCacheIndexedDB | undefined;
+function currentSessionCache(): SessionCacheIndexedDB {
+  return sessionCacheAdapterOverride ?? sessionCacheAdapter;
+}
+/** Tests swap the singleton for a wedged or gated instance; production never calls this. */
+export function setSessionCacheAdapterForTests(adapter: SessionCacheIndexedDB | undefined): void {
+  sessionCacheAdapterOverride = adapter;
+}
+type CacheLookup = { record?: CachedSessionRecord; epoch: number };
+const inflightCacheLookups = new Map<string, Promise<CacheLookup | undefined>>();
+// The tab's in-memory view of the durable clear epoch: undefined until the
+// first lookup observes it. Only durable observations advance it, monotonically.
+// Optimistic same-tab clear arming lives separately in clearInFlight.
+let tabCacheEpoch: number | undefined;
+
+// One shared bounded lookup per ref. The deadline is the lookup's own
+// Promise.race against SESSION_CACHE_LOOKUP_DEADLINE_MS — never the storage
+// timeout — and a lost race resolves the join as a miss, discarding whatever
+// the adapter answers later.
+function joinCacheLookup(ref: string): Promise<CacheLookup | undefined> {
+  const existing = inflightCacheLookups.get(ref);
+  if (existing) return existing;
+  const race = (async () => {
+    // The deadline's timer is cleared the moment the race settles: the losing
+    // timer's resolve was a no-op by then, so this only keeps an armed timer
+    // from outliving the lookup.
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        (async (): Promise<CacheLookup | undefined> => {
+          const adapter = currentSessionCache();
+          const found = await adapter.get(ref, Date.now());
+          const epoch = found?.epoch ?? adapter.observedEpoch;
+          return epoch === undefined ? undefined : { record: found?.record, epoch };
+        })(),
+        new Promise<undefined>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+        }),
+      ]);
+    } catch {
+      return undefined; // every failure is a miss
+    } finally {
+      clearTimeout(deadlineTimer);
+    }
+  })();
+  // The cleanup is a reaction registered here — before any awaiter's — so it
+  // still runs ahead of every joiner the settlement wakes, exactly as an
+  // inline finally would. (It cannot be an inline finally: the IIFE's own
+  // body would reference its promise before the assignment completes.)
+  const forget = () => {
+    if (inflightCacheLookups.get(ref) === race) inflightCacheLookups.delete(ref);
+  };
+  void race.then(forget, forget);
+  inflightCacheLookups.set(ref, race);
+  return race;
+}
+
+// The gap rule's anchor: the newest item position the record holds, fixed at
+// shell-build from pure record data before any live merge, ordered by
+// comparePositions (turns can interleave, so the newest positioned item wins
+// rather than the last turn's). undefined for a record with no positioned
+// item, which Task 7's predicate treats as the ordinary cold merge.
+function newestItemPosition(turns: TurnModel[]): ThreadItemPosition | undefined {
+  let newest: ThreadItemPosition | undefined;
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.position === undefined) continue;
+      if (newest === undefined || comparePositions(item.position, newest) > 0) newest = item.position;
+    }
+  }
+  return newest;
+}
+
 const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // The identity a pending hydration accepts frames for. Both facts come from an
 // authority, never from the stream: the routing is seeded from the published
@@ -622,6 +819,8 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
     .discardCanceledOfInstance(targetRef, supersededThreadId)
     .then(() => {
       if (!isCurrentMutationRuntime(runtime)) return;
+      // Rows left the outbox: in-flight reads for the ref are stale.
+      noteMutationStateChange(targetRef);
       // Every successful cleanup notifies AND refreshes pins, zero included -
       // the local discard path's own rule. Zero says what THIS tab's write
       // removed, never what another tab removed from under this tab's cached
@@ -642,8 +841,24 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
 }
 
 function removeThreadModel(ref: string): void {
+  // The memo never outlives the model (spec, "Eviction, cap, and cross-tab"):
+  // a memo that survived the release would skip an eligible session
+  // indefinitely.
+  clearOversizeMemo(ref);
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
+  // The shell-only cache metadata leaves with the model: the fields' whole
+  // meaning is "this ref's CURRENT model is an unverified cached shell", so a
+  // final release must not leave a ref named with no model behind (Tasks 6/7
+  // read them). The clear's suppression and the lease that armed it end with
+  // the same final release (spec, "The clear-cached-sessions setting"):
+  // premature suppression decays with the final release of each open ref,
+  // so the next open of the same ref starts with no lease and no
+  // suppression. Even a verified or suppression-only lifetime leaves here.
+  threadsStore.setState((s) => {
+    if (!s.cacheLifetimes.has(ref)) return s;
+    return { cacheLifetimes: releaseCacheLifetime(s.cacheLifetimes, ref) };
+  });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
     const nextThreads = new Map(s.threads);
@@ -730,16 +945,109 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+// Per ref, the clientMutationIds of that ref's durably committed rows this tab
+// has not yet proven handled. The fallback's ordering guard asks exactly one
+// question - does this ref have a committed row that has not been delivered? -
+// and this map answers it with the rows themselves rather than a boolean that
+// has to be guessed at. Deliberately NOT pinnedMutationRefs: that is a
+// retention pin, and a canceled row (which leaves only on an explicit Retry or
+// the thread going away) keeps a ref pinned with nothing left to deliver.
+//   - a commit whose row is not born-canceled adds that row's id (every writer
+//     can name its row: the send funnel from the record, the recovery writes
+//     from the record they create or the id they reopen);
+//   - a settle that proves delivery (settleReceipt / settleApplied) removes it;
+//   - a successful read replaces the ref's ids with the non-canceled rows it
+//     observed - also how a persisted row this tab never committed (a reload,
+//     another tab) enters the set;
+//   - a cancel path that cannot name its rows leaves them until that next
+//     successful read;
+//   - a failed read changes nothing: guessing "nothing is undelivered" while
+//     storage is unreadable is precisely the reorder this guard exists to
+//     prevent.
+const undeliveredMutationIds = new Map<string, Set<string>>();
+// Whether the guard's question is answered yes for a ref, for the places that
+// want a bool (the fallback admission, disarmQuiescedMutationArm).
+function hasUndeliveredMutation(ref: string): boolean {
+  return (undeliveredMutationIds.get(ref)?.size ?? 0) > 0;
+}
+function noteUndeliveredMutation(ref: string, clientMutationId: string): void {
+  const ids = undeliveredMutationIds.get(ref) ?? new Set<string>();
+  ids.add(clientMutationId);
+  undeliveredMutationIds.set(ref, ids);
+}
+// A proven delivery, from the two settle writes (see the runtime's storage
+// wiring). This is what clears a settled row - no read required, so a settle
+// whose clearing refresh fails cannot leave the guard armed forever. Only the
+// id removal lives here; the read invalidation is separate and unconditional
+// (see noteMutationStateChange), because a settle for a row this tab never
+// registered still changed the ref's outbox.
+function noteHandledMutation(clientMutationId: string): void {
+  for (const [ref, ids] of undeliveredMutationIds) {
+    if (!ids.delete(clientMutationId)) continue;
+    if (ids.size === 0) undeliveredMutationIds.delete(ref);
+  }
+}
+// A successful read is the authoritative snapshot of the ref: its ids are
+// exactly the rows that read observed as non-canceled work.
+function replaceUndeliveredMutations(ref: string, clientMutationIds: Iterable<string>): void {
+  const ids = new Set(clientMutationIds);
+  if (ids.size === 0) undeliveredMutationIds.delete(ref);
+  else undeliveredMutationIds.set(ref, ids);
+}
+// The rule, in one place: ANY change to a ref's durable outbox state advances
+// that ref's generation of read invalidation, so a read that began before the
+// change discards its snapshot instead of restoring what the change resolved
+// (or dropping what it added). Whoever performs the change names the ref: a
+// commit, a settle (the storage reports the settled record's own ref), a cancel
+// or a removal. A read's own reconciliation does not advance: reads are what
+// the generation is compared against, and advancing there would let a newer
+// read's snapshot be discarded by an older one.
+const mutationStateGenerations = new Map<string, number>();
+function noteMutationStateChange(ref: string): void {
+  mutationStateGenerations.set(ref, (mutationStateGenerations.get(ref) ?? 0) + 1);
+}
+// Per-ref count of durable enqueues whose write is still in flight (from the
+// click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
+// serve this: a background pin refresh clears a ref's arm when the outbox reads
+// empty, which it does while another enqueue's write is still uncommitted, so an
+// arm is not proof that a concurrent enqueue is outstanding. This count is that
+// proof, and only the fallback's ordering guard reads it.
+const inflightDurableEnqueues = new Map<string, number>();
 const olderPageGenerations = new Map<string, number>();
 
-// Refs this connection generation holds a wire subscription for. thread/read
-// with subscribe:true is how a subscription is created, and every re-read of
-// a tracked ref (ensureThread retry, onReady resync, watchThread upgrade)
-// used to send it again — additively and with a fresh capture cycle, because
-// nothing recorded "already subscribed on THIS socket". A new connection
-// carries no subscriptions, so rewireClient and the onReady path both clear
-// the set; the next read of a still-tracked ref re-subscribes as before.
-const wireSubscribedRefs = new Set<string>();
+// Pane, watch and durable outbox holders share one local lease. Activity views
+// hold their own leases on the same routing ref and actual client identity.
+const threadSubscriptions = new Map<string, { client: AppwireClientLike; lease: ThreadSubscriptionLease }>();
+
+function syncThreadSubscription(ref: string, client = wiredClient): ThreadSubscriptionLease | undefined {
+  const previous = threadSubscriptions.get(ref);
+  const held = (refCounts.get(ref) ?? 0) > 0 || (watchRefCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref);
+  if (previous && (!held || previous.client !== client)) {
+    previous.lease.release();
+    threadSubscriptions.delete(ref);
+  }
+  if (!held || !client) return;
+  const existing = threadSubscriptions.get(ref);
+  if (existing) return existing.lease;
+  const lease = acquireThreadSubscription(client, ref);
+  threadSubscriptions.set(ref, { client, lease });
+  return lease;
+}
+
+function releaseThreadSubscriptions(): void {
+  for (const { lease } of threadSubscriptions.values()) lease.release();
+  threadSubscriptions.clear();
+}
+
+function pinMutationRef(ref: string): void {
+  pinnedMutationRefs.add(ref);
+  syncThreadSubscription(ref);
+}
+
+function unpinMutationRef(ref: string): void {
+  pinnedMutationRefs.delete(ref);
+  syncThreadSubscription(ref);
+}
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
@@ -755,6 +1063,7 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
+
 type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
 const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 
@@ -785,6 +1094,16 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   await discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // A clear replaces the history outright — the one mid-lifetime shrink that
+  // clears the oversize memo (spec: "replacement is the only mid-lifetime
+  // shrink"; a merge only adds items).
+  clearOversizeMemo(targetRef);
+  // The session-content clear's cache hook: the cleared model is a bare
+  // hydrate with no history, so it would never match the write gates;
+  // deleting the record in the same step is what keeps a cleared session's
+  // next reload from painting pre-clear content from the shell.
+  cancelCacheWrite(targetRef);
+  void currentSessionCache().deleteRecords([targetRef]);
   // A clear response is a newer authoritative cut than any thread/read that
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
@@ -800,10 +1119,14 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
     stateBefore.watchedThreads.has(targetRef) ? model : undefined,
   );
   threadsStore.setState((state) => {
+    // This authoritative replacement retired the shell's pending read, so
+    // publishThreadHydration will never clear its verification metadata.
+    const cacheLifetimes = releaseCacheShell(state.cacheLifetimes, targetRef);
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(targetRef);
     else mutationAuthorityRefs.delete(targetRef);
     return {
+      cacheLifetimes,
       mutationAuthorityRefs,
       hydrations: stateBefore.threads.has(targetRef)
         ? new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1)
@@ -812,37 +1135,109 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
+// currentDispatchClient is the dispatch admission: the wired client and its
+// epoch must still be current, and the named ref must pass its fences. The
+// `requireArmed` clause is the dispatcher's own precondition - a ref is
+// dispatched only while it is in dispatchableMutationRefs, the set of refs with
+// durable work waiting. enqueueMutationIntent's fallback asks the SAME question
+// with requireArmed false: it has no durable row of its own, so it cannot be in
+// that set for its own sake, and the clause's absence only means "the client is
+// current and the ref is not fenced" - the admission the fallback needs. The
+// refs that DO hold durable work are covered separately, by the fallback's own
+// ordering guard: undeliveredMutationIds (the committed rows this tab has not
+// proven delivered) plus inflightDurableEnqueues (a durable enqueue for the ref
+// still in flight).
+function currentDispatchClient(
+  targetRef?: string,
+  method?: string,
+  requireArmed = true,
+  options?: { storageBlockedAdmissible?: boolean },
+): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
-  if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
+  const state = threadsStore.getState();
+  // A storage-blocked ref (its reconcile failed only because storage would not
+  // answer) is fenced here like any reconcile failure: the durable dispatcher
+  // waits for discovery's retry to reconcile before it can order anything.
+  // The send fallback is the one caller that may admit it
+  // ({ storageBlockedAdmissible }): a storage wedge must not strand a send,
+  // and the fallback's own in-memory ordering guards carry the ordering
+  // responsibility instead. Admitting the ref also waives the reconcile still
+  // pending for it - that read sits on the same wedge, so waiting for it
+  // cannot produce ordering facts anyway.
+  const storageBlocked = targetRef !== undefined && state.mutationReconciliationStorageBlocked.has(targetRef);
+  const storageBlockedWaived = storageBlocked && options?.storageBlockedAdmissible === true;
   if (
     targetRef &&
-    (pendingMutationReconciliations.has(targetRef) ||
-      threadsStore.getState().restartBlockingObligations.has(targetRef) ||
-      threadsStore.getState().mutationReconciliationFailures.has(targetRef))
+    (((storageBlocked || pendingMutationReconciliations.has(targetRef)) && !storageBlockedWaived) ||
+      // A Force stop this page started is its own fence for its whole drain
+      // window: the hub holds Stopping > 0 and refuses EVERY method there,
+      // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
+      // independently of restartBlockingObligations, which a stale thread
+      // refresh can clear while the RPC is still in flight.
+      state.stoppingRefs.has(targetRef) ||
+      // A merely-resumable session's send must dispatch: the hub folds its
+      // resume into turn/start, so the obligation does not park the mutation.
+      // Only turn/start is carved out of the hub's recovery admission, though,
+      // so the exemption holds only for that method: the dispatcher names the
+      // record it is about to send (dispatcher.ts's method-aware lookup), and a
+      // queued turn/queue/turn/steer/turn/interrupt parks instead of meeting a
+      // refusal. The ref-less and pre-record calls pass no method, where the
+      // exemption is the readiness answer they always were. Every other
+      // obligation (Stop drain, restartRequired) still blocks it.
+      //
+      // This gate reads resumeOnlyLocalDispatchable, NOT resumeOnlyLocalModel:
+      // dispatch asks "is this exact head record admissible?". At the
+      // head-of-loop lookup the named record may itself be the turn/start with
+      // nothing ahead of it, while resumeOnlyLocalModel's hasQueuedNonSend
+      // clause answers the ADMISSION question ("may a NEW send be minted behind
+      // this queue?"), where a queued non-send row is genuinely ahead of the
+      // candidate. Used here that clause refused the head turn/start before the
+      // method-aware recheck could name it, so a ref holding [turn/start,
+      // turn/queue] could neither resume nor drain its outbox. The method check
+      // below still parks the tail non-send row.
+      (state.restartBlockingObligations.has(targetRef) &&
+        !(resumeOnlyLocalDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
+      state.mutationReconciliationFailures.has(targetRef))
   )
     return null;
-  if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
+  if (targetRef && state.threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
 function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
+  // The pinned drain is the path a pinned ref's model finally leaves through
+  // (releaseThread returns early while pinned), so the flush runs here too —
+  // ordered before the model leaves the map, on the pre-removal snapshot —
+  // and the memo dies with the model.
+  flushCacheWrite(ref);
+  clearOversizeMemo(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
   if (dropped) removeThreadModelIndex(threadsIndex, dropped);
+  // The clear's suppression and its lease end with this same final release
+  // (removeThreadModel's own rule): premature suppression decays here too,
+  // so a ref the pinned drain retires never stays suppressed with no model.
   threadsStore.setState((state) => {
-    if (!state.threads.has(ref) && !state.frameTimes.has(ref) && !state.hydrations.has(ref)) return state;
+    if (
+      !state.threads.has(ref) &&
+      !state.frameTimes.has(ref) &&
+      !state.hydrations.has(ref) &&
+      !state.cacheLifetimes.has(ref)
+    )
+      return state;
     const threads = new Map(state.threads);
     threads.delete(ref);
     const frameTimes = new Map(state.frameTimes);
     frameTimes.delete(ref);
     const hydrations = new Map(state.hydrations);
     hydrations.delete(ref);
-    return { threads, frameTimes, hydrations };
+    const cacheLifetimes = releaseCacheLifetime(state.cacheLifetimes, ref);
+    return { threads, frameTimes, hydrations, cacheLifetimes };
   });
 }
 
@@ -850,21 +1245,38 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
+    const generation = mutationStateGenerations.get(targetRef) ?? 0;
+    // A failed read proves nothing, so it changes nothing: guessing "nothing is
+    // undelivered" here is what let a later storage-timeout send dispatch ahead
+    // of a committed row whose delivery no one had proven. The rejection still
+    // propagates, so a caller that relied on it (the hydration reconciliation
+    // aborts on it) keeps that flow.
     const [outbox, optimistic] = await Promise.all([
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
     ]);
     if (!isCurrentMutationRuntime(runtime)) return;
+    // A durable commit for this ref since the read began means this snapshot
+    // predates it: discard rather than replace the commit's own ids.
+    if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
+    // A successful read is the authoritative snapshot: the ref's ids are
+    // exactly the non-canceled rows this read observed.
+    replaceUndeliveredMutations(
+      targetRef,
+      outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+    );
     if (outbox.length > 0) {
-      pinnedMutationRefs.add(targetRef);
+      pinMutationRef(targetRef);
       continue;
     }
     if (optimistic.length > 0) {
-      pinnedMutationRefs.add(targetRef);
+      pinMutationRef(targetRef);
+      // An optimistic row is accepted (settled), never undelivered work - the
+      // empty outbox above already says so in the ids.
       dispatchableMutationRefs.delete(targetRef);
       continue;
     }
-    pinnedMutationRefs.delete(targetRef);
+    unpinMutationRef(targetRef);
     dispatchableMutationRefs.delete(targetRef);
     dropUnpinnedModel(targetRef);
   }
@@ -882,16 +1294,25 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 // turn on the next discovery; a dispatch killed here costs the user's save.
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
+  const generation = mutationStateGenerations.get(targetRef) ?? 0;
+  // As in refreshMutationPins: a failed read proves nothing and changes
+  // nothing, so nothing here catches it.
   const [outbox, optimistic] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
     runtime.storage.listOptimistic(targetRef),
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
+  // As in refreshMutationPins: a commit since the read began outranks it.
+  if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
+  replaceUndeliveredMutations(
+    targetRef,
+    outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+  );
   if (outbox.length > 0 || optimistic.length > 0) {
-    pinnedMutationRefs.add(targetRef);
+    pinMutationRef(targetRef);
     return;
   }
-  pinnedMutationRefs.delete(targetRef);
+  unpinMutationRef(targetRef);
   dropUnpinnedModel(targetRef);
 }
 
@@ -907,10 +1328,30 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
     });
 }
 
+// The dispatch gate a durable projection read opens. A resume-only ref's head
+// send parks while its ref's outbox read is in flight (the pending-turns
+// projection fails readiness closed through that window, and the predicate
+// reads it), so the read resolving is what unparks it. Nothing else re-attempts
+// that dispatch, so the projection hands the refs that (re)gained readiness
+// here - the same explicit send-aside publishAndReconcileThreadHydration makes
+// when its reconciliation opens the gate. A ref with no dispatchable mutation
+// is a no-op.
+export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  scheduleMutationDispatch(runtime, refs);
+}
+
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
-  for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
+  const state = threadsStore.getState();
+  // Storage-blocked refs ride the same retry: the wedge that failed their
+  // reconcile lifts with storage itself, and this pass is what re-reads the
+  // outbox and re-arms the ref once it does.
+  const refs = [
+    ...new Set([...targetRefs, ...state.mutationReconciliationFailures, ...state.mutationReconciliationStorageBlocked]),
+  ];
+  for (const targetRef of refs) pinMutationRef(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
 
@@ -919,9 +1360,15 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
     if (pendingMutationReconciliations.has(targetRef)) continue;
+    const refState = threadsStore.getState();
     if (
       dispatchableMutationRefs.has(targetRef) &&
-      !threadsStore.getState().mutationReconciliationFailures.has(targetRef)
+      !refState.mutationReconciliationFailures.has(targetRef) &&
+      // A storage-blocked ref must fall through to handleReady's reconcile
+      // retry, not take the authority refresh: that refresh's outbox read
+      // would wedge on the same storage, and only a successful reconcile
+      // clears the storage-blocked fence.
+      !refState.mutationReconciliationStorageBlocked.has(targetRef)
     ) {
       // Another tab can block a shared record after this tab's snapshot.
       // Cached authority cannot settle that newly uncertain send.
@@ -961,6 +1408,27 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // A proven delivery is what resolves a committed row's id: the two settle
+  // writes are the only place this tab learns that a committed row reached the
+  // daemon. `settleReceipt` is the dispatcher's receipt commit and
+  // `settleApplied` the live-submission reconciliation. This is what clears a
+  // settled row: no read has to succeed for the guard to stand down. The
+  // invalidation is unconditional and comes with the settled record's own ref,
+  // so a settle for a row this tab never registered still invalidates that
+  // ref's in-flight reads (see noteMutationStateChange).
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  storage.settleReceipt = async (clientMutationId, projectionState) => {
+    const settled = await settleReceipt(clientMutationId, projectionState);
+    if (settled) noteHandledMutation(clientMutationId);
+    return settled;
+  };
+  const settleApplied = storage.settleApplied.bind(storage);
+  storage.settleApplied = async (clientMutationId) => {
+    const settled = await settleApplied(clientMutationId);
+    if (settled) noteHandledMutation(clientMutationId);
+    return settled;
+  };
+  storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
   // refresh may have completed before the cleanup's write does, and a
@@ -976,14 +1444,20 @@ function getMutationRuntime(): MutationRuntime | null {
     void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
   });
   // One client lookup for both halves of the mutation runtime: the dispatcher
-  // asks it per target ref, and the outbox asks it ref-less for "is any client
-  // ready right now". Wiring them from one function is what keeps the
-  // dispatcher's readiness and the outbox's from drifting apart.
-  const getClient: MutationClientLookup = (targetRef) =>
-    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
+  // asks it per target ref (with the record's method, for the resume-only
+  // carve-out), and the outbox asks it ref-less for "is any client ready right
+  // now". Wiring them from one function is what keeps the dispatcher's
+  // readiness and the outbox's from drifting apart; the method is optional so
+  // the same function satisfies the outbox's ref-only lookup too.
+  const getClient = (targetRef?: string, method?: string): AppwireClientLike | null =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
     onStorageChange: (targetRefs) => {
+      // The dispatcher's own state changes - a settle, a recovery transfer, a
+      // blocked reclassification - invalidate in-flight reads for every ref it
+      // names, on the rule noteMutationStateChange states.
+      for (const targetRef of targetRefs) noteMutationStateChange(targetRef);
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
     onBlockedMutation: (targetRef, client) => {
@@ -1105,6 +1579,101 @@ function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, ++userIntentStopSequence);
 }
 
+// Marks/clears a Force stop this page started as in flight. A fresh Set each
+// change (never mutating the initial state's Set) so a subscriber selects on
+// the boolean and re-renders when the drain begins and ends.
+function markStopping(ref: string, stopping: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.stoppingRefs.has(ref) === stopping) return state;
+    const stoppingRefs = new Set(state.stoppingRefs);
+    if (stopping) stoppingRefs.add(ref);
+    else stoppingRefs.delete(ref);
+    return { stoppingRefs };
+  });
+}
+
+// The refcounted group of Force stops this module has in flight for a ref.
+// markStopping is a boolean Set with no ownership: two overlapping stops would
+// clear the fence when the FIRST completed, while the second was still draining,
+// and a stale thread/read refresh could then clear the restart obligation too -
+// reopening mutation dispatch for the rest of the stop window. A bare count
+// fixes that early clear but not the shared recovery obligation: each stop
+// capturing the map's value and restoring it on its own abort can clobber a
+// fence a sibling still owns, or write back a sibling's arming symbol. So the
+// group records the pre-group obligation once, on the 0 -> 1 transition, and
+// whether any member signalled a daemon, and settles both on the 1 -> 0
+// transition.
+interface StopGroup {
+  count: number;
+  // The obligation the ref held before the group's first stop armed its own
+  // fence. endStop restores it only when no member of the group reached a
+  // daemon.
+  previousObligation: symbol | undefined;
+  // The exact symbol this group armed on its 0 -> 1 transition. endStop
+  // restores/deletes the ref's obligation only while the ref still holds THIS
+  // symbol: a concurrent hydration can arm a fresh fence during an aborting
+  // stop's cancellation await, and only a still-owned entry is the group's to
+  // settle. Otherwise the group leaves the newer fence in place.
+  ownObligation: symbol;
+  // Whether any member reached client.forceStop, i.e. signalled a daemon. A
+  // group that did keeps its armed fence (a later snapshot clears it); one that
+  // never did restores previousObligation exactly.
+  signalled: boolean;
+}
+const activeStops = new Map<string, StopGroup>();
+
+// Arm the stopping fence and the recovery obligation on the 0 -> 1 transition
+// only: every overlapping stop shares the one group, and endStop settles it once
+// the count returns to 0. Capturing the pre-group obligation here - not per
+// call - is what keeps an aborting stop from restoring a value another stop
+// still owns.
+function beginStop(ref: string): void {
+  const existing = activeStops.get(ref);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+  const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
+  const ownObligation = Symbol();
+  activeStops.set(ref, { count: 1, previousObligation, ownObligation, signalled: false });
+  markStopping(ref, true);
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, ownObligation),
+  }));
+}
+
+// Settle one member's return. `signalled` is true when the member reached
+// client.forceStop (even if the RPC then rejected: the signal may still have
+// reached the daemon). On the 1 -> 0 transition restore the pre-group obligation
+// only when no member of the group ever signalled; a group that signalled keeps
+// the fence armed until a later snapshot clears it, and no aborting member
+// writes back its own captured value over an entry a sibling still owns. The
+// ownership test is the group's own arming symbol, not merely "no sibling": a
+// hydration can arm a fresh fence during the aborting member's cancellation
+// await, and that newer fence must survive the abort untouched.
+function endStop(ref: string, signalled: boolean): void {
+  const group = activeStops.get(ref);
+  if (!group) return;
+  if (signalled) group.signalled = true;
+  group.count -= 1;
+  if (group.count > 0) return;
+  activeStops.delete(ref);
+  markStopping(ref, false);
+  if (group.signalled) return;
+  threadsStore.setState((state) => {
+    // A hydration (publishAndReconcileThreadHydration) can arm a fresh
+    // obligation during this aborting stop's cancellation await. Only a ref
+    // still holding this group's own fence is the group's to restore; a newer
+    // fence is left exactly as the hydration wrote it, rather than overwritten
+    // with a stale captured value or deleted outright.
+    if (state.restartBlockingObligations.get(ref) !== group.ownObligation) return {};
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    if (group.previousObligation === undefined) restartBlockingObligations.delete(ref);
+    else restartBlockingObligations.set(ref, group.previousObligation);
+    return { restartBlockingObligations };
+  });
+}
+
 // The explicit Resume action is the one user intent that still starts a daemon
 // directly, and a Stop acknowledged while its reconnect or post-resume
 // hydration is in flight must cancel it. Production fences that action through
@@ -1147,6 +1716,258 @@ export function resumeStopBaseline(): (ref?: string) => void {
     if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0))
       throw new Error("Stop canceled this pending action; send again when ready.");
   };
+}
+
+// The store-driven resume for the Send-resumes face (R09). A send on a fenced
+// ref parks in the durable outbox (enqueueMutationIntent admits its turn/start),
+// and this driver runs the same sequence the standalone Resume button ran
+// (Session.tsx's RestartRequiredNotice): snapshot every Stop generation before
+// the resume starts, launch the resume with that global fence as beforeRequest,
+// then re-hydrate the resumed identity behind a fence over BOTH refs - the old
+// one the pane still shows and the new one the resume returned, which can be
+// named by a Stop while the resume RPC or its hydration is in flight. The
+// hydration's reconciliation clears the obligation, and the dispatcher's tails
+// drain the parked row exactly once.
+//
+// Idempotent per ref: one resumeThread at a time (AppwireClient itself rejects a
+// second), so a second press while a drive is running parks its row and rides
+// the first drive's reconciliation. A failed drive publishes its reason for the
+// press surface to toast, and is re-drivable by the next press.
+let resumeFailureSeq = 0;
+// Per ref, the ONE in-flight drive. Concurrent callers (a second send, the
+// notice's Resume press) await the same promise, so they ride the same retarget,
+// hydration, and publication instead of starting a second resumeThread.
+const inFlightResumes = new Map<string, Promise<void>>();
+
+async function resumeFencedForSend(ref: string): Promise<void> {
+  const existing = inFlightResumes.get(ref);
+  if (existing !== undefined) return existing;
+  const drive = runResumeFencedForSend(ref);
+  inFlightResumes.set(ref, drive);
+  try {
+    await drive;
+  } finally {
+    if (inFlightResumes.get(ref) === drive) inFlightResumes.delete(ref);
+  }
+}
+
+async function runResumeFencedForSend(ref: string): Promise<void> {
+  // Hoisted for the catch: which identity this drive reached, what its first
+  // retarget moved, whether a Stop won the identity fence, and the token that
+  // identifies this drive's swap registration.
+  let resumedRef: string | undefined;
+  let movedFirst: RetargetedMutations | null = null;
+  let stopWon = false;
+  let swapToken: symbol | undefined;
+  try {
+    const client = wiredClient;
+    if (client === null || client.state !== "ready")
+      throw new Error("Connect to the hub before resuming this session.");
+    const stopBaseline = resumeStopBaseline();
+    const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
+    resumedRef = thread.evener.ref;
+    // The token the daemon's instance fence compares (appwire_runtime's
+    // expectedInstanceID vs appThreadID), read the same fused way a fresh send
+    // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
+    // resumed ref is usually not tracked yet, so the store has no model for it.
+    const resumedIdentity = { threadId: thread.id, instanceId: thread.evener.instanceId };
+    // The fence over BOTH refs runs before and after the hydration, exactly as
+    // the button's own identityFence did: a Stop against either ref cancels the
+    // publish. The pane only follows the new identity once the hydration has
+    // survived that fence, so a canceled resume leaves it where it was. It is
+    // also the drive's Stop signal: whichever evaluation throws - here, or the
+    // one refreshThread runs before and after publication - records that a Stop
+    // won, so the catch distinguishes a Stop from a transport failure without
+    // matching error text.
+    const identityFence = () => {
+      try {
+        stopBaseline(ref);
+        stopBaseline(resumedRef);
+      } catch (error) {
+        stopWon = true;
+        throw error;
+      }
+    };
+    identityFence();
+    // The old identity is superseded: move every row still parked under it to
+    // the resumed ref BEFORE the hydrated read, so that read reconciles the rows
+    // and the dispatch tails drain the pressed send exactly once under the new
+    // identity. The swap is registered BEFORE the move, so a Stop landing inside
+    // the move's window still reaches the resumed ref through it.
+    if (resumedRef !== ref) {
+      swapToken = registerResumeSwap(ref, resumedRef);
+      movedFirst = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
+    }
+    await threadsStore.getState().refreshThread(resumedRef, identityFence);
+    identityFence();
+    if (resumedRef !== ref) {
+      // A send enqueued after the first snapshot while this drive was in flight
+      // rode this same promise and parked under the old ref. Move those late
+      // rows too, draining until a pass moves nothing.
+      //
+      // The old ref's restart obligation is NOT cleared by this drive:
+      // publishThreadHydration clears only the HYDRATED ref's obligation
+      // (threads.ts's reconciliation tail), and the hydration here is the
+      // resumed ref. So a concurrent send on the old ref can still be admitted
+      // and park while we drain. The inline loop stops at the first pass that
+      // moves nothing, but a row committed inside THAT pass's own read window is
+      // not in its snapshot, so the trailing pass below is scheduled
+      // unconditionally - not only when the loop reaches its cap.
+      for (let pass = 0; pass < RETARGET_DRAIN_PASSES; pass += 1) {
+        if ((await retargetParkedMutations(ref, resumedRef, resumedIdentity)) === null) break;
+      }
+      // scheduleRetargetDrain queues a microtask, and this drive's remaining
+      // synchronous work (the resumedIdentities publication just below, then the
+      // return) completes before the microtask can run - so the trailing pass
+      // fires after this drive has published the identity, and it is the last
+      // drain this drive performs (it re-schedules itself only while rows keep
+      // moving). Navigation is a later React effect, so the trailing pass can
+      // still precede the pane swap; a press that lands after it starts a fresh
+      // drive once this one has settled, so its row is still moved.
+      if (swapToken !== undefined) scheduleRetargetDrain(ref, resumedRef, resumedIdentity, swapToken);
+      const swapTo = resumedRef;
+      threadsStore.setState((state) => ({
+        resumedIdentities: new Map(state.resumedIdentities).set(ref, swapTo),
+      }));
+    }
+    // The drive succeeded: drop any earlier failure for this ref so a later
+    // composer mount does not re-toast a superseded one.
+    threadsStore.setState((state) => {
+      if (!state.resumeFailures.has(ref)) return {};
+      const resumeFailures = new Map(state.resumeFailures);
+      resumeFailures.delete(ref);
+      return { resumeFailures };
+    });
+  } catch (error) {
+    // A Stop that won after the first retarget had already moved rows: the Stop's
+    // own cancel named the old ref, so without this the moved rows would still
+    // deliver while the toast says canceled. Cancel exactly that work under the
+    // resumed ref so the UI and the wire agree. A NON-stop failure is
+    // deliberately different: the moved rows are preserved work queued under the
+    // resumed identity, and they deliver when it reconnects - canceling them
+    // there would lose the user's message.
+    if (stopWon && movedFirst !== null && resumedRef !== undefined) {
+      await cancelUnattemptedMutations(resumedRef).catch(() => {});
+    }
+    if (swapToken !== undefined) settleResumeSwap(ref, swapToken);
+    const message = error instanceof Error ? error.message : String(error);
+    resumeFailureSeq += 1;
+    threadsStore.setState((state) => ({
+      resumeFailures: new Map(state.resumeFailures).set(ref, { seq: resumeFailureSeq, message }),
+    }));
+  }
+}
+
+// The late-row drain's in-line bound: enough passes for the common case. The
+// scheduled trailing pass runs regardless, so the bound never exits silently.
+const RETARGET_DRAIN_PASSES = 3;
+
+// A resume that changed identity is mid-swap: the rows it moved to the resumed
+// ref are still the user's to cancel with a Stop pressed on the ref they are
+// looking at, but a Stop's own durable cancel names only that ref. This map
+// (old ref -> resumed ref plus the registering drive's token) is the
+// registration that closes the gap, live from the moment the resume response
+// names the differing ref until the retarget
+// machinery goes quiet - the drain pass that moves nothing - so a Stop racing
+// either the pre-hydration window or the trailing drain still cancels the moved
+// rows (the Stop call sites consult it). It is NOT cleared with the drive: the
+// trailing drain runs after the drive's own bookkeeping, so a Stop during that
+// pass must still find the target.
+const resumeSwapTargets = new Map<string, { toRef: string; token: symbol }>();
+
+// The token identifies THIS drive's registration. Two drives can target the
+// same (fromRef, toRef) pair - inFlightResumes drops the first when it resolves
+// while its trailing drain still awaits storage, and a second press then starts
+// a second drive that registers the same pair - so matching only the pair would
+// let the first drive's drain clear the second drive's live registration.
+function registerResumeSwap(fromRef: string, toRef: string): symbol {
+  const token = Symbol("resumeSwap");
+  resumeSwapTargets.set(fromRef, { toRef, token });
+  return token;
+}
+
+// Idempotent per drive: both the drive and its drain may settle, and only the
+// registration carrying THIS token is cleared - an earlier swap's settle can
+// never clear a later swap's registration.
+function settleResumeSwap(fromRef: string, token: symbol): void {
+  if (resumeSwapTargets.get(fromRef)?.token === token) resumeSwapTargets.delete(fromRef);
+}
+
+// The Stop call sites' second cancel: while `ref` is mid-swap, a Stop pressed on
+// it must also cancel the unattempted rows the drive moved to the resumed ref.
+// A Stop after the swap settles is about the resumed ref's own rows and is not
+// this registration's to cancel.
+async function cancelResumeSwapTarget(ref: string): Promise<void> {
+  const entry = resumeSwapTargets.get(ref);
+  if (entry === undefined) return;
+  await cancelUnattemptedMutations(entry.toRef);
+}
+
+// One more drain pass, on a later task, re-scheduling itself while passes keep
+// moving rows. The old ref's restart obligation is not cleared by the drive (see
+// the drain loop's comment), so a concurrent send can park during the drain;
+// this converges on a clean snapshot without blocking the event loop. The pass
+// that moves nothing is the swap's convergence: it settles the Stop
+// registration, so a Stop no longer needs to chase the resumed ref after the
+// rows have stopped moving.
+function scheduleRetargetDrain(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+  token: symbol,
+): void {
+  queueMicrotask(() => {
+    void retargetParkedMutations(fromRef, toRef, identity)
+      .then((moved) => {
+        if (moved !== null) scheduleRetargetDrain(fromRef, toRef, identity, token);
+        else settleResumeSwap(fromRef, token);
+      })
+      // Silence is deliberate, like the store's other fire-and-forget tails: the
+      // resume itself already succeeded, so a resume-failure toast would be
+      // wrong. A storage failure here just leaves the straggler parked under the
+      // old ref - the pre-move behavior - where a later drive or a fresh
+      // discovery retries it. The swap is settled either way: no further moves
+      // happen, so a Stop has nothing left to chase.
+      .catch(() => settleResumeSwap(fromRef, token));
+  });
+}
+
+// Move the rows a resume left parked under its superseded ref onto the resumed
+// ref, through the storage's retarget transaction, rewriting the rows' identity
+// fields to `identity` so the daemon's instance fence accepts them under the
+// resumed identity. The outbox bookkeeping the store keeps per ref moves with
+// them: the old ref's undelivered ids are resolved and re-registered under the
+// new ref, the new ref is pinned and armed for dispatch, and the old ref's arm
+// is dropped if it is now idle. Returns what moved (null when nothing did) - an
+// optimistic-only or recovery-only identity change still needs the new ref
+// pinned and armed, and the drive needs the moved set to cancel that work if a
+// Stop wins the swap.
+async function retargetParkedMutations(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+): Promise<RetargetedMutations | null> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return null;
+  const moved = await runtime.storage.retargetOutbox(fromRef, toRef, identity);
+  if (moved.outbox.length === 0 && moved.optimistic.length === 0 && moved.recovery.length === 0) return null;
+  for (const record of moved.outbox) {
+    noteHandledMutation(record.clientMutationId);
+    noteUndeliveredMutation(toRef, record.clientMutationId);
+  }
+  noteMutationStateChange(fromRef);
+  noteMutationStateChange(toRef);
+  disarmQuiescedMutationArm(fromRef);
+  pinMutationRef(toRef);
+  if (dispatchReplayGateOpen(toRef)) dispatchableMutationRefs.add(toRef);
+  // BOTH refs: the destination's projection must show the moved rows, and the
+  // superseded ref's projection still holds them (retargetOutbox removed them
+  // from storage), so it must re-read and clear to the honest state. Dispatch is
+  // scheduled for the destination only - the old ref has no rows left, so a
+  // schedule there would be a no-op drain.
+  notifyMutationPersistence([fromRef, toRef]);
+  scheduleMutationDispatch(runtime, [toRef]);
+  return moved;
 }
 
 // The snapshot-level refusals of retryBlockedMutation: a target the store
@@ -1227,7 +2048,11 @@ export async function retryBlockedMutation(
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef) ||
+    // A storage-blocked ref cannot answer the ordering questions a Retry
+    // press asks either: its reconcile sits on the same wedge, and
+    // discovery's retry is what clears this fence.
+    state.mutationReconciliationStorageBlocked.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
@@ -1241,7 +2066,16 @@ export async function retryBlockedMutation(
     // capture above: a Stop that landed between the capture and this release
     // outranks the Retry, and the refused release leaves the row canceled
     // for it — the release returning false is this press's refusal.
-    if (!(await runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }))) return false;
+    // Registered around the write: the reopened row is undelivered work, and a
+    // fallback send must see it before the async refresh can.
+    const released = await trackOutboxWrite(
+      record.targetRef,
+      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
+      // The released row keeps the id it is reopened under, and is undelivered
+      // work: it is reopened for a fresh dispatch.
+      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+    );
+    if (!released) return false;
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -1269,14 +2103,17 @@ export async function updateRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
-    buildInput(text, attachments, skillNames),
+    buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
     text,
+    mentions,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -1291,7 +2128,14 @@ export async function discardRecoveryMutation(
   const runtime = requireMutationRuntime();
   await runtime.start;
   const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
-  if (discarded) notifyMutationPersistence([targetRef]);
+  if (discarded) {
+    // A row left the outbox: in-flight reads for the ref are stale.
+    noteMutationStateChange(targetRef);
+    // The removed row's id is resolved: a later settle of a replacement, or
+    // unreadable storage, must not keep blocking fallback sends behind it.
+    noteHandledMutation(clientMutationId);
+    notifyMutationPersistence([targetRef]);
+  }
   return discarded;
 }
 
@@ -1302,15 +2146,35 @@ export async function resendRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
-  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
+  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
+  // Registered around the write: the resent row is undelivered work, and a
+  // fallback send must see it before the async refresh can.
+  const record = await trackOutboxWrite(
+    targetRef,
+    () => runtime.storage.resendRecovery(clientMutationId, intent),
+    // A resend mints its own row, so the id comes from the record it returns.
+    (resent) =>
+      resent === undefined
+        ? undefined
+        : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
+  );
   if (!record) return undefined;
-  pinnedMutationRefs.add(targetRef);
+  // The resend mints a new row and removes the recovery row it came from, so
+  // the old id is resolved: keep the new one (trackOutboxWrite registered it)
+  // and drop the old, so a later settle of the new row or unreadable storage
+  // does not strand the guard on a row that no longer exists.
+  noteHandledMutation(clientMutationId);
+  pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
+  // A resent row on the Send-resumes face parks like an ordinary send: drive the
+  // resume it needs. Read after the write, which cannot have changed the face.
+  if (sendResumesLocalModel(targetRef)) void resumeFencedForSend(targetRef);
   return record;
 }
 
@@ -1382,16 +2246,8 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
-// Both hydrate paths (open-pane and watched) read a ref with exactly these
-// params, differing only in includeTurns: replaceSubscription is always
-// false — additive, layering onto whatever the daemon already tracks for this
-// client rather than resetting it.
-//
-// subscribe is true only when this connection generation holds no wire
-// subscription for the ref yet (see wireSubscribeDecision): a re-read of an
-// already-subscribed ref sends subscribe:false so the server skips the
-// buffered-capture cycle a second subscribe would run, and
-// releaseThread's unsubscribe is what drops the entry again.
+// Both hydrate paths retain transcript window and response-cut parameters;
+// the shared lease owns only wire membership and additive subscribe ordering.
 const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
 
 // heldSnapshot lets the server answer with HistoryChanges instead of a full
@@ -1399,19 +2255,10 @@ const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
 // "Later completions of held items"). Sent whenever the request carries a
 // held v6 model's identity - the server decides whether the read is
 // daemon-served or daemonless; the client sends what it holds either way.
-function threadReadParams(
-  ref: string,
-  includeTurns: boolean,
-  subscribe: boolean,
-  requestGeneration?: number,
-  heldSnapshot?: SnapshotIdentity,
-) {
+function threadReadParams(includeTurns: boolean, requestGeneration?: number, heldSnapshot?: SnapshotIdentity) {
   return {
-    ref,
     includeTurns,
     itemsView: "full",
-    subscribe,
-    replaceSubscription: false,
     itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE,
     ...(requestGeneration !== undefined ? { requestGeneration } : {}),
     ...(heldSnapshot ? { heldSnapshot } : {}),
@@ -1436,10 +2283,8 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
 // scope, reports whether that is what happened and the caller should retry
 // once with no held snapshot (for a full latest-window replacement). Both
 // call sites inline that retry in their own nested try/catch (rather than
-// wrapping the whole request in one shared async helper) so the ordinary,
-// non-stale-cursor path awaits client.request() exactly once, matching the
-// microtask timing callers (e.g. a reconnect's response-cut ordering) depend
-// on.
+// wrapping transcript history recovery in the membership helper). The
+// hydration owner retains all history and response-cut ordering authority.
 function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err: unknown): boolean {
   return held !== undefined && isStaleCursorError(err);
 }
@@ -1447,56 +2292,6 @@ function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err:
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
-}
-
-// sendThreadUnsubscribe drops this client's wire subscription to a ref the
-// last holder of just released. Fire-and-forget on purpose: the local release
-// is already complete and cannot be rolled back, so a failed or racing
-// unsubscribe must not block navigation — the hub's idle-relay teardown and
-// the server's connection-close cleanup (RemoveConnection) are both
-// idempotent backstops for a lost message.
-function sendThreadUnsubscribe(ref: string): void {
-  const client = wiredClient;
-  if (client?.state !== "ready") return;
-  void client.request("thread/unsubscribe", { ref }).catch(() => {
-    // Swallow: see above. A dropped unsubscribe costs only a kept server-side
-    // subscription until the connection or the relay's idle timer ends it.
-  });
-}
-
-// The shared subscribe decision for both hydrate paths (open-pane and
-// watched): a read subscribes only when this connection generation holds no
-// wire subscription for the ref yet, and marks it held only after the read
-// succeeds — a failed read's subscribe never took effect server-side, so its
-// retry must send subscribe:true again.
-//
-// The membership set is NOT derivable from refCounts/watchRefCounts: those
-// count local interest (incremented synchronously, before any wire call),
-// while this records a fact about the wire (a subscribe that completed).
-// A count>0 with no held entry is exactly the pending-hydration and
-// failed-read-retry window, and deriving subscribe:false there would strand
-// the ref unsubscribed.
-//
-// markSubscribed re-checks holders after the read resolves: a release that
-// ran mid-flight left no holder, and that release saw the set WITHOUT this
-// ref (so it sent no unsubscribe). Recording the entry now would leak the
-// server-side subscription this read just created until connection close —
-// so the zero-holder read sends its own unsubscribe instead. A pinned
-// outbox ref is the deliberate exception: it holds no pane but must keep
-// its subscription for the mutation replay.
-function wireSubscribeDecision(ref: string): { subscribe: boolean; markSubscribed: () => void } {
-  const subscribe = !wireSubscribedRefs.has(ref);
-  return {
-    subscribe,
-    markSubscribed: () => {
-      if (!subscribe) return;
-      if ((refCounts.get(ref) ?? 0) <= 0 && (watchRefCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
-        sendThreadUnsubscribe(ref);
-        return;
-      }
-      wireSubscribedRefs.add(ref);
-    },
-  };
 }
 
 async function hydrateAndSubscribe(
@@ -1507,20 +2302,15 @@ async function hydrateAndSubscribe(
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
   let discardHeldHistory = false;
-  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const lease = syncThreadSubscription(ref, client);
+  if (!lease) throw new Error("Thread hydration has no subscription holder");
   const held = heldSnapshotFor(pending.baseModel);
   try {
     try {
-      response = await client.request(
-        "thread/read",
-        threadReadParams(ref, true, subscribe, pending.requestGeneration, held),
-      );
+      response = await lease.read(threadReadParams(true, pending.requestGeneration, held));
     } catch (err) {
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      response = await client.request(
-        "thread/read",
-        threadReadParams(ref, true, subscribe, pending.requestGeneration, undefined),
-      );
+      response = await lease.read(threadReadParams(true, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -1540,7 +2330,7 @@ async function hydrateAndSubscribe(
     }
     throw err;
   }
-  markSubscribed();
+  if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -1550,7 +2340,7 @@ async function hydrateAndSubscribe(
   // instead, matching the hub's intent.
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
-      ? applyReadResponse(pending.baseModel, response, now)
+      ? applyCacheGapRule(ref, pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
@@ -1560,20 +2350,23 @@ async function hydrateAndSubscribe(
 // (data.mutationOutcome === "targetDeleted" - cmd/evener-hub/app_sources.go's
 // deletionFenceError) and recorded into `deletedRefs`, which Session.tsx
 // reads to tell a genuinely gone ref apart from one merely slow to hydrate.
-// Purely additive: it changes no control flow here (the retry above still
-// fires exactly as it always has, since retiring a deleted ref's retry loop
-// is a separate concern this function does not take on), only what state a
-// caller can observe once the retry loop is running.
+// The fence never clears, so this rejection is terminal for the ref's
+// hydration lifecycle: scheduleOwnedHydrationRetry below reads the flag this
+// sets and retires the lifecycle (settling any owner awaiting a first model
+// and cancelling its retry) instead of arming another read, and
+// ensureThread/watchThread's loops return on it. Recording the flag here is
+// what lets all three paths agree on one terminal deleted state. The cache
+// work the fence owes (spec, "The write seam") is delegated, never
+// duplicated: markCacheSessionsDeleted is exactly the effect set a
+// read-proven deletion owes the cache — join deletedRefs, cancel the
+// pending write, delete the record, propagate — and its idempotence IS the
+// retry contract: a later firing retries the delete a storage fault
+// aborted, instead of this hook growing a second copy of those lines.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
   releaseSubagentRows(ref);
   discardCanceledMutations(ref);
-  threadsStore.setState((s) => {
-    if (s.deletedRefs.has(ref)) return s;
-    const deletedRefs = new Set(s.deletedRefs);
-    deletedRefs.add(ref);
-    return { deletedRefs };
-  });
+  markCacheSessionsDeleted([ref]);
 }
 
 // The removal half of a canceled row's lifecycle
@@ -1588,6 +2381,9 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
     .discardCanceled(targetRef)
     .then(() => {
       if (!isCurrentMutationRuntime(runtime)) return;
+      // Rows left the outbox: in-flight reads for the ref are stale, whether or
+      // not any of their ids was registered here.
+      noteMutationStateChange(targetRef);
       // Every successful discard notifies, a zero count included: zero says
       // what THIS tab's write removed, never what another tab may have
       // removed from under this tab's cached projection - and the notify is
@@ -1615,7 +2411,15 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  await runtime.storage.cancelUnattempted(ref);
+  const canceled = await runtime.storage.cancelUnattempted(ref);
+  // Rows were canceled in the outbox: in-flight reads for the ref are stale,
+  // whether or not their ids were registered here.
+  noteMutationStateChange(ref);
+  // The write named the ids it canceled, so they are provably undelivered no
+  // more: leaving them would fail a later send closed for a row that never
+  // reached the daemon. Only a cancel path that cannot name its rows may leave
+  // them for the next successful read.
+  for (const clientMutationId of canceled) noteHandledMutation(clientMutationId);
   // Notify on every successful write, zero canceled rows included: zero is
   // exactly what this tab sees when a sibling tab's Stop already canceled the
   // rows, and cancelUnattempted is a raw storage write — it announces nothing
@@ -1639,20 +2443,15 @@ async function hydrateAndSubscribeWatch(
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
   let discardHeldHistory = false;
-  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const lease = syncThreadSubscription(ref, client);
+  if (!lease) throw new Error("Thread hydration has no subscription holder");
   const held = heldSnapshotFor(pending.baseModel);
   try {
     try {
-      resp = await client.request(
-        "thread/read",
-        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
-      );
+      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
     } catch (err) {
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      resp = await client.request(
-        "thread/read",
-        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
-      );
+      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -1667,7 +2466,6 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
-  markSubscribed();
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -1727,12 +2525,26 @@ function threadInstanceID(model: ThreadModel | undefined): string | undefined {
   return model?.instanceId ?? model?.threadId;
 }
 
+// The composer's routes and the wire methods they build, in ONE place: both
+// composerMutationIntent and DIRECT_FALLBACK_METHODS read this map, so a route
+// added here (or a method changed) cannot leave the fallback set silently
+// behind. The Record<ComposerMutationRoute, string> annotation makes the map
+// exhaustive over the route union at compile time.
+const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
+  send: "turn/start",
+  queue: "turn/queue",
+  steer: "turn/steer",
+  drain: "turn/drainAsSteer",
+};
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   text: string,
   attachments?: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -1746,11 +2558,14 @@ function composerMutationIntent(
   if (canonicalSkillNames(skillNames).length > 0 && model?.capabilities?.skillInput !== true) {
     throw new Error("skill selections are not supported on this target");
   }
+  if (canonicalSkillNames(commandNames).length > 0 && model?.capabilities?.commandInput !== true) {
+    throw new Error("command selections are not supported on this target");
+  }
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildComposerInput(text, attachments, skillNames);
+  const input = buildComposerInput(text, attachments, skillNames, commandNames, mentions);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
@@ -1761,17 +2576,18 @@ function composerMutationIntent(
     instanceId: model?.instanceId,
     attachments: durableAttachments(attachments),
     composerText: text,
+    composerMentions: mentions,
   };
   if (route === "send") {
     return {
       ...base,
-      method: "turn/start",
+      method: COMPOSER_ROUTE_METHODS.send,
       payload: { ref, expectedInstanceId, input },
-      optimisticDisplay: { method: "turn/start", input },
+      optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.send, input },
     };
   }
   if (route === "queue" || route === "steer") {
-    const method = route === "queue" ? "turn/queue" : "turn/steer";
+    const method = COMPOSER_ROUTE_METHODS[route];
     return {
       ...base,
       method,
@@ -1785,19 +2601,21 @@ function composerMutationIntent(
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
-    method: "turn/drainAsSteer",
+    method: COMPOSER_ROUTE_METHODS.drain,
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
-    optimisticDisplay: { method: "turn/drainAsSteer", input },
+    optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.drain, input },
   };
 }
 
 // The local recovery fence. A LOCAL session carrying a restart-blocking
 // obligation (a Stop in flight, or a snapshot the daemon reports as
 // restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/start,
-// turn/steer, turn/queue and every other fenced mutation for exactly that
-// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
-// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// obligation stands: the hub's recovery admission refuses turn/steer,
+// turn/queue and every other fenced mutation for exactly that window
+// (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
+// the projected status), with turn/start carved out only for the merely-
+// resumable shape isResumeOnlyLocal names, so even a still-ACTIVE snapshot is
+// fenced while
 // a Stop drains - a live read relays the daemon's active status with
 // resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
 // store arms the obligation on that very hydration. An offered press in that
@@ -1808,6 +2626,254 @@ function composerMutationIntent(
 // re-exports it for the surfaces.
 export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
   return ref.startsWith("local:") && restartObligated;
+}
+
+// A LOCAL session the hub admits a folded send for. The authority is the hub's
+// OWN answer, not a shape this client infers: ResumeOnlyFoldable (whom
+// applyThreadResumeRequirement stamps) is true exactly when a turn/start on the
+// current connection would be admitted under the resume-only carve-out
+// (cmd/evener-hub's sessionAdmitsResumeRequired, read without a request: the
+// requirement is set, no Stop is draining, the exit is confirmed, and no
+// connection fence applies). The client no longer reads resumeRequired plus a
+// cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
+// sets both for a Stop drain, an unconfirmed force-stop exit, the
+// connection-recovery fence, and an incompatible-protocol daemon too, four
+// shapes whose turn/start the hub still refuses, so inferring from them offered
+// Send where the hub would refuse it.
+//
+// Deliberately narrow - it is NOT the whole recovery fence. Every clause below
+// excludes a shape the hub would refuse or one whose send would starve:
+//
+//   - the hub bit must be true; an older or non-local snapshot that never
+//     carried it is not this shape.
+//   - no status clause: the hub's admission is status-independent
+//     (sessionActionRecoveryError / resumeOnlyFoldable read no status), so a
+//     live snapshot the hub legitimately stamped foldable - a daemon another
+//     controller started under a confirmed force-stop obligation - is admitted
+//     and folds. A status clause here would hide the folded send from a
+//     snapshot the hub would happily admit, silently falling back to the old
+//     explicit-Resume step the fold exists to remove. The stale bit a shut-down
+//     snapshot leaves behind is defended against where it is written, not here:
+//     the off-shut-down transition clears it (settleResumeOnlyOffShutdown) and
+//     a connection-generation change invalidates it
+//     (invalidateHeldHistoriesForReconnect), so a bit whose shut-down snapshot
+//     has ended cannot mis-route a send.
+//   - signals.uncertainMessages must be false: while delivery-uncertain rows
+//     exist the hub's explicit Resume still runs reconciliation, so the send is
+//     not the whole story and the Resume affordance stays.
+//   - signals.stopInFlight must be false: a snapshot taken before this page's
+//     Stop was answered can still carry the bit the hub stamped before the
+//     Stop's drain began, so the local in-flight Stop keeps the fence.
+//   - signals.queuedNonSend must be false: a queued non-turn/start durable row
+//     (still "submitting", attempted or not) parks at the target's FIFO ahead
+//     of a turn/start, so folding a send behind it would silently never
+//     deliver it.
+//
+// A Stop in flight / active drain, a restartRequired daemon that needs the
+// older daemon stopped first, and a stale-connection snapshot all leave the hub
+// bit false; all keep the fence.
+export interface ResumeOnlySignals {
+  // The store's delivery-uncertain rows (blockedUnknown).
+  uncertainMessages?: boolean;
+  // A Force stop this page started is still draining (stoppingRefs).
+  stopInFlight?: boolean;
+  // A queued non-turn/start durable row (still "submitting", attempted or not)
+  // ahead of the send (the pending-turns projection's hasQueuedNonSend).
+  queuedNonSend?: boolean;
+  // The store's mutation-recency reading (mutationAuthorityRefs), read only by
+  // the Send-resumes face below: a local snapshot whose parent still owns its
+  // uncertain rows (Session.tsx's recoveryOwnerRef) is not Send-driven.
+  mutationStateAuthoritative?: boolean;
+}
+
+export function isResumeOnlyLocal(
+  ref: string,
+  model: Pick<ThreadModel, "resumeOnlyFoldable">,
+  signals: ResumeOnlySignals = {},
+): boolean {
+  return (
+    ref.startsWith("local:") &&
+    model.resumeOnlyFoldable === true &&
+    signals.uncertainMessages !== true &&
+    signals.stopInFlight !== true &&
+    signals.queuedNonSend !== true
+  );
+}
+
+// The pending-turns projection's synchronous view of a ref's durable outbox,
+// published by pendingTurnsStore.ts at its own module load. Deliberately NOT
+// read through the projection module: threads.ts cannot import it (it imports
+// this one), so the projection registers its read here instead. The composer's
+// blockedMutations selector and this read see the same durable rows; routing
+// the store-wide predicate through it is what gives the press, enqueue and
+// dispatch paths the delivery-uncertain signal the render already had.
+//
+// Failing closed: until a projection is installed the read answers "uncertain",
+// so the carve-out never folds a resume ahead of rows nobody has reconciled.
+// The projection is installed wherever a session pane is (Session/Composer
+// import it), and every caller of the predicate acts on a loaded session.
+interface ResumeOnlyProjection {
+  // Whether `ref`'s durable outbox has been read and published into the
+  // projection. An installed projection whose first durable read for the ref
+  // has not resolved yet still holds an EMPTY outbox for it - the same map a
+  // ref with no rows holds - so a predicate that read only hasBlockedUnknown/
+  // hasQueuedNonSend would report "no uncertainty" through exactly the window
+  // between hydration and the refresh completing, where an unreconciled
+  // blockedUnknown row can sit. Both reads below therefore fail closed until
+  // this is true, per ref.
+  isLoaded(ref: string): boolean;
+  hasBlockedUnknown(ref: string): boolean;
+  // Queued non-turn/start rows (still "submitting", attempted or not): a
+  // turn/start queued behind one starves at the target's FIFO, so a ref holding
+  // one is not foldable.
+  hasQueuedNonSend(ref: string): boolean;
+}
+let resumeOnlyProjection: ResumeOnlyProjection | null = null;
+
+export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
+  resumeOnlyProjection = projection;
+}
+
+// Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
+// as the pending-turns projection last published them. True when no projection
+// is installed OR the ref's own durable outbox has not loaded yet (failing
+// closed - an installed-but-unrefreshed projection holds an empty outbox for
+// every ref). Exported so a surface that reasons about the fence can ask the
+// same question the store-wide predicate does.
+export function hasBlockedUnknown(ref: string): boolean {
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
+  );
+}
+
+// Whether ref's durable outbox holds a queued non-turn/start row (still
+// "submitting", attempted or not), as the pending-turns projection last
+// published them. True when no projection is installed OR the ref's own
+// durable outbox has not loaded yet (failing closed). Exported so a surface
+// that reasons about the fence can ask the same question the store-wide
+// predicate does.
+export function hasQueuedNonSend(ref: string): boolean {
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
+  );
+}
+
+// isResumeOnlyLocal over the store's current model for ref: the ADMISSION
+// predicate the press (liveControls) and enqueue (enqueueMutationIntent) paths
+// share. Unlike isResumeOnlyLocal it reads the delivery-uncertain signal
+// itself, from the pending-turns projection (hasBlockedUnknown), and the
+// queued-non-send signal (hasQueuedNonSend), so a direct caller that bypassed
+// the composer's own reads - the palette's slash fallthrough, the ask dock's
+// batch send, a failed turn's Retry - still keeps the fence while blockedUnknown
+// rows or a queued non-send row stand. It can also read the store's own
+// in-flight Stop (stoppingRefs). Dispatch reads its sibling instead:
+// resumeOnlyLocalDispatchable omits the queued-non-send clause because at
+// dispatch the named head record may itself be the send, with no non-send row
+// ahead of it (currentDispatchClient).
+export function resumeOnlyLocalModel(ref: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  return model !== undefined && isResumeOnlyLocal(ref, model, localFenceSignals(ref));
+}
+
+// The store's client-side fence signals, read once from the current state: the
+// delivery-uncertain rows, the in-flight Stop, the queued non-send row, and the
+// mutation-recency mark. resumeOnlyLocalModel, sendResumesLocalModel and
+// sendDrivenLocalModel all share this one literal.
+function localFenceSignals(ref: string): ResumeOnlySignals {
+  const state = threadsStore.getState();
+  return {
+    stopInFlight: state.stoppingRefs.has(ref),
+    uncertainMessages: hasBlockedUnknown(ref),
+    queuedNonSend: hasQueuedNonSend(ref),
+    mutationStateAuthoritative: state.mutationAuthorityRefs.has(ref),
+  };
+}
+
+// A local snapshot the pane shows as retained by its owning session: its
+// uncertain rows are the owner's to reconcile, and the pane offers the owner's
+// link and a Refresh - never a resume. The ONE definition, consumed by the
+// Send-resumes face here, Session.tsx's notice, and SessionChrome.tsx's
+// force-stop eligibility.
+export function ownerRetainedRef(
+  model: Pick<ThreadModel, "status" | "parentRef">,
+  mutationStateAuthoritative: boolean,
+): string | undefined {
+  return !mutationStateAuthoritative &&
+    model.status.type !== "notLoaded" &&
+    model.status.type !== "restartRequired" &&
+    model.parentRef?.startsWith("local:") === true
+    ? model.parentRef
+    : undefined;
+}
+
+// The recovery fence's Send-driven face (R09): a LOCAL session carrying a
+// restart-blocking obligation whose only recovery action used to be the
+// standalone Resume button. Broad by design - it is everything the merely-
+// resumable fold is NOT, minus the two shapes that keep their own controls:
+//   - a restartRequired daemon still needs its older process stopped first,
+//     which Send cannot do;
+//   - an owner-retained snapshot's rows belong to its owner;
+//   - a draining Stop is still the wire's own fence (the hub holds Stopping > 0
+//     and refuses even turn/start).
+// Everything else - delivery-uncertain rows, a queued non-send row, an
+// unconfirmed exit, the connection fence - offers Send, and the store's driver
+// resumes before the parked send dispatches.
+export function isSendResumesLocal(
+  ref: string,
+  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
+  restartObligated: boolean,
+  signals: ResumeOnlySignals = {},
+): boolean {
+  if (!ref.startsWith("local:")) return false;
+  if (!restartObligated) return false;
+  if (model.status.type === "restartRequired") return false;
+  if (signals.stopInFlight === true) return false;
+  if (ownerRetainedRef(model, signals.mutationStateAuthoritative === true) !== undefined) return false;
+  return !isResumeOnlyLocal(ref, model, signals);
+}
+
+// isSendResumesLocal over the store's current model for ref: the ADMISSION
+// predicate enqueueMutationIntent and the press (liveControls) share, read from
+// the same store-wide signals resumeOnlyLocalModel reads.
+export function sendResumesLocalModel(ref: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  return (
+    model !== undefined &&
+    isSendResumesLocal(ref, model, threadsStore.getState().restartBlockingObligations.has(ref), localFenceSignals(ref))
+  );
+}
+
+// The two faces whose only recovery action is a Send: the merely-resumable fold
+// and the Send-resumes face. The admission (enqueueMutationIntent) and the press
+// (liveControls' pressRefusal) both admit turn/start for exactly this union, so
+// they read this one helper rather than recombining the pair.
+export function sendDrivenLocalModel(ref: string): boolean {
+  return resumeOnlyLocalModel(ref) || sendResumesLocalModel(ref);
+}
+
+// The DISPATCH reading of the resume-only carve-out, used by
+// currentDispatchClient when it names the exact head record it is about to
+// send. It is deliberately NOT resumeOnlyLocalModel: the two callers ask
+// genuinely different questions. resumeOnlyLocalModel answers ADMISSION - "may
+// a new send be minted behind this queue?" - where any queued non-send row is
+// genuinely ahead of the candidate, so hasQueuedNonSend belongs. Dispatch asks
+// "is this exact head record admissible?", and the head record is the next
+// thing the wire sees: a queued non-send row BEHIND a head turn/start is not
+// ahead of it, so it must not park the head. currentDispatchClient still
+// exempts only turn/start (and the ref-less/pre-record calls), so the gate
+// names a queued non-send method itself and parks it; this reading only stops
+// a tail non-send row from refusing the head send. The delivery-uncertain and
+// in-flight-Stop signals stay, because both fence the head record too.
+export function resumeOnlyLocalDispatchable(ref: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  return (
+    model !== undefined &&
+    isResumeOnlyLocal(ref, model, {
+      stopInFlight: state.stoppingRefs.has(ref),
+      uncertainMessages: hasBlockedUnknown(ref),
+    })
+  );
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
@@ -1825,7 +2891,12 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 // (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
-// table is the whole policy.
+// table is the whole policy. turn/start is carved out for BOTH Send-driven
+// shapes (sendDrivenLocalModel): the merely-resumable fold
+// (isResumeOnlyLocal), whose resume the hub folds into turn/start, and the
+// Send-resumes face (isSendResumesLocal), whose send parks and drives the
+// store's resume. A live Stop drain or a restartRequired daemon is neither and
+// still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "turn/start": "Send isn't available until this session is resumed",
   "turn/steer": "Steer isn't available until this session is resumed",
@@ -1837,11 +2908,99 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "notes/human/set": "Notes aren't available until this session is resumed",
 };
 
+// The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
+// builder and this set cannot drift. These are the only mutations the direct
+// fallback answers when storage fails their durable write (isStorageFailure):
+// each has no response-side local commit beyond the wire call itself, so a
+// plain RPC looks to the rest of the store exactly like the dispatched row
+// would have. Every
+// other durable write keeps its own contract and stays fail-closed - see the
+// catch in enqueueMutationIntent.
+const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
+
+// Decrement a ref's in-flight durable-enqueue count, dropping the entry at
+// zero. Paired exactly with the increment in enqueueMutationIntent and
+// trackOutboxWrite, on both the settle and the throw path. A release with no
+// matching acquire is a bookkeeping bug, not a normal case, so it throws rather
+// than defaulting the missing entry to 1 - that default would also hide a
+// double release or a mid-flight reset.
+function releaseInflightDurableEnqueue(ref: string): void {
+  const current = inflightDurableEnqueues.get(ref);
+  if (current === undefined) {
+    throw new Error(`threads store: released an in-flight durable enqueue for ${ref} that was never acquired`);
+  }
+  if (current > 1) inflightDurableEnqueues.set(ref, current - 1);
+  else inflightDurableEnqueues.delete(ref);
+}
+
+// Register an outbox write that can create or reopen a row this tab now owes
+// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
+// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
+// marked as holding undelivered work when the write commits a row that is not
+// canceled. Without this the guard's in-memory state stays stale-empty until an
+// async refresh reads the row back - and if storage wedges first, a fallback
+// send jumps the row that was just written. Every caller names the row it
+// wrote: a reopened recovery row keeps its id and a resend returns the new
+// record, so the settle that proves delivery can resolve it. (Writes that only
+// REMOVE or cancel rows - discardRecovery, updateRecoveryInput, discardCanceled,
+// discardCanceledOfInstance, cancelUnattempted - need no registration: they
+// never create undelivered work, and the next refresh/hydration recomputes the
+// ids from the records when it can read them.)
+async function trackOutboxWrite<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
+): Promise<T> {
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  try {
+    const result = await write();
+    const committed = committedRow(result);
+    if (committed !== undefined) {
+      // The write changed this ref's outbox, so in-flight reads are stale
+      // whether or not the row it touched is undelivered work.
+      noteMutationStateChange(ref);
+      if (committed.undelivered) noteUndeliveredMutation(ref, committed.clientMutationId);
+    }
+    return result;
+  } finally {
+    releaseInflightDurableEnqueue(ref);
+  }
+}
+
+// Remove a ref's dispatch arm once the ref is genuinely idle: it has no
+// undelivered durable work (a non-canceled outbox row) and no durable enqueue
+// still in flight. Ownership is deliberately NOT consulted - the arm is shared
+// state, and with ownership two clicks can each decline to remove it (A's
+// because B was still in flight at A's failure, B's because B never added it),
+// leaving a stale arm with no durable row behind it. Quiescence is exactly the
+// state in which an arm has nothing left to dispatch, so a stale one should go.
+// pinnedMutationRefs is NOT read here either: it is a retention pin, and a ref
+// whose only row is canceled (which leaves only on an explicit Retry or the
+// thread going away) stays pinned forever.
+function disarmQuiescedMutationArm(ref: string): void {
+  if (!hasUndeliveredMutation(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
+    dispatchableMutationRefs.delete(ref);
+  }
+}
+
+// The hydrated-replay gate: a matching pending hydration for the ref keeps
+// dispatch closed while its replay is in flight. Read at the moment it is
+// consulted, never from a value captured earlier - the click's arming and the
+// commit's re-arm both ask NOW, so a hydration that starts or finishes across
+// the write is seen either way. (A captured snapshot would re-arm during a
+// replay that started mid-write, or skip the re-arm for a hydration that
+// finished mid-write, leaving the committed row unarmed until the next
+// discovery.)
+function dispatchReplayGateOpen(ref: string): boolean {
+  const pending = pendingThreadHydrations.get(ref);
+  return pending?.client !== wiredClient || pending.epoch !== readyEpoch;
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
-): Promise<MutationOutboxRecord> {
+): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
@@ -1849,9 +3008,28 @@ async function enqueueMutationIntent(
   // is refused here - before any durable write, so every caller shape hears
   // the same admission refusal.
   const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
+  const admissionState = threadsStore.getState();
   if (
     fenceRefusal !== undefined &&
-    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))
+    // The obligation, OR an in-flight Stop of our own: a stale thread refresh
+    // can clear restartBlockingObligations while the forceStop RPC still
+    // drains, and the hub holds Stopping > 0 (refusing even turn/start) for
+    // that whole window - so stopInFlight is an independent fence here, not
+    // only a blocker of the resume-only carve-out below.
+    isLocalRecoveryFenced(
+      ref,
+      admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref),
+    ) &&
+    // Two shapes admit turn/start at this funnel. A merely-resumable session
+    // folds its resume into the send - the hub admits it (cmd/evener-hub's
+    // sessionActionRecoveryError turn/start carve-out). The Send-resumes face
+    // (isSendResumesLocal) is the broad complement: its only recovery action
+    // used to be the standalone Resume button, and a send now drives that
+    // resume in the store (resumeFencedForSend) with the button's protections,
+    // so its intent must be admitted to park rather than refused. turn/start on
+    // a live Stop drain or a restartRequired daemon is neither; every other
+    // fenced verb keeps the refusal unchanged.
+    !(intent.method === "turn/start" && sendDrivenLocalModel(ref))
   )
     throw new Error(fenceRefusal);
   const client = requireClient();
@@ -1874,29 +3052,322 @@ async function enqueueMutationIntent(
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
-  const pending = pendingThreadHydrations.get(ref);
-  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
+  // The click arms the ref for dispatch; a matching pending hydration keeps the
+  // replay gate closed instead. Whether this click added the value or found it
+  // already set no longer matters - the disarm is quiescence-based, not
+  // ownership-based (see disarmQuiescedMutationArm).
+  if (dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
   }
+  // Register this click's durable write as in flight for the ordering guard
+  // below. It stays counted until the write settles, so a concurrent enqueue
+  // the fallback must not jump stays visible even though it has not committed
+  // (and so has not pinned, and its arm a refresh can clear).
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   let record: MutationOutboxRecord;
   try {
-    // The click-time capture, awaited at the write it fences. A rejecting
-    // read (MutationStorageTimeoutError, VersionError, a retired connection)
-    // is a failed submission exactly like a failed enqueue: the catch below
-    // disarms the ref this click armed, so a transient read failure leaves no
-    // stale dispatch bookkeeping for later discovery passes to act on.
-    const barrier: MutationStopBarrier | undefined =
-      barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
-    record =
-      durableWrite === "interruptAndCancel"
+    // The click-time capture, awaited at the write it fences, and the durable
+    // enqueue behind it, retried once on a storage timeout (see
+    // enqueueDurableMutation).
+    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+  } catch (error) {
+    // This click's write has settled; only OTHER enqueues remain counted.
+    releaseInflightDurableEnqueue(ref);
+    // The direct fallback answers ONLY a durable enqueue whose method is one of
+    // the composer's four send verbs (DIRECT_FALLBACK_METHODS). Every other
+    // durable write keeps its own contract and fails closed here:
+    // turn/interrupt is Stop - its enqueue is enqueueInterruptAndCancel, the
+    // one transaction in which the ref's cancelable rows turn "canceled" AND
+    // the interrupt record is written, both land or neither does, so falling
+    // back would dispatch the interrupt while writing no cancels and leave the
+    // queued messages the click was cancelling still queued for a later
+    // dispatch. thread/clear needs its response applied locally
+    // (applyClearResponse) and notes/human/set needs its onCommitted to mark
+    // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
+    // A storage failure on any of those propagates exactly as every other
+    // submission failure: the caller sees the refusal. This click's own write
+    // has settled, so drop the ref's arm if it is now idle - see
+    // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
+    // fallback below, so its fail-closed decision lives with its invariant.)
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageFailure(error)) {
+      disarmQuiescedMutationArm(ref);
+      throw error;
+    }
+    // Storage failed a composer send's durable write - timed out or refused
+    // outright (see isStorageFailure) - so send it as a plain
+    // RPC right now, exactly as the non-durable operations do (setModel,
+    // rename, compact, ...). The outbox row, the dispatcher, the
+    // receipt/settle machinery and the recovery list are all skipped - there
+    // is nothing durable to settle or replay.
+    //
+    // It must still re-earn the admission the dispatcher would grant, because
+    // it is NOT the ref's durable FIFO head. currentDispatchClient is that
+    // exact admission (the dispatcher asks it per ref and method), so re-run
+    // it: it re-checks the wired client and readyEpoch - both may have changed
+    // across the failed write - the client's ready state, and the ref's fences (a
+    // pending reconciliation, a reconciliation failure, a Stop drain via
+    // stoppingRefs, the restart obligation with turn/start's resume-only
+    // carve-out, and restartRequired). requireArmed is off: the fallback's own
+    // ordering guard is not the dispatcher's arm but the two checks below.
+    // A reconcile the same storage wedge failed is admissible here and nowhere
+    // else: storage-blocked is the one fence whose cause cannot be waited out
+    // inside the wedge, so the fallback waives it (and the reconcile still
+    // pending on that wedge) rather than strand the send. The pending record
+    // is classified below when the fallback's own timeout observes the wedge,
+    // so the waiver does not wait for the reconcile's own watchdog.
+    //
+    // A fallback send must not jump an earlier durable send for the ref, and
+    // two in-memory facts cover what this tab can see. undeliveredMutationIds
+    // holds the ref's committed rows this tab has not proven delivered. (Not
+    // pinnedMutationRefs: that is a retention pin, and a canceled row keeps a
+    // ref pinned with nothing left to deliver, so reading it would refuse the
+    // fallback for a ref whose only row a Stop already canceled.) And
+    // inflightDurableEnqueues counts durable enqueues whose write has not
+    // settled yet - the CONCURRENT case a committed row cannot show: this
+    // click's own was just released, so a nonzero count is another enqueue for
+    // this ref still in flight, one that has not committed (so not undelivered
+    // work yet) and whose dispatch arm a background refresh can clear. The
+    // precise answer - whether the ref's nextDispatchable head is this send -
+    // lives in storage, which just failed this send; these two are what the
+    // in-memory state proves, and the fallback refuses on either rather than
+    // reorder.
+    // The storage that failed this write is the storage the reconcile reads,
+    // so a reconcile still pending for the ref sits on the same failure:
+    // classify it now rather than wait for it to reject. Without this, a send
+    // whose fallback decision lands while the reconcile has not yet rejected
+    // meets the pending fence and dies with the storage error - the exact
+    // window the fallback exists to close. A reconcile that later succeeds
+    // (a full origin's reads still answer) clears the record, so a read that
+    // was healthy after all self-corrects.
+    //
+    // A full origin's QuotaExceededError refuses only writes, so its pending
+    // reconcile may still finish and find an undelivered row this send then
+    // jumps. That reorder is accepted on purpose (friction C13's per-ref
+    // ordering gap). Keeping the pending fence for quota would fail the send
+    // the person just made, in order to wait on a reconcile that usually finds
+    // nothing; getting the send out wins.
+    if (pendingMutationReconciliations.has(ref)) {
+      threadsStore.setState((state) => ({
+        mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
+      }));
+    }
+    const dispatchClient = currentDispatchClient(ref, intent.method, false, { storageBlockedAdmissible: true });
+    const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
+    if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
+      disarmQuiescedMutationArm(ref);
+      throw error;
+    }
+    // The admission above proved the ref has no undelivered work and no enqueue
+    // in flight, so it is idle: drop the arm - see disarmQuiescedMutationArm.
+    disarmQuiescedMutationArm(ref);
+    //
+    // The forfeited cross-tab Stop fence: this send carries no click-time stop
+    // epoch - whether the capture read failed, or the capture succeeded and only
+    // the enqueue failed. The epoch is a commit-order comparison
+    // against the durable row the enqueue would have written, not a wire
+    // parameter (the dispatcher sends record.payload alone), so a send with no
+    // row carries none either way. A Stop landing in another tab during that
+    // window therefore cannot be honoured for it; the composer's draft is
+    // untouched (it lives in localStorage), and a send is retryable by hand -
+    // the trade the fallback makes against failing closed.
+    await dispatchMutationDirectly(dispatchClient, intent);
+    return undefined;
+  }
+  // The success path releases exactly once, here, BEFORE the post-commit
+  // bookkeeping and its listeners run: a listener that consults
+  // inflightDurableEnqueues sees this click already decremented, which is the
+  // ordering the previous structure had. Keeping the bookkeeping OUTSIDE the
+  // try means a throw from it can no longer re-enter a release (the
+  // double-release bug), and this release is unreachable from an error path
+  // because the only other exit from the try is the catch above.
+  releaseInflightDurableEnqueue(ref);
+  // Every commit bumps the generation refreshes check against: a born-canceled
+  // row's pin must survive a stale refresh just as an undelivered row's markers
+  // must.
+  noteMutationStateChange(ref);
+  pinMutationRef(ref);
+  // A committed row is undelivered work unless the stop barrier committed it
+  // born-canceled.
+  const committedUndelivered = record.state !== "canceled";
+  if (committedUndelivered) noteUndeliveredMutation(ref, record.clientMutationId);
+  // A background pin refresh can clear the ref's arm while this write was in
+  // flight (it reads the outbox empty before the commit), so re-arm on a
+  // successful non-canceled commit rather than wait for the next hydration's
+  // re-arm in publishAndReconcileThreadHydration. Gated by the same replay-gate
+  // predicate as the click's own arming: a pending hydration still keeps the
+  // gate closed.
+  if (committedUndelivered && dispatchReplayGateOpen(ref)) {
+    dispatchableMutationRefs.add(ref);
+  }
+  notifyMutationPersistence([ref], { record });
+  return record;
+}
+
+// A durable write that timed out may mean only that storage is slow to
+// answer, so try it a second time before giving up. The click-time capture is
+// awaited ONCE here, before the ladder, and every attempt reuses that same
+// observation: re-reading it would let a Stop landing between attempts become
+// the retry's own baseline (the fence the capture exists to hold). Only a
+// timeout is retried: a write the browser refused outright would be refused
+// again. A rejecting
+// capture, or a write that is not retried, propagates, and
+// enqueueMutationIntent decides between the fallback and a hard failure.
+const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
+const MUTATION_DURABLE_WRITE_RETRY_DELAY_MS = 50;
+
+async function enqueueDurableMutation(
+  runtime: MutationRuntime,
+  intent: MutationIntent,
+  onCommitted: ((record: MutationOutboxRecord) => void) | undefined,
+  durableWrite: "enqueue" | "interruptAndCancel",
+  barrierRead: Promise<number> | undefined,
+): Promise<MutationOutboxRecord> {
+  const barrier: MutationStopBarrier | undefined =
+    barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
         : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
-  } catch (error) {
-    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
-    throw error;
+    } catch (error) {
+      if (!isStorageTimeout(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
+    }
   }
-  pinnedMutationRefs.add(ref);
-  notifyMutationPersistence([ref], { record });
+}
+
+// Whether the IndexedDB watchdog gave up on an open or a transaction: storage
+// that may only be slow, so a durable write is worth a second attempt.
+function isStorageTimeout(error: unknown): boolean {
+  return error instanceof MutationStorageTimeoutError;
+}
+
+// The DOMException names IndexedDB uses when storage itself refuses: a full
+// origin, a browser that denies this origin storage, a schema version another
+// tab moved, a connection closed under the transaction, a transaction the
+// browser aborted, an internal failure. Names that judge the record written
+// (DataError, DataCloneError, ConstraintError: its key, its payload, a
+// duplicate id) or that only this code's own bugs raise (NotFoundError for a
+// missing store, TransactionInactiveError for a request on a finished
+// transaction) are absent on purpose. An AbortError cannot stand in for a
+// record judgment: the outbox adapter races a transaction's body against its
+// completion, so a body that throws rejects with its own error before the
+// abort it causes is reported, and IDBConnection rejects an open whose schema
+// upgrade threw with IDBUpgradeError, not the abort.
+const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  "QuotaExceededError",
+  "SecurityError",
+  "VersionError",
+  "InvalidStateError",
+  "UnknownError",
+  "AbortError",
+]);
+
+// Whether an outbox operation failed because storage did, not because of what
+// it was asked to write: the adapter's own storage errors (a timeout, a
+// refused, blocked or superseded open) or a storage refusal IndexedDB raised.
+// Only these earn the send fallback and the storage-blocked reconcile record;
+// the outbox's own validation errors keep their ordinary meaning. IndexedDB's
+// are matched by name because DOMExceptions from another realm fail
+// instanceof.
+function isStorageFailure(error: unknown): boolean {
+  if (error instanceof MutationStorageError) return true;
+  const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
+  return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
+}
+
+// The fallback send's RPC is its only transport, so a failure on the wire is
+// retried rather than surfaced. Only a transport failure earns the second
+// attempt: a settled WireError is the daemon's own answer (a conflict or a
+// malformed request cannot succeed on an identical retry), while a timeout or a
+// dropped connection leaves the outcome unknown. The clientMutationId is minted
+// ONCE, before the ladder, and every attempt reuses it - the daemon dedups by
+// clientMutationId, so a reply lost after the mutation applied replays as a
+// no-op on the retry instead of applying twice.
+const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
+// A dropped connection leaves the client "reconnecting", where a retry fired
+// now only meets the client's own synchronous not-ready rejection. Wait for a
+// ready client before the second attempt, bounded so a wedged hub cannot hang
+// the send: 10s is the durable-write watchdog's own scale, which the composer
+// already tolerates. The read paths never wait like this for a mutation because
+// a blind retry could land twice - but every attempt here reuses one
+// clientMutationId, so the daemon dedups them.
+const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
+
+// The imperative transport for a mutation whose durable write could not be
+// made: the same plain RPC the non-durable operations issue. Delivery here is
+// at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
+// holds it, so if this RPC lands but its response is lost, a retry of the same
+// action mints a different id and the daemon cannot recognise the duplicate
+// (the same gap Jesse's ruling documents in issue #3313). A rejection maps a
+// conflict the same way the non-durable operations do.
+async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
+  const clientMutationId = createSecureUUID();
+  let target = client;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // Resolve the transport from the CURRENT target: a retry may run against
+      // a rewired or waited-ready client, so the first client's request must
+      // not be reused.
+      const request = target.request as unknown as (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<unknown>;
+      await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      return;
+    } catch (err) {
+      if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
+      // A failed client that has closed for good can never become ready again,
+      // but a manual retry (ConnectionBanner) may already have wired a
+      // replacement - which can itself still be connecting. Retry against it
+      // once it is ready (bounded); surface at once only when no replacement
+      // has been wired at all, rather than waiting out the bound for a failed
+      // client that can never recover. requireClient() is rewire-aware, so it
+      // reads the current client, not the failed one.
+      if (target.state === "closed" || target.terminalReason !== null) {
+        let replacement: AppwireClientLike | null = null;
+        try {
+          const current = requireClient();
+          if (current !== target) replacement = current;
+        } catch {
+          replacement = null;
+        }
+        if (replacement === null) throw mapConflict(err);
+        if (replacement.state !== "ready") {
+          try {
+            replacement = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+          } catch {
+            throw mapConflict(err);
+          }
+        }
+        target = replacement;
+        continue;
+      }
+      try {
+        target = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+      } catch {
+        throw mapConflict(err);
+      }
+    }
+  }
+}
+
+// A non-send durable write (thread/clear, notes/human/set,
+// turn/promoteQueuedAsSteer) can never take the direct fallback, so
+// enqueueMutationIntent always resolves with its committed record. This asserts
+// that contract instead of casting it: a cast would hand the caller an
+// undefined record its type called present, where a violation here throws. The
+// union stays enqueueMutationIntent's own return; this is the honest narrow for
+// a caller whose method is never one of the composer send verbs.
+async function enqueueCommittedMutation(
+  intent: MutationIntent,
+  onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+): Promise<MutationOutboxRecord> {
+  const record = await enqueueMutationIntent(intent, onCommitted, durableWrite);
+  if (record === undefined) {
+    throw new Error(`threads store: ${intent.method} unexpectedly took the direct send fallback`);
+  }
   return record;
 }
 
@@ -1908,7 +3379,7 @@ async function enqueueMutation(
   attachments?: InputAttachment[],
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<void> {
-  await enqueueMutationIntent(
+  await enqueueCommittedMutation(
     {
       targetRef: ref,
       threadId: threadsStore.getState().threads.get(ref)?.threadId,
@@ -2100,12 +3571,46 @@ function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadMod
   return pending.baseModel !== undefined && model === pending.baseModel;
 }
 
+function ensureCacheLease(ref: string): void {
+  threadsStore.setState((state) =>
+    state.cacheLifetimes.get(ref)?.leaseEpoch !== undefined
+      ? state
+      : {
+          cacheLifetimes: new Map(state.cacheLifetimes).set(ref, {
+            ...state.cacheLifetimes.get(ref),
+            leaseEpoch: tabCacheEpoch ?? 0,
+          }),
+        },
+  );
+}
+
+// Final release removes every part of the lifetime, but only after the
+// release flush has checked the still-armed shell/suppression gates.
+function releaseCacheLifetime(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
+  const next = new Map(lifetimes);
+  next.delete(ref);
+  return next;
+}
+
+// An authoritative publish ends verification, not ownership. Keep even epoch
+// zero and suppression without a lease; neither may disappear with the shell.
+function releaseCacheShell(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
+  const lifetime = lifetimes.get(ref);
+  if (!lifetime?.shell && lifetime?.anchor === undefined) return lifetimes;
+  if (lifetime.leaseEpoch === undefined && !lifetime.suppressed) return releaseCacheLifetime(lifetimes, ref);
+  return new Map(lifetimes).set(ref, { leaseEpoch: lifetime.leaseEpoch, suppressed: lifetime.suppressed });
+}
+
 function beginThreadHydration(
   ref: string,
   client: AppwireClientLike,
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  // Restored mutations hydrate pinned refs without an ensureThread claim.
+  // Capture their lifetime before any base publishes or read starts, so a
+  // clear during hydration suppresses them through their final release too.
+  ensureCacheLease(ref);
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
@@ -2181,6 +3686,15 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
 
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
+  // The first authoritative publish ends the cached-shell window: the flag
+  // and the gap rule's anchor live only from the shell's arming until this
+  // read's publish (spec, "The load seam"); the lease outlives
+  // the window — until the ref's final release — for the clear's suppression
+  // (Task 10).
+  threadsStore.setState((s) => {
+    const cacheLifetimes = releaseCacheShell(s.cacheLifetimes, ref);
+    return cacheLifetimes === s.cacheLifetimes ? s : { cacheLifetimes };
+  });
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
   threadsStore.setState((s) => {
@@ -2319,9 +3833,16 @@ async function publishAndReconcileThreadHydration(
         pending.client === wiredClient
       ) {
         threadsStore.setState((state) => {
+          // Returning the same reference skips the merge and the listener
+          // pass (zustand/vanilla drops identical states), and a healthy ref
+          // settles neither fence on most reconciles.
+          if (!state.mutationReconciliationFailures.has(ref) && !state.mutationReconciliationStorageBlocked.has(ref))
+            return state;
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           mutationReconciliationFailures.delete(ref);
-          return { mutationReconciliationFailures };
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          mutationReconciliationStorageBlocked.delete(ref);
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
         });
       }
     } catch (error) {
@@ -2331,11 +3852,29 @@ async function publishAndReconcileThreadHydration(
         pending.epoch === readyEpoch &&
         pending.client === wiredClient
       ) {
-        // Discovery retries the authoritative read after storage recovers.
-        // Keep the failure visible and dispatch closed until that succeeds.
-        threadsStore.setState((state) => ({
-          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(ref),
-        }));
+        // A storage failure is not a mutation-state fact: the same storage
+        // that fails the durable write failed this read, so record
+        // the ref aside as storage-blocked - the slice the send fallback may
+        // admit - and let discovery retry the read on every pass. A genuine
+        // failure recorded earlier (a real reconcile conflict, a blocked
+        // shared record) must survive it: erasing it would unfence the
+        // fallback through the waivable slice, so a storage failure only adds
+        // the storage-blocked record. Any other failure keeps its old
+        // meaning and supersedes the storage-blocked state, being the
+        // stricter fence: record it in failures and clear the storage-blocked
+        // record. A successful reconcile clears both.
+        const storageBlocked = isStorageFailure(error);
+        threadsStore.setState((state) => {
+          const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          if (storageBlocked) {
+            mutationReconciliationStorageBlocked.add(ref);
+          } else {
+            mutationReconciliationFailures.add(ref);
+            mutationReconciliationStorageBlocked.delete(ref);
+          }
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
+        });
       }
       throw error;
     } finally {
@@ -2401,12 +3940,21 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
+): {
+  next: Map<string, ThreadModel> | null;
+  changedRefs: string[];
+  acceptedRefs: string[];
+  // Refs whose thread/status/changed fold moved them OFF the shut-down set: the
+  // merely-resumable window those refs' snapshots described has ended, so their
+  // recovery obligation is the caller's to clear (see handleNotification).
+  endedResumeOnlyRefs: string[];
+} {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
+  const endedResumeOnlyRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs, acceptedRefs };
+  if (!routed) return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   const accept = (model: ThreadModel): void => {
     acceptedRefs.push(model.ref);
   };
@@ -2416,19 +3964,52 @@ function applyToMap(
       const updated = applyNotification(model, n, now);
       if (updated === model) continue;
       next ??= new Map(map);
-      next.set(model.ref, updated);
+      next.set(model.ref, settleResumeOnlyOffShutdown(model, updated, endedResumeOnlyRefs));
       changedRefs.push(model.ref);
     }
-    return { next, changedRefs, acceptedRefs };
+    return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   }
   accept(routed);
   const updated = applyNotification(routed, n, now);
   if (updated !== routed) {
     next = new Map(map);
-    next.set(routed.ref, updated);
+    next.set(routed.ref, settleResumeOnlyOffShutdown(routed, updated, endedResumeOnlyRefs));
     changedRefs.push(routed.ref);
   }
-  return { next, changedRefs, acceptedRefs };
+  return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+}
+
+// A folded notification that moved a ref OFF the shut-down set ends the
+// merely-resumable shape that ref's snapshot described: the resume the hub bit
+// was stamped for has started, so the snapshot's resumeOnlyFoldable bit must
+// not outlive the status that carried it. The bit is written ONLY by a snapshot
+// hydration (reducer.ts's threadFields), while the thread/status/changed branch
+// keeps ...model, so without this a stale bit would ride a live status. The
+// predicate reads no status of its own, so this is where a bit whose shut-down
+// snapshot has ended is cleared - the bit belongs to the snapshot, not to every
+// later frame. The ref is reported so the caller clears the recovery obligation
+// the same snapshot armed. Only the off-set direction counts: a fold onto the
+// set (or within it) keeps the window, and the reverse transition is a shutdown,
+// not a resume.
+function settleResumeOnlyOffShutdown(previous: ThreadModel, updated: ThreadModel, endedRefs: string[]): ThreadModel {
+  if (!SHUT_DOWN_STATUSES.has(previous.status.type) || SHUT_DOWN_STATUSES.has(updated.status.type)) {
+    return updated;
+  }
+  // Only a model that genuinely carried the snapshot's resume-only shape ends
+  // here. A ref that was never resume-only - a restart-required daemon, an
+  // unconfirmed force-stop exit, connection recovery - keeps both its bit
+  // (already false) and its recovery obligation: an off-shut-down status fold
+  // alone is not evidence the hub resumed it, so clearing that ref's fence
+  // would admit mutations the hub still rejects.
+  if (previous.resumeOnlyFoldable !== true) {
+    return updated;
+  }
+  // A Stop this page started still owns the ref's obligation until its RPC
+  // settles (the hub holds Stopping > 0, refusing even turn/start, for that
+  // whole window), so the ref is not reported for the obligation clear. Its bit
+  // still clears with the snapshot.
+  if (!activeStops.has(updated.ref)) endedRefs.push(updated.ref);
+  return invalidateResumeOnlyForReconnect(updated);
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -2502,11 +4083,13 @@ function handleNotification(n: AnyNotification): void {
     next: nextThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
+    endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
   const {
     next: nextWatchedThreads,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
+    endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
@@ -2542,6 +4125,23 @@ function handleNotification(n: AnyNotification): void {
     patch.watchedThreads = nextWatchedThreads;
   }
   threadsStore.setState(patch);
+
+  // A status frame that moved a ref off the shut-down set ends the
+  // merely-resumable window: the recovery obligation the same shut-down
+  // snapshot armed is stale now, and leaving it armed would fence a session the
+  // hub has resumed (stillFenced keeps Send and Queue off until a fresh read
+  // clears it). Clear it here, in the same step the model's stale
+  // resumeOnlyFoldable bit was cleared, so the composer routes normally. The
+  // fold withholds a ref a Stop this page started still owns (see
+  // settleResumeOnlyOffShutdown), so every reported ref is this clear's to make.
+  if (endedThreadsResumeOnly.length > 0 || endedWatchedResumeOnly.length > 0) {
+    const endedRefs = new Set([...endedThreadsResumeOnly, ...endedWatchedResumeOnly]);
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      for (const ref of endedRefs) restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+  }
 
   if (invalidatedThreadRefs.length > 0 || invalidatedWatchedRefs.length > 0) {
     const client = wiredClient;
@@ -2679,6 +4279,13 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
   // attempt already owns the entry, so leave that one — and its retry — alone.
   if (pendingHydrations.get(ref) !== pending) return;
   pendingHydrations.delete(ref);
+  // A durably deleted target is terminal (see the `deletedRefs` field doc):
+  // retire the lifecycle — cancelling its retry and settling any owner — and
+  // arm nothing. markThreadDeletedIfFenced recorded the flag on the way here.
+  if (threadsStore.getState().deletedRefs.has(ref)) {
+    retireOwnedHydration(kind, ref);
+    return;
+  }
   const client = pending.client;
   const epoch = pending.epoch;
   if (wiredClient !== client || readyEpoch !== epoch) return;
@@ -2946,7 +4553,7 @@ async function handleReady(
     // so reset or reconnect can land inside it; re-check both owners before
     // mutating the shared pin set or putting reads on the wire.
     if (!isCurrentMutationRuntime(runtime)) return;
-    for (const ref of discovered) pinnedMutationRefs.add(ref);
+    for (const ref of discovered) pinMutationRef(ref);
     if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
     await Promise.all(
       discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
@@ -2993,11 +4600,9 @@ async function handleReady(
 function teardownWiring(): void {
   readyEpoch += 1;
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
-  // A different (or absent) client is a different connection: every wire
-  // subscription this generation tracked belongs to a socket that is gone, so
-  // drop the whole set — handleReady's re-reads re-subscribe the still-tracked
-  // refs on the new client.
-  wireSubscribedRefs.clear();
+  // Old leases belong to the outgoing client. The next hydration joins the
+  // replacement client's membership without affecting activity owners.
+  releaseThreadSubscriptions();
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -3023,7 +4628,7 @@ function rewireClient(client: AppwireClientLike): void {
         // onReady is the SAME client reconnecting: its old connection's
         // subscriptions are server-side gone too, even though the client object
         // survives. handleReady re-subscribes the still-tracked refs.
-        wireSubscribedRefs.clear();
+
         retireAllOwnedHydrations();
         dispatchReadyClient = null;
         dispatchReadyEpoch = -1;
@@ -3068,14 +4673,32 @@ function detachClient(): void {
 // reconnect's re-read goes out, so that read always replaces whole history
 // rather than merging by version. A no-op the first time a client ever
 // connects: nothing is tracked yet.
+//
+// The same connection change also invalidates the resumeOnlyFoldable bit: it
+// is the PREVIOUS connection's answer (applyThreadResumeRequirement stamped it
+// on a snapshot that connection produced), and the hub's connection-recovery
+// fence can refuse a folded turn/start on the new connection. Clearing it here
+// - the store's single connection-generation hook - is what keeps a send from
+// folding from a bit the current connection has not re-stamped; a fresh read
+// on the current connection restores folding.
 function invalidateHeldHistoriesForReconnect(): void {
   const { threads, watchedThreads } = threadsStore.getState();
   for (const [ref, model] of threads) {
-    if (model.history) putThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putThreadModel(ref, next);
   }
   for (const [ref, model] of watchedThreads) {
-    if (model.history) putWatchedThreadModel(ref, invalidateHistory(model));
+    const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
+    if (next !== model) putWatchedThreadModel(ref, next);
   }
+}
+
+// Clears the retained resumeOnlyFoldable bit: the outgoing connection's answer
+// on a reconnect, and the shut-down snapshot a status fold ended. A model with
+// an absent or already-false bit is returned in place, so neither caller writes
+// for the sessions that were not foldable.
+function invalidateResumeOnlyForReconnect(model: ThreadModel): ThreadModel {
+  return model.resumeOnlyFoldable === true ? { ...model, resumeOnlyFoldable: false } : model;
 }
 
 // The single reactive trigger for rewireClient: every connectionStore
@@ -3166,7 +4789,11 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // enqueueMutationIntent gate) deliberately do NOT call this - they keep
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
-// both attempts land.
+// both attempts land. The one mutation that does wait here is
+// enqueueMutationIntent's storage-failure fallback send
+// (dispatchMutationDirectly): it reuses ONE clientMutationId across its
+// attempts, so the daemon dedups a replay and the double-land reason above
+// does not hold.
 //
 // Loops rather than waiting once: a rewire mid-wait can land on a client
 // that is ALSO not yet ready (a fresh client still mid-handshake), so this
@@ -3214,29 +4841,114 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
+  mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
+  resumedIdentities: new Map(),
+  resumeFailures: new Map(),
+  stoppingRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
+  cacheLifetimes: new Map(),
+  clearInFlight: undefined,
+
+  clearResumedIdentity(ref) {
+    threadsStore.setState((state) => {
+      if (!state.resumedIdentities.has(ref)) return {};
+      const resumedIdentities = new Map(state.resumedIdentities);
+      resumedIdentities.delete(ref);
+      return { resumedIdentities };
+    });
+  },
 
   async ensureThread(ref) {
     let client = requireClient();
     const count = refCounts.get(ref) ?? 0;
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
+      // A pinned model keeps its lifetime after the last pane releases it.
+      ensureCacheLease(ref);
     }
     const generation = ensureGenerations.get(ref) ?? 0;
     refCounts.set(ref, count + 1);
+    syncThreadSubscription(ref, client);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
-    const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
-      const hydrationEpoch = readyEpoch;
+    // The claim's hydration epoch, observed when the pane claimed the ref —
+    // BEFORE the serial cache lookup, because the lookup widens the
+    // claim-to-arming window by milliseconds and a ready transition inside
+    // it must meet the same contract as one during the claim's read. A
+    // lookup MISS arms at the observed epoch, exactly as the pre-lookup
+    // claim did: the epoch-current replacement then comes from the same
+    // machinery as before the seam (handleReady's refresh of a pending
+    // hydration, or the re-arm loop after the stale epoch's publish is
+    // refused), so only a matching client and epoch may share the pending
+    // hydration — Session's deferred-until-ready handshake pins exactly this
+    // claim-then-replace pair (Session.test.tsx). A lookup HIT publishes a
+    // model — the shell — and the arming that follows serves that model, so
+    // it commits to the CURRENT epoch: the ready pass has already gone by
+    // and nothing would ever replace a stale arming, which would strand the
+    // pane on an unverified shell with no live read behind it.
+    const claimEpoch = readyEpoch;
+
+    // The cached-shell lookup (spec, "The load seam"): serial by necessity —
+    // the held identity must exist before issueLatestWindowRead runs — and
+    // bounded by its own 250 ms deadline. The creator alone publishes and
+    // arms; a joiner sees the shell (threads.has) or the hydration
+    // (inflightHydrates) and joins that instead.
+    let cachedBase: ThreadModel | undefined;
+    if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+      const found = await joinCacheLookup(ref);
+      const state = threadsStore.getState();
+      // The creator rechecks after the await: a pane that released while the
+      // lookup was in flight, or a ref the deletion fence durably rejected,
+      // publishes nothing and arms nothing — a closed pane must not send a
+      // cold read in its own name. (A concurrent holder that published while
+      // we looked keeps its model; the guard below just declines to arm the
+      // shell over it.)
+      if ((refCounts.get(ref) ?? 0) === 0 || ensureGenerations.get(ref) !== generation || state.deletedRefs.has(ref))
+        return;
+      if (found !== undefined) {
+        const captured = found.epoch;
+        // The first durable observation establishes this still-unpublished
+        // claim's epoch. Already-published deadline fallbacks keep their old
+        // lease, and later observations suppress rather than rebind them.
+        if (tabCacheEpoch === undefined && state.clearInFlight === undefined && !state.threads.has(ref)) {
+          threadsStore.setState((s) => ({
+            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
+              ...s.cacheLifetimes.get(ref),
+              leaseEpoch: captured,
+            }),
+          }));
+        }
+        onCacheEpochObserved(captured);
+        const epochMatch =
+          captured === tabCacheEpoch && (state.clearInFlight === undefined || captured >= state.clearInFlight);
+        if (epochMatch && found.record !== undefined && !state.threads.has(ref)) {
+          const shell = threadModelFromCache(found.record, Date.now());
+          const anchor = newestItemPosition(found.record.history.turns);
+          threadsStore.setState((s) => ({
+            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
+              ...s.cacheLifetimes.get(ref),
+              shell: true,
+              ...(anchor === undefined ? {} : { anchor }),
+            }),
+          }));
+          cachedBase = shell;
+        }
+      }
+    }
+
+    const startHydration = (
+      hydrationClient: AppwireClientLike,
+      hydrationEpoch: number,
+    ): Promise<ThreadModel | null> => {
       const pending = beginThreadHydration(
         ref,
         hydrationClient,
-        threadsStore.getState().threads.get(ref),
+        cachedBase ?? threadsStore.getState().threads.get(ref),
         hydrationEpoch,
       );
       const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now(), pending)
@@ -3273,7 +4985,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     };
 
     let inflight = inflightHydrates.get(ref);
-    if (!inflight) inflight = startHydration(client);
+    if (!inflight) inflight = startHydration(client, cachedBase !== undefined ? readyEpoch : claimEpoch);
+    cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
     try {
       for (;;) {
         const inflightClient = inflightHydrateClients.get(ref) ?? client;
@@ -3292,6 +5005,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // Release is terminal even when the failed read belongs to an old
           // connection. A reconnect cannot re-arm a pane that no longer exists.
           if (!lifecycleActive) return;
+          // Durable deletion is the other terminal: return the result of the
+          // lifecycle scheduleOwnedHydrationRetry already retired (see the
+          // `deletedRefs` field doc) instead of re-arming another read.
+          if (threadsStore.getState().deletedRefs.has(ref)) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
@@ -3300,7 +5017,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // as both of watchThread's.
             client = await requireReadyClient();
             if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
-            inflight = inflightHydrates.get(ref) ?? startHydration(client);
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, readyEpoch);
             continue;
           }
           // Same client, same ready epoch: the read failed in transport, not
@@ -3317,11 +5034,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
         if ((refCounts.get(ref) ?? 0) <= 0) return;
         if (threadsStore.getState().threads.has(ref)) return;
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
 
         client = await requireReadyClient();
         if ((refCounts.get(ref) ?? 0) <= 0) return;
+        // Recheck after the possibly-long ready wait: a deletion fence can
+        // land while this loop is waiting out a reconnect, and a ref known
+        // deleted must not start another read on becoming ready.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         inflight = inflightHydrates.get(ref);
-        if (!inflight) inflight = startHydration(client);
+        if (!inflight) inflight = startHydration(client, readyEpoch);
       }
     } catch (err) {
       // This call's own claim (the increment above) never landed: undo it
@@ -3349,6 +5071,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    syncThreadSubscription(ref);
     releaseSubagentRows(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
@@ -3371,13 +5094,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
     // subscription when this was the last holder of either kind, so the hub
     // stops relaying a thread nobody renders and its relay can idle out.
-    if (wireSubscribedRefs.has(ref) && (watchRefCounts.get(ref) ?? 0) <= 0) {
-      wireSubscribedRefs.delete(ref);
-      sendThreadUnsubscribe(ref);
-    }
+
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
+    flushCacheWrite(ref); // the tail commits before the model leaves the map
     removeThreadModel(ref);
   },
 
@@ -3393,6 +5114,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     const generation = watchGenerations.get(ref) ?? 0;
     watchRefCounts.set(ref, (watchRefCounts.get(ref) ?? 0) + 1);
+    syncThreadSubscription(ref, client);
     // Monotonic per-ref turns flag: once any watcher wants turns, keep them
     // for every watcher until the last release (yd16 §4.2).
     const hadTurns = watchIncludeTurns.get(ref) ?? false;
@@ -3460,6 +5182,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         }
         const hydrated = threadsStore.getState().watchedThreads.get(ref);
         if (lifecycleActive && hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+        // Durable deletion is terminal for this watcher (see the `deletedRefs`
+        // field doc), and it is checked here - before the client/epoch branch
+        // below, exactly as ensureThread does - so a fenced rejection that
+        // coincides with a rewire returns instead of starting another read
+        // against a ref already known deleted.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
           if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
@@ -3481,8 +5209,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
       const hydrated = threadsStore.getState().watchedThreads.get(ref);
       if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
 
       client = await requireReadyClient();
+      // Recheck after the possibly-long ready wait: a deletion fence can land
+      // while this loop waits out a reconnect, and a ref known deleted must
+      // not start another read on becoming ready.
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
       inflight = inflightWatchHydrates.get(ref);
       const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
       if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
@@ -3497,6 +5230,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    syncThreadSubscription(ref);
     retireOwnedHydration("watched", ref);
     watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
     // A retired lifecycle must not lend its pending hydrate to a new watcher.
@@ -3513,10 +5247,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     watchHydratedIncludeTurns.delete(ref);
     // The open-pane lifecycle may still hold this ref; only when it is gone
     // too does the wire subscription have no remaining holder.
-    if (wireSubscribedRefs.has(ref) && (refCounts.get(ref) ?? 0) <= 0) {
-      wireSubscribedRefs.delete(ref);
-      sendThreadUnsubscribe(ref);
-    }
+
     removeWatchedThreadModel(ref);
   },
 
@@ -3559,7 +5290,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
 
+  resumeSession(ref) {
+    return resumeFencedForSend(ref);
+  },
+
   async loadOlderTurns(ref) {
+    // A shell's cursor belongs to whichever window the reconcile settles on;
+    // paging below a shell the gap rule is about to replace races that
+    // replacement (spec, "Scroll-back"). Scroll-back waits for the read.
+    if (threadsStore.getState().cacheLifetimes.get(ref)?.shell) return;
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
@@ -3615,25 +5354,44 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments, skillNames) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions) {
     // The recovery fence is enforced at the shared admission every durable
     // action funnels through (enqueueMutationIntent's central check), so the
     // alternate send paths - the palette's slash fallthrough, the ask dock's
     // batch send, a failed turn's Retry - hear the same refusal the surfaces
     // render, with nothing parked behind it.
-    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
+    //
+    // The Send-resumes face is the one shape the fence admits: its send parks
+    // (no RPC leaves while the obligation stands). After the durable write the
+    // store runs the resume the standalone button used to, and the deferred
+    // dispatch tails drain the parked row once the resume reconciles. The face
+    // is read AFTER the write: a hydration that landed while the write was in
+    // flight is the snapshot the admission saw, and re-reading here keeps the
+    // drive from being skipped (or spuriously started) across that window.
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+    );
+    if (sendResumesLocalModel(ref)) void resumeFencedForSend(ref);
   },
 
-  async steer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments, skillNames));
+  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "steer", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
-  async queue(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments, skillNames));
+  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async interrupt(ref) {
     cancelPendingUserIntents(ref);
+    // Same mid-swap reach as forceStop's cancel above: a Stop pressed on the
+    // old ref while a resume is moving its rows to the resumed ref must cancel
+    // the moved rows too, or the message delivers under a Stop.
+    await cancelResumeSwapTarget(ref);
     // Stop is session-scoped, always. Naming a turn here could only ever make
     // Stop fail: the id is missing in the windows Stop matters most -- a turn
     // the session started for itself, a boundary between two turns of one
@@ -3653,8 +5411,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "drain", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
@@ -3670,6 +5430,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
+          ...(display.commandNames ?? []).map((name) => ({ type: "command", name })),
         ],
       },
     );
@@ -3739,7 +5500,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       throw new Error("Session instance changed");
     const generation = (notesUpdateGenerations.get(ref) ?? 0) + 1;
     notesUpdateGenerations.set(ref, generation);
-    return enqueueMutationIntent(
+    return enqueueCommittedMutation(
       {
         targetRef: ref,
         threadId: model?.threadId,
@@ -3795,7 +5556,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async clearThread(ref) {
     const runtime = requireMutationRuntime();
     await runtime.start;
-    await enqueueMutationIntent(clearMutationIntent(ref));
+    await enqueueCommittedMutation(clearMutationIntent(ref));
     // A clear is fenced by the model's instance id, so it can dispatch while
     // an older resync read is in flight. Its response is the newer cut and
     // retires that read in applyClearResponse.
@@ -3806,33 +5567,64 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async forceStop(ref) {
     cancelPendingUserIntents(ref);
-    // Write-first (stop-cancellation-outbox §4): the cancellation lands
-    // durably before the stop RPC, so a storage failure aborts the stop here
-    // with the daemon untouched and the user free to retry.
-    await cancelUnattemptedMutations(ref);
+    // Arm the stopping fence and the recovery obligation synchronously with the
+    // drain, BEFORE the first await: the hub holds Stopping > 0 for the whole
+    // window and refuses even turn/start there (cmd/evener-hub's
+    // sessionActionRecoveryError), so the store's own admission -
+    // currentDispatchClient, enqueueMutationIntent, and every control surface
+    // that reads this obligation - must fence that window too, not only the
+    // restartRequired state the drain leaves behind. The in-flight Stop is not
+    // itself a fence, so arming after the cancellation write's await would leave
+    // that write's window unfenced. beginStop arms the group's shared fence and
+    // captures the pre-group obligation on the 0 -> 1 transition; endStop
+    // settles both when the last overlapping stop returns.
+    beginStop(ref);
+    // Whether this stop reached a daemon signal. A Stop that proceeds keeps the
+    // fence; only a group in which no stop ever signalled restores the captured
+    // obligation, on its last return.
+    let signalled = false;
     try {
-      await requireClient().forceStop(ref);
+      // Write-first (stop-cancellation-outbox §4): the cancellation lands
+      // durably before the stop RPC, so a storage failure aborts the stop here
+      // with the daemon untouched and the user free to retry.
+      await cancelUnattemptedMutations(ref);
+      // A Stop pressed on the old ref while a resume is mid-swap must also
+      // cancel the rows the drive already moved to the resumed ref.
+      await cancelResumeSwapTarget(ref);
+      // Resolve the client in its own step, so a lookup failure is
+      // distinguishable by construction from a signal failure: no client
+      // means no signal reached any daemon, so - exactly like the
+      // cancellation-storage abort above - the obligation is restored on the
+      // group's last return, and refreshThread must NOT be kicked (while
+      // offline it cannot clear the fence and only leaves a live session's
+      // recovery fenced).
+      const client = requireClient();
+      // Reaching the call counts as signalling even if it rejects below: the
+      // signal may have reached the daemon despite failed exit confirmation.
+      signalled = true;
+      await client.forceStop(ref);
     } catch (error) {
-      // The signal may have succeeded despite failed exit confirmation.
-      // Retain the recovery fence until a fresh snapshot proves it can clear.
-      threadsStore.setState((state) => ({
-        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-      }));
-      // Reconcile the hub's recovery requirement without delaying this error.
-      void threadsStore
-        .getState()
-        .refreshThread(ref)
-        .catch(() => {});
+      if (signalled) {
+        // The signal may have succeeded despite failed exit confirmation.
+        // The fence armed by beginStop is retained until a fresh snapshot
+        // proves it can clear. Reconcile the hub's recovery requirement without
+        // delaying this error.
+        void threadsStore
+          .getState()
+          .refreshThread(ref)
+          .catch(() => {});
+      }
       throw error;
+    } finally {
+      endStop(ref, signalled);
     }
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-    }));
   },
 
   async shutdown(ref) {
     cancelPendingUserIntents(ref);
     await cancelUnattemptedMutations(ref);
+    // Same mid-swap reach as forceStop's cancel above.
+    await cancelResumeSwapTarget(ref);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });
@@ -3914,17 +5706,28 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId, beforeBytes, maxBytes) {
+  async jobOutput(ref, jobId, beforeBytes, maxBytes, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
-      ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+      ...(beforeBytes !== undefined ? { beforeBytes } : {}),
       ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
+    return resp.data;
+  },
+
+  async jobGet(ref, jobId, isCurrent) {
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
+    const resp = await client.request("evener/jobs/get", { ref, jobId });
     return resp.data;
   },
 
@@ -3961,6 +5764,336 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 }));
 
+// The write seam (spec, "The write seam"): a subscription to the threads map,
+// not a funnel. Publications flow through putThreadModel(s) and the
+// notification handler's own setState; a subscription sees them all.
+// The debounce and starvation bounds (spec, "The write seam"): a burst's
+// trailing write fires 1 s after its last publication, and a streaming burst
+// never starves past 5 s.
+const DEFAULT_CACHE_WRITE_TIMERS = { debounceMs: 1_000, maxWaitMs: 5_000 };
+let cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
+
+/** Tests inject cadence before arming writes; existing schedules keep their timers. */
+export function setCacheWriteTimersForTests(timers: typeof DEFAULT_CACHE_WRITE_TIMERS): void {
+  cacheWriteTimers = timers;
+}
+
+interface CacheWriteSchedule {
+  trailing: ReturnType<typeof setTimeout>;
+  maxWait: ReturnType<typeof setTimeout>;
+}
+const cacheWriteSchedules = new Map<string, CacheWriteSchedule>();
+const oversizeMemo = new Set<string>();
+const cacheHistoryLifetimes = new Map<string, symbol>();
+
+function clearOversizeMemo(ref: string): void {
+  oversizeMemo.delete(ref);
+  cacheHistoryLifetimes.delete(ref);
+}
+
+// cancelCacheWrite ends the ref's schedule: both of the CURRENT entry's
+// timers cleared and the entry removed, so no live timer for the ref ever
+// survives outside the map and resetThreadsStoreForTests' walk always names
+// every armed timer. The entry resolves AT CALL TIME, never through a
+// closure's captured schedule object: the max-wait handle is inherited
+// across reschedules, so a firing timer's closure can name an older object
+// than the entry that now owns the handle — and the map's current entry is
+// always the owner of every live timer for the ref, so ending it is the one
+// correct fire action for either timer. (An identity-guarded retire was the
+// round-1 shape: a stale-closure max-wait wrote at its boundary but left the
+// newer entry holding its dead handle, inherited by every later reschedule —
+// a stream of sub-trailing publications then never wrote again.)
+function cancelCacheWrite(ref: string): void {
+  const current = cacheWriteSchedules.get(ref);
+  if (current === undefined) return;
+  clearTimeout(current.trailing);
+  clearTimeout(current.maxWait);
+  cacheWriteSchedules.delete(ref);
+}
+
+function scheduleCacheWrite(ref: string): void {
+  const existing = cacheWriteSchedules.get(ref);
+  if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
+  // Whichever timer fires, it ends the burst by cancelling the schedule the
+  // map holds at fire time and writing once. The next publication then arms a
+  // FRESH max-wait, so a burst of sub-trailing publications keeps its
+  // once-per-max-wait write even after a max-wait has fired once.
+  const fire = () => {
+    cancelCacheWrite(ref);
+    const model = threadsStore.getState().threads.get(ref);
+    if (model !== undefined) writeCacheRecord(ref, model);
+  };
+  const schedule: CacheWriteSchedule = {
+    trailing: setTimeout(fire, cacheWriteTimers.debounceMs),
+    maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteTimers.maxWaitMs), // max-wait: a streaming session never starves
+  };
+  cacheWriteSchedules.set(ref, schedule);
+}
+
+/** The flush: fires a pending write NOW, its gates evaluated on the current
+ * (pre-removal) model. Ordered before the model leaves the map (spec, "The
+ * flush is load-bearing"): a flush after removal would read an empty map and
+ * drop the tail on every graceful close. */
+function flushCacheWrite(ref: string): void {
+  cancelCacheWrite(ref);
+  const model = threadsStore.getState().threads.get(ref);
+  if (model !== undefined) writeCacheRecord(ref, model);
+}
+
+function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
+  const state = threadsStore.getState();
+  const lifetime = state.cacheLifetimes.get(ref);
+  // The in-flight clear's arm (clearInFlight): every open lease captured
+  // below the armed epoch predates the clear, so its writes wait for the
+  // outcome — the same lifetimes the commit suppresses.
+  const inFlight = state.clearInFlight;
+  if (inFlight !== undefined) {
+    const captured = lifetime?.leaseEpoch;
+    if (captured !== undefined && captured < inFlight) return false;
+  }
+  return (
+    model.history?.incarnation !== undefined && // a completed v6 content-bearing read
+    !lifetime?.shell && // the shell skip: lineage state, not object identity
+    !state.deletedRefs.has(ref) && // the deletion fence, re-checked at fire time
+    !lifetime?.suppressed && // the clear suppression, re-checked at fire time
+    model.history.invalidatedAtGeneration === undefined && // the one liveness marker
+    model.history.failed === undefined &&
+    currentSessionCache().isOpen() // a still-opening connection skips; the next publication retries
+  );
+}
+
+function writeCacheRecord(ref: string, model: ThreadModel): void {
+  if (!cacheWriteGatesPass(ref, model)) return;
+  if (oversizeMemo.has(ref)) return; // memoized per ref, scoped to the model's lifetime
+  const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
+  if (record === undefined) return;
+  const lifetime = cacheHistoryLifetimes.get(ref) ?? Symbol();
+  cacheHistoryLifetimes.set(ref, lifetime);
+  const scheduledEpoch = tabCacheEpoch ?? 0; // the epoch this write was scheduled under
+  void currentSessionCache()
+    .put(record, scheduledEpoch, Date.now())
+    .then((result) => {
+      if (result.outcome === "oversize" && cacheHistoryLifetimes.get(ref) === lifetime) oversizeMemo.add(ref);
+      if (result.outcome === "aborted") onCacheEpochObserved(result.observedEpoch);
+    })
+    .catch(() => {}); // every failure is a dropped write; the next debounced window retries
+}
+
+// The missed-message backstop (spec, "Eviction, cap, and cross-tab"): the
+// aborted write is itself the tab's proof that a clear happened.
+function onCacheEpochObserved(observed: number): void {
+  if (tabCacheEpoch !== undefined && observed <= tabCacheEpoch) return;
+  tabCacheEpoch = observed;
+  threadsStore.setState((s) => ({ cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed) }));
+}
+
+function suppressCacheLifetimesBefore(
+  lifetimes: Map<string, CacheLifetime>,
+  epoch: number,
+): Map<string, CacheLifetime> {
+  const next = new Map(lifetimes);
+  for (const [ref, lifetime] of lifetimes) {
+    if (lifetime.leaseEpoch !== undefined && lifetime.leaseEpoch < epoch) {
+      next.set(ref, { ...lifetime, suppressed: true });
+    }
+  }
+  return next;
+}
+
+// Cross-tab propagation (spec, "The write seam" deletion bullet and the
+// eviction section): one BroadcastChannel message per action, the same
+// versioned-envelope discipline crossTabSync uses. A browser without
+// BroadcastChannel degrades to single-tab: the durable epoch and the
+// fire-time gates hold correctness without it.
+const CACHE_CHANNEL_NAME = "evener.session-cache.v1";
+const cacheSourceId = makeSourceId();
+type CacheChannelMessage = VersionedChannelMessage &
+  ({ kind: "deletion"; refs: string[] } | { kind: "clear"; epoch: number });
+
+function isCacheChannelMessage(value: VersionedChannelMessage): value is CacheChannelMessage {
+  const candidate = value as Partial<CacheChannelMessage>;
+  return (
+    (candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
+    (candidate.kind === "clear" && typeof candidate.epoch === "number")
+  );
+}
+
+// In tests the default factory answers null: the jsdom window has no
+// BroadcastChannel, so the visible one is Node's own — which crosses worker
+// threads and keeps an open event loop alive, so a real channel would let one
+// test file's broadcasts reach another concurrently-running file's handler
+// (and stall its worker at exit). Tests that need a channel install one
+// through the seam; DEFAULT_OPEN_DIAGNOSTIC's MODE gate is the precedent.
+const defaultCacheChannelFactory = (name: string): BroadcastChannel | null =>
+  typeof BroadcastChannel !== "undefined" && import.meta.env.MODE !== "test" ? new BroadcastChannel(name) : null;
+let createCacheChannel: (name: string) => BroadcastChannel | null = defaultCacheChannelFactory;
+const cacheChannel = createVersionedChannel<CacheChannelMessage>({
+  name: CACHE_CHANNEL_NAME,
+  getSourceId: () => cacheSourceId,
+  isMessage: isCacheChannelMessage,
+  onMessage: onCacheChannelMessage,
+  createChannel: (name) => createCacheChannel(name),
+});
+export function setCacheChannelFactoryForTests(factory: (name: string) => BroadcastChannel | null): void {
+  cacheChannel.close();
+  createCacheChannel = factory;
+  // The installed factory's channel is attached at once: a peer's post must
+  // reach this tab's handler even before this tab ever broadcasts, which is
+  // the receiving half the channel exists for.
+  cacheChannel.connect();
+}
+
+function onCacheChannelMessage(message: CacheChannelMessage): void {
+  if (message.kind === "deletion") {
+    // Two things, not one, in one step (spec): arm the suppression and heal
+    // the storage. The heal cannot be lost: IndexedDB serializes this delete
+    // transaction after any in-flight write's, so it always runs after the
+    // record it must remove.
+    threadsStore.setState((s) => {
+      const cacheLifetimes = new Map(s.cacheLifetimes);
+      for (const ref of message.refs) cacheLifetimes.set(ref, { ...cacheLifetimes.get(ref), suppressed: true });
+      return { cacheLifetimes };
+    });
+    void currentSessionCache().deleteRecords(message.refs);
+  } else {
+    onCacheEpochObserved(message.epoch); // Task 10's clear arm: the same backstop the aborted write uses
+  }
+}
+
+// The tab listens from the moment the store loads, not from its first send:
+// a sibling's deletion must reach this tab even when this tab never deletes
+// anything itself, which is the common tab. A browser without
+// BroadcastChannel stays single-tab (the factory answers null); a failure to
+// attach stays single-tab too.
+cacheChannel.connect();
+
+/** The deletion response's cache hook (spec, "The write seam"): keyed on the
+ * response, not the caller — any deletion response that reports removed
+ * thread ids reaches here through markDeletedSessionCaches, whichever
+ * action produced it (session delete from the Rail or the chrome menu,
+ * project delete). Joins deletedRefs (the immediate arm), cancels each
+ * pending write, deletes each record, and propagates one message per action. */
+export function markCacheSessionsDeleted(refs: string[]): void {
+  if (refs.length === 0) return;
+  threadsStore.setState((s) => {
+    const deletedRefs = new Set(s.deletedRefs);
+    for (const ref of refs) deletedRefs.add(ref);
+    return { deletedRefs };
+  });
+  for (const ref of refs) cancelCacheWrite(ref);
+  void currentSessionCache().deleteRecords(refs);
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "deletion", refs });
+}
+
+/** Clear cached session content (spec, "The clear-cached-sessions setting").
+ * Synchronous in-memory step first — the only order that works, since
+ * in-memory timer state cannot commit transactionally — then one
+ * read-write transaction. The in-flight arm lives in clearInFlight, never
+ * in the lifetimes: the write gate refuses open leases below the armed
+ * epoch, the commit suppresses exactly those lifetimes, and the
+ * abort drops the marker without touching their suppression at all — so an
+ * abort is incapable of disarming another source's suppression (a sibling
+ * deletion message, the aborted-write backstop) that arrived mid-flight.
+ * The broadcast is commit-gated: a sibling never arms suppression for a
+ * clear that did not happen. A clear that never reaches a definite commit
+ * reverts its own in-memory effects — an earlier committed clear's
+ * suppression stands — so open refs resume caching at their next
+ * publication. */
+export async function clearCachedSessions(): Promise<{ committed: boolean }> {
+  const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
+  threadsStore.setState({ clearInFlight: armed });
+  for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
+  const result = await currentSessionCache().clear();
+  if (!result.committed) {
+    // The abort drops only its own marker — lifetime suppression is never touched,
+    // so another source's mid-flight arming stands. Durable observations
+    // never need reverting: optimistic arming did not change their epoch.
+    threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
+    return { committed: false };
+  }
+  onCacheEpochObserved(result.epoch);
+  // Every open lease whose captured epoch predates the committed epoch: the
+  // same set the marker refused during the flight, re-derived at commit so a
+  // lease captured mid-flight is covered too.
+  threadsStore.setState((s) => {
+    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch);
+    return s.clearInFlight === armed ? { cacheLifetimes, clearInFlight: undefined } : { cacheLifetimes };
+  });
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "clear", epoch: result.epoch });
+  return { committed: true };
+}
+
+/** The settings row's reader (spec, "The clear-cached-sessions setting"):
+ * the records store's row count through the same singleton seam the lookup,
+ * the write and the clear ride. The adapter's failure discipline holds:
+ * undefined means unavailable (a failed open or transaction), never a throw
+ * and never a zero that would let the row claim a remedy ran. */
+export async function countCachedSessions(): Promise<number | undefined> {
+  return currentSessionCache().count();
+}
+
+/** Same-tab committed writes invalidate a mounted settings row immediately.
+ * Sibling writes still use its existing per-render count. */
+export function subscribeCacheWrites(listener: () => void): () => void {
+  return currentSessionCache().subscribeWrites(listener);
+}
+
+// The live gap rule (spec, "The two serving paths, the live gap, and its
+// rule"): a cached-shell reconciling read that carries no changes and whose
+// fresh window starts above the shell's captured anchor replaces instead of
+// merging. The anchor is captured at shell-build from pure record data, so
+// a live fold cannot move it. A response carrying changes merges as usual;
+// so does an empty record (the ordinary cold merge) and any disposition the
+// identity rules already answer (replace/discard are theirs).
+function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadResponse, now: number): ThreadModel {
+  const ordinary = () => {
+    if (base.history !== undefined && readDisposition(base.history, response) === "replace") clearOversizeMemo(ref);
+    return applyReadResponse(base, response, now);
+  };
+  const state = threadsStore.getState();
+  const lifetime = state.cacheLifetimes.get(ref);
+  const anchor = lifetime?.anchor;
+  if (anchor === undefined || !lifetime?.shell || response.changes !== undefined) return ordinary();
+  const held = base.history;
+  if (held === undefined || held.turns.length === 0) return ordinary();
+  if (readDisposition(held, response) !== "merge") return ordinary();
+  const bounds = readWindowBounds(response);
+  if (bounds.start === undefined || comparePositions(bounds.start, anchor) <= 0) return ordinary();
+  // The window starts above the anchor: replace. Pages drop, the response's
+  // cursor is taken. The abut case (start at the anchor's successor) lands
+  // here too: the position model has no predecessor function, and the cached
+  // pages re-fetch rather than risk a hole (the spec's accepted cost).
+  const current = state.threads.get(ref) ?? base;
+  const newest = newestItemPosition(current.history?.turns ?? held.turns);
+  const replaced = hydrateThread(response, ref, now);
+  clearOversizeMemo(ref); // a replacement is the one mid-lifetime shrink
+  if (newest === undefined || bounds.end === undefined || comparePositions(newest, bounds.end) <= 0) {
+    return replaced; // the response covers everything folded so far
+  }
+  // The fold is newer than the response: replace, then replay the tail —
+  // the model's items above the window's end. They cannot be cached pages,
+  // since the anchor sits below the window's start. The result carries the
+  // same hole today's live path carries when a notification was dropped;
+  // the next authoritative read's merge fills it.
+  const end = bounds.end;
+  const tail = (current.history?.turns ?? []).flatMap((turn) => {
+    const items = turn.items.filter((item) => item.position !== undefined && comparePositions(item.position, end) > 0);
+    return items.length === 0 ? [] : [{ ...turn, items }];
+  });
+  return mergeTailTurns(replaced, tail);
+}
+
+threadsStore.subscribe((state, previous) => {
+  if (state.threads === previous.threads) return; // watched-only publications never touch this map
+  for (const ref of state.threads.keys()) {
+    if (state.threads.get(ref) === previous.threads.get(ref)) continue;
+    if (state.threads.get(ref)?.history?.incarnation === undefined) continue; // a model with no recorded history can never produce a cache record, so the seam arms nothing for it — a pointless pending timer is the whole cost, but a test suite's fake clock pays it in shifted delivery; the publication that first gives the model a recorded history schedules it, and every write gate still applies at fire time
+    scheduleCacheWrite(ref);
+  }
+});
+
 export function useThreadsStore(): ThreadsStoreState;
 export function useThreadsStore<T>(selector: (state: ThreadsStoreState) => T): T;
 export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): T | ThreadsStoreState {
@@ -3982,10 +6115,12 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
+  activeStops.clear();
+  inFlightResumes.clear();
+  resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;
@@ -4003,6 +6138,9 @@ export function resetThreadsStoreForTests(): void {
   };
   retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
+  inflightDurableEnqueues.clear();
+  undeliveredMutationIds.clear();
+  mutationStateGenerations.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -4014,6 +6152,31 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
+  // The session cache's module state: a lookup still in flight must not
+  // publish a shell into the fresh state (the map is dropped, not awaited —
+  // its race's own guards recheck everything), the epoch view returns to
+  // unobserved, and the singleton adapter drops its connection so the next
+  // test opens afresh against a database its beforeEach just deleted. An
+  // override a test installed goes with it; tests close their own adapters.
+  inflightCacheLookups.clear();
+  tabCacheEpoch = undefined;
+  setSessionCacheAdapterForTests(undefined);
+  sessionCacheAdapter.close();
+  // The write seam's module state: a pending debounced write must not fire
+  // into the fresh state, and the oversize memo dies with the models it
+  // memoized.
+  for (const schedule of cacheWriteSchedules.values()) {
+    clearTimeout(schedule.trailing);
+    clearTimeout(schedule.maxWait);
+  }
+  cacheWriteSchedules.clear();
+  cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
+  oversizeMemo.clear();
+  cacheHistoryLifetimes.clear();
+  // The cache channel's module state: a test's installed factory and its
+  // channel go with the reset, so the next test attaches a fresh channel
+  // under the default factory (the seam's own close-and-reattach).
+  setCacheChannelFactoryForTests(defaultCacheChannelFactory);
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();
@@ -4026,7 +6189,7 @@ export function resetThreadsStoreForTests(): void {
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
-  wireSubscribedRefs.clear();
+  releaseThreadSubscriptions();
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;
@@ -4065,6 +6228,8 @@ export function resetThreadsStoreForTests(): void {
       hydrations: new Map(),
       watchedThreads: new Map(),
       deletedRefs: new Set(),
+      cacheLifetimes: new Map(),
+      clearInFlight: undefined,
     },
     true,
   );

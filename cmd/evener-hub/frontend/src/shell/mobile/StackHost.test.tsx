@@ -1,15 +1,34 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { bindFilePath } from "@evener/appwire-client/docContent";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { DockviewApi } from "dockview-core";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../motion";
+import { openDocBeside } from "../../panes/doc/openDoc";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import "../../panes/transcript";
+import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../../panes/zoom/intent";
+import "../../panes/zoom";
+import { connectionStore } from "../../stores/connection";
+import {
+  activityClient,
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  activitySummary,
+} from "../../stores/sessionActivityTestUtils";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
+import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
+import { usePaneVisible } from "../paneVisibility";
 import { openTopLevelSession } from "../sessionPlacement";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
@@ -19,12 +38,14 @@ import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 // need a real example of. A local click counter proves whether a mount
 // survived a focus change (StackHost's own remount-safety contract, same
 // one DockHost's PaneHost documents - see this component's own comment).
-function DocFixture({ params, paneId, focused }: PaneProps<{ ref: string }>) {
+function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?: string }>) {
   const [clicks, setClicks] = useState(0);
+  const visible = usePaneVisible();
+  const label = params.ref ?? params.path ?? "unknown";
   return (
     <div>
-      <p>
-        doc pane: {params.ref} (focused={String(focused)}) (paneId={paneId})
+      <p data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
+        doc pane: {label} (focused={String(focused)}) (paneId={paneId})
       </p>
       <button type="button" onClick={() => setClicks((c) => c + 1)}>
         clicks: {clicks}
@@ -37,10 +58,46 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
+class RestoreDockviewApi {
+  panels: Array<{ id: string; params: unknown }> = [];
+  activePanel: { id: string } | undefined = undefined;
+  received: unknown;
+
+  constructor(
+    readonly serialized: unknown,
+    private readonly restoredPanels: Array<{ id: string; params: unknown }>,
+    private readonly restoredActivePanel: { id: string },
+  ) {}
+
+  toJSON(): unknown {
+    return this.serialized;
+  }
+
+  fromJSON(data: unknown): void {
+    this.received = data;
+    this.panels = this.restoredPanels;
+    this.activePanel = this.restoredActivePanel;
+  }
+
+  clear(): void {
+    this.panels = [];
+    this.activePanel = undefined;
+  }
+
+  removePanel(panel: { id: string }): void {
+    this.panels = this.panels.filter((candidate) => candidate.id !== panel.id);
+    if (this.activePanel?.id === panel.id) this.activePanel = undefined;
+  }
+}
+
+function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
+  return fake as unknown as DockviewApi;
+}
+
 beforeAll(async () => {
-  registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
-    title: (params) => `Doc ${params.ref}`,
+    title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   registerPaneForTests<{ section?: string }>({
@@ -101,12 +158,15 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
   await findLandmark(PANE_WARMUP_TRIPWIRE_MS);
   cleanup();
   resetWorkspaceStoreForTests();
+  resetActivitySidebarStoreForTests();
   setLastPopstateWasTrustedForTests(false);
   window.history.pushState({}, "", "/");
 }
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  resetActivitySidebarStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -128,6 +188,258 @@ test("opens the mobile panel when nothing is focused", async () => {
   await screen.findByText("No session open");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("Activity opened from the mobile drawer supersedes the drawer", async () => {
+  const ref = "remote:drawer-activity";
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  const user = userEvent.setup();
+  workspaceStore.getState().openPane("doc", { ref });
+
+  render(
+    <MotionProvider>
+      <StackHost
+        railSlot={
+          <button
+            type="button"
+            onClick={() => {
+              workspaceStore.getState().openPane("doc", { ref });
+              activitySidebarStore.getState().openFor(ref, "jobs");
+            }}
+          >
+            Activity for drawer session
+          </button>
+        }
+      />
+    </MotionProvider>,
+  );
+
+  await screen.findByText(new RegExp(`doc pane: ${ref}`));
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  await user.click(screen.getByRole("button", { name: "Activity for drawer session" }));
+
+  expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+});
+
+test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
+  const ref = "remote:activity";
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
+    context: activityContext(requested),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("doc", { ref });
+  activitySidebarStore.getState().openWith("jobs");
+
+  render(
+    <MotionProvider>
+      <StackHost />
+    </MotionProvider>,
+  );
+
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
+});
+
+test.each(["Close", "Escape"])(
+  "%s returns phone Overview focus to its parent link after child drilling",
+  async (dismiss) => {
+    const restoreViewport = installMobileViewport();
+    const parent = "remote:focus-parent";
+    const child = "remote:focus-child";
+    const client = activityClient();
+    const context = (ref: string) => ({
+      ...activityContext(ref),
+      rootRef: parent,
+      ancestors: ref === parent ? [] : [{ ref: parent, sessionId: "parent", title: "Parent work" }],
+    });
+    client.on("thread/read", ({ ref }) =>
+      activityDetailsThread(ref, { name: ref === parent ? "Parent work" : "Child work" }),
+    );
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: context(ref),
+    }));
+    client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+      context: context(ref),
+      scope: scope ?? "session",
+      delegates:
+        ref === parent ? [activityDelegate({ ownerRef: parent, childRef: child, description: "Open child" })] : [],
+      page: { complete: true, issues: [] },
+    }));
+    connectionStore.getState().connect(client);
+    const parentPane = workspaceStore.getState().openPane("session", { ref: parent });
+    const user = userEvent.setup();
+    try {
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <StackHost />
+          </MotionProvider>
+        </ClientProvider>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Session actions" }));
+      await user.click(screen.getByRole("menuitem", { name: /Overview/ }));
+      await user.click(await screen.findByRole("button", { name: /Open child/ }));
+      const sidebar = await screen.findByTestId("activity-sidebar");
+      await user.click(within(sidebar).getByRole("radio", { name: "About" }));
+      await within(sidebar).findByText("~$1.00");
+      await screen.findByRole("heading", { name: "Child work" });
+      const parentLink = await waitFor(() => {
+        const link = screen.getAllByRole("button", { name: "Parent work" }).find((button) => !sidebar.contains(button));
+        if (!link) throw new Error("Child transcript has no parent link");
+        return link;
+      });
+      const before = workspaceStore.getState();
+      expect(before.focusedPaneId).not.toBe(parentPane);
+      expect(screen.queryByRole("button", { name: "Session actions" })).toBeNull();
+      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      else await user.keyboard("{Escape}");
+      await waitFor(() => expect(document.activeElement).toBe(parentLink));
+      await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+      expect(workspaceStore.getState().panes).toEqual(before.panes);
+      expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+      await user.keyboard("{Enter}");
+      await screen.findByRole("button", { name: "Session actions" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(parentPane);
+    } finally {
+      cleanup();
+      restoreViewport();
+    }
+  },
+);
+
+test("at the mobile boundary an ordinary Agents row retains the existing transcript route", async () => {
+  const restoreViewport = installMobileViewport();
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("doc", { ref: "remote:owner" });
+  activitySidebarStore.getState().openWith("agents");
+  try {
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <StackHost />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /inspect/ }));
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("transcript");
+    expect(state.panes.some((pane) => pane.type === "sessionZoom")).toBe(false);
+  } finally {
+    cleanup();
+    restoreViewport();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
+});
+
+test("a restored cascade renders only its selected reader on mobile and restores its desktop columns without changing intent", async () => {
+  const original = window.matchMedia;
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
+  const media = Object.assign(new EventTarget(), {
+    matches: true,
+    media: "(max-width: 899px)",
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+  });
+  window.matchMedia = ((query: string) =>
+    query === media.media
+      ? media
+      : Object.assign(new EventTarget(), {
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+        })) as typeof window.matchMedia;
+  const context = (ref: string) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+  const client = cascadeClient(context);
+  const params: SessionZoomParams = {
+    ref: "grandchild",
+    source: { type: "transcript", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "edge-child" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
+    ],
+  };
+  workspaceStore.setState({
+    panes: [{ id: "restored-cascade", type: "sessionZoom", slot: "main", params }],
+    focusedPaneId: "restored-cascade",
+  });
+  connectionStore.getState().connect(client);
+  window.history.replaceState({}, "", "/s/root");
+  try {
+    await act(async () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <StackHost />
+          </MotionProvider>
+        </ClientProvider>,
+      ),
+    );
+    const phoneReturn = await screen.findByRole("button", { name: "Return to previous view" });
+    expect(phoneReturn.closest('[data-pane-scaffold="cascade"]')).not.toBeNull();
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      "grandchild",
+    ]);
+    expect(screen.queryByTestId("cascade-spine")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    phoneReturn.focus();
+    act(() => activitySidebarStore.getState().openWith("about"));
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    await within(sidebar).findByText("wire-grandchild");
+    expect(within(sidebar).queryByText("wire-child")).toBeNull();
+    await userEvent.setup().keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+    expect(document.activeElement).toBe(phoneReturn);
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    expect(workspaceStore.getState().focusedPaneId).toBe("restored-cascade");
+    await act(async () => {
+      media.matches = false;
+      media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+    });
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+      "child",
+      "grandchild",
+    ]);
+    expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("root");
+    expect(workspaceStore.getState().panes[0]?.params).toBe(params);
+    expect(window.location.pathname).toBe("/s/root");
+    expect(
+      screen.getByTestId("pane-actions").contains(screen.getByRole("button", { name: "Return to previous view" })),
+    ).toBe(true);
+    await act(async () => {
+      media.matches = true;
+      media.dispatchEvent(Object.assign(new Event("change"), { matches: true }));
+    });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Return to previous view" }));
+    expect(workspaceStore.getState().panes[0]).toMatchObject({
+      id: "restored-cascade",
+      type: "transcript",
+      params: { ref: "root" },
+    });
+    expect(await screen.findByText("root real content")).toBeTruthy();
+    expect(screen.queryByTestId("cascade-column")).toBeNull();
+  } finally {
+    cleanup();
+    if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    if (original) window.matchMedia = original;
+    else Reflect.deleteProperty(window, "matchMedia");
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });
 
 test("does not flash the panel during routeDeferred", async () => {
@@ -161,6 +473,15 @@ test("renders only the focused pane - a second open pane is not mounted at all",
 
   await screen.findByText(/doc pane: ref_b/);
   expect(screen.queryByText(/doc pane: ref_a/)).toBeNull();
+});
+
+test("publishes only the rendered mobile foreground pane as visible", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "background" });
+  workspaceStore.getState().openPane("doc", { ref: "foreground" });
+  render(<StackHost />);
+  const foreground = await screen.findByTestId("doc-visibility-foreground");
+  expect(foreground.getAttribute("data-pane-visible")).toBe("true");
+  expect(screen.queryByTestId("doc-visibility-background")).toBeNull();
 });
 
 test("switching the focused pane (workspace.focusPane) swaps which one is rendered", async () => {
@@ -291,6 +612,146 @@ test("back returns to the pane that was focused before the current one", async (
   await user.click(screen.getByRole("button", { name: "Back" }));
 
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+});
+
+test("document Back prefers its retained exact origin over transient local history", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const unrelated = workspace.openPane("doc", { ref: "unrelated" }, { slot: "secondary" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: unrelated/);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  act(() => openDocBeside({ session, reference, sourcePaneId: sourceId }));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(unrelated);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back uses the latest exact same-session origin after reopen and host remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const firstSourceId = workspace.openPane("session", { ref: session });
+  const secondSourceId = workspace.openPane("transcript", { ref: session }, { slot: "secondary" });
+  const firstSource = workspaceStore.getState().panes.find((pane) => pane.id === firstSourceId);
+  const secondSource = workspaceStore.getState().panes.find((pane) => pane.id === secondSourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !firstSource || !secondSource) throw new Error("fixture did not create bound sources");
+
+  openDocBeside({ session, reference, sourcePaneId: firstSource.id });
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!document) throw new Error("document did not open");
+  const firstHost = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  firstHost.unmount();
+
+  openDocBeside({ session, reference, sourcePaneId: secondSource.id });
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([document]);
+  expect(documentPaneState(document)).toEqual({ reference, origin: secondSource, reopen: 1 });
+  workspace.focusPane(firstSource.id);
+
+  render(<StackHost />);
+  await screen.findByRole("heading", { name: session });
+  act(() => workspace.focusPane(document.id));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).toBe(secondSource.id);
+  expect(state.focusedPaneId).not.toBe(firstSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)).toBe(secondSource);
+});
+
+test("document Back retains its exact origin across a StackHost remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const first = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  first.unmount();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back navigates to its bound session after the exact origin closes", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  workspace.closePane(sourceId);
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(session)}`);
+});
+
+test("restored document Back cannot follow a source id reused from the retired lifetime", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const oldSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !oldSource) throw new Error("fixture did not create a bound source");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!oldDocument) throw new Error("document did not open");
+  expect(documentPaneState(oldDocument)).toEqual({ reference, origin: oldSource, reopen: 0 });
+
+  const saved = {
+    grid: { root: { type: "branch", data: [] } },
+    panels: {
+      [sourceId]: {
+        id: sourceId,
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: session } },
+      },
+      [oldDocument.id]: {
+        id: oldDocument.id,
+        contentComponent: "default",
+        params: { paneType: "doc", paneParams: oldDocument.params },
+      },
+    },
+    activeGroup: "group-2",
+  };
+  const fake = new RestoreDockviewApi(
+    saved,
+    [
+      { id: sourceId, params: { paneType: "session", paneParams: { ref: session } } },
+      { id: oldDocument.id, params: { paneType: "doc", paneParams: oldDocument.params } },
+    ],
+    { id: oldDocument.id },
+  );
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspace.restoreLayout(workspace.layoutJSON())).toBe(true);
+  expect(fake.received).toBe(saved);
+  const restoredSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const restoredDocument = workspaceStore.getState().panes.find((pane) => pane.id === oldDocument.id);
+  if (!restoredSource || !restoredDocument) throw new Error("layout did not restore source and document");
+  expect(restoredSource).not.toBe(oldSource);
+  expect(restoredDocument).not.toBe(oldDocument);
+  expect(documentPaneState(oldDocument)).toBeUndefined();
+  expect(documentPaneState(restoredDocument)).toBeUndefined();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).not.toBe(restoredSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
 });
 
 test("back falls all the way to welcome when this component never observed an earlier pane", async () => {

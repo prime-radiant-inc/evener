@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
+
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -22,21 +23,6 @@ import (
 )
 
 type projectDeleteSkip = appwire.ProjectDeleteSkip
-
-// projectRemoteSources returns the hosts a tree project reports as owning it.
-// The tree spells the controller's own sessions with the empty string — the
-// decision store's key — so every other entry is a host that shares the
-// project's canonical ID and path. Sorted by the tree, so the refusal reads
-// deterministically.
-func projectRemoteSources(sources []string) []string {
-	var hosts []string
-	for _, source := range sources {
-		if source != "" {
-			hosts = append(hosts, source)
-		}
-	}
-	return hosts
-}
 
 func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, skipped []projectDeleteSkip, changed bool, project string) (appwire.ProjectDeleteResponse, error) {
 	navigation := s.emptyNavigationMutation()
@@ -185,29 +171,18 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 		releaseOwnership = nil
 		return s.projectDeleteResult(ctx, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
 	}
-	// Validate the body against the current tree entry for that key — never
-	// invert the lossy slug on a destructive path (round-2 A11).
-	tree, _ := s.memoTree(ctx)
-	var matched *hubcore.TreeProject
-	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
-		if p.Key == params.Key {
-			pp := p
-			matched = &pp
-			break
-		}
-	}
-	if matched == nil || matched.WorkingDir != project.CanonicalPath {
-		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key does not match workingDir")
-	}
+	// The request is validated against the project's own facts, not a full
+	// tree: the working directory resolved to the requested key above, and the
+	// remote threads say whether a host shares the project (round-2 A11: never
+	// invert the lossy slug on a destructive path).
+	//
 	// A merged project — the controller's own rows plus a host's under the same
-	// canonical ID and path — is not deletable here either. The rail refuses it
-	// before the confirmation dialog opens, and the wire must refuse it too: a
-	// request that named no source would otherwise remove the controller's
-	// sessions of a project a host also owns, leaving one project half-deleted
-	// and the UI and the API disagreeing about the same row. The tree's sources
-	// are the authority ("" is the controller), so the gate matches the
-	// ownership the client just rendered.
-	if hosts := projectRemoteSources(matched.Sources); len(hosts) > 0 {
+	// canonical ID and path — is not deletable here. The rail refuses it before
+	// the confirmation dialog opens, and the wire must refuse it too: a request
+	// that named no source would otherwise remove the controller's sessions of
+	// a project a host also owns, leaving one project half-deleted and the UI
+	// and the API disagreeing about the same row.
+	if hosts := s.remoteProjectHosts(ctx, project); len(hosts) > 0 {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams(
 			"project delete is local-only; this project also belongs to " + strings.Join(hosts, ", "))
 	}
@@ -224,15 +199,9 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if err != nil {
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError("resolve project membership: " + err.Error())
 	}
-
-	// Select the session set from All() (carries StateDir), uncapped.
-	var entries []hubcore.PastEntry
-	for _, e := range all {
-		workingDir := hubcore.EffectiveWorkingDir(e.Meta)
-		if projects[workingDir].ID == params.Key {
-			entries = append(entries, e)
-		}
-	}
+	entries := projectDeleteEntries(all, func(e hubcore.PastEntry) bool {
+		return projects[hubcore.EffectiveWorkingDir(e.Meta)].ID == params.Key
+	})
 
 	// Whole-project fast path: refuse when anything is live at entry.
 	if s.cfg.Roster != nil {
@@ -267,10 +236,14 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	targets := make([]hubcore.DeletionTarget, 0, len(entries))
 	stateDirs := make(map[string]string, len(entries))
 	for _, entry := range entries {
-		targets = append(targets, hubcore.DeletionTarget{
+		target := hubcore.DeletionTarget{
 			Ref:      localAppRef(entry.ID),
 			ThreadID: entry.ID,
-		})
+		}
+		if owner, ok := stateDirProjectID(entry.StateDir); ok && owner != project.ID {
+			target.StateProjectID = owner
+		}
+		targets = append(targets, target)
 		stateDirs[entry.ID] = entry.StateDir
 	}
 	ownedTargets, skipped, releaseOwnership := s.acquireProjectDeletionCandidates(ctx, targets, stateDirs)
@@ -298,6 +271,77 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	releaseOwnership()
 	releaseOwnership = nil
 	return s.projectDeleteResult(ctx, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
+}
+
+// projectDeleteEntries is the set a project delete removes: every entry whose
+// own working directory belongs to the project (inProject), plus every subagent
+// reachable from one of those through parent or job-tree-root links at any
+// depth. The reach keeps a subagent that ran from another directory (an
+// isolated worktree, say) from being leaked; the own-directory rule keeps an
+// orphan subagent whose parent is gone. Fork continuations are independent
+// roots and are not followed: one that ran elsewhere belongs to that project.
+func projectDeleteEntries(all []hubcore.PastEntry, inProject func(hubcore.PastEntry) bool) []hubcore.PastEntry {
+	subagentsUnder := make(map[string][]int)
+	for i, e := range all {
+		if !e.Meta.IsSubagent {
+			continue
+		}
+		for _, owner := range []string{e.Meta.ParentSessionID, e.Meta.JobTreeRootSessionID} {
+			if owner != "" {
+				subagentsUnder[owner] = append(subagentsUnder[owner], i)
+			}
+		}
+	}
+	selected := make(map[int]bool)
+	var pending []int
+	for i, e := range all {
+		if inProject(e) {
+			selected[i] = true
+			pending = append(pending, i)
+		}
+	}
+	for len(pending) > 0 {
+		i := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, child := range subagentsUnder[all[i].ID] {
+			if !selected[child] {
+				selected[child] = true
+				pending = append(pending, child)
+			}
+		}
+	}
+	entries := make([]hubcore.PastEntry, 0, len(selected))
+	for i, e := range all {
+		if selected[i] {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// remoteProjectHosts names the hosts whose threads carry this project's
+// identity, sorted. The controller's own rows are not listed.
+func (s *WebServer) remoteProjectHosts(ctx context.Context, project identifier.Project) []string {
+	seen := make(map[string]bool)
+	for _, thread := range s.remoteThreadFetch(ctx).threads {
+		ref, ok := appThreadTreeRef(thread)
+		if !ok {
+			continue
+		}
+		_, entry, _ := appThreadTreeEntries(thread)
+		if entry.Project.ID != project.ID || entry.Project.CanonicalPath != project.CanonicalPath {
+			continue
+		}
+		if source := hubcore.NormalizeDecisionSource(ref.SourceID); source != "" {
+			seen[source] = true
+		}
+	}
+	hosts := make([]string, 0, len(seen))
+	for host := range seen {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
 }
 
 type projectDeletionOwnershipError struct {
@@ -415,7 +459,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			release()
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: live, Err: ownershipErr}
 		}
-		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
+		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
 		if stateDir == "" {
 			release()
 			return nil, &projectDeletionOwnershipError{
@@ -447,46 +491,14 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
-	// Remove the artifacts first: the release below is authorized by that
-	// deletion succeeding, not by the attempt. Releasing before a removal that
-	// can still fail would tombstone a session whose metadata and transcript
-	// survive (and stay resumable), so a later resume would mint replacement
-	// scratch and let the originally retained directories be collected.
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
 		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, decisionErrors
-	}
-	// Under this verified deletion ownership, release the exact target root's
-	// scratch-retention manifest now that its state is purged. A manifest owned
-	// by a surviving root is never touched, so a child-only deletion cannot
-	// release its parent's retained scratch. A release failure is recorded, not
-	// silently dropped, so deletion still proceeds conservatively.
-	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
-		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
 	}
 	return true, nil, append(decisionErrors, s.scrubSessionDecisions(threadID)...)
 }
 
-// releaseProjectDeletionScratchRetention writes the terminal tombstone for the
-// scratch-retention manifest owned by exactly sessionID. It is a no-op when no
-// manifest exists for that id, so a session that is not a retention root (a
-// delegate child, or one that never minted scratch) cannot release a surviving
-// root's manifest.
-func releaseProjectDeletionScratchRetention(stateDir, sessionID string) error {
-	if stateDir == "" || sessionID == "" {
-		return nil
-	}
-	manifestPath := filepath.Join(stateDir, "scratch-retention", sessionID+".json")
-	if _, err := os.Stat(manifestPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return agentsandbox.ReleaseScratchRetention(agentsandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID})
-}
-
 func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []string) {
-	authority := s.sessionDecisionAuthority()
+	authority := s.sessionDecisionAuthority(threadID)
 	aliases := hubcore.LocalSessionDecisionAliases(threadID, authority)
 	if s.cfg.Archive != nil {
 		for _, id := range aliases {
@@ -521,12 +533,13 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	return decisionErrors
 }
 
-func (s *WebServer) sessionDecisionAuthority() hubcore.FavoriteAuthority {
-	if s.cfg.Past == nil {
-		return hubcore.FavoriteAuthority{}
-	}
-	_, _, _, authority := s.memoTreeWithAuthority(context.Background())
-	return authority
+// sessionDecisionAuthority is the referenced-ID authority for the one session
+// being scrubbed: the same collection navigation runs for the ids the stores
+// refer to, with no tree behind it. The deleted session has no live or remote
+// facts of its own to add, so the snapshot is empty.
+func (s *WebServer) sessionDecisionAuthority(threadID string) hubcore.FavoriteAuthority {
+	sessions, _ := referencedSessionAuthorities([]string{threadID}, navigationSnapshot{}, s.localSessionIndex())
+	return hubcore.FavoriteAuthority{Sessions: sessions}
 }
 
 func (s *WebServer) cleanupProjectDeletion(
@@ -536,7 +549,7 @@ func (s *WebServer) cleanupProjectDeletion(
 ) projectDeletionCleanupResult {
 	result := projectDeletionCleanupResult{}
 	for _, target := range record.Targets {
-		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
+		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
 		deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(stateDir, target.ThreadID)
 		result.DecisionErrors = append(result.DecisionErrors, decisionErrors...)
 		if !deleted {
@@ -590,6 +603,20 @@ func (s *WebServer) cleanupProjectDeletion(
 		}
 	}
 	return result
+}
+
+// recordedScratchTempDir is the temp dir sessionID's daemon recorded in its
+// meta, as the index still holds it while the session's files are removed.
+// The hub's own temp dir is always searched; this adds the daemon's, which
+// differs when the daemon was started with another TMPDIR.
+func (s *WebServer) recordedScratchTempDir(sessionID string) []string {
+	if s.cfg.Past == nil {
+		return nil
+	}
+	if entry, ok := s.cfg.Past.FindIndexed(sessionID); ok && entry.Meta.ScratchTempDir != "" {
+		return []string{entry.Meta.ScratchTempDir}
+	}
+	return nil
 }
 
 func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) error {
@@ -670,6 +697,9 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	if err := removeProjectSessionFile(apiLogPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Last and best-effort, as on archive: the session is already gone, and an
+	// entry the scratch removal cannot take must not leave it half-deleted.
+	_ = agentsandbox.RemoveSessionScratchTree(sessionID, s.recordedScratchTempDir(sessionID)...)
 	return nil
 }
 
@@ -684,7 +714,13 @@ func sessionMetaFilePresent(stateDir, sessionID string) bool {
 	return !os.IsNotExist(err)
 }
 
-func (s *WebServer) projectDeletionStateDir(projectID, threadID string, stateDirs map[string]string) string {
+// projectDeletionStateDir locates a target's state directory: the caller's
+// live index entry when it has one, else the project directory the target was
+// recorded under (stateProjectID), else the deleted project's own.
+func (s *WebServer) projectDeletionStateDir(stateProjectID, projectID, threadID string, stateDirs map[string]string) string {
+	if stateProjectID != "" {
+		projectID = stateProjectID
+	}
 	if stateDir := stateDirs[threadID]; stateDir != "" {
 		return stateDir
 	}

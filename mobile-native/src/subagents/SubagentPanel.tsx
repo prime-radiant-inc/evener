@@ -5,12 +5,11 @@
 // its composer would be. A stop goes to the hub directly when the
 // coordinator's hub can make one (S6), and is asked of the coordinator
 // otherwise.
-import { WireError } from "@evener/appwire-client";
+import { isMethodNotFound, WireError } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { SessionLink } from "../session/sessionMessage";
-import { isMethodNotFound } from "../wireErrors";
 import { returnToSession, type SessionNavigation } from "../session/returnToSession";
 import { stopRequests } from "./nativeStopRequests";
 import { SubagentBar } from "./SubagentBar";
@@ -18,6 +17,7 @@ import { stopOffer } from "./stopOffer";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
 import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
+import { destructiveButton } from "../haptics";
 
 export interface Coordinator {
 	ref: string;
@@ -35,6 +35,12 @@ export interface SubagentPanelProps {
 	/** The hub takes no message for the subagent: the bar takes the composer's place. */
 	barShown: boolean;
 	showToast(text: string): void;
+	/** This subagent's row in its coordinator's tree, as the tree reads it, for
+	 * the screen's state line to time its run as the row does. */
+	onRow?(row: SubagentRow | null): void;
+	/** The coordinator's thread the panel reads its tree under, as it reads
+	 * now, for the screen's own hold on the same tree. */
+	onTreeThread?(threadId: string): void;
 	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
 }
 
@@ -48,13 +54,28 @@ export function SubagentPanel({
 	inFront,
 	barShown,
 	showToast,
+	onRow,
+	onTreeThread,
 	navigation,
 }: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
 	const connected = state === "ready" && activeProfile?.id === hubId && client !== null;
-	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
+	// The coordinator's state, read while this screen is in front, without
+	// taking the connection's subscription, which the transcript under this
+	// screen follows. Its thread id is the tree's: a coordinator that
+	// restarted since the screen opened runs under a new thread, and
+	// the shared activity context identifies the resolved session.
+	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
+	const treeThreadId =
+		coordinatorState && coordinatorState !== "unreadable" ? coordinatorState.threadId : coordinator.threadId;
+	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, treeThreadId);
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
+	useEffect(() => {
+		onRow?.(row);
+		return () => onRow?.(null);
+	}, [onRow, row]);
+	useEffect(() => onTreeThread?.(treeThreadId), [onTreeThread, treeThreadId]);
 	const requests = stopRequests(hubId);
 	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 
@@ -64,10 +85,7 @@ export function SubagentPanel({
 	useEffect(() => {
 		if (!inFront || !client) return;
 		void tree.reload();
-		return client.onNotification((notification) => {
-			if (notification.method === "thread/status/changed" && notification.params.ref === ref) void tree.reload();
-		});
-	}, [inFront, client, tree, ref]);
+	}, [inFront, client, tree]);
 
 	// The stops you asked for, settled against each new tree, with a toast for
 	// each that just stopped. Only the screen in front settles them, so the
@@ -82,7 +100,6 @@ export function SubagentPanel({
 	// while this screen is in front. "unreadable" when the read failed: the
 	// bar then asks the coordinator, whose sheet reads it again. A hub that
 	// didn't know the direct stop is asked again on the next connection.
-	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
 	const [directUnsupported, setDirectUnsupported] = useState(false);
 	useEffect(() => setDirectUnsupported(false), [client]);
 	const direct =
@@ -95,34 +112,30 @@ export function SubagentPanel({
 		(target: SubagentRow) => {
 			Alert.alert(`Stop “${target.title}”?`, "Anything it started keeps running.", [
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Stop",
-					style: "destructive",
-					onPress: async () => {
-						if (!client) return;
-						try {
-							// The stop names the coordinator's thread as it reads now: a
-							// coordinator that restarted since the screen opened runs
-							// under a new one. Read without following, as the bar's
-							// capability read is.
-							const link = new SessionLink(client, coordinator.ref);
-							const now = await link.read({ follow: false }).finally(() => link.dispose());
-							const response = await client.request("evener/delegate/stop", {
-								ref: coordinator.ref,
-								threadId: now.threadId,
-								delegateId: target.id,
-							});
-							if (response.outcome === "stopping")
-								requests.request(coordinator.ref, target, Date.now(), { direct: true });
-							// notRunning: it was already finishing; the tree says how it ended.
-							else void tree.reload();
-						} catch (error) {
-							if (isMethodNotFound(error)) setDirectUnsupported(true);
-							else if (isResourceNotFound(error)) void tree.reload();
-							else showToast(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`);
-						}
-					},
-				},
+				destructiveButton("Stop", async () => {
+					if (!client) return;
+					try {
+						// The stop names the coordinator's thread as it reads now: a
+						// coordinator that restarted since the screen opened runs
+						// under a new one. Read without following, as the bar's
+						// capability read is.
+						const link = new SessionLink(client, coordinator.ref);
+						const now = await link.read({ follow: false }).finally(() => link.dispose());
+						const response = await client.request("evener/delegate/stop", {
+							ref: coordinator.ref,
+							threadId: now.threadId,
+							delegateId: target.id,
+						});
+						if (response.outcome === "stopping")
+							requests.request(coordinator.ref, target, Date.now(), { direct: true });
+						// notRunning: it was already finishing; the tree says how it ended.
+						else void tree.reload();
+					} catch (error) {
+						if (isMethodNotFound(error)) setDirectUnsupported(true);
+						else if (isResourceNotFound(error)) void tree.reload();
+						else showToast(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				}),
 			]);
 		},
 		[client, coordinator.ref, requests, tree, showToast],

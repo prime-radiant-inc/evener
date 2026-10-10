@@ -75,7 +75,7 @@ export async function readOrganizationNavigation(
 				});
 				const page = response.data as NavigationProjectCatalog | null;
 				if (!page || (version !== undefined && version !== response.version.revision))
-					throw Error("Projects changed while checking this item. Refresh to try again.");
+					throw Error("Projects changed while checking this item. Try again.");
 				version = response.version.revision;
 				remaining = page.remaining;
 				project = page.projects.find((row) => row.key === params.id);
@@ -85,7 +85,7 @@ export async function readOrganizationNavigation(
 			} while (remaining > 0);
 			if (project) break;
 		}
-		if (!project) throw Error("The previous project could not be found. Refresh to try again.");
+		if (!project) throw Error("The previous project could not be found. Try again.");
 		if (operation.kind === "archive" && project.working_dir !== operation.params.workingDir)
 			throw Error("The project's working directory changed. Its organization could not be confirmed.");
 		title = projectName(project);

@@ -171,6 +171,20 @@ export function onConnectionReplacedOrRecovered(handler: () => void): () => void
   });
 }
 
+/**
+ * readyConnectionTransition reports whether a connectionStore publish ENTERED
+ * a ready, client-wired connection: a first connect, a client replacement
+ * while ready, or a recovery back to ready. A republish over an already-ready
+ * client (handshake metadata writes included) is not a transition. Stores
+ * that load connection-scoped data (the command catalog, navigation) share
+ * this predicate so a change to connection-state semantics lands in one
+ * place; onConnectionReplacedOrRecovered serves the complementary "did we
+ * MISS something" question and deliberately skips the first connect. */
+export function readyConnectionTransition(state: ConnectionStoreState, previous: ConnectionStoreState): boolean {
+  if (state.client === null || state.state !== "ready") return false;
+  return state.client !== previous.client || previous.state !== "ready";
+}
+
 export function useConnectionStore(): ConnectionStoreState;
 export function useConnectionStore<T>(selector: (state: ConnectionStoreState) => T): T;
 export function useConnectionStore<T>(selector?: (state: ConnectionStoreState) => T): T | ConnectionStoreState {

@@ -6,6 +6,11 @@ export interface HubProfile {
 	name: string;
 	origin: string;
 }
+
+/** Whether `hubId` is still one of the phone's saved hubs. */
+export function hasHub(profiles: readonly Pick<HubProfile, "id">[], hubId: string): boolean {
+	return profiles.some((profile) => profile.id === hubId);
+}
 export interface HubInput {
 	name: string;
 	origin: string;
@@ -202,7 +207,7 @@ export type NativeSocketFactory = (url: string, options: { headers: Record<strin
 export function createHubClient(origin: string, token: string, socketFactory: NativeSocketFactory): AppwireClient {
 	return new AppwireClient({
 		url: connectionTarget(origin),
-		clientInfo: { name: "evener-native", version: "0.2.0" },
+		clientInfo: { name: "evener-native", version: "0.3.0" },
 		socketFactory: (url) =>
 			socketFactory(url, {
 				headers: token ? { Authorization: `Bearer ${token}` } : {},

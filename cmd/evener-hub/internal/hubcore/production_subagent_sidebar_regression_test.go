@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
+func TestBuildTree_RecursiveSubagentActivityRollsUpToItsRoot(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
@@ -28,18 +28,8 @@ func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("tree = %#v, want one current parent", tree)
 	}
-	children := tree.Projects[0].Current[0].Children
-	if len(children) != 1 || children[0].ID != "child" {
-		t.Fatalf("parent children = %#v, want direct child", children)
-	}
-	if len(children[0].Children) != 1 || children[0].Children[0].ID != "grandchild" {
-		t.Fatalf("child children = %#v, want recursively preserved grandchild", children[0].Children)
-	}
-	if parent := tree.Projects[0].Current[0]; parent.State != "idle" {
-		t.Fatalf("parent state = %q, want idle", parent.State)
-	}
-	if children[0].State != "active" {
-		t.Fatalf("child state = %q, want active", children[0].State)
+	if parent := tree.Projects[0].Current[0]; parent.State != "idle" || len(parent.Children) != 0 {
+		t.Fatalf("parent = %#v, want an idle row with no subagent rows", parent)
 	}
 	if tree.Projects[0].RollupState != "active" || !tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want active/true", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
@@ -54,20 +44,15 @@ func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 	}
 	parent := LiveEntry{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
 	tree := BuildTreeAt(metas, []LiveEntry{parent}, nil, now)
-	child := tree.Projects[0].Current[0].Children[0]
-	if child.State != "idle" {
-		t.Fatalf("running in-process child state = %q, want idle (liveness is not activity)", child.State)
-	}
 	if tree.Projects[0].RollupState != "idle" || tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want idle/false", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
 	}
 }
 
-// TestBuildTree_ChildOwnLiveEntryBeatsParentProjection proves the removed
-// runningChildIDs override was wrong: a child with its own live entry
-// reporting "active" must keep that state even when its parent's daemon
-// lists it in RunningSubagentIDs with no RunningSubagentStates (which would
-// have fallen back to idle and overwritten the child's own truth).
+// TestBuildTree_ChildOwnLiveEntryBeatsParentProjection: a child with its own
+// live entry reporting "active" keeps the project working even when its
+// parent's daemon lists it in RunningSubagentIDs with no RunningSubagentStates
+// (which alone would fall back to idle).
 func TestBuildTree_ChildOwnLiveEntryBeatsParentProjection(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -81,16 +66,12 @@ func TestBuildTree_ChildOwnLiveEntryBeatsParentProjection(t *testing.T) {
 		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
 	}
 	tree := BuildTreeAt(metas, live, nil, now)
-	child := tree.Projects[0].Current[0].Children[0]
-	if child.State != "active" {
-		t.Fatalf("child state = %q, want active (child's own live entry beats parent's no-state projection)", child.State)
-	}
 	if tree.Projects[0].RollupState != "active" || !tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want active/true", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
 	}
 }
 
-func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *testing.T) {
+func TestBuildTree_CrossEffectiveDirectorySubagentHasNoRowOrProject(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
@@ -103,16 +84,15 @@ func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *tes
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("projects = %#v, want one parent project with one current session", tree.Projects)
 	}
-	children := tree.Projects[0].Current[0].Children
-	if len(children) != 1 || children[0].ID != "isolated-child" {
-		t.Fatalf("parent children = %#v, want cross-directory child attached once", children)
+	if children := tree.Projects[0].Current[0].Children; len(children) != 0 {
+		t.Fatalf("parent children = %#v, want none: subagents have no rows", children)
 	}
-	if len(children[0].Children) != 1 || children[0].Children[0].ID != "nested-isolated-child" {
-		t.Fatalf("cross-directory child children = %#v, want recursively attached grandchild", children[0].Children)
+	if len(tree.ArchivedProjects) != 0 {
+		t.Fatalf("archived projects = %#v: a subagent's directory is not a project", tree.ArchivedProjects)
 	}
 }
 
-func TestBuildProjectTreeAt_LazyLookupKeepsCrossDirectorySubagent(t *testing.T) {
+func TestBuildProjectTreeAt_LazyLookupRollsUpCrossDirectorySubagent(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "projects", "evener")
@@ -131,9 +111,16 @@ func TestBuildProjectTreeAt_LazyLookupKeepsCrossDirectorySubagent(t *testing.T) 
 		{ID: "isolated-child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: isolationDir}},
 	}
-	project, ok := BuildProjectTreeAt(metas, nil, nil, now, projectID)
-	if !ok || len(project.Current) != 1 || len(project.Current[0].Children) != 1 || project.Current[0].Children[0].ID != "isolated-child" {
-		t.Fatalf("lazy project = %#v, found=%v; want parent and cross-directory child", project, ok)
+	live := []LiveEntry{
+		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"isolated-child"}},
+		{PID: 2, SessionID: "isolated-child", Status: appwire.ThreadStatusActive},
+	}
+	project, ok := BuildProjectTreeAt(metas, live, nil, now, projectID)
+	if !ok || len(project.Current) != 1 || len(project.Current[0].Children) != 0 {
+		t.Fatalf("lazy project = %#v, found=%v; want the parent alone", project, ok)
+	}
+	if project.RollupState != "active" || project.RollupLive != 1 {
+		t.Fatalf("lazy project rollup = %q live=%d, want the cross-directory child to keep it working", project.RollupState, project.RollupLive)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -37,6 +38,10 @@ func ResolveUserOnly(stateRoot string, overrides Layer) (Resolved, error) {
 // loadGlobalLayerFS reads and validates the global layer, the one step shared
 // by a full directory resolution and the user-only preview before one exists.
 func loadGlobalLayerFS(fs afero.Fs, globalPath string) (Layer, []Diagnostic, error) {
+	if globalPath == "" {
+		// No user config root resolved: there is no global layer to read.
+		return Layer{}, nil, nil
+	}
 	g, err := loadLayerFS(fs, globalPath)
 	if err != nil {
 		return Layer{}, nil, fmt.Errorf("global: %w", err)
@@ -47,7 +52,7 @@ func loadGlobalLayerFS(fs afero.Fs, globalPath string) (Layer, []Diagnostic, err
 }
 
 func resolveUserOnlyFS(fs afero.Fs, stateRoot string, overrides Layer) (Resolved, error) {
-	g, pathDiags, err := loadGlobalLayerFS(fs, filepath.Join(stateRoot, "launch.toml"))
+	g, pathDiags, err := loadGlobalLayerFS(fs, userdirs.Subdir(stateRoot, "launch.toml"))
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -119,18 +124,20 @@ func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
 		return Layer{}, nil, err
 	}
 
-	if _, err := fs.Stat(paths.LegacyProject); err == nil {
-		layer, err := loadLayerFS(fs, paths.LegacyProject)
-		if err != nil {
+	if paths.LegacyProject != "" {
+		if _, err := fs.Stat(paths.LegacyProject); err == nil {
+			layer, err := loadLayerFS(fs, paths.LegacyProject)
+			if err != nil {
+				return Layer{}, nil, err
+			}
+			return layer, []Diagnostic{{
+				Layer:   LayerProject,
+				Field:   "launch.local.toml",
+				Message: fmt.Sprintf("using legacy project launch config at %s; save the project layer to migrate to %s", paths.LegacyProject, paths.ProjectFile),
+			}}, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return Layer{}, nil, err
 		}
-		return layer, []Diagnostic{{
-			Layer:   LayerProject,
-			Field:   "launch.local.toml",
-			Message: fmt.Sprintf("using legacy project launch config at %s; save the project layer to migrate to %s", paths.LegacyProject, paths.ProjectFile),
-		}}, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Layer{}, nil, err
 	}
 
 	return Layer{}, nil, nil
@@ -163,7 +170,10 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
-	meta, _ := loadMetaFS(fs, filepath.Join(stateRoot, "projects", project.ID, "meta.toml"))
+	var meta Meta
+	if metaPath := userdirs.Subdir(stateRoot, filepath.Join("projects", project.ID, "meta.toml")); metaPath != "" {
+		meta, _ = loadMetaFS(fs, metaPath)
+	}
 	state := ComputeTrustState(hash, meta)
 
 	status := &RepoStatus{Path: repoPath, Hash: hash, Trust: state}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // FuzzProcessRuntimeProgram exercises the public command, grep-ripgrep, stream,
@@ -329,6 +330,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("Platform = %q", platform)
 	}
 
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	if _, err := env.ExecArgv(context.Background(), "tool", nil, 50, filepath.Join(filepath.Dir(root), "outside"), nil); err == nil {
 		t.Fatal("ExecArgv outside the root unexpectedly succeeded")
 	}
@@ -336,6 +338,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("outside-root command was configured or started: %+v", command)
 	}
 
+	env.Sandbox = nil
 	env.EnvPolicy = EnvPolicyNone
 	result, err := env.ExecArgv(context.Background(), "tool", []string{"--check"}, 50, "sub", map[string]string{
 		"PATH":    "/fixture/base-bin",
@@ -415,7 +418,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		return "/fixture/rg", nil
 	}
 	grep, err := env.Grep(context.Background(), "x; touch never", "sub", "*.go", true, 2, "")
-	if err != nil || grep != "one\ntwo" {
+	if err != nil || grep != searchresult.WithNotes("one\ntwo", grepTruncationNote(2)) {
 		t.Fatalf("Grep ripgrep success = %q, %v", grep, err)
 	}
 	// Grep hands ripgrep an argument vector directly (never a shell command
@@ -493,13 +496,14 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("StreamCommand detached wait=(%d, %v)", code, waitErr)
 	}
 
-	// The stream path initializes its PID tracker lazily and applies the same root
-	// containment before creating a runtime. Invalid roots therefore cannot consume
-	// a factory plan or reach Start.
+	// A confined stream rejects an external cwd before creating a runtime.
+	// The rejection must not consume a factory plan or reach Start.
 	env.runningPIDs = nil
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	if handle, err := env.StreamCommand(context.Background(), "never", filepath.Join(filepath.Dir(root), "outside"), nil, &bytes.Buffer{}); err == nil || handle != nil {
 		t.Fatalf("outside-root StreamCommand = (%v, %v), want nil/error", handle, err)
 	}
+	env.Sandbox = nil
 	handle, err = env.StreamCommand(context.Background(), "stream-default-dir", "", nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("StreamCommand default directory: %v", err)

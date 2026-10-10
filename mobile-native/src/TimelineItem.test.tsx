@@ -1,11 +1,12 @@
 import { createElement, type ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { paletteFor } from "./design/tokens";
 import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform, Text } from "react-native";
-import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -217,7 +218,10 @@ describe("your message", () => {
 			const [target] = tree.root.findAll((node) => typeof node.props.onLongPress === "function");
 			act(() => target.props.onLongPress());
 			const request = alertRequests.at(-1);
-			expect(request?.message).toBe("Ship it now");
+			// The preview is the alert's title now, as NotesSheet's link menu
+			// shows it, rather than a "Message" heading over the words.
+			expect(request?.title).toBe("Ship it now");
+			expect(request?.message).toBeUndefined();
 			expect(request?.buttons?.map((button) => button.text)).toEqual(["Copy", "Fork from here", "Quote"]);
 			expect(request?.options).toEqual({ cancelable: true });
 		} finally {
@@ -385,6 +389,7 @@ describe("a time marker", () => {
 		vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
 	});
 	afterEach(() => {
+		unmountMountedTrees();
 		vi.useRealTimers();
 	});
 
@@ -420,6 +425,30 @@ describe("a time marker", () => {
 	});
 });
 
+describe("a tool step", () => {
+	const step: TimelineRow = {
+		kind: "activity",
+		id: "step-1",
+		label: "read_file",
+		family: "tool",
+		state: "completed",
+		detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
+	};
+
+	// Its toggle shows the step's words and state; VoiceOver hears what a
+	// press does, and whether the step is open.
+	it("opens from a toggle VoiceOver names Expand, then Collapse", () => {
+		const tree = render(<TimelineItem item={step} hubId="hub" sessionRef="step-toggle" />);
+		const closed = pressable(tree, "Expand Read agent/session.go");
+		expect(closed && textOf(closed)).toBe("▸ Read agent/session.go · completed");
+		expect(closed?.props.accessibilityState).toMatchObject({ expanded: false });
+		act(() => closed?.props.onPress());
+		const open = pressable(tree, "Collapse Read agent/session.go");
+		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
+		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
+	});
+});
+
 describe("a run in the transcript", () => {
 	const run: TimelineRow = {
 		kind: "run",
@@ -432,7 +461,8 @@ describe("a run in the transcript", () => {
 				label: "read_file",
 				family: "tool",
 				state: "completed",
-				detail: { arguments: '{"file_path":"agent/session.go"}' },
+				// Its words, as projectedRows builds them from the whole step.
+				detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
 			},
 		],
 	};
@@ -453,9 +483,105 @@ describe("a run in the transcript", () => {
 	});
 
 	it("never folds while it is live", () => {
-		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live />);
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live liveRunsOpen />);
 		expect(header(tree.root)).toBeUndefined();
 		expect(renderedText(tree)).toContain("agent/session.go");
+	});
+
+	// Nothing collapses on its own (Jesse's ruling on S7): a run held open
+	// while live stays open once the next run starts or the turn ends.
+	it("stays open after it stops being live, until you fold it", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" liveRunsOpen />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(renderedText(tree)).toContain("agent/session.go");
+		act(() => header(tree.root).props.onPress());
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+	});
+
+	it("stays open when you switch to a level that doesn't open live runs", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// Two parallel calls: the one that settles last joins the front of the run
+	// in the same update that ends the turn. The run is the same run.
+	it("stays open when a parallel call settles ahead of it as the turn ends", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const b = { ...step, id: "b", detail: { ...step.detail, callId: "call-b" } };
+		const a = { ...step, id: "a", detail: { ...step.detail, callId: "call-a" } };
+		const live: TimelineRow = { kind: "run", id: "run:b", turnId: "t1", steps: [b] };
+		const settled: TimelineRow = { kind: "run", id: "run:a", turnId: "t1", steps: [a, b] };
+		const tree = render(<TimelineItem item={live} hubId="hub" sessionRef="run-parallel" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={settled} hubId="hub" sessionRef="run-parallel" liveRunsOpen />));
+		const fold = tree.root.findAll((node) =>
+			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
+		)[0];
+		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+	});
+
+	// An older page can bring earlier items of the first loaded turn: a run
+	// ahead of this one, or steps that join its front. Either way it is the
+	// same run, and the run ahead of it stays folded.
+	it("stays open when an older page brings an earlier run or earlier steps of its turn", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const call = (id: string) => ({ ...step, id, detail: { ...step.detail, callId: `call-${id}` } });
+		const runOf = (...ids: string[]): TimelineRow => ({
+			kind: "run",
+			id: `run:${ids[0]}`,
+			turnId: "t1",
+			steps: ids.map(call),
+		});
+		const tree = render(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" live liveRunsOpen />);
+		act(() => tree.update(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
+		const earlier = render(<TimelineItem item={runOf("z")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />);
+		expect(header(earlier.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={runOf("y", "b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
+		const fold = tree.root.findAll((node) =>
+			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
+		)[0];
+		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+	});
+
+	// At Activity and Full every run opens by default, so a run held open
+	// there must still be pinned, or a switch to Intent would fold it.
+	it("stays open after a switch down from a level that opens every run", () => {
+		const tree = render(
+			<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" live liveRunsOpen expandByDefault />,
+		);
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// A tool shown from the overlay carries the overlay's id until history
+	// records its call; the call id is the same on both.
+	it("stays open when its first step's id changes as history records the call", () => {
+		const step = run.kind === "run" ? run.steps[0] : undefined;
+		if (!step) throw new Error("run fixture has no step");
+		const withStep = (id: string): TimelineRow => ({
+			kind: "run",
+			id: `run:${id}`,
+			turnId: "t1",
+			steps: [{ ...step, id, detail: { ...step.detail, callId: "call-1" } }],
+		});
+		const tree = render(
+			<TimelineItem item={withStep("tool:call:call-1")} hubId="hub" sessionRef="run-renamed" live liveRunsOpen />,
+		);
+		act(() =>
+			tree.update(<TimelineItem item={withStep("item_tool_1_0")} hubId="hub" sessionRef="run-renamed" liveRunsOpen />),
+		);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+	});
+
+	// At Intent the tray shows the live step, so the run's line is enough.
+	it("doesn't open while live where the tray shows the live step", () => {
+		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" live />);
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" />));
+		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
 	});
 });
 
@@ -511,6 +637,7 @@ describe("a subagent", () => {
 		detail: { callId: "call-1", description: "Audit the store" },
 	});
 	const delegate = {
+		runGeneration: 1,
 		delegateId: "d1",
 		ownerSessionId: "s0",
 		rootSessionId: "s0",
@@ -546,6 +673,24 @@ describe("a subagent", () => {
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({
 			minHeight: 44,
 		});
+	});
+
+	// It re-renders when its silence crosses the Quiet threshold, not only
+	// on the minute clock's next tick.
+	it("turns Quiet on its own when a running subagent goes silent", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+			const silent = { ...delegate, runStartedAt: at(60_000), latestActivityAt: at(19_900) };
+			const tree = render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[silent]} />);
+			expect(renderedText(tree)).toContain("Working");
+			act(() => {
+				vi.advanceTimersByTime(100);
+			});
+			expect(renderedText(tree)).toContain("Quiet 20s");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("opens the subagent's own transcript when pressed", () => {
@@ -628,18 +773,73 @@ describe("a system event", () => {
 		expect(target.props.style).toMatchObject({ minHeight: 44 });
 	});
 
+	// A long label ("System steered: Where to find the full transcript") keeps
+	// its chevron in view: it truncates to one line, and VoiceOver reads it whole.
+	it("keeps a long label to one line beside its chevron, spoken in full", () => {
+		const label = "System steered: Where to find the full transcript";
+		const event = notice({ origin: "steering", steeringKind: "transcript-pointer", text: "Read it.", label });
+		const tree = render(<TimelineItem item={event} hubId="hub" sessionRef="event-long" />);
+		const text = tree.root.findAll((node) => String(node.type) === "Text").find((node) => textOf(node) === label);
+		expect(text?.props.numberOfLines).toBe(1);
+		expect(text?.props.style).toMatchObject({ flexShrink: 1 });
+		const button = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(button?.props.accessibilityLabel).toBe(label);
+	});
+
 	it("opens a labelled steering notice's text", () => {
-		const reminder = notice({ origin: "steering", steeringKind: "task-nudge", text: "Remember the open task." });
+		const reminder = notice({
+			origin: "steering",
+			steeringKind: "task-inactive",
+			text: "Remember the open task.",
+			label: "Task list idle",
+		});
 		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
-		expect(renderedText(tree)).toContain("Task reminder");
+		expect(renderedText(tree)).toContain("Task list idle");
 		expect(renderedText(tree)).not.toContain("Remember the open task.");
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 		expect(renderedText(tree)).toContain("Remember the open task.");
 	});
+
+	// An informational warning is one quiet line, but an item that also carries
+	// a hint shows it as a quiet second line under the message, and VoiceOver
+	// speaks both (the web keeps the hint as hover title and VisuallyHidden text).
+	it("reads an informational warning's hint as a quiet second line, spoken in the row", () => {
+		const warning = notice({
+			family: "informational",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+			hint: "Free some context.",
+		});
+		const tree = render(<TimelineItem item={warning} hubId="hub" sessionRef="event-hint" />);
+		expect(renderedText(tree)).toContain("Output clamped to fit the context window");
+		expect(renderedText(tree)).toContain("Free some context.");
+		expect(texts(tree.root).find((node) => textOf(node) === "Free some context.")?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: INK_LOW,
+		});
+		const button = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(button?.props.accessibilityLabel).toBe("Output clamped to fit the context window\nFree some context.");
+	});
 });
 
+const palette = paletteFor("light");
+
+// The colour of the one rule an error or warning row draws down its left edge.
+function ruleColor(tree: ReturnType<typeof render>): unknown {
+	const rules = tree.root.findAll((node) => typeof node.type === "string" && node.props.style?.borderLeftWidth === 2);
+	expect(rules).toHaveLength(1);
+	return rules[0]?.props.style.borderLeftColor;
+}
+
+// The label VoiceOver reads for a row's title: a warning and an error differ
+// in more than colour.
+const titleLabels = (tree: ReturnType<typeof render>) =>
+	tree.root
+		.findAll((node) => typeof node.type === "string" && typeof node.props.accessibilityLabel === "string")
+		.map((node) => node.props.accessibilityLabel);
+
 describe("an error", () => {
-	const DANGER_INK = "#C51D23";
 	const failure = (detail: string, turnId = "turn_2"): TimelineRow => ({
 		kind: "failure",
 		id: `failure:${turnId}`,
@@ -670,9 +870,8 @@ describe("an error", () => {
 
 	it("draws a red rule, the title and the detail", () => {
 		const { tree } = show(failure("go test exited 1"));
-		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(
-			DANGER_INK,
-		);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The turn failed");
 		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({
 			fontWeight: "600",
 			fontSize: 15,
@@ -698,5 +897,73 @@ describe("an error", () => {
 			"Retry",
 		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
+	});
+});
+
+// A warning is amber (spec 8.2 and the state table: amber means a human is
+// needed; red means failed), with its hint as a quiet second line (#3387).
+describe("a warning", () => {
+	it("draws a daemon warning notice with an amber rule, its text, and its hint", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "w",
+					origin: "system",
+					family: "warning",
+					tone: "attention",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					hint: "Check the state directory.",
+					turnId: "turn_2",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+				errorActionFor={() => "retry"}
+				onErrorAction={() => {}}
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.attention);
+		expect(renderedText(tree)).toContain("inspect delegate attention: permission denied");
+		expect(renderedText(tree)).toContain("Check the state directory.");
+		expect(titleLabels(tree)).toContain("Warning: inspect delegate attention: permission denied");
+		// A warning reports; it offers no Retry or Resume of its own.
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
+	});
+
+	it("draws a warning item amber too, with no Resume or Retry even on a paused session", () => {
+		const tree = render(
+			<TimelineItem
+				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true, turnId: "turn_2" }}
+				hubId="hub"
+				sessionRef="warning"
+				errorActionFor={(failed) =>
+					errorAction(failed, { resumeRequired: true, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)
+				}
+				onErrorAction={() => {}}
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.attention);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
+	});
+
+	it("keeps a loop detection red", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "l",
+					origin: "system",
+					family: "warning",
+					tone: "warning",
+					eventKind: "loop_detection",
+					text: "The agent repeated itself",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The agent repeated itself");
 	});
 });

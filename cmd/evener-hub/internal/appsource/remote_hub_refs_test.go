@@ -31,6 +31,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		Rename:            true,
 		SkillInput:        true,
 		StopSubagent:      true,
+		PageBefore:        true,
 	}
 }
 
@@ -162,6 +163,19 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		{"SkillInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		{"CommandInput", map[string]func() error{
+			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
+			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		// The source forwards a cursorless before to a remote thread now
+		// (#3176), but the hub does not advertise PageBefore for one yet, so
+		// the capability stays masked.
+		{"PageBefore", map[string]func() error{
+			"ListItemCandidates": func() error {
+				_, err := source.ListItemCandidates(ctx, appwire.ThreadTurnsListParams{Before: &appwire.ThreadItemPosition{Entry: 1}})
+				return err
+			},
 		}},
 	}
 
@@ -611,6 +625,41 @@ func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
 				t.Fatalf("Data = %#v, want the unrecognized payload preserved as %#v", resp.Data, want)
 			}
 			assertNoRewrittenRefs(t, resp.Data)
+		})
+	}
+}
+
+// Typed job detail results translate only declared session refs. Commands and
+// opaque shell transcript handles retain their literal values.
+func TestRemoteHubJobsGetTranslatesTypedJobRefs(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, transcriptRef := range []string{"local:child", "job:job_1", ""} {
+		t.Run(transcriptRef, func(t *testing.T) {
+			var response appwire.JobsGetResponse
+			payload := `{"data":{"jobId":"job_1","ownerSessionId":"sess_1","ownerRef":"local:sess_1","command":"echo local:sess_1"}}`
+			if err := json.Unmarshal([]byte(payload), &response); err != nil {
+				t.Fatal(err)
+			}
+			response.Data.TranscriptRef = transcriptRef
+			if err := source.translateOut(&response); err != nil {
+				t.Fatal(err)
+			}
+			wantOwner, err := source.fromRemoteRefString("local:sess_1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTranscript := transcriptRef
+			if transcriptRef == "local:child" {
+				wantTranscript, err = source.fromRemoteRefString(transcriptRef)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := response.Data
+			if job.OwnerRef != wantOwner || job.TranscriptRef != wantTranscript ||
+				job.OwnerSessionID != "sess_1" || job.Command != "echo local:sess_1" {
+				t.Fatalf("translated job = %+v", job)
+			}
 		})
 	}
 }

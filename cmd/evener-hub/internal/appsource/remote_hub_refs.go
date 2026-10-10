@@ -139,6 +139,7 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 		SharedNotes:       remote.SharedNotes && forwarded.SharedNotes,
 		Rename:            remote.Rename && forwarded.Rename,
 		SkillInput:        remote.SkillInput && forwarded.SkillInput,
+		CommandInput:      remote.CommandInput && forwarded.CommandInput,
 		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 	}
 }
@@ -571,8 +572,40 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		for index := range response.Items {
 			rewriteItemImageURLs(s.id, &response.Items[index])
 		}
+	case *appwire.SessionActivitySummary:
+		page := appwire.SessionActivityPage{Issues: response.Issues}
+		if err := s.translateSessionActivity(&response.Context, &page); err != nil {
+			return err
+		}
+		response.Issues = page.Issues
+		return nil
+	case *appwire.SessionDelegatesResponse:
+		refs := make([]*string, 0, 3*len(response.Delegates))
+		for i := range response.Delegates {
+			row := &response.Delegates[i]
+			refs = append(refs, &row.OwnerRef, &row.RootRef, &row.ChildRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionJobsResponse:
+		refs := make([]*string, 0, len(response.Jobs))
+		for i := range response.Jobs {
+			row := &response.Jobs[i]
+			refs = append(refs, &row.OwnerRef)
+			row.TranscriptRef = s.fromRemoteRefOrOpaque(row.TranscriptRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionWatchesResponse:
+		refs := make([]*string, 0, 3*len(response.Watches))
+		for i := range response.Watches {
+			row := &response.Watches[i]
+			refs = append(refs, &row.OwnerRef, &row.ReceiverRef, &row.SourceRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
+	case *appwire.JobsGetResponse:
+		response.Data.OwnerRef = s.translateNestedRef(response.Data.OwnerRef)
+		response.Data.TranscriptRef = s.translateNestedRef(response.Data.TranscriptRef)
 	}
 	return nil
 }

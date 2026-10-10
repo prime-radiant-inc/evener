@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
@@ -24,13 +22,12 @@ export {
   isFailedDelegateOutcome,
   isFailedJobOutcome,
   isTurnContainer,
+  jobCommandLabel,
   jobStatusDisplay,
+  parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
-export { ACTIVITY_REFRESH_MIN_INTERVAL_MS, ActivityList } from "./activityList";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,
@@ -49,6 +46,7 @@ export {
   indexActivityEntities,
   jobIsFailed,
   jobRowFields,
+  shellJobState,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
@@ -56,6 +54,20 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
+export type {
+  ArchivedList,
+  ArchivedListCatalog,
+  ArchivedListClient,
+  ArchivedListState,
+  ArchivedListStore,
+} from "./archivedListStore";
+export { archivedListKey, createArchivedListStore } from "./archivedListStore";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type {
@@ -72,8 +84,14 @@ export type {
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
-export type { RejectableFile } from "./attachmentLimits";
-export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
+export {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
@@ -103,7 +121,7 @@ export type {
   TerminalReason,
 } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
-export type { AppwireClientLike } from "./clientLike";
+export type { AppwireClientLike, RequestPort } from "./clientLike";
 export type {
   CommandCatalog,
   CommandCatalogClient,
@@ -112,7 +130,7 @@ export type {
   SessionCommandCatalogState,
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
-export type { InputAttachment } from "./composerInput";
+export type { ComposerMention, InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
@@ -120,6 +138,8 @@ export {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  endpointMoved,
+  endpointUncheckable,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -133,8 +153,35 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
-export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
-export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export type {
+  DelegateEndingFields,
+  DelegateModelFields,
+  DelegateTiming,
+  DelegateTimingFields,
+} from "./delegateDetails";
+export {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
+export {
+  type DelegateSendEarlierResponse,
+  type DelegateSendFooterInfo,
+  type DelegateSendRawState,
+  type DelegateSendResult,
+  type DelegateSendStep,
+  delegateSendBase,
+  delegateSendEarlierLabel,
+  delegateSendEarlierResponses,
+  delegateSendFooter,
+  delegateSendResponse,
+  delegateSendSummary,
+  delegateSendTarget,
+  delegateSendWaitIgnoredReason,
+  isDelegateSendResult,
+} from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
@@ -161,7 +208,7 @@ export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
-export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
+export { buildEntityView, entityOpenTarget, findEntityView, watchFoldKey, watchItems } from "./entityView";
 export {
   ClientNotReadyError,
   ConnectionClosedError,
@@ -177,11 +224,13 @@ export {
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
+  HostMutationOutcomeError,
   HUB_UNREACHABLE_MESSAGE,
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
@@ -194,8 +243,40 @@ export {
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
+export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
+export type {
+  EditableHostField,
+  HostMutationPair,
+  HostMutationPorts,
+  HostMutationResult,
+  HostMutations,
+} from "./hostMutations";
+export {
+  committedMutationRow,
+  createHostMutations,
+  ErrorStaleEntry,
+  HOST_CHANGED_MESSAGE,
+  HOST_ENTRY_FIELD_ORDER,
+  HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
+  HOST_GATE_TIMEOUT_MS,
+  hostChangedSinceOpened,
+  rootsFromText,
+  rootsToText,
+} from "./hostMutations";
+export type { HostDependentDiscoveryMethod } from "./hostRouting";
+export { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST, normalizeHost } from "./hostRouting";
+export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
+export type {
+  HubUpdateController,
+  HubUpdatePorts,
+  HubUpdateState,
+  HubUpdateStateStore,
+  UpdateChannel,
+} from "./hubUpdate";
+export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,
@@ -207,8 +288,22 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
+export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
+export {
+  endReasonPhrase,
+  isRecognizedWatchResult,
+  type JobWatchStep,
+  jobWatchEvidence,
+  jobWatchOperation,
+  jobWatchSummary,
+  rowConditionPhrase,
+  type TimerSpec,
+  timerSpec,
+  WATCH_DELIVERY_BUDGET,
+  watchRowStateWord,
+} from "./jobWatchSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";
 export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
@@ -285,7 +380,7 @@ export type {
   LaunchConfigStoreState,
   LaunchSettingsState,
 } from "./launchConfig";
-export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
+export { createLaunchConfigStore, LAUNCH_CHANGED_ELSEWHERE, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
@@ -310,6 +405,30 @@ export {
   schemaPathKind,
 } from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+export {
+  MEMORY_CONTEXT_EVENT_KIND,
+  MEMORY_CONTEXT_LABEL,
+  MEMORY_CONTEXT_SCOPES,
+  MEMORY_CONTEXT_STATES,
+  type MemoryContextObservation,
+  type MemoryContextScope,
+  type MemoryContextState,
+  memoryContextEmptyText,
+  memoryContextScopeLabel,
+  memoryContextStateLabel,
+  parseMemoryContext,
+} from "./memoryContext";
+export {
+  type MemoryStep,
+  memoryDeleteSummary,
+  memoryEditSummary,
+  memoryFileTarget,
+  memoryMutation,
+  memoryProgress,
+  memoryReadSummary,
+  memorySearchSummary,
+  memoryWriteSummary,
+} from "./memorySteps";
 export type {
   CapabilitySource,
   HistoryState,
@@ -336,13 +455,15 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
-export { approvalWaiting, humanizeState } from "./railSessionState";
+export { approvalWaiting, humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
+  CachedSessionHistory,
+  CachedSessionRecord,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -353,11 +474,11 @@ export {
   applyNotification,
   applyReadModel,
   applyReadResponse,
+  cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
   foldWarningParams,
-  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
   invalidateHistory,
@@ -372,17 +493,31 @@ export {
   markItemTextOmitted,
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
+  mergeTailTurns,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
+  readDisposition,
+  readWindowBounds,
   resolvePendingEscalation,
+  threadModelFromCache,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
+export type {
+  SessionActivityClient,
+  SessionActivityClock,
+  SessionActivityCollection,
+  SessionActivityCollectionState,
+  SessionActivityReadState,
+  SessionActivitySnapshot,
+} from "./sessionActivityStore";
+export { SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -417,6 +552,26 @@ export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSch
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export {
+  isSuppressedSteeringKind,
+  type LabelledSteeringKind,
+  STEERING_KIND_LABELS,
+  steeringLabel,
+} from "./steeringLabels";
+export {
+  decodeNotificationEntities,
+  escapeNotificationEntities,
+  isNotificationRemnant,
+  isValidTranscriptRef,
+  type NotificationOutcome,
+  type NotificationTone,
+  type ParsedNotification,
+  parseSteeringNotifications,
+  type SteeringFragment,
+  steeringNotificationFragments,
+  stripSystemReminder,
+} from "./steeringNotifications";
+export { BINARY_PAYLOAD_HEADER, composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -438,10 +593,21 @@ export {
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
+export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
-export { parseTaskListData, taskAggregateLabel } from "./taskListData";
+export { parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
+export {
+  freshNotes,
+  type MutationTouch,
+  mutationRows,
+  SUMMARY_MARK,
+  type TaskListStep,
+  type TouchedRow,
+  taskMutationRecap,
+  taskMutationSummary,
+} from "./taskListStep";
 export { absoluteTime, relativeTime } from "./taskListTime";
 export type {
   PanelLoadFailure,
@@ -463,9 +629,17 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type {
+  ThreadSubscriptionClient,
+  ThreadSubscriptionLease,
+  ThreadSubscriptionMetadata,
+  ThreadSubscriptionReadParams,
+} from "./threadSubscription";
+export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
+  capitalized,
   clip,
   clipJobID,
   formatByteCount,
@@ -478,6 +652,47 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
+export {
+  prettyJSON,
+  type ShellOutput,
+  shellOutput,
+  skillContext,
+  toolJSONResult,
+  webFetchResult,
+} from "./toolEvidence";
+export {
+  applyPatchSummary,
+  askUserSummary,
+  delegateSummary,
+  editFileSummary,
+  fallbackToolSummary,
+  filePathArg,
+  filePathOf,
+  globSummary,
+  grepSummary,
+  listDirSummary,
+  mcpToolParts,
+  readFileSummary,
+  shellCommand,
+  shellSummary,
+  skillName,
+  stripRedundantCd,
+  type ToolFamily,
+  type ToolStep,
+  type ToolSummaryContext,
+  taskListChanges,
+  toolFamily,
+  toolStepProgress,
+  toolStepSummary,
+  toolStepWords,
+  useSkillSummary,
+  webFetchByteCount,
+  webFetchSummary,
+  webSearchResultLines,
+  webSearchSummary,
+  words,
+  writeFileSummary,
+} from "./toolSummaries";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -505,6 +720,7 @@ export {
   configFingerprint,
   configSummary,
   contentSummary,
+  contentVectorForConfig,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -552,12 +768,43 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
+export {
+  findSessionsSummary,
+  readTranscriptEnvelope,
+  readTranscriptSummary,
+  type TranscriptEnvelope,
+  type TranscriptStep,
+  turns,
+} from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
+
 export type * from "./types.gen";
-export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
-export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
+export {
+  HOST_REQUEST_METHODS,
+  METHOD_NAMES,
+  NOTIFICATION_NAMES,
+  STEERING_KINDS,
+  THREAD_ITEM_EVENT_KINDS,
+} from "./types.gen";
+export type { WarningWords } from "./warnings";
+export {
+  attentionWarningNotice,
+  isInformationalWarning,
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
+  WarningCodePluginCompatibility,
+  warningWords,
+} from "./warnings";
+export { hasWarningText } from "./warningText";
+export {
+  filterSummaryPhrase,
+  type WatchTriggerPhrases,
+  watchEventLabel,
+  watchTriggerPhrases,
+} from "./watchConditionPhrase";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,
@@ -582,3 +829,4 @@ export {
   watchNextFireLabel,
   watchTitle,
 } from "./watchText";
+export { type WorktreeStep, worktreeMessage, worktreeSummary } from "./worktreeSteps";

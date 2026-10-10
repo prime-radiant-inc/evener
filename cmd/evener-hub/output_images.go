@@ -362,6 +362,33 @@ func readOutputImageFile(abs string) ([]byte, os.FileInfo, bool) {
 	return data, info, true
 }
 
+// readOutputImageInRoot reads abs, a path fspaths.ResolveInRoot accepted for
+// root, for the image routes. root may be reached through a symlink: the open
+// resolves it. abs must be symlink-resolved, as ResolveInRoot returns it, since
+// the open measures it against that resolved root: an unresolved abs (named
+// through macOS's /var rather than /private/var, say) reads as outside and is
+// refused. The open goes through root again (docOpen, i.e. openDocInRoot), so a
+// symlink swapped in after the containment check cannot lead it outside root;
+// the stat is of the open descriptor, so a non-regular file or one over
+// outputImageMaxBytes is refused whatever the path names by then.
+func readOutputImageInRoot(root, abs string) ([]byte, os.FileInfo, bool) {
+	f, err := docOpen(root, abs)
+	if err != nil {
+		return nil, nil, false
+	}
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
+	info, err := docStat(f)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > outputImageMaxBytes {
+		return nil, nil, false
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(info.Size()))
+	if _, err := buf.ReadFrom(f); err != nil {
+		return nil, nil, false
+	}
+	return buf.Bytes(), info, true
+}
+
 func outputImageDisplayName(path string) string {
 	if base := filepath.Base(path); base != "." && base != string(filepath.Separator) {
 		return base

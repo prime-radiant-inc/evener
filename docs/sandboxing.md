@@ -21,6 +21,13 @@ command line (or a resumed session's persisted config), never from a tool call.
 Sandboxing is opt-in on purpose. The default stays off so existing workflows are
 unchanged; turn it on when you want a session's blast radius contained.
 
+With sandbox off, built-in file writes, edits, patches, and the shell's `cwd`
+may target paths outside the session working directory. Relative paths still
+resolve against that working directory, and an omitted `cwd` defaults to it.
+Operating-system permissions and user instructions still apply. Explicit
+sandbox policies retain their boundaries, and allocated session scratch keeps
+its separate access contract.
+
 There is one deliberate delegate safety floor: a delegate whose structured tool
 scope contains no workspace-mutation tool (`write_file`, `edit_file`,
 `apply_patch`, or `manage_worktree`) receives a private `read-only` sandbox even
@@ -60,6 +67,28 @@ write-blocked policy and may only preserve or tighten the parent's network
 boundary. The same structured scope and sandbox policy are revalidated before
 a stable delegate is restored, and a write-blocked delegate cannot relax that
 inherited floor for its own descendants.
+
+## Independently confined memory
+
+The five [memory tools](tools/memory.md) use separate confined roots under the
+owning host's state root, not a workspace policy with its permissions widened.
+Their `personal`/`project` scope and relative paths cannot select arbitrary host
+roots or another project. Shared confinement rejects escapes and symlink
+indirection even when the session's workspace sandbox is off.
+
+A root session's read-only role can write its authorized memory without
+workspace writes. A delegate only reads and searches memory, whatever its role;
+see [memory](product/memory.md). Memory permissions do not grant shell or
+network access. Fresh and restored delegates retain their parent's effective
+memory tool/scope ceilings. Memory
+tool names do not count as workspace-mutation tools for the delegate safety
+floor described above.
+
+`--disable-memory` removes the native capability, automatic guidance and index
+I/O for that session, persistently through resume and compaction. It is not a
+general filesystem ban: an unrestricted shell or file tool keeps whatever
+access it already had. Stored files and earlier conversation remain. See
+[memory ownership and lifetime](product/memory.md).
 
 ## Flags
 
@@ -127,9 +156,23 @@ layers), git config/hook protection, a fresh PID namespace with its own `/proc`,
 minimal `/dev`, the environment floor, and no inherited evener file descriptors or
 sockets beyond stdio.
 
+On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
+the table below means anywhere except the rest of the host `/tmp`. The private
+`/tmp` exists because bubblewrap cannot stop a process connecting to a Unix socket
+it can see, and the host `/tmp` holds tmux and ssh-agent sockets that would let a
+sandboxed command act outside the box. Inside it the shell sees the cwd, its grants,
+its own scratch (writable), and, in the read-anywhere modes, the root session's
+whole scratch tree read-only. That tree holds the parent's and sibling delegates'
+scratch, which the file tools of those modes already read, so a delegate handed a
+file from its parent's scratch can open it from the shell too. The tree is also
+every sandboxed session's `TMPDIR`, so a socket a sibling's daemon puts there
+(an ssh-agent started with its default socket path, say) is connectable from the
+shell. That reaches only what that sibling's own sandbox already allows; an
+unsandboxed root's `TMPDIR` is not in the tree.
+
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
-| `off` (default) | anywhere | working root only (today's behavior) | anywhere | anywhere |
+| `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
 | `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
@@ -280,7 +323,12 @@ file tool nor a spawned process can read them:
 
 - **Credential directories and files** (resolved against `$HOME`): `~/.ssh`,
   `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
-  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`.
+  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. When
+  `$XDG_CONFIG_HOME` moves Evener's config root, `$XDG_CONFIG_HOME/evener` is
+  masked as well, since hub configuration and credentials live wherever that root
+  is; removing `~/.config/evener` from the denylist removes both, and removing the
+  relocated root removes that one. A masked path reached through a symlink is
+  masked at its real location too, so neither spelling reads it.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
@@ -363,7 +411,19 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
   redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
   granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH.
+  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
+  session scratch as its first entry too: Go records the checksum database's tree
+  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
+  module or toolchain download needs it writable. In `workspace-write` the ambient
+  GOPATH stays after it, so GOPATH-mode builds still find the packages already
+  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
+  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
+  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
+  `$HOME/go`). Evener reads that file rather than running `go env`, which would
+  run whichever go is first on PATH, and any toolchain it downloads, before the
+  sandbox exists. A spawn whose environment gives go no way to find those
+  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
+  does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -382,8 +442,8 @@ spawned process:
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
 - Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
-  there.
+  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
+  `CARGO_HOME` there.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

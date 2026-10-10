@@ -1,5 +1,6 @@
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode, EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ActivityDelegateRow, type ActivityJobRow, buildEntityView } from "@evener/appwire-client";
+import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -68,6 +69,7 @@ function delegateRow(
   rowOverrides: Partial<ActivityDelegateRow> = {},
 ): ActivityDelegateRow {
   const delegate = {
+    runGeneration: 1,
     delegateId: "dlg_x",
     ownerSessionId: "sess_root",
     rootSessionId: "sess_root",
@@ -106,6 +108,7 @@ const DELEGATE_ID = "dlg_034HQ2kSDXfKFq1mm3idL1";
 
 function delegateEntities(id: string, task: string) {
   const delegate: EvenerDelegateInfo = {
+    runGeneration: 1,
     delegateId: id,
     ownerSessionId: "sess_root",
     rootSessionId: "sess_root",
@@ -125,10 +128,13 @@ function delegateEntities(id: string, task: string) {
 
 // Every provider-wrapped delegate-line case below renders the same strip over
 // the same fixture map; only the assertions differ.
-function renderDelegateStrip() {
+function renderDelegateStrip(delegateOverrides: Record<string, unknown> = {}) {
   return render(
     <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
-      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+      <ActivityRowDetail
+        row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo", ...delegateOverrides })}
+        now={NOW}
+      />
     </EntityViewsProvider>,
   );
 }
@@ -137,9 +143,14 @@ function renderDelegateStrip() {
 // fetch stays in-process; the default resolve is an empty tail, and tests
 // override it with mockResolvedValue/mockRejectedValue on the returned spy.
 function setupJobOutput() {
-  return vi
-    .spyOn(threadsStore.getState(), "jobOutput")
-    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0 });
+  return vi.spyOn(threadsStore.getState(), "jobOutput").mockResolvedValue({
+    offsetBytes: 0,
+    bytesReturned: 0,
+    totalBytes: 0,
+    retainedStartBytes: 0,
+    encoding: "utf8",
+    data: "",
+  });
 }
 
 let jobOutput: ReturnType<typeof setupJobOutput>;
@@ -158,6 +169,30 @@ afterEach(() => {
 });
 
 describe("ActivityRowDetail", () => {
+  test("decodes a latest base64 preview through the actual AppwireClient", async () => {
+    vi.restoreAllMocks();
+    const { client, peer } = await connectJobOutputPeer();
+    connectionStore.setState({ state: "ready", client });
+    try {
+      render(<ActivityRowDetail row={jobRow({ command: "npm test", hasOutput: true }, { live: true })} now={NOW} />);
+      const request = await peer.request("evener/jobs/output");
+      expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", maxBytes: 256 });
+      await act(async () =>
+        peer.reply(request, {
+          offsetBytes: 100,
+          bytesReturned: 5,
+          totalBytes: 105,
+          retainedStartBytes: 100,
+          encoding: "base64",
+          data: "8J+YgAo=",
+        }),
+      );
+      expect(await screen.findByText("😀")).toBeTruthy();
+    } finally {
+      client.close();
+    }
+  });
+
   test("terminal delegate detail displays outcome instead of idle lifecycle status", () => {
     render(
       <ActivityRowDetail
@@ -215,6 +250,61 @@ describe("ActivityRowDetail", () => {
 
     rerender(<ActivityRowDetail row={delegateRow({ mandate: "Only one paragraph." })} now={NOW} />);
     expect(screen.queryByText("Show more")).toBeNull();
+  });
+
+  test("renders a settled delegate report as a small message bubble attributed to its name", () => {
+    render(
+      <ActivityRowDetail
+        row={delegateRow({ name: "par-3618-a", reportPreview: "The findings are verified and the fix is ready." })}
+        now={NOW}
+      />,
+    );
+
+    const message = screen.getByTestId("delegate-report");
+    expect(message.textContent).toContain("Message from par-3618-a");
+    expect(within(message).getByTestId("delegate-report-bubble").textContent).toContain(
+      "The findings are verified and the fix is ready.",
+    );
+  });
+
+  test("preserves leading indentation in the delegate report Markdown", () => {
+    render(<ActivityRowDetail row={delegateRow({ reportPreview: "    indented report line" })} now={NOW} />);
+
+    const bubble = screen.getByTestId("delegate-report-bubble");
+    expect(bubble.querySelector("pre")?.textContent).toContain("indented report line");
+  });
+
+  test("attributes the report with the standard delegate hover card and open control", () => {
+    vi.useFakeTimers();
+    try {
+      renderDelegateStrip({ name: "par-3618-a", reportPreview: "The findings are verified." });
+
+      const message = screen.getByTestId("delegate-report");
+      const sender = within(message).getByTestId("entity-trigger");
+      expect(sender.textContent).toBe("par-3618-a");
+      expect(within(message).getByRole("button", { name: "Open delegate transcript" })).toBeTruthy();
+
+      fireEvent.focus(sender);
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(screen.getByRole("tooltip").textContent).toContain("Delegate");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not render an attributed message when the delegate has no report preview", () => {
+    const { rerender } = render(<ActivityRowDetail row={delegateRow({ name: "par-3618-a" })} now={NOW} />);
+    expect(screen.queryByTestId("delegate-report")).toBeNull();
+
+    rerender(<ActivityRowDetail row={delegateRow({ name: "par-3618-a", reportPreview: "   " })} now={NOW} />);
+    expect(screen.queryByTestId("delegate-report")).toBeNull();
+  });
+
+  test("does not render an attributed message for a malformed report preview", () => {
+    expect(() => render(<ActivityRowDetail row={delegateRow({ reportPreview: 42 })} now={NOW} />)).not.toThrow();
+    expect(screen.queryByTestId("delegate-report")).toBeNull();
   });
 
   // The delegate line names a real entity, so its id renders as the shared
@@ -403,7 +493,14 @@ describe("ActivityRowDetail", () => {
   });
 
   test("a shell job row with output fetches a bounded tail and renders its ANSI escapes as styled runs", async () => {
-    jobOutput.mockResolvedValue({ tail: "[32mok[39m\n[2mPASS[22m\n", totalBytes: 8, retainedStart: 0 });
+    jobOutput.mockResolvedValue({
+      data: "[32mok[39m\n[2mPASS[22m\n",
+      totalBytes: 27,
+      offsetBytes: 0,
+      bytesReturned: 27,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+    });
     render(
       <ActivityRowDetail
         row={jobRow(

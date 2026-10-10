@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,6 +35,80 @@ func TestInstallLockHonorsContext(t *testing.T) {
 	}
 	if elapsed > 30*time.Second {
 		t.Fatalf("lock wait took %v with a 100ms context; acquisition ignores ctx", elapsed)
+	}
+}
+
+// A commit failure whose rollback also fails must report both. The install
+// is one binary since #2314, but a rollback that cannot restore the previous
+// binary still leaves a partial state: the caller must see the rollback
+// failure instead of only the original commit error. The injected commit
+// failure destroys the restore destination (replacing it with a directory)
+// so the rollback rename fails deterministically.
+func TestInstallReportsAFailedRollback(t *testing.T) {
+	oldBody := []byte("old release binary")
+	extractDir, shareBin, binDir := installFixture(t, oldBody)
+	if err := os.Symlink(filepath.Join(shareBin, "evener"), filepath.Join(binDir, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	commitErr := errors.New("injected commit failure")
+	previous := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		if newpath == filepath.Join(shareBin, "evener") {
+			if err := os.Rename(oldpath, newpath); err != nil {
+				return err
+			}
+			// Destroy the destination the rollback restores onto, so its
+			// rename fails and the failure must propagate.
+			if err := os.Remove(newpath); err != nil {
+				return err
+			}
+			if err := os.Mkdir(newpath, 0o755); err != nil {
+				return err
+			}
+			return commitErr
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFile = previous })
+
+	_, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir)
+	if err == nil {
+		t.Fatal("expected the injected commit failure")
+	}
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("returned error %v does not carry the original commit failure", err)
+	}
+	if _, ok := errors.AsType[*os.LinkError](err); !ok {
+		t.Fatalf("rollback failure was swallowed: %v carries no restore error", err)
+	}
+}
+
+// A close failure while writing the restored binary must also be reported:
+// the temporary file may hold incomplete contents, so the rollback must not
+// rename it into place nor report success.
+func TestInstallReportsAFailedRollbackClose(t *testing.T) {
+	oldBody := []byte("old release binary")
+	extractDir, shareBin, binDir := installFixture(t, oldBody)
+	if err := os.Symlink(filepath.Join(shareBin, "evener"), filepath.Join(binDir, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	failDigestAfterCommit(t, shareBin)
+	closeErr := errors.New("injected close failure")
+	previous := closeFile
+	closeFile = func(f *os.File) error {
+		if strings.HasSuffix(f.Name(), ".restore") {
+			return closeErr
+		}
+		return previous(f)
+	}
+	t.Cleanup(func() { closeFile = previous })
+
+	_, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir)
+	if err == nil {
+		t.Fatal("expected a digest error from the removed committed binary")
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("rollback close failure was swallowed: %v carries no close error", err)
 	}
 }
 

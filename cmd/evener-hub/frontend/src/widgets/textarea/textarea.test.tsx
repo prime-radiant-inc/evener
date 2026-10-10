@@ -121,8 +121,8 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
 
 // --- seamless: opt-in only, and only ADDS a class ------------------------
 //
-// The default appearance is what four other consumers already render
-// (panes/settings' launch fields, panes/spawn, chrome/GoalControl), so the
+// The default appearance is what the other consumers already render
+// (panes/settings' launch fields, panes/spawn), so the
 // variant must be additive: same base class, one extra modifier.
 function moduleCss(): string {
   return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "textarea.module.css"), "utf8");

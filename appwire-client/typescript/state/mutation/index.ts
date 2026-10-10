@@ -28,6 +28,7 @@ export type {
 export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export {
+  commandMarkers,
   imagePlaceholder,
   normalizeText,
   ownPendingSend,
@@ -74,7 +75,7 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { createClientIdentity } from "./records";
+export { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
 export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";

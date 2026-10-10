@@ -106,8 +106,8 @@ func TestReadWriteConfigFile(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("mode: %v %v", err, info)
 	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("temp file must be renamed away")
+	if left, _ := filepath.Glob(path + ".tmp-*"); len(left) != 0 {
+		t.Fatalf("temp files survived the rename: %v", left)
 	}
 	back, exists, err := ReadConfigFile(path)
 	if err != nil || !exists || back.Default != "local" || back.Providers["local"].Base != "openai-compatible" {
@@ -214,6 +214,35 @@ func TestWriteConfigFileDanglingSymlinkFallsBackToLinkPath(t *testing.T) {
 	back, exists, err := ReadConfigFile(link)
 	if err != nil || !exists || back.Default != "local" {
 		t.Fatalf("read back: %v %v %+v", err, exists, back)
+	}
+}
+
+// The temp file must be created under a name nothing else holds. A fixed
+// <path>.tmp opened without O_EXCL lets a planted symlink at that name redirect
+// the save into a file of the attacker's choosing (the class #1040 fixed for
+// the target itself). The temp name is exclusive and random, so the planted
+// link is left alone and the config lands on the real path.
+func TestWriteConfigFileDoesNotFollowAPlantedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigFile(path, symlinkWriterLayer()); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	if b, err := os.ReadFile(victim); err != nil || string(b) != "keep me" {
+		t.Fatalf("the planted temp symlink redirected the write: %q %v", b, err)
+	}
+	back, exists, err := ReadConfigFile(path)
+	if err != nil || !exists || back.Default != "local" {
+		t.Fatalf("the config did not land on the path: %v %v %+v", err, exists, back)
 	}
 }
 

@@ -4,6 +4,7 @@
 
 import type {
   AdvancedValues,
+  ComposerMention,
   LaunchConfigLayer,
   PluginSelectionError,
   PluginSelectionState,
@@ -17,7 +18,11 @@ import { readUrlPrefill } from "./urlPrefill";
 
 interface DraftFields {
   prompt: string;
+  skillNames: string[];
+  commandNames: string[];
+  mentions?: ComposerMention[];
   promptRevision: number;
+  selectionRestoreRevision: number;
   harness: string;
   model: string;
   /** The model value the uncredentialed-default fallback installed into `model`
@@ -63,7 +68,10 @@ function createDraft(cwd: string) {
     cwd,
     fields: createStore<DraftFields>(() => ({
       prompt: "",
+      skillNames: [],
+      commandNames: [],
       promptRevision: 0,
+      selectionRestoreRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
       defaultModelFallback: null,
@@ -111,6 +119,35 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
   return draft;
 }
 
+/** The controller's own default working directory: the ?dir= prefill when this
+ * page is on /new, else the sticky global working-dir default (floor §1.9).
+ * This is the directory a fresh LOCAL mount seeds, so a switch back to the
+ * local host re-seeds exactly this - and a remote host never does. */
+export function controllerDefaultDirectory(): string {
+  const prefill = window.location.pathname === "/new" ? readUrlPrefill(window.location.search) : {};
+  const urlDir = prefill.dir?.trim();
+  return urlDir || resolveInitialDefaults({}).workingDir || "";
+}
+
+/** Moves the LIVE draft to a new working directory, keeping its fields (prompt,
+ * model, plugin selection, advanced options) and its attachment pipeline: a
+ * host switch re-seeds the directory from the selected host and must not
+ * discard what the person typed - the same reseed-vs-discard rule the
+ * host-scoped launch panes follow for their own draft (LaunchConfigForm's
+ * owner reseed). Not-current drafts and drafts already at `cwd` are no-ops,
+ * so a superseded or late answer can never move a draft the reader has left. */
+export function reseedSpawnDirectory(draft: SpawnDraft, cwd: string): void {
+  const state = spawnDraftsStore.getState();
+  if (state.current !== draft || draft.cwd === cwd) return;
+  const drafts = new Map(state.drafts);
+  drafts.delete(draft.cwd);
+  // The live draft wins the target key: a draft already sitting there (from a
+  // visit to that directory) is the stale one.
+  const reseeded = { ...draft, cwd };
+  drafts.set(cwd, reseeded);
+  spawnDraftsStore.setState({ drafts, current: reseeded });
+}
+
 export function applySpawnURL(onNavigation = false): void {
   const state = spawnDraftsStore.getState();
   const isNew = window.location.pathname === "/new";
@@ -122,7 +159,10 @@ export function applySpawnURL(onNavigation = false): void {
   const cwd = urlDir || (state.current?.cwd ?? resolveInitialDefaults({}).workingDir ?? "");
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
-    if (prefill.prompt) setDraftField(draft, "prompt", prefill.prompt);
+    if (prefill.prompt) {
+      setDraftField(draft, "prompt", prefill.prompt);
+      draft.fields.setState({ skillNames: [], commandNames: [], mentions: undefined });
+    }
     // The rail's project-copy launch hands its host over as ?host=; Spawn's
     // host picker owns the fallback when that host is unknown or offline.
     if (prefill.host) setDraftField(draft, "source", prefill.host);
@@ -156,7 +196,9 @@ export function setDraftField<K extends keyof DraftFields>(
   if (Object.is(state[key], value)) return;
   draft.fields.setState({
     [key]: value,
-    ...(key === "prompt" ? { promptRevision: state.promptRevision + 1 } : {}),
+    ...(key === "prompt" || key === "skillNames" || key === "commandNames" || key === "mentions"
+      ? { promptRevision: state.promptRevision + 1 }
+      : {}),
   });
 }
 

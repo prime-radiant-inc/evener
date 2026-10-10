@@ -1,20 +1,16 @@
 // A sheet's word on the connection (spec 14): one line, no button. The app
 // reconnects on its own (hubConnection.ts), so nothing here asks you to.
 import { Text } from "react-native";
-import { UPDATE_NEEDED_HINT, useConnectionStatusText } from "../board/connectionStatus";
+import { useConnectionStatusText } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useConnection } from "../ConnectionProvider";
+import { scaledType, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-
-/** The connection's words (spec 14), the same and at the same moments as the
- * Board's toolbar: null while live. */
-export function useConnectionLine(): string | null {
-	const { state, fatal } = useConnection();
-	return useConnectionStatusText(state, fatal);
-}
+import { Spinner } from "./Spinner";
 
 /** The connection's line at the top of a sheet page; nothing while live. */
 export function SheetStatus() {
-	const line = useConnectionLine();
+	const line = useConnectionStatusText();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	if (!line) return null;
@@ -23,8 +19,7 @@ export function SheetStatus() {
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkMid,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
+				...scaledType(uiType.footnote, scale),
 				textAlign: "center",
 				paddingVertical: 6,
 			}}
@@ -34,19 +29,22 @@ export function SheetStatus() {
 	);
 }
 
-/** What a page that has never loaded says while the connection comes up, in
- * place of a wall with a Reconnect button: spec 15's "Connecting to
- * magic-kingdom…", or spec 14's sentence when no retry can help. */
-export function Connecting({ hubName }: { hubName: string }) {
-	const { fatal } = useConnection();
+/** What a page that has never loaded shows until its first read lands: spec
+ * 15's "Connecting to magic-kingdom…" only while the app is connecting,
+ * spec 14's sentence when no retry can help, and otherwise nothing about the
+ * connection (spec 14): the quiet spinner, named by `label`, with the
+ * sheet's status line above saying anything more. */
+export function FirstLoad({ hubName, label }: { hubName: string; label: string }) {
+	const { state, fatal } = useConnection();
 	const { palette } = useColors();
 	const scale = useTextScale();
+	if (!fatal && state !== "connecting" && state !== "reconnecting") return <Spinner label={label} />;
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, textAlign: "center", padding: 32 }}
+			style={{ color: palette.inkMid, ...scaledType(uiType.subheadline, scale), textAlign: "center", padding: 32 }}
 		>
-			{fatal ? UPDATE_NEEDED_HINT : `Connecting to ${hubName}…`}
+			{fatal ? INCOMPATIBLE_VERSIONS : `Connecting to ${hubName}…`}
 		</Text>
 	);
 }

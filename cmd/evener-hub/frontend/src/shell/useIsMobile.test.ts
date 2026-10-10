@@ -1,6 +1,11 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { isMobileViewport, resetMobileViewportForTests, useIsMobile } from "./useIsMobile";
+import {
+  initTranscriptDisplay,
+  resetTranscriptDisplayStoreForTests,
+  transcriptDisplayStore,
+} from "../stores/transcriptDisplay";
+import { isMobileViewport, resetMobileViewportForTests, subscribeMobileViewport, useIsMobile } from "./useIsMobile";
 
 // jsdom does not implement window.matchMedia at all (verified directly:
 // `typeof window.matchMedia === "undefined"` under this project's vitest+
@@ -62,6 +67,7 @@ function installMatchMediaStub(initialMatches: boolean) {
 
 afterEach(() => {
   cleanup();
+  resetTranscriptDisplayStoreForTests();
   resetMobileViewportForTests();
   // @ts-expect-error restores jsdom's own absence of matchMedia between
   // tests, matching the honest baseline this file's own header comment
@@ -119,6 +125,139 @@ test("uses one shared live media query for direct readers and React subscribers"
   act(() => lists.get("(max-width: 899px)")!.emit(true));
   expect(result.current).toBe(true);
   expect(isMobileViewport()).toBe(true);
+});
+
+test.each([
+  { direction: "mobile to desktop", initial: true, next: false, before: "mobile", after: "desktop" },
+  { direction: "desktop to mobile", initial: false, next: true, before: "desktop", after: "mobile" },
+] as const)(
+  "publishes $direction after another hook reads the live value before its event",
+  ({ initial, next, before, after }) => {
+    const { lists, matchMedia } = installMatchMediaStub(initial);
+    initTranscriptDisplay();
+    const primary = renderHook(() => useIsMobile());
+    const secondary = renderHook(() => useIsMobile());
+    const firstDirectListener = vi.fn();
+    const secondDirectListener = vi.fn();
+    const stopFirst = subscribeMobileViewport(firstDirectListener);
+    const stopSecond = subscribeMobileViewport(secondDirectListener);
+    const list = lists.get("(max-width: 899px)")!;
+
+    expect(primary.result.current).toBe(initial);
+    expect(secondary.result.current).toBe(initial);
+    expect(transcriptDisplayStore.getState().viewport).toBe(before);
+    expect(list.listenerCount).toBe(1);
+    expect(matchMedia).toHaveBeenCalledTimes(1);
+
+    // A MediaQueryList is live before its asynchronous change event arrives.
+    // Change only that external live value, then make one existing React
+    // consumer take the intervening snapshot that reproduced the browser race.
+    list.matches = next;
+    secondary.rerender();
+
+    expect(secondary.result.current).toBe(next);
+    expect(primary.result.current).toBe(initial);
+    expect(transcriptDisplayStore.getState().viewport).toBe(before);
+    expect(firstDirectListener).not.toHaveBeenCalled();
+    expect(secondDirectListener).not.toHaveBeenCalled();
+
+    act(() => list.emit(next));
+
+    expect(primary.result.current).toBe(next);
+    expect(secondary.result.current).toBe(next);
+    expect(transcriptDisplayStore.getState().viewport).toBe(after);
+    expect(firstDirectListener).toHaveBeenCalledTimes(1);
+    expect(secondDirectListener).toHaveBeenCalledTimes(1);
+    expect(list.listenerCount).toBe(1);
+    expect(matchMedia).toHaveBeenCalledTimes(1);
+
+    stopFirst();
+    stopSecond();
+    primary.unmount();
+    secondary.unmount();
+    expect(list.listenerCount).toBe(1);
+    resetTranscriptDisplayStoreForTests();
+    expect(list.listenerCount).toBe(0);
+  },
+);
+
+test("ordinary events publish both directions once without duplicate notifications", () => {
+  const { lists, matchMedia } = installMatchMediaStub(false);
+  initTranscriptDisplay();
+  const { result, unmount } = renderHook(() => useIsMobile());
+  const directListener = vi.fn();
+  const stop = subscribeMobileViewport(directListener);
+  const list = lists.get("(max-width: 899px)")!;
+
+  act(() => list.emit(true));
+  expect(result.current).toBe(true);
+  expect(transcriptDisplayStore.getState().viewport).toBe("mobile");
+  expect(directListener).toHaveBeenCalledTimes(1);
+
+  expect(isMobileViewport()).toBe(true);
+  expect(isMobileViewport()).toBe(true);
+  act(() => list.emit(true));
+  expect(directListener).toHaveBeenCalledTimes(1);
+
+  act(() => list.emit(false));
+  expect(result.current).toBe(false);
+  expect(transcriptDisplayStore.getState().viewport).toBe("desktop");
+  expect(directListener).toHaveBeenCalledTimes(2);
+  expect(list.listenerCount).toBe(1);
+  expect(matchMedia).toHaveBeenCalledTimes(1);
+
+  stop();
+  unmount();
+  resetTranscriptDisplayStoreForTests();
+  expect(list.listenerCount).toBe(0);
+});
+
+test("preserves a viewport change across the snapshot-to-subscribe gap", () => {
+  const { lists, matchMedia } = installMatchMediaStub(false);
+  expect(isMobileViewport()).toBe(false);
+  const list = lists.get("(max-width: 899px)")!;
+
+  list.matches = true;
+  const directListener = vi.fn();
+  const stop = subscribeMobileViewport(directListener);
+  expect(isMobileViewport()).toBe(true);
+
+  act(() => list.emit(true));
+  expect(directListener).toHaveBeenCalledTimes(1);
+  expect(list.listenerCount).toBe(1);
+  expect(matchMedia).toHaveBeenCalledTimes(1);
+
+  stop();
+  expect(list.listenerCount).toBe(0);
+});
+
+test("replaces the shared media source without losing existing subscribers", () => {
+  const first = installMatchMediaStub(false);
+  const primary = renderHook(() => useIsMobile());
+  const firstList = first.lists.get("(max-width: 899px)")!;
+  expect(primary.result.current).toBe(false);
+  expect(firstList.listenerCount).toBe(1);
+
+  const replacement = installMatchMediaStub(true);
+  const secondary = renderHook(() => useIsMobile());
+  const replacementList = replacement.lists.get("(max-width: 899px)")!;
+  expect(firstList.listenerCount).toBe(0);
+  expect(replacementList.listenerCount).toBe(1);
+  expect(primary.result.current).toBe(false);
+  expect(secondary.result.current).toBe(true);
+
+  act(() => replacementList.emit(false));
+  expect(primary.result.current).toBe(false);
+  expect(secondary.result.current).toBe(false);
+  act(() => replacementList.emit(true));
+  expect(primary.result.current).toBe(true);
+  expect(secondary.result.current).toBe(true);
+  expect(first.matchMedia).toHaveBeenCalledTimes(1);
+  expect(replacement.matchMedia).toHaveBeenCalledTimes(1);
+
+  primary.unmount();
+  secondary.unmount();
+  expect(replacementList.listenerCount).toBe(0);
 });
 
 test("does not throw and returns false when window.matchMedia is unavailable", () => {

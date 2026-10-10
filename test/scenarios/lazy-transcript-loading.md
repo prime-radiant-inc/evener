@@ -70,10 +70,13 @@ checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub
    ```
 
 3. **Scroll-up paging**: scroll the transcript's own scroll container toward
-   the top. Paging is automatic — `LoadOlderRow` observes a sentinel with a
-   400px prefetch margin (`flow/LoadOlderRow.tsx:48,66-79`), so it fires
+   the top. Paging is automatic — the scroll coordinator every transcript
+   surface runs loads a page while the reader is near the top, so it fires
    *before* the row is fully on screen; there is no button to press and no
-   `scrollTop = 0` to set. Note which message is under the reader's eye
+   `scrollTop = 0` to set. The one page that scroll rule cannot reach is one
+   too short to scroll at all: `LoadOlderRow` fills it from the port's
+   geometry (`flow/scrollMetrics.ts#shouldAutoLoadOlder`) whenever the content
+   does not fill the port. Note which message is under the reader's eye
    first, then re-read after the fetch settles: the lowest
    `user message number NN` still rendered, whether `load-older-row` is
    still present, and whether the noted message is still at the same offset.
@@ -103,9 +106,9 @@ checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub
 - **Failure path** (optional, worth one look if step 3 misbehaves): a failed
   page renders `role="alert"` with the error text plus a
   `[data-testid="load-older-retry"]` button inside the same row, and the
-  automatic observer stops re-firing until Retry is pressed
-  (`LoadOlderRow.tsx:57-62,86-93`). Falsify: a failed page shows nothing, or
-  the observer hammers the failing endpoint in a loop.
+  automatic paging check stops re-firing until Retry is pressed
+  (`flow/LoadOlderRow.tsx#LoadOlderRow`). Falsify: a failed page shows nothing,
+  or the check hammers the failing endpoint in a loop.
 
 Recorded run (2026-07, pre-rewrite, transport half only): full=120,
 window=40/cursor=80, pages 30+30+20 to head. The browser half's recorded
@@ -145,6 +148,9 @@ programs and the `$run` scratch dir. Leave any real hub untouched.
   "Page not found" by design.
 - "Turns" are per-message (user *and* assistant), so a 40-turn window is ~20
   user messages. Count the right granularity when reading step 1's output.
-- Paging fires from an `IntersectionObserver`, which needs a real layout —
-  it does nothing in a headless/zero-size viewport. If step 3 never fires,
-  check the window size before suspecting the loader.
+- Paging is automatic and driven by two triggers, not a scroll-position
+  observer: the near-top rule watches the reader's scroll position, and a
+  page too short to scroll at all is filled from the port's own geometry
+  (`flow/scrollMetrics.ts#shouldAutoLoadOlder`), re-read on every geometry
+  change rather than on a native scroll. If step 3 never fires, check the
+  window size before suspecting the loader.

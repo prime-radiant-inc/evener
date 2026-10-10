@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -104,23 +105,25 @@ async function boundary() {
 		originalInput: "original input",
 	};
 	const io = { fork: async () => result };
-	const service = createConversationService({
-		request: async (method, params) => {
-			if (method === "thread/read") return { thread: parent };
-			if (method === "thread/fork") {
-				requests++;
-				expect(params).toEqual({
-					ref: "local:parent",
-					sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:6:0",
-					deferInput: true,
-				});
-				expect(journal.load()).toMatchObject({ target });
-				return io.fork();
-			}
-			throw Error(`Unexpected ${method}`);
-		},
-		onNotification: () => () => {},
-	} as ConversationClientLike);
+	const service = createConversationService(
+		Object.assign(new FakeClient("ready"), {
+			request: async (method, params) => {
+				if (method === "thread/read") return { thread: parent };
+				if (method === "thread/fork") {
+					requests++;
+					expect(params).toEqual({
+						ref: "local:parent",
+						sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:6:0",
+						deferInput: true,
+					});
+					expect(journal.load()).toMatchObject({ target });
+					return io.fork();
+				}
+				throw Error(`Unexpected ${method}`);
+			},
+			onNotification: () => () => {},
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+	);
 	await service.open("local:parent");
 	const actions = () =>
 		new ForkActions(

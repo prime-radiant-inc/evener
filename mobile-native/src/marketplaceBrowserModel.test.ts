@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { ErrorMarketplaceRemoveApplied, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createMarketplacesStore } from "@evener/appwire-client/state/extensions";
+import { createHubWriteGate, createMarketplacesStore } from "@evener/appwire-client/state/extensions";
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 import {
@@ -91,7 +91,7 @@ test("a stale list that still carries the removed name refreshes; a reconciled o
 
 test("an applied removal whose authoritative list the store already published needs no refetch", async () => {
 	const fake = new FakeClient("ready");
-	const store = createMarketplacesStore(fake);
+	const store = createMarketplacesStore(fake, createHubWriteGate());
 	fake.on("evener/marketplace/list", () => ({ marketplaces: [entry("acme")] }));
 	await store.getState().fetchMarketplaces();
 	const error = new WireError("clone could not be removed", -32603, {

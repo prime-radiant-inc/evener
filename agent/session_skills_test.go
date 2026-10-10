@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -506,6 +507,48 @@ func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
 	}
 }
 
+// TestNoUserSkillsEnvHidesUserAndPluginSkills pins the hermetic switch the
+// tool-fluency harness sets: EVENER_NO_USER_SKILLS=1 drops the operator's home
+// skills (~/.agents/skills), their user config skills, and installed plugins'
+// skills, while bundled and project skills remain. Without it an eval round's
+// catalog would depend on who runs it (#3227).
+func TestNoUserSkillsEnvHidesUserAndPluginSkills(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	project := t.TempDir()
+	markGitRoot(t, project)
+
+	writeSkillMD(t, filepath.Join(os.Getenv("HOME"), ".agents"), "home-skill", "---\nname: home-skill\ndescription: home\n---\nHOME_BODY\n")
+	writeSkillMD(t, filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener"), "user-skill", "---\nname: user-skill\ndescription: user\n---\nUSER_BODY\n")
+	writeSkillMD(t, project, "project-skill", "---\nname: project-skill\ndescription: project\n---\nPROJECT_BODY\n")
+
+	pluginDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatalf("MkdirAll plugin manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), []byte(`{"name":"probe"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile plugin manifest: %v", err)
+	}
+	writeSkillMD(t, pluginDir, "plugin-skill", "---\nname: plugin-skill\ndescription: plugin\n---\nPLUGIN_BODY\n")
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{PluginDirs: []string{pluginDir}, testOnly: testConfig{skipGitSnapshot: true}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	for _, hidden := range []string{"home-skill", "user-skill", "probe:plugin-skill"} {
+		if _, ok := sess.skills.Entries[hidden]; ok {
+			t.Errorf("skill %q was discovered despite %s=1", hidden, envvars.EVENERNoUserSkills.Name)
+		}
+	}
+	if _, ok := sess.skills.Entries["project-skill"]; !ok {
+		t.Error("project skill must remain discoverable")
+	}
+}
+
 func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -683,6 +726,44 @@ func TestSkillCatalogInspectionCopiesFullMetadata(t *testing.T) {
 	for _, d := range sess.skills.Diagnostics {
 		if d.Source == "MUTATED_1" {
 			t.Fatal("inspection aliased live diagnostics")
+		}
+	}
+}
+
+func TestInitPlugins_SkillCompatibilityWarningsAreInformational(t *testing.T) {
+	t.Parallel()
+	pluginDir := makePluginDir(t, "compatibility-plugin")
+	writeSkillMD(t, pluginDir, "advisory", "---\nname: advisory\ndescription: fixture\nallowed-tools: [read_file]\ncontext: fork\n---\nBODY\n")
+	writeSkillMD(t, pluginDir, "invalid", "---\nname: invalid\ndescription: fixture\nuser-invocable: \"true\"\n---\nBODY\n")
+	// A skill written from scratch without its opening delimiter is read
+	// tolerantly; the recovery is advisory, not an error the user must act on.
+	writeSkillMD(t, pluginDir, "recovered", "name: recovered\ndescription: fixture\n---\nBODY\n")
+
+	warnings := sessionWarnings(t, pluginDir)
+	wantWarnings := map[string]struct {
+		skillName string
+		code      string
+	}{
+		"allowed_tools_not_enforced":    {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"unsupported_control":           {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"missing_frontmatter_delimiter": {skillName: "recovered", code: events.WarningCodePluginCompatibility},
+		"invalid_control":               {skillName: "invalid"},
+	}
+	seen := make(map[string]bool, len(wantWarnings))
+	for _, warning := range warnings {
+		for category, want := range wantWarnings {
+			if !strings.Contains(warning.Message, "skill compatibility-plugin:"+want.skillName+" ["+category+"]") {
+				continue
+			}
+			seen[category] = true
+			if warning.Code != want.code {
+				t.Errorf("%s warning code = %q, want %q", category, warning.Code, want.code)
+			}
+		}
+	}
+	for category := range wantWarnings {
+		if !seen[category] {
+			t.Errorf("missing %s warning in %+v", category, warnings)
 		}
 	}
 }

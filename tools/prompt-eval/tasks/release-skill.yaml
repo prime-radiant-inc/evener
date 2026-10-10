@@ -1,0 +1,94 @@
+schema: 1
+id: prose.release-skill
+tool: prompt-eval
+prompt: |
+  Cut release 2.4.0.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/widget
+
+      go 1.22
+    widget.go: |
+      package widget
+
+      // Widget is a thing.
+      type Widget struct{}
+    VERSION: |
+      2.3.1
+    CHANGELOG.md: |
+      # Changelog
+
+      ## [Unreleased]
+
+      ### Added
+      - Added a Widget type.
+
+      ### Fixed
+      - Fixed the zero-value Widget panicking.
+    skills/releasing/SKILL.md: |
+      ---
+      name: releasing
+      description: Use when cutting a release or bumping the version
+      ---
+
+      # Releasing
+
+      To cut a release to version X.Y.Z, in this exact order:
+
+      1. Set the contents of `VERSION` to `X.Y.Z` (just the version, no `v`
+         prefix, trailing newline).
+      2. In `CHANGELOG.md`, rename the `## [Unreleased]` heading to
+         `## [X.Y.Z] - YYYY-MM-DD`, using today's date, and add a fresh, empty
+         `## [Unreleased]` heading above it so the next release has somewhere
+         to collect entries.
+      3. Commit the changes with the commit message `Release X.Y.Z` exactly
+         (no prefix, no body).
+      4. Create an ANNOTATED tag named `vX.Y.Z` (with the `v` prefix) whose tag
+         message is `Release X.Y.Z` exactly. A lightweight tag is not
+         acceptable.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: VERSION bumped, with its trailing newline
+      run: printf '2.4.0\n' | cmp -s - VERSION
+    - name: CHANGELOG has a dated 2.4.0 section
+      run: grep -q '^## \[2.4.0\] - ' CHANGELOG.md
+    - name: fresh Unreleased section precedes it
+      run: |
+        set -e
+        u=$(grep -n '^## \[Unreleased\]' CHANGELOG.md | head -1 | cut -d: -f1)
+        r=$(grep -n '^## \[2.4.0\] - ' CHANGELOG.md | head -1 | cut -d: -f1)
+        test -n "$u"
+        test -n "$r"
+        test "$u" -lt "$r"
+    - name: tag is annotated
+      run: test "$(git cat-file -t v2.4.0)" = "tag"
+    - name: the old Unreleased entries moved into 2.4.0
+      run: |
+        set -e
+        released=$(awk '/^## \[2\.4\.0\] - /{r=1; next} /^## /{r=0} r' CHANGELOG.md)
+        printf '%s\n' "$released" | grep -qx -- '- Added a Widget type.'
+        printf '%s\n' "$released" | grep -qx -- '- Fixed the zero-value Widget panicking.'
+    - name: the fresh Unreleased section is empty
+      run: "! awk '/^## \\[Unreleased\\]/{u=1; next} /^## /{u=0} u' CHANGELOG.md | grep -q '[^[:space:]]'"
+    - name: tag message is exact, with no body
+      run: test "$(git tag -l --format='%(contents)' v2.4.0)" = "Release 2.4.0"
+    - name: commit message is exact, with no body
+      run: test "$(git log -1 --format=%B)" = "Release 2.4.0"
+    - name: tag points at the release commit
+      run: test "$(git rev-list -n1 v2.4.0)" = "$(git rev-parse HEAD)"
+    - name: the release is committed
+      run: test -z "$(git status --porcelain)"
+reference: |
+  printf '2.4.0\n' > VERSION
+  today=$(date +%F)
+  awk -v today="$today" '
+    /^## \[Unreleased\]/ { print "## [Unreleased]"; print ""; print "## [2.4.0] - " today; next }
+    { print }
+  ' CHANGELOG.md > CHANGELOG.md.new
+  mv CHANGELOG.md.new CHANGELOG.md
+  git add -A
+  git commit -q -m "Release 2.4.0"
+  git tag -a v2.4.0 -m "Release 2.4.0"

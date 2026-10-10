@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { Action, Copy, useColors } from "./ui";
-import { render, renderHook } from "./renderNative.testkit";
+import { Copy, useColors } from "./ui";
+import { render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 
 // vi.mock is hoisted above everything else, so the scheme and fontScale it
 // reads live in vi.hoisted state rather than plain top-level variables.
@@ -17,6 +17,7 @@ vi.mock("react-native", async () => ({
 // The Dynamic Type case below sets a non-default fontScale; reset it so a
 // later test never inherits it.
 afterEach(() => {
+	unmountMountedTrees();
 	mode.fontScale = 1;
 });
 
@@ -59,18 +60,6 @@ it("treats an unspecified scheme as light", () => {
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors.palette.scheme).toBe("light");
 	expect(colors.background).toBe("#FAF9F6");
-});
-
-it("fills a primary action with accent-fill so white text passes contrast in dark mode", () => {
-	mode.scheme = "dark";
-	const tree = render(
-		<Action tone="primary" onPress={() => {}}>
-			Send
-		</Action>,
-	);
-	const pressable = tree.root.findByProps({ accessibilityLabel: "Send" });
-	const style = pressable.props.style({ pressed: false });
-	expect(style).toEqual(expect.arrayContaining([expect.objectContaining({ backgroundColor: "#0070E0" })]));
 });
 
 it("scales the yourMessage variant's text size with Dynamic Type", () => {

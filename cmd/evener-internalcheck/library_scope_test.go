@@ -46,6 +46,7 @@ var allExecsupportPackages = []string{
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest",
 	"primeradiant.com/evener/execsupport/procgroup",
 	"primeradiant.com/evener/execsupport/shellquote",
+	"primeradiant.com/evener/execsupport/syncio",
 	"primeradiant.com/evener/execsupport/valueexpr",
 }
 
@@ -56,6 +57,7 @@ var execsupportPackagesByGOOS = map[string][]string{
 		"primeradiant.com/evener/execsupport/orphanpipe",
 		"primeradiant.com/evener/execsupport/procgroup",
 		"primeradiant.com/evener/execsupport/shellquote",
+		"primeradiant.com/evener/execsupport/syncio",
 		"primeradiant.com/evener/execsupport/valueexpr",
 	},
 }

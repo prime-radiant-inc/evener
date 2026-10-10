@@ -7,10 +7,17 @@ import type {
 	ActivityTree,
 } from "@evener/appwire-client";
 import {
-	countLabel,
+	subagentOutcome,
+	summaryTally,
+	endedInStop,
+	flattenActivity,
+	flattenJobs,
 	flattenSubagents,
 	matchesSearch,
 	sameModel,
+	shellJobLabel,
+	shellJobMeta,
+	shellJobOwner,
 	type SubagentRow,
 	subagentLastLine,
 	subagentSections,
@@ -18,9 +25,10 @@ import {
 	subagentStateWord,
 	subagentTitle,
 	subagentWhy,
+	runningSubagentCount,
 	stripSegments,
 	subtreeStopped,
-	tallySubagents,
+	subtreeStops,
 	timeInState,
 } from "./subagentModel";
 
@@ -96,6 +104,9 @@ describe("a subagent's state is its own (spec 9)", () => {
 		["stopped", done("e", { outcome: "stopped" }), "done"],
 		["cancelled", done("f", { outcome: "cancelled" }), "done"],
 		["resumed after a failure", running("g", { outcome: "failed" }), "running"],
+		// The daemon sets an outcome with every terminal run; a record that
+		// somehow carries only a failed status still reads as failed.
+		["failed, by its status alone", delegate("h", { terminal: true, status: "failed" }), "failed"],
 	] as const)("%s", (_name, subject, expected) => {
 		expect(subagentState(subject)).toBe(expected);
 	});
@@ -116,8 +127,25 @@ describe("a subagent's state is its own (spec 9)", () => {
 		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "success" })] }))).toBe("done");
 	});
 
+	it("counts the running subagents among any it is given", () => {
+		const turnContainer = delegate("t", { type: "turns", turns: [job(false)] });
+		expect(
+			runningSubagentCount([running("a"), turnContainer, failed("b"), done("c"), done("s", { outcome: "stopped" })]),
+		).toBe(2);
+		expect(runningSubagentCount([])).toBe(0);
+	});
+
 	it("says the state in the spec's words", () => {
 		expect((["running", "failed", "done"] as const).map(subagentStateWord)).toEqual(["Running", "Failed", "Done"]);
+	});
+
+	it("knows a subagent a stop ended, by its outcome or else its status", () => {
+		expect(endedInStop(done("s", { outcome: "stopped" }))).toBe(true);
+		expect(endedInStop(done("c", { outcome: "cancelled" }))).toBe(true);
+		expect(endedInStop(delegate("u", { terminal: true, status: "cancelled" }))).toBe(true);
+		expect(endedInStop(done("d"))).toBe(false);
+		expect(endedInStop(failed("f"))).toBe(false);
+		expect(endedInStop(running("r", { outcome: "stopped" }))).toBe(false);
 	});
 
 	it("knows a stopped subagent, or one whose subtree was stopped", () => {
@@ -126,6 +154,15 @@ describe("a subagent's state is its own (spec 9)", () => {
 		const failedParent = failed("p", { child: session("local:p", [entry(done("c", { outcome: "cancelled" }))]) });
 		expect(subtreeStopped(failedParent)).toBe(true);
 		expect(subtreeStopped(failed("p"))).toBe(false);
+	});
+
+	it("counts a subagent's own stop by the same rule its row reads", () => {
+		const statusOnly = delegate("u", { terminal: true, status: "cancelled" });
+		expect(rowOf(statusOnly).stopped).toBe(true);
+		expect(subtreeStops(statusOnly)).toBe(1);
+		expect(subtreeStops(done("s", { outcome: "stopped" }))).toBe(1);
+		expect(subtreeStops(running("r", { outcome: "stopped" }))).toBe(0);
+		expect(subtreeStops(done("d"))).toBe(0);
 	});
 });
 
@@ -144,8 +181,16 @@ describe("one flat list", () => {
 		expect(rows[0]?.ref).toBe("local:Fix race in tree settle");
 	});
 
+	it("uses the durable name without changing a delegate's transcript target", () => {
+		const named = delegate("worker", { name: "  Navigation observer  ", description: "Inspect every navigation path" });
+		const row = rowOf(named);
+		expect(row.title).toBe("Navigation observer");
+		expect(row.ref).toBe("local:worker");
+		expect(subagentTitle({ ...named, name: " " })).toBe("Inspect every navigation path");
+	});
+
 	it("titles a row with the short description, else the brief's first line, else the session", () => {
-		expect(subagentTitle(delegate("x", { description: "  ", mandate: "Fix the settle race.\nThen report." }))).toBe(
+		expect(subagentTitle(delegate("x", { description: "  ", task: "Fix the settle race.\nThen report." }))).toBe(
 			"Fix the settle race.",
 		);
 		expect(
@@ -176,33 +221,36 @@ describe("one flat list", () => {
 	});
 });
 
-describe("tallies and counts (S3's fallback)", () => {
-	it("counts the loaded subagents by state, and says when some couldn't be listed", () => {
-		const rows = flattenSubagents(tree(running("a"), running("b"), failed("c"), done("d")));
-		expect(tallySubagents(rows)).toEqual({ total: 4, running: 2, failed: 1, done: 1 });
-		expect(countLabel(55, false)).toBe("55");
-		expect(countLabel(55, true)).toBe("55+");
+describe("authoritative summary tallies", () => {
+	it("adds known resource counts while keeping any unknown resource unknown", () => {
+		const counts = { known: true, total: 501, active: 400, failed: 20, completed: 81 };
+		expect(summaryTally(counts, { known: true, total: 2, active: 1, failed: 1, completed: 0 })).toEqual({
+			total: 503,
+			running: 401,
+			failed: 21,
+			done: 81,
+		});
+		expect(summaryTally(counts, { ...counts, known: false })).toBeNull();
+		expect(summaryTally(undefined)).toBeNull();
 	});
 });
 
 describe("the strip", () => {
-	it("sizes segments by count in the list's order, with failures never thinner than 3pt", () => {
+	it("combines all terminal outcomes into quiet history and preserves the running minimum", () => {
 		const segments = stripSegments({ failed: 2, running: 32, done: 21 }, 361);
-		expect(segments.map((segment) => segment.state)).toEqual(["failed", "running", "done"]);
-		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 2).toBeCloseTo(361);
-		expect(segments[0]?.width).toBeCloseTo(13.0545, 3);
-		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([
-			{ state: "failed", width: 3 },
-			{ state: "done", width: 296 },
-		]);
+		expect(segments.map((segment) => segment.state)).toEqual(["running", "done"]);
+		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 1).toBeCloseTo(361);
+		expect(segments[0]?.width).toBeCloseTo((360 * 32) / 55);
+		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 1, done: 999 }, 200)).toEqual([
 			{ state: "running", width: 1 },
 			{ state: "done", width: 198 },
 		]);
 	});
 
-	it("draws no strip once nothing is running or failed", () => {
+	it("draws no strip once nothing is running", () => {
 		expect(stripSegments({ failed: 0, running: 0, done: 5 }, 200)).toEqual([]);
+		expect(stripSegments({ failed: 5, running: 0, done: 0 }, 200)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 0, done: 0 }, 200)).toEqual([]);
 	});
 });
@@ -216,12 +264,38 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		expect(subagentWhy(rowOf(failed("f")), NOW)).toEqual({ word: "Failed", text: "" });
 	});
 
+	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
+	it("names a failure by its cause, else its reason code in words", () => {
+		expect(subagentWhy(rowOf(failed("f", { reason: "failed", error: "provider returned 500" })), NOW)).toEqual({
+			word: "Failed",
+			text: "provider returned 500",
+		});
+		expect(subagentWhy(rowOf(failed("f", { reason: "runtime_lost" })), NOW)).toEqual({
+			word: "Failed",
+			text: "runtime lost",
+		});
+	});
+
 	it("opens a finished report, and says Stopped or Finished when there's nothing to quote", () => {
-		expect(subagentWhy(rowOf(done("d", { message: "## Report\n**Tests pass** on both platforms." })), NOW)).toEqual({
+		expect(
+			subagentWhy(rowOf(done("d", { reportPreview: "## Report\n**Tests pass** on both platforms." })), NOW),
+		).toEqual({
 			text: "Tests pass on both platforms.",
 		});
-		expect(subagentWhy(rowOf(done("d", { message: { ok: true } })), NOW)).toEqual({ text: "Finished" });
+		expect(subagentWhy(rowOf(done("d", { reportPreview: undefined })), NOW)).toEqual({ text: "Finished" });
 		expect(subagentWhy(rowOf(done("s", { outcome: "stopped" })), NOW)).toEqual({ text: "Stopped" });
+	});
+
+	// What a subagent's transcript row and the tray count too: its own
+	// subagents that are themselves running. A finished subagent is not
+	// waited on, even while its own subagent or command still runs.
+	it("waits only on its own subagents that are still running", () => {
+		const finishedWithRunningChild = done("c", { child: session("local:c", [entry(running("g"))]) });
+		const finishedWithLiveJob = done("j", { child: session("local:j", [{ kind: "shell", job: job(false) }]) });
+		const parent = (...children: ActivityDelegate[]) =>
+			running("p", { latestActivityAt: ago(10_000), child: session("local:p", children.map(entry)) });
+		expect(subagentWhy(rowOf(parent(finishedWithRunningChild, finishedWithLiveJob)), NOW).text).toBe("Working");
+		expect(subagentWhy(rowOf(parent(finishedWithRunningChild, running("r"))), NOW).text).toBe("Waiting on 1 subagent");
 	});
 
 	it("says what a running subagent is doing with what the tree carries", () => {
@@ -233,8 +307,37 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 			child: session("local:w", [entry(running("a")), entry(running("b")), entry(done("c"))]),
 		});
 		expect(subagentWhy(rowOf(waiting), NOW)).toEqual({ text: "Waiting on 2 subagents" });
-		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({ text: "Quiet 4m" });
-		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(1 * MIN) })), NOW)).toEqual({ text: "Working" });
+		const waitingOnOne = running("o", { child: session("local:o", [entry(running("a")), entry(done("c"))]) });
+		expect(subagentWhy(rowOf(waitingOnOne), NOW)).toEqual({ text: "Waiting on 1 subagent" });
+		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({
+			text: "Quiet 4m",
+			quietForMs: 4 * MIN,
+		});
+		// The tray's and a subagent row's threshold: 20 seconds without an update.
+		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({
+			text: "Quiet 30s",
+			quietForMs: 30_000,
+		});
+		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({
+			text: "Working",
+			quietForMs: 10_000,
+		});
+	});
+
+	// The silence the list times to turn a row Quiet (useNowPastQuiet): only
+	// a line that would say Quiet, and only while the silence grows with the
+	// clock, or the list would wake again and again for nothing.
+	it("times the silence only of a line that would say Quiet", () => {
+		const commanding = running("r", {
+			latestActivityAt: ago(10_000),
+			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
+		});
+		const waiting = running("w", { latestActivityAt: ago(10_000), child: session("local:w", [entry(running("a"))]) });
+		// Only a snapshot of its silence, with no time it can grow from.
+		const snapshotOnly = delegate("p", { quietForMs: 10_000 });
+		for (const subject of [commanding, waiting, snapshotOnly, done("d"), failed("f")]) {
+			expect(subagentWhy(rowOf(subject), NOW).quietForMs).toBeUndefined();
+		}
 	});
 });
 
@@ -254,13 +357,13 @@ describe("the last line", () => {
 		const rows = flattenSubagents(
 			tree(
 				failed("Fix race in tree settle", {
-					resolvedModel: "glm-5.3-vision",
+					model: "glm-5.3-vision",
 					worktree: { path: "/w/fix", branch: "fix-settle-race", headSha: "abc", ahead: 2, dirty: false },
 					usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
 					child: session("local:settle", [
 						entry(
 							running("Check drain ordering in tests", {
-								resolvedModel: "deepseek-4.1-flash",
+								model: "deepseek-4.1-flash",
 								usage: { inputTokens: 200_000, outputTokens: 10_000 },
 							}),
 						),
@@ -275,13 +378,22 @@ describe("the last line", () => {
 		expect(subagentLastLine(rows[1] as SubagentRow, coordinatorModel, name)).toEqual({
 			parent: "Fix race in tree settle",
 			model: "DeepSeek 4.1 Flash",
-			tokens: "210K tokens",
 		});
+	});
+
+	// The hub fills a subagent's usage from its finished runs only, so while it
+	// runs the count would be an earlier run's, or nothing. A running row shows
+	// no tokens; a finished or failed one shows its run's.
+	it("shows a finished or failed run's tokens, and none while a subagent runs", () => {
+		const usage = { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 };
+		expect(subagentLastLine(rowOf(running("r", { usage })), coordinatorModel, name)).toBeNull();
+		expect(subagentLastLine(rowOf(done("d", { usage })), coordinatorModel, name)).toEqual({ tokens: "210K tokens" });
+		expect(subagentLastLine(rowOf(failed("f", { usage })), coordinatorModel, name)).toEqual({ tokens: "210K tokens" });
 	});
 
 	it("has no last line when nothing applies, and hides the model while the coordinator's is unknown", () => {
 		expect(subagentLastLine(rowOf(running("r")), coordinatorModel, name)).toBeNull();
-		expect(subagentLastLine(rowOf(running("r", { resolvedModel: "deepseek-4.1-flash" })), null, name)).toBeNull();
+		expect(subagentLastLine(rowOf(running("r", { model: "deepseek-4.1-flash" })), null, name)).toBeNull();
 	});
 
 	it("knows one model under two spellings", () => {
@@ -296,4 +408,211 @@ it("filters by title, ignoring case and surrounding space", () => {
 	expect(matchesSearch(row, "  DRAIN ")).toBe(true);
 	expect(matchesSearch(row, "settle")).toBe(false);
 	expect(matchesSearch(row, "")).toBe(true);
+});
+
+// Shell jobs join the Activity list (Jesse's ruling on shell jobs): each is a
+// row with its state, its description, and the session or subagent that
+// started it, in the same flat list by state as the subagents.
+describe("shell jobs in the Activity list", () => {
+	const COORDINATOR = "Get PR 2138 Test Clean";
+	const shell = (j: ActivityJob): ActivityEntry => ({ kind: "shell", job: j });
+	const activityTree = (): ActivityTree => ({
+		revision: 1,
+		root: session("local:coord", [
+			shell(
+				job(false, {
+					jobId: "j-root",
+					ownerRef: "local:coord",
+					ownerSessionId: "coord",
+					description: "Serving the docs",
+					command: "npm run docs",
+				}),
+			),
+			entry(
+				done("Fix race in tree settle", {
+					child: session("local:fix", [
+						shell(
+							job(true, {
+								jobId: "j-child",
+								description: "",
+								command: "go test ./agent/...\n# second line",
+								status: "command_exited_nonzero",
+								outcome: "failure",
+								exitCode: 1,
+								endedAt: ago(MIN),
+							}),
+						),
+					]),
+				}),
+			),
+		]),
+	});
+
+	it("lists every shell job with its state, its title and who started it", () => {
+		const jobs = flattenJobs(activityTree(), COORDINATOR);
+		const subagents = flattenSubagents(activityTree());
+		expect(subagents.map((row) => row.title)).toEqual(["Fix race in tree settle"]);
+		expect(jobs.map((row) => [row.id, row.state, row.title, row.owner])).toEqual([
+			["j-root", "running", "Serving the docs", COORDINATOR],
+			["j-child", "failed", "go test ./agent/...", "Fix race in tree settle"],
+		]);
+	});
+
+	// One list in the tree's own walk order, jobs interleaved with the
+	// subagents that ran them, so the screen needs no join (issue #3446).
+	it("returns one list in walk order, jobs among the subagents", () => {
+		expect(flattenActivity(activityTree(), COORDINATOR).map((row) => row.id)).toEqual([
+			"j-root",
+			"Fix race in tree settle",
+			"j-child",
+		]);
+	});
+
+	// A job id and a delegate id are different namespaces: one can't hide
+	// the other (activityListKey keys them apart the same way).
+	it("keeps a job and a subagent that share an id", () => {
+		const tree: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [shell(job(false, { jobId: "same" })), entry(done("same"))]),
+		};
+		const jobs = flattenJobs(tree, COORDINATOR);
+		const subagents = flattenSubagents(tree);
+		expect(jobs.map((row) => row.id)).toEqual(["same"]);
+		expect(subagents.map((row) => row.id)).toEqual(["same"]);
+	});
+
+	it("sorts jobs among subagents by state, and finds them by title, command or owner", () => {
+		const all = flattenActivity(activityTree(), COORDINATOR);
+		const sections = subagentSections(all);
+		expect(sections.failed.map((row) => row.id)).toEqual(["j-child"]);
+		expect(sections.running.map((row) => row.id)).toEqual(["j-root"]);
+		expect(sections.done.map((row) => row.id)).toEqual(["Fix race in tree settle"]);
+		expect(all.filter((row) => matchesSearch(row, "npm run")).map((row) => row.id)).toEqual(["j-root"]);
+		expect(all.filter((row) => matchesSearch(row, "tree settle")).map((row) => row.id)).toEqual([
+			"Fix race in tree settle",
+			"j-child",
+		]);
+	});
+
+	it("says a running job's status and quiet age, and a finished one's duration, in words", () => {
+		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
+		if (!running || !finished) throw new Error("no jobs");
+		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
+		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
+	});
+
+	// VoiceOver hears every ending, the clean one the meta leaves out included,
+	// and its durations in words, as a subagent row's.
+	it("reads a job to VoiceOver with how it ended, even a clean finish", () => {
+		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
+		if (!running || !finished) throw new Error("no jobs");
+		expect(shellJobLabel(running, NOW)).toBe(
+			"Shell job, Serving the docs, running, 2 minutes, under Get PR 2138 Test Clean",
+		);
+		expect(shellJobLabel(finished, NOW)).toBe(
+			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
+		);
+		const clean = {
+			...finished,
+			state: "done" as const,
+			job: { ...finished.job, status: "completed", outcome: "success" },
+		};
+		expect(shellJobLabel(clean, NOW)).toBe(
+			"Shell job, go test ./agent/..., completed, 1 minute, under Fix race in tree settle",
+		);
+		const untimed = { ...clean, job: { ...clean.job, endedAt: undefined } };
+		expect(shellJobMeta(untimed, NOW)).toBe("completed");
+		expect(shellJobLabel(untimed, NOW)).toBe(
+			"Shell job, go test ./agent/..., completed, under Fix race in tree settle",
+		);
+	});
+
+	// The shared projection sets a job at the top of the tree when its
+	// subagent's row isn't loaded yet (it's on a later page). Its owner can't be
+	// named until that row loads, so it says so rather than naming the
+	// coordinator.
+	it("says a job's subagent isn't listed while that subagent's row isn't loaded", () => {
+		const hoisted = job(false, { jobId: "j-later", ownerRef: "local:later", description: "Serving the docs" });
+		const [row] = flattenJobs({ revision: 1, root: session("local:coord", [shell(hoisted)]) }, COORDINATOR);
+		if (!row) throw new Error("no job");
+		expect(row.owner).toBeUndefined();
+		expect(shellJobOwner(row)).toBe("under a subagent that isn't listed");
+		expect(shellJobLabel(row, NOW)).toBe(
+			"Shell job, Serving the docs, running, 2 minutes, under a subagent that isn't listed",
+		);
+		expect(matchesSearch(row, "docs")).toBe(true);
+		expect(matchesSearch(row, COORDINATOR)).toBe(false);
+	});
+
+	// The status words are the shared package's (jobStatusDisplay): the phone
+	// once capitalized "stopped"/"cancelled" and said "Done"/"Failed", drifting
+	// from the web's rows. One vocabulary now.
+	it("words an ended job's status the way the web's rows do", () => {
+		const stopped = job(true, { status: "stopped", reason: "runtime_lost", endedAt: ago(MIN) });
+		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(stopped)]) }, COORDINATOR);
+		const [row] = jobs;
+		if (!row) throw new Error("no job");
+		expect(row.state).toBe("done");
+		expect(shellJobMeta(row, NOW)).toBe("stopped · 1m");
+		expect(shellJobLabel(row, NOW)).toContain(", stopped, ");
+	});
+
+	// A completed status over a failure outcome is a failure (jobIsFailed), not a
+	// clean finish: its status stays on the row instead of being left to the hue.
+	it("leaves a job that ended badly, even under a completed status, un-clean", () => {
+		const bad = job(true, { status: "completed", outcome: "failure", endedAt: ago(MIN) });
+		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(bad)]) }, COORDINATOR);
+		const [row] = jobs;
+		if (!row) throw new Error("no job");
+		expect(row.state).toBe("failed");
+		expect(shellJobMeta(row, NOW)).toBe("completed · 1m");
+	});
+});
+
+describe("qualified activity evidence", () => {
+	it("keeps colliding logical IDs under distinct owners and resolves outcomes by transcript owner", () => {
+		const left = done("same", {
+			childRef: "local:child-a",
+			ownerRef: "local:parent-a",
+			reportPreview: "left",
+			runGeneration: 1,
+		});
+		const right = done("same", {
+			childRef: "local:child-b",
+			ownerRef: "local:parent-b",
+			reportPreview: "right",
+			runGeneration: 1,
+		});
+		const t: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [
+				entry(
+					running("parent-a", {
+						child: session("local:parent-a", [
+							entry(left),
+							{ kind: "shell", job: job(false, { jobId: "same", ownerRef: "local:parent-a" }) },
+						]),
+					}),
+				),
+				entry(
+					running("parent-b", {
+						child: session("local:parent-b", [
+							entry(right),
+							{ kind: "shell", job: job(false, { jobId: "same", ownerRef: "local:parent-b" }) },
+						]),
+					}),
+				),
+			]),
+		};
+		expect(flattenActivity(t, "Coordinator")).toHaveLength(6);
+		expect(subagentOutcome(t, "same", NOW, "local:parent-a", 1)).toBe("left");
+		expect(subagentOutcome(t, "same", NOW, "local:parent-b", 1)).toBe("right");
+		expect(subagentOutcome(t, "same", NOW, "local:unrelated", 1)).toBeUndefined();
+	});
+	it("does not invent a total when only an input usage counter is present", () => {
+		expect(subagentLastLine(rowOf(done("one", { usage: { inputTokens: 1200 } })), null, (x) => x)?.tokens).toBe(
+			"1.2K input tokens",
+		);
+		expect(subagentLastLine(rowOf(done("none", { usage: {} })), null, (x) => x)?.tokens).toBeUndefined();
+	});
 });

@@ -32,10 +32,13 @@ import (
 // per-handler code (app_plugin_autoupgrade.go) broadcasts evener/plugin/updated
 // only when a plugin actually upgraded (none is installed here), and never
 // broadcasts evener/marketplace/updated at all — yet the tick refreshes every
-// marketplace, and RefreshMarketplace always writes known_marketplaces.json's
-// LastUpdated, refreshed or not. Before this hook that write went out with no
-// broadcast at all; this proves it now reaches clients exactly once, as the
-// real evener/marketplace/updated notification.
+// marketplace, and a refresh of a directory marketplace (the one registered
+// here) always counts as a change, having nothing to compare. Before this hook
+// that write went out with no broadcast at all; this proves it now reaches
+// clients exactly once, as the real evener/marketplace/updated notification.
+// (A git marketplace's refresh that pulls nothing reports no change and
+// broadcasts nothing: internal/plugins
+// TestRefreshMarketplace_ANoOpRefreshReportsNoChange.)
 func TestRegisterPluginAutoUpgradeHandlers_CheckNowBroadcastsARefreshWithNoUpgrade(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	dir := t.TempDir()

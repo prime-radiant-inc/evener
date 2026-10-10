@@ -1,10 +1,12 @@
 import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
+import { subagentWireStep } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
+import "./subagentModule";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -45,6 +47,7 @@ function jobEntityViews(ids: string[]) {
 
 function delegateEntityViews(id: string) {
   const delegate: EvenerDelegateInfo = {
+    runGeneration: 1,
     delegateId: id,
     ownerSessionId: "s",
     rootSessionId: "s",
@@ -198,7 +201,7 @@ test("job_status: delegate ID is a trigger and the footer remains the single Ope
   const raw = delegateStatusRaw();
   const id = (raw as { id: string }).id;
   render(
-    <TranscriptRenderProvider entities={delegateEntityViews(id)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={delegateEntityViews(id)}>
       <Body
         item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })}
         live={false}
@@ -372,6 +375,23 @@ test("job_status: body renders not-resumable reason diagnostic", () => {
   expect(screen.getByText(/Not resumable: Delegate was disposed/)).toBeTruthy();
 });
 
+// not_resumable_reason carries its own codes; the card says them in words too
+// (#3362). turn_budget_exhausted is a run-ending code the shared table already
+// carries; isolation_disposed and working_dir_missing are closure-only codes
+// the not-resumable table carries.
+test.each([
+  ["turn_budget_exhausted", /Not resumable: ran out of turns/],
+  ["isolation_disposed", /Not resumable: its isolation was disposed/],
+  ["working_dir_missing", /Not resumable: its working directory is missing/],
+])("job_status: body says not-resumable code %s in words", (reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ not_resumable_reason: reason });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
 test("job_status: body renders failed outcome reason in danger text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
@@ -382,6 +402,32 @@ test("job_status: body renders failed outcome reason in danger text", () => {
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
   expect(screen.getByText(/Last run failed: exec: command not found/)).toBeTruthy();
+});
+
+// A reason is a code; the card says it in words, never as snake_case (#3327).
+test.each([
+  ["failed", "runtime_lost", /Last run failed: runtime lost/],
+  ["exhausted", "tool_round_budget_exhausted", /Last run exhausted: ran out of tool rounds/],
+])("job_status: body says a %s outcome's code %s in words", (status, reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ status: "idle", last_outcome: { status, reason } });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
+// last_outcome is the daemon's delegatestore.Outcome, which carries a failed
+// run's cause beside its reason code (#3356): the body says the cause.
+test("job_status: body says a failed run's recorded cause, not its reason code", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "failed", reason: "run_error", error: "provider returned 500" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(/Last run failed: provider returned 500/)).toBeTruthy();
 });
 
 test("job_status: body renders exhausted outcome reason without danger text", () => {
@@ -409,7 +455,8 @@ test("job_status: body renders stopped outcome reason without danger text", () =
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   const diag = screen.getByTestId("delegate-outcome-reason");
   expect(diag).toBeTruthy();
-  expect(screen.getByText(/Last run stopped: stopped_by_parent/)).toBeTruthy();
+  // The reason is a code; the card says it in words (#3327).
+  expect(screen.getByText(/Last run stopped: stopped by its coordinator/)).toBeTruthy();
   expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
 });
 
@@ -521,9 +568,9 @@ test("job_list: body renders stable direct raw state when the producer supplies 
 test("job_list: rows render one entity ref and exactly one open control per identity", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;
-  const ids = ["job_alpha", "job_beta"];
+  const ids = ["job_02wMz5TxvEMoJEDTDGOTil_000000000123", "job_02wMz5TxvEMoJEDTDGOTil_000000000124"];
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(ids)}>
       <Body
         item={item({
           toolName: "job_list",
@@ -552,7 +599,7 @@ test("job_list: rows state the command-outcome statuses under the card's display
   const Body = d.body!;
   const ids = ["job_cen", "job_kil"];
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(ids)}>
       <Body
         item={item({
           toolName: "job_list",
@@ -583,7 +630,7 @@ test("job_list: rows join a legacy failed record to the display word by its reas
   const d = toolRendererFor("job_list");
   const Body = d.body!;
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(["job_l1"])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1"])}>
       <Body
         item={item({
           toolName: "job_list",
@@ -602,13 +649,11 @@ test("job_list: rows join a legacy failed record to the display word by its reas
 
 // --- job_stop -----------------------------------------------------------
 
-test("job_stop: summary shows the target job and the tool's own outcome footer", () => {
+test("job_stop: summary shows the target job and the status its footer reports", () => {
   const d = toolRendererFor("job_stop");
   const args = JSON.stringify({ target: "job_7" });
   const output = "[job job_7 · cancelled · cancelled_by_request]";
-  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe(
-    "Stopped job_7 · job job_7 · cancelled · cancelled_by_request",
-  );
+  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe("Stopped job_7 · cancelled");
 });
 
 test("job_stop: no footer yet (request in flight) shows just the target", () => {
@@ -696,7 +741,7 @@ test("delegate_send: openTranscriptRef reads transcript_ref from valid raw state
 test("delegate_send: openTranscriptRef is undefined for absent, malformed, or blank-ref raw state", () => {
   const d = toolRendererFor("delegate_send");
   expect(d.openTranscriptRef?.(item({ toolName: "delegate_send" }))).toBeUndefined();
-  // Missing running_in_background: not a valid delegateSendResult at all.
+  // Missing running_in_background: not a valid isDelegateSendResult state at all.
   expect(
     d.openTranscriptRef?.(item({ toolName: "delegate_send", raw: { action: "steered", transcript_ref: "local:c" } })),
   ).toBeUndefined();
@@ -715,11 +760,13 @@ function renderDelegateSendBody({
   argumentsJSON = JSON.stringify({ to: "dlg_abc123", message: "Inspect the parser.\nReport exact findings." }),
   output = "Found two call sites.\nBoth need coverage.\n[delegate_id dlg_abc123 · delivered · completed]",
   raw,
+  startedAt,
 }: {
   toolName?: "delegate_send" | "job_send_message";
   argumentsJSON?: string;
   output?: string;
   raw?: unknown;
+  startedAt?: string;
 } = {}) {
   const Body = toolRendererFor(toolName).body!;
   render(
@@ -729,6 +776,7 @@ function renderDelegateSendBody({
         argumentsJSON,
         output,
         raw,
+        ...(startedAt ? { startedAt } : {}),
       })}
       live={false}
     />,
@@ -750,6 +798,77 @@ test("delegate_send: expanded body renders the sent message as an outgoing chat 
   expect(within(reply).getByRole("button", { name: "Copy response" })).toBeTruthy();
 
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
+});
+
+// A send whose wait carried results its caller had not yet received (#3906)
+// shows each as an earlier incoming bubble, oldest first, above the reply: a
+// failed one with no text by its reason, its status in the bubble's name.
+test("delegate_send: earlier results a wait carried render as incoming bubbles ahead of the reply", () => {
+  const entry = (status: string, output: string, reason?: string) => ({
+    delegate_id: "dlg_abc123",
+    type: "delegate",
+    status,
+    ...(reason ? { reason } : {}),
+    running_in_background: false,
+    action: "completed",
+    output,
+    truncated: false,
+  });
+  renderDelegateSendBody({
+    raw: {
+      ...entry("completed", "Third result"),
+      earlier_results: [entry("completed", "First result"), entry("failed", "", "the run crashed")],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const earlier = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(earlier.map((section) => within(section).getByTestId("user-bubble").textContent)).toEqual([
+    "First result",
+    "the run crashed",
+  ]);
+  expect(within(earlier[0]!).getByText("dlg_abc123 (delegate, earlier reply 1 of 2)")).toBeTruthy();
+  expect(within(earlier[1]!).getByText("dlg_abc123 (delegate, earlier reply 2 of 2 · failed)")).toBeTruthy();
+  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier reply 2 of 2 · failed" })).toBeTruthy();
+  // An earlier result arrived before the send, so its bubble shows no time;
+  // the reply keeps the send's.
+  expect(earlier.map((section) => section.querySelector("time"))).toEqual([null, null]);
+  expect(screen.getByTestId("delegate-send-response").querySelector("time")).not.toBeNull();
+  const reply = screen.getByTestId("delegate-send-response");
+  expect(within(reply).getByTestId("user-bubble").textContent).toBe("Third result");
+  expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+// An update the wait carried (action "update", no status) is headed as an
+// update, never as an earlier reply.
+test("delegate_send: an update a wait carried renders as an earlier update", () => {
+  renderDelegateSendBody({
+    raw: {
+      delegate_id: "dlg_abc123",
+      type: "delegate",
+      status: "completed",
+      running_in_background: false,
+      action: "completed",
+      output: "Third result",
+      truncated: false,
+      earlier_results: [
+        {
+          delegate_id: "dlg_abc123",
+          type: "delegate",
+          running_in_background: false,
+          action: "update",
+          output: "Which table?",
+          truncated: false,
+        },
+      ],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const [earlier] = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(within(earlier!).getByText("dlg_abc123 (delegate, earlier update 1 of 1)")).toBeTruthy();
+  expect(within(earlier!).getByTestId("user-bubble").textContent).toBe("Which table?");
+  expect(screen.queryByText(/earlier reply/)).toBeNull();
 });
 
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {
@@ -905,17 +1024,19 @@ test("job_send_message aliases to the same descriptor as delegate_send, reading 
 // unlisted job_* name. These pin the predicate with a name no exact
 // descriptor claims, plus the exact-wins-over-predicate precedence rule.
 
-test("an unlisted job_* tool falls to the generic family descriptor, mentioning its operation arg when present", () => {
+test("an unlisted job_* tool falls to the generic family descriptor, in words with its operation arg when present", () => {
   const d = toolRendererFor("job_zzz_unlisted");
   const args = JSON.stringify({ operation: "frobnicate" });
   expect(d.summary(item({ id: "jw_1", toolName: "job_zzz_unlisted", argumentsJSON: args }))).toBe(
-    "job_zzz_unlisted: frobnicate",
+    "Used job zzz unlisted: frobnicate",
   );
 });
 
-test("the generic job_* descriptor degrades to the bare tool name with no operation arg", () => {
+test("the generic job_* descriptor says the tool in words with no operation arg, never its raw name", () => {
   const d = toolRendererFor("job_zzz_unlisted");
-  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe("job_zzz_unlisted");
+  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe(
+    "Used job zzz unlisted",
+  );
 });
 
 test("the generic job_* descriptor never wins over an exact match", () => {
@@ -924,4 +1045,14 @@ test("the generic job_* descriptor never wins over an exact match", () => {
 
 test("job_watch resolves to its own descriptor, not the generic family fallback", () => {
   expect(toolRendererFor("job_watch")).not.toBe(toolRendererFor("job_zzz_unlisted"));
+});
+
+// The recorded delegate and delegate_send calls (agent/testdata/subagentwire),
+// as their rows' lines: a delegate's is its intent, a send's names the
+// delegate and the status its footer reports.
+test("says the recorded delegate and delegate_send calls as their rows' lines", () => {
+  expect(toolRendererFor("delegate").summary(subagentWireStep("call_delegate_1"))).toBe("Fix race in tree settle");
+  expect(toolRendererFor("delegate_send").summary(subagentWireStep("call_send_1"))).toBe(
+    "Sent a message to delegate dlg_02wMz5TxvSettleRace001 · running",
+  );
 });

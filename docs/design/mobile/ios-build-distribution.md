@@ -21,6 +21,22 @@ bundle _2.7.2_ exec pod install --deployment --project-directory=ios
 
 The generated workspace is `mobile-native/ios/Evener.xcworkspace`, with scheme `Evener`. Generated iOS projects, installed dependencies, archives and exported bundles remain ignored. The app configuration and distribution helper restrict the product to iPhone device family 1. Use normal simulator signing for installed simulator tests: disabling code signing strips the application entitlement SecureStore needs and prevents saving credentials. No paid provisioning profile is required for the simulator. Keep the committed CocoaPods lock stable; a failed deployment install requires diagnosis rather than silently regenerating it.
 
+### Regenerating the pod lock
+
+Adding, removing or upgrading a native dependency in `mobile-native/package.json` changes the pods the Podfile asks for, and `pod install --deployment` then refuses the committed `mobile-native/Podfile.lock` (`make check-podfile-lock` names the pods that differ). Regenerate the lock from `mobile-native`, starting from the committed one so that no other pod moves:
+
+```sh
+npx expo prebuild --platform ios --no-install
+cp Podfile.lock ios/Podfile.lock
+bundle _2.7.2_ install
+bundle _2.7.2_ exec pod install --project-directory=ios
+cp ios/Podfile.lock Podfile.lock
+git diff Podfile.lock
+bundle _2.7.2_ exec pod install --deployment --project-directory=ios
+```
+
+`pod install` without `--deployment` writes the new resolution to the generated, ignored `ios/Podfile.lock`, and the copy back is what makes it a change to commit. The diff should add or remove only the dependency's own pods; if other pods move, stop and find out why before committing. The last command proves the new lock installs the way the Release and TestFlight builds install it. Commit only `Podfile.lock`.
+
 [PR #1039](https://github.com/prime-radiant-inc/evener/pull/1039) owns registration of the manual TestFlight workflow. It depends on this app, the protocol package and the Make gates existing on the selected source branch. The workflow must not be treated as usable until those dependencies and its hosted run are verified.
 
 The local Fastlane lanes authenticate with an App Store Connect API key, reject an existing exact version/build, validate signed IPA identity, upload to internal TestFlight and verify Apple processing plus group availability. Credentials remain outside Git. A processed TestFlight build is distribution evidence; physical install/update and app-data preservation require their own [acceptance checks](acceptance.md).

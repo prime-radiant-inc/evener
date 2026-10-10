@@ -55,3 +55,48 @@ func TestDescendantThreadsCarryTheirOwnAccess(t *testing.T) {
 		t.Fatalf("root access = %+v, want the root's own workspace-write", got)
 	}
 }
+
+// A snapshot must not hand out the cached envelope's Access pointer: the
+// envelope is shared across every read, so a caller mutating its copy would
+// corrupt the cache and race concurrent readers. Access is a value type, so
+// the snapshot gets its own copy.
+func TestThreadSnapshotsDoNotAliasTheEnvelopeAccess(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
+		ID:     "root",
+		Config: schema.ConfigSnapshot{Sandbox: "workspace-write"},
+	}})
+	snap := readThreadOverWire(t, srv, "local:root")
+	if snap.Evener.Access == nil {
+		t.Fatal("access missing from snapshot")
+	}
+	snap.Evener.Access.Sandbox = "off"
+	if got := srv.appEnvelope.Access; got == nil || got.Sandbox != "workspace-write" {
+		t.Fatalf("envelope access = %+v after mutating the snapshot, want workspace-write", got)
+	}
+}
+
+// A descendant snapshot reads through appThreadForID, which shallow-copies the
+// cached projection; Access must be cloned there too, or a caller mutating the
+// child's snapshot corrupts the projection for every later reader (S15).
+func TestDescendantSnapshotsDoNotAliasTheProjectionAccess(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		Sandbox: "read-only",
+	}})
+	snap := readThreadOverWire(t, srv, "local:child")
+	if snap.Evener.Access == nil {
+		t.Fatal("access missing from descendant snapshot")
+	}
+	snap.Evener.Access.Sandbox = "off"
+	projection := srv.appDescendants["child"]
+	if projection == nil {
+		t.Fatal("child projection missing")
+	}
+	if got := projection.thread.Evener.Access; got == nil || got.Sandbox != "read-only" {
+		t.Fatalf("projection access = %+v after mutating the snapshot, want read-only", got)
+	}
+}

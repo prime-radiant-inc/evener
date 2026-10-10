@@ -28,6 +28,16 @@
   display: none;
 }
 
+/* A delegate row whose head carries everything (a machinery stop, a failure
+ * whose whole error is its ending - mockups 24-delegate-complete §C): the
+ * same head grammar with no disclosure to open, so it renders as a static
+ * line. Composing .head keeps the two seats from drifting; the cursor is the
+ * one declaration a summary owns that a static row must not. */
+.staticHead {
+  composes: head;
+  cursor: default;
+}
+
 /* The status glyph in the rail beside the head's first line - the same seat
  * ToolRow's .rowIcon gives the tool-kind glyph, composed from the shared
  * icon-rail seat (styles/railseat.module.css): .seat is the avatar-column
@@ -152,6 +162,55 @@
 }
 
 .fieldLabel {
+  color: var(--ink-low);
+}
+
+/* The structured result as a headerless table (§A): labels are the schema's
+ * own keys in words, one hairline per row, the first row's top edge left open
+ * so the message and the table read as one report. Both cells wrap anywhere:
+ * a schema key can be as long as its author likes, and `overflow-wrap:
+ * anywhere` (not break-word) is what collapses a cell's min-content width,
+ * so neither cell can widen the table past the card. */
+.resultTable {
+  width: 100%;
+  margin-top: var(--space-3);
+  border-collapse: collapse;
+  font-size: var(--font-size-ui);
+}
+
+.resultKey {
+  padding: 7px var(--space-4) 7px 0;
+  text-align: left;
+  font-weight: var(--font-weight-regular);
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--edge);
+  vertical-align: baseline;
+}
+
+.resultValue {
+  padding: 7px 0;
+  color: var(--ink-hi);
+  border-top: 1px solid var(--edge);
+  overflow-wrap: anywhere;
+  vertical-align: baseline;
+}
+
+.resultTable tr:first-child .resultKey,
+.resultTable tr:first-child .resultValue {
+  border-top: none;
+}
+
+/* An absent value says so, quietly: an empty cell reads as a gap. */
+.resultNone {
+  color: var(--ink-low);
+}
+
+/* A structured result that failed its verdict is a fact, not an alarm: one
+ * ink-low line, with the verbatim frame keeping the details. */
+.structuredNote {
+  margin-top: var(--space-2);
+  font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 

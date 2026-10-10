@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { readOrganizationNavigation } from "./organizationNavigation";
@@ -82,7 +82,7 @@ function fixture() {
 						: { projects: [], remaining: 0 };
 				if (changeGeneration) generation = "new";
 			}
-			const response = wireV2(params as never, body, '"fresh"', revision, generation);
+			const response = wireSnapshot(params as never, body, '"fresh"', revision, generation);
 			if (params.resource === "location") {
 				const metadata = (response.data as { metadata: Record<string, unknown> }).metadata;
 				metadata.tier = archived ? "archived" : "recent";

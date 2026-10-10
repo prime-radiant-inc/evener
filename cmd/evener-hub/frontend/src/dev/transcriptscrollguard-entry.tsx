@@ -27,12 +27,20 @@
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
+import "../panes/session";
+import "../panes/transcript";
+import "../panes/welcome";
 import Session from "../panes/session/Session";
+import { openTranscript } from "../panes/session/transcript/openTranscript";
+import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
+import { DockHost } from "../shell/DockHost";
+import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
 import {
+  createPagedOpenSettleTracker,
   createTranscriptSettleTracker,
   describeTranscriptSettleBlocker,
   SETTLE_OVERFLOW_FACTOR,
@@ -59,7 +67,10 @@ function throwOnPageErrors(context: string): void {
   if (errors.length > 0) throw new Error(`transcriptscrollguard page errors during ${context}: ${errors.join("\n")}`);
 }
 
-const REF = "local:transcriptscrollguard";
+const REF =
+  new URLSearchParams(window.location.search).get("dock") === "1"
+    ? "local:transcriptscrollguard-dock"
+    : "local:transcriptscrollguard";
 const THREAD_ID = "thr_transcriptscrollguard";
 
 // Deterministic PRNG (mulberry32): the transcript's row heights must be
@@ -135,6 +146,29 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
   );
 });
 
+// ?paged=1: the read answers with a page plus an olderCursor, so the paging row
+// mounts - the open-with-history shape the other passes lack.
+// ?readonly=1: render the READ-ONLY transcript pane instead of the live Session.
+// It runs the same useTranscriptScroll coordinator (#2963), so its paging and
+// landing must behave identically - the pass the guard lacked.
+const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
+const DOCK = new URLSearchParams(window.location.search).get("dock") === "1";
+const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
+// Hold hydration explicitly so the browser guard exercises pre-mount frames.
+const DEFER_READ = new URLSearchParams(window.location.search).get("deferRead") === "1";
+let releaseRead: (() => void) | undefined;
+const readAdmission = DEFER_READ
+  ? new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    })
+  : undefined;
+const OLDER_CURSOR = "cursor_page_1";
+const OLDER_PAGE_TURNS = 12;
+let olderPageCalls = 0;
+const olderPageTurns: Turn[] = Array.from({ length: OLDER_PAGE_TURNS }, (_, i) =>
+  wireTurn(`older_${i + 1}`, sentence(4, `older ${i + 1} ask`), paragraphs(4, `older ${i + 1}`)),
+);
+
 // Turns appended WHILE the reader is scrolled away: never rendered, so at
 // click time the virtualizer holds only the 96px estimate for them while
 // their real rendered height is ~1-2 viewport heights each. This is the
@@ -183,20 +217,44 @@ const fake = new FakeClient("ready");
 const BOOT_GENERATION = "1";
 const EPOCH = 1;
 const INCARNATION = "inc-1";
-fake.on(
-  "thread/read",
-  () =>
-    ({
-      thread: THREAD,
-      bootGeneration: BOOT_GENERATION,
-      epoch: EPOCH,
-      snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
-    }) satisfies ThreadReadResponse,
-);
+// The hub stamps requestGeneration on every read response, and the echo is
+// load-bearing once the session cache is in play: a pane that opens on a
+// cached shell issues its reconciling read with a bumped generation, and a
+// generation-less response is discarded as superseded (readDisposition) —
+// stranding the pane on the cursor-less shell. The suites' echoingReadHandler
+// exists for the same contract.
+fake.on("thread/read", async (params) => {
+  await readAdmission;
+  if (!params.ref) throw new Error("transcript fixture requires a session ref");
+  return {
+    thread:
+      params.ref === REF
+        ? THREAD
+        : {
+            ...THREAD,
+            name: params.ref,
+            id: `thr_${params.ref}`,
+            sessionId: `sess_${params.ref}`,
+            evener: { ...THREAD.evener, ref: params.ref },
+            turns: initialTurns.slice(0, 8),
+          },
+    bootGeneration: BOOT_GENERATION,
+    epoch: EPOCH,
+    snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+    requestGeneration: params.requestGeneration,
+    ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
+  } satisfies ThreadReadResponse;
+});
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
 // unhandledrejection and pollutes the page-error probe.
 fake.on("evener/tasks/list", () => ({ data: [] }));
 fake.on("model/list", () => ({ data: [{ provider: "anthropic", model: "claude-sonnet-4-5" }] }));
+if (PAGED) {
+  fake.on("thread/turns/list", () => {
+    olderPageCalls += 1;
+    return { data: olderPageTurns, nextCursor: undefined };
+  });
+}
 connectionStore.getState().connect(fake);
 
 // The model's turn count, tracked store-side so appendLargeTurns() can prove
@@ -217,10 +275,47 @@ document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 rootEl.style.height = "100%";
 
+if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
+else
+  workspaceStore.setState({
+    panes: [
+      { id: "transcriptscrollguard", type: READONLY ? "transcript" : "session", params: { ref: REF }, slot: "main" },
+    ],
+    focusedPaneId: "transcriptscrollguard",
+  });
+
 createRoot(rootEl).render(
   <ClientProvider client={fake}>
     <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
-      <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      {DOCK ? (
+        <>
+          <div style={{ position: "fixed", bottom: 0, right: 0, zIndex: 10000 }}>
+            <button type="button" onClick={() => openTranscript("local:observer", REF)}>
+              Open observer
+            </button>
+            <button type="button" onClick={() => openTranscript("local:grandchild", "local:observer")}>
+              Open grandchild
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const pane = workspaceStore.getState().mainPane();
+                if (pane) workspaceStore.getState().focusPane(pane.id);
+              }}
+            >
+              Focus root
+            </button>
+            <button type="button" onClick={() => openTranscript("local:observer", REF)}>
+              Focus observer
+            </button>
+          </div>
+          <DockHost />
+        </>
+      ) : READONLY ? (
+        <Transcript params={{ ref: REF }} paneId="transcriptscrollguard" focused={false} />
+      ) : (
+        <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
+      )}
     </div>
     <Toast />
   </ClientProvider>,
@@ -266,6 +361,22 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
   pillText: string | null;
   turns: number;
   renderedRows: number;
+  /** Older pages fetched through thread/turns/list (?paged=1 only). */
+  listCalls: number;
+  /**
+   * Whether the paging row is actually mounted. Read from the DOM rather than
+   * the ?paged=1 flag: the flag only says how the runner navigated, while this
+   * says the open-with-history shape the pass exists for really rendered (the
+   * row mounts only once the model carries an olderCursor).
+   */
+  pagingRow: boolean;
+  /**
+   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
+   * The read-only Transcript pane passes no footer, so this distinguishes the
+   * two surfaces from the DOM itself: a pass that claims to exercise the
+   * read-only pane while the live Session rendered would read `true` here.
+   */
+  paneFooter: boolean;
   errors: string[];
 }
 
@@ -280,6 +391,9 @@ function metrics(): TranscriptScrollMetrics {
     pillText: pill?.textContent ?? null,
     turns: modelTurnCount,
     renderedRows: document.querySelectorAll('[data-testid="transcript-row"]').length,
+    listCalls: olderPageCalls,
+    pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
+    paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
     errors: pageErrors(),
   };
 }
@@ -315,6 +429,30 @@ function nextFrame(): Promise<void> {
 // stall this cannot see (issue #919), so widening it needs a measurement that
 // says the run got slower, not a hunch that it might.
 const SETTLE_TRIPWIRE_MS = 15_000;
+
+// ?paged=1 readiness: the model AND the geometry both holding still. The bug
+// this pass exists for is the paging row's prepend landing DURING the
+// mount's own settle and stranding the reader, so this wait cannot assume
+// "the mount landed, that's the end of it" - it has to let any auto-loaded
+// page land and the virtualizer's reconcile finish before it reads the
+// result. Notably ABSENT is the paging row: the regression this pass guards
+// against clears olderCursor and unmounts the row, so waiting on it would spin
+// to the tripwire and report a settle timeout instead of the runner's own
+// "auto-loaded N older page(s)" failure (see createPagedOpenSettleTracker).
+async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
+  const tracker = createPagedOpenSettleTracker(INITIAL_TURN_COUNT);
+  const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("paged open");
+    const el = findScrollElement();
+    const sample = { turns: modelTurnCount, geometry: el === null ? null : geometryOf(el) };
+    if (tracker.observe(sample)) return metrics();
+    if (performance.now() > deadline) {
+      throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(sample)}`);
+    }
+  }
+}
 
 // Callable, not a module-load one-shot: the runner awaits webfonts FIRST
 // (waitForFonts over CDP) and only then calls this, because a late-arriving
@@ -543,7 +681,9 @@ async function shrinkPortAndSettle(): Promise<
 
 declare global {
   interface Window {
+    releaseTranscriptRead: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
+    waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
     transcriptScrollMetrics: typeof metrics;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
     appendLargeTurns: typeof appendLargeTurns;
@@ -553,7 +693,11 @@ declare global {
   }
 }
 
+window.releaseTranscriptRead = () => {
+  releaseRead?.();
+};
 window.waitForTranscriptSettled = waitForTranscriptSettled;
+window.waitForPagedOpenSettled = waitForPagedOpenSettled;
 window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;

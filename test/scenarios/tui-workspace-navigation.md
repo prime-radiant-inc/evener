@@ -78,9 +78,10 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
    context instead.
 
 6. **Browse mode**: press `Esc`. Footer changes to
-   `esc/i/q: compose  ctrl+o: dashboard`. The selected message row gets a
-   `▶` glyph (or whatever the current selection style is). Press `i` to
-   return to compose mode; the composer prompt and footer return.
+   `esc: compose  ctrl+o: dashboard`. The selected message row gets a
+   `▶` glyph (or whatever the current selection style is). Browse is
+   text-first (kata 7hh0): printable runes go to the composer, and `Esc`
+   returns to compose mode; the composer prompt and footer return.
 
 7. **Session command palette**: press `/` (with empty composer) or
    `Ctrl+P`. Overlay opens listing `/help`, `/dashboard`, `/auth`,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -358,7 +359,6 @@ const (
 	SteeringKindNoToolCalls        = "no-tool-calls"
 	SteeringKindLoopDetected       = "loop-detected"
 	SteeringKindTasksDone          = "tasks-done"
-	SteeringKindTaskNudge          = "task-nudge"
 	SteeringKindTaskInactive       = "task-inactive"
 	SteeringKindNoteHandoff        = "note-handoff"
 	SteeringKindGoalObjective      = "goal-objective"
@@ -385,7 +385,6 @@ var AllSteeringKinds = []string{
 	SteeringKindNoToolCalls,
 	SteeringKindLoopDetected,
 	SteeringKindTasksDone,
-	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,
 	SteeringKindNoteHandoff,
 	SteeringKindGoalObjective,
@@ -458,6 +457,10 @@ type QueueChangedData struct {
 	// editing or returning a queued entry can restore its chips — a queued
 	// {type:"skill"} item is otherwise unrecoverable by any path.
 	SkillNames [][]string `json:"skill_names,omitempty"`
+	// CommandNames retains each queued entry's explicit command selections.
+	CommandNames [][]string `json:"command_names,omitempty"`
+	// Mentions retains FIFO-aligned editing locations independently of names.
+	Mentions [][]appwire.InputMention `json:"mentions,omitempty"`
 	// ConsumedClientMutationIDs names the queued entries THIS push's
 	// transition just consumed (currently: a drain folding the queue into
 	// steering) so a client can settle those optimistic records by positive
@@ -554,9 +557,10 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
-	CallID  string `json:"call_id,omitempty"`
-	EndTurn bool   `json:"end_turn"`
-	Message string `json:"message"`
+	CallID    string `json:"call_id,omitempty"`
+	EndTurn   bool   `json:"end_turn"`
+	Message   string `json:"message"`
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.
@@ -583,10 +587,41 @@ type CompactionTurnData struct {
 const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 
 // WarningCodeContextBudget identifies the informational context-budget
-// notices (a context-usage heads-up, an output-allocation clamp): budget
-// arithmetic succeeding, not a failure. Clients demote and verbosity-gate
+// notices (a context-usage heads-up, an output-allocation clamp, a predictive
+// checkpoint that fell back to the deterministic one): context management
+// that worked, not a failure. Clients demote and verbosity-gate
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
+
+// WarningCodePluginCompatibility identifies plugin, skill, and evener-wide
+// command settings that Evener preserves but does not enforce. The affected
+// content remains available, so clients show this advisory only in full
+// transcript detail.
+const WarningCodePluginCompatibility = "plugin_compatibility"
+
+// WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
+// it as quiet detail; the retried tool call reports its own outcome separately.
+const WarningCodeMCPReconnected = "mcp_reconnected"
+
+// WarningCodeDelegateAttentionRestore identifies a failed attempt to get a
+// delegate's owed attention where it belongs: restoring its cold runtime to
+// deliver it, or escalating it to the root when a closed ancestor fences it
+// off. The session retries on its own and warns once per failure episode, so
+// clients show this warning only at their most detailed level, by this stable
+// code.
+const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
+
+// WarningCodeDelegateAttentionUndeliverable identifies the notice that a
+// delegate's owed attention could be neither delivered nor handed to the
+// root, so Evener stopped trying until new attention arrives or the daemon
+// restarts. Clients show it at every level.
+const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
+
+// WarningCodeAttentionPaused identifies the notice that a permanent provider
+// failure (a dead credential, a spent quota) has paused delivering background
+// updates to a session until something changes. Unlike the informational
+// codes, clients show it at every level: it is news the user must act on.
+const WarningCodeAttentionPaused = "attention_paused"
 
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
@@ -626,9 +661,10 @@ type ErrorData struct {
 	Recorded bool `json:"recorded,omitempty"`
 }
 
-// ErrorCause describes a structured root cause for an EventError. Today the
-// only Kind is "provider" (HTTP failure from an LLM adapter); additional
-// kinds can be added as further consumers need typed dispatch (kata ts0x).
+// ErrorCause describes a structured root cause for an EventError. Consumers
+// typed-branch on Kind rather than substring-matching the message (kata ts0x).
+// Kinds include "provider" (HTTP failure from an LLM adapter) and
+// "signInRequired" (the user must sign in to a provider instance again).
 type ErrorCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
@@ -688,18 +724,24 @@ type JobFinishedData struct {
 // result: clients control the resource by DelegateID and order state by
 // ProjectionRevision while merging LatestActivityAt independently.
 type DelegateUpdatedData struct {
-	DelegateID          string                `json:"delegate_id"`
-	OwnerSessionID      string                `json:"owner_session_id"`
-	RootSessionID       string                `json:"root_session_id"`
-	ChildSessionID      string                `json:"child_session_id"`
-	TranscriptRef       string                `json:"transcript_ref"`
-	ParentDelegateID    string                `json:"parent_delegate_id,omitempty"`
+	RunGeneration    uint64 `json:"run_generation"`
+	DelegateID       string `json:"delegate_id"`
+	OwnerSessionID   string `json:"owner_session_id"`
+	RootSessionID    string `json:"root_session_id"`
+	ChildSessionID   string `json:"child_session_id"`
+	TranscriptRef    string `json:"transcript_ref"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
+	// AncestorSessionIDs are the subagent sessions whose own threads list this
+	// delegate (it is in their subtree), nearest first. The root's thread lists
+	// every delegate through OwnerSessionID, so the root is not repeated here.
+	AncestorSessionIDs  []string              `json:"ancestor_session_ids,omitempty"`
 	Type                string                `json:"type"`
 	Lifecycle           string                `json:"lifecycle"`
 	Phase               string                `json:"phase"`
 	Status              string                `json:"status"`
 	Outcome             string                `json:"outcome,omitempty"`
 	Reason              string                `json:"reason,omitempty"`
+	Error               string                `json:"error,omitempty"`
 	Terminal            bool                  `json:"terminal,omitempty"`
 	Resumable           bool                  `json:"resumable"`
 	NeedsAttention      bool                  `json:"needs_attention"`
@@ -859,6 +901,17 @@ type SessionURLData struct {
 type EnvironmentData struct {
 	TurnID string `json:"turn_id"`
 	Text   string `json:"text"`
+}
+
+// EnvironmentChangedData is the payload for an EventEnvironmentChanged event.
+type EnvironmentChangedData struct {
+	WorkingDir string `json:"working_dir"`
+}
+
+// StatusSettledData is the payload for an EventStatusSettled event: the
+// session's wire state after the change.
+type StatusSettledData struct {
+	State string `json:"state"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

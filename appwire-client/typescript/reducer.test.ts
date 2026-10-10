@@ -323,6 +323,16 @@ test("hydrateThread leaves diagnostics unavailable when the wire omits them", ()
   expect(testHydrate().diagnostics).toBeUndefined();
 });
 
+test("hydrateThread retains and copies the owning command inventory, including authoritative empty", () => {
+  const commands = [{ name: "project-only", source: "project", description: "owner" }];
+  const model = testHydrate({ evener: { diagnostics: { commands } } });
+  expect(model.diagnostics?.commands).toEqual(commands);
+  commands[0]!.description = "changed source";
+  expect(model.diagnostics?.commands?.[0]?.description).toBe("owner");
+  expect(testHydrate({ evener: { diagnostics: { commands: [] } } }).diagnostics?.commands).toEqual([]);
+  expect(testHydrate({ evener: { diagnostics: {} } }).diagnostics?.commands).toBeUndefined();
+});
+
 test("hydrateThread retains canonical skill descriptors", () => {
   const model = testHydrate({
     evener: {
@@ -8585,6 +8595,7 @@ test("applyNotification distributes a union model's extra fields member by membe
 
 function delegateInfo(overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
   return {
+    runGeneration: 1,
     delegateId: "dlg_1",
     ownerSessionId: "sess_owner",
     rootSessionId: "sess_root",
@@ -8871,6 +8882,14 @@ test("hydrateThread defaults notes/urls when thread.evener omits them (old daemo
 test("hydrateThread carries the recovery fence from thread.evener.resumeRequired", () => {
   expect(testHydrate().resumeRequired).toBe(false);
   expect(testHydrate({ evener: { resumeRequired: true } }).resumeRequired).toBe(true);
+});
+
+// The hub's own admission answer, carried straight from the wire. It is what
+// the client now keys Send on, so the model must mirror it (an absent wire
+// value means not foldable, never a guess).
+test("hydrateThread carries the resume-only foldable bit from thread.evener.resumeOnlyFoldable", () => {
+  expect(testHydrate().resumeOnlyFoldable).toBe(false);
+  expect(testHydrate({ evener: { resumeOnlyFoldable: true } }).resumeOnlyFoldable).toBe(true);
 });
 
 test("evener/notes/updated replaces both notes and stamps lastFrameAt", () => {

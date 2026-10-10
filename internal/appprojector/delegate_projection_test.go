@@ -29,7 +29,7 @@ func TestDelegateProjection_LateRootReceivesStableDelegateSnapshot(t *testing.T)
 	stable := delegateProjectionFixture()
 	stable.OwnerSessionID = "root"
 	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", stable)))
-	if params.Delegate.DelegateID != "dlg_projection" || params.Delegate.ProjectionRevision != 7 {
+	if params.Delegate.DelegateID != "dlg_projection" || params.Delegate.ProjectionRevision != 7 || params.Delegate.RunGeneration != stable.RunGeneration {
 		t.Fatalf("late stable snapshot = %+v", params.Delegate)
 	}
 }
@@ -45,6 +45,27 @@ func TestDelegateProjection_OwnerRootFencesForeignUpdates(t *testing.T) {
 	owned.OwnerSessionID = "owner"
 	if out := p.Project(delegateProjectionEvent("owner", owned)); len(out) != 1 {
 		t.Fatalf("owner stable update notifications = %+v, want one", out)
+	}
+}
+
+// A subagent's thread lists its subtree, so it takes an update for a delegate
+// below it, which still names the tree's root as owner. A row outside its
+// subtree stays fenced.
+func TestDelegateProjection_AncestorSubagentThreadReceivesSubtreeUpdates(t *testing.T) {
+	p := NewAppEventProjector("middle", "local:middle")
+	below := delegateProjectionFixture()
+	below.OwnerSessionID = "root"
+	below.AncestorSessionIDs = []string{"middle"}
+	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("middle", below)))
+	if params.ThreadID != "middle" || params.Ref != "local:middle" || params.Delegate.OwnerSessionID != "root" || params.Delegate.DelegateID != below.DelegateID {
+		t.Fatalf("subtree update on the middle thread = %+v", params)
+	}
+	elsewhere := delegateProjectionFixture()
+	elsewhere.DelegateID = "dlg_elsewhere"
+	elsewhere.OwnerSessionID = "root"
+	elsewhere.AncestorSessionIDs = []string{"sibling"}
+	if out := p.Project(delegateProjectionEvent("middle", elsewhere)); len(out) != 0 {
+		t.Fatalf("a row outside the middle subtree crossed the fence: %+v", out)
 	}
 }
 
@@ -150,7 +171,7 @@ func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T) {
 
 func delegateProjectionFixture() events.DelegateUpdatedData {
 	return events.DelegateUpdatedData{
-		DelegateID: "dlg_projection", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
+		RunGeneration: 2, DelegateID: "dlg_projection", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
 		TranscriptRef: "local:child", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle",
 		Resumable: true, NeedsAttention: true, ProjectionRevision: 7, Task: "inspect", Description: "inspect carefully", AgentType: "explorer",
 		RequestedModel: "openai/gpt-5", ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5",

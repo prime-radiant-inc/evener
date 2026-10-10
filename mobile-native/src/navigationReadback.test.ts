@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { NavigationReadParams } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { navigationReadback } from "./navigationReadback";
 
@@ -29,10 +29,10 @@ test.each([
 	const client = {
 		request: async (_method: string, params: NavigationReadParams) => {
 			calls.push(params);
-			if (params.resource === "manifest") return wireV2(params, manifest(), '"m"', 1, generation_id);
-			return wireV2(params, { projects: [], sessions: [], remaining: 0 }, '"r"', 1, generation_id);
+			if (params.resource === "manifest") return wireSnapshot(params, manifest(), '"m"', 1, generation_id);
+			return wireSnapshot(params, { projects: [], sessions: [], remaining: 0 }, '"r"', 1, generation_id);
 		},
 	} as ConversationClientLike;
 	await navigationReadback(client, { generation_id, targets: [target] }, () => true);
-	expect(calls).toContainEqual({ ...expectedParams, representationVersion: 2 });
+	expect(calls).toContainEqual({ ...expectedParams, representationVersion: 3 });
 });

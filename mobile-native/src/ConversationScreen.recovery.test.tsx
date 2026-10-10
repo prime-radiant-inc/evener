@@ -18,7 +18,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { render, renderedText, screenConnection } from "./renderNative.testkit";
+import { render, renderedText, screenConnection, settle } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 
 const harness = vi.hoisted(() => ({
@@ -37,6 +37,9 @@ const navigationState = vi.hoisted(() => ({
 // One sqlite double per database name, keyed the way the singletons open them,
 // so the test can read the same rows the screen's own recovery hook reads.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
+// The app's outbox flush, which the screen asks to look when it lets go.
+const outbox = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
+vi.mock("./outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
@@ -48,7 +51,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -160,20 +162,8 @@ const navigation = {
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 function pressables(tree: ReactTestRenderer) {
 	return tree.root.findAll((node) => String(node.type) === "Pressable");
-}
-
-function pressLabel(tree: ReactTestRenderer, label: string) {
-	const target = pressables(tree).find((node) => node.props.accessibilityLabel === label);
-	if (!target) throw new Error(`no pressable labelled ${label}`);
-	act(() => target.props.onPress());
 }
 
 // The client keeps the conversation read pending: the screen stays connected
@@ -192,7 +182,24 @@ function pendingClient() {
 	};
 }
 
-it("shows a refused message as a ghost above the composer, row-conditional under the #2247 contract", async () => {
+it("asks the outbox flush to look once it lets go of its session, so a message still waiting there goes (ruling 17)", async () => {
+	harness.connection = { ...screenConnection(pendingClient(), "ready"), error: null, disconnect: () => {} };
+	const ref = "ref-leave";
+	const runtime = getNativeMutationRuntime();
+	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
+	outbox.flush.mockClear();
+	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
+	await settle();
+	expect(runtime.targetClient("hub-1", ref)).toBeDefined();
+	expect(outbox.flush).not.toHaveBeenCalled();
+
+	act(() => tree.unmount());
+
+	expect(runtime.targetClient("hub-1", ref)).toBeUndefined();
+	expect(outbox.flush).toHaveBeenCalledTimes(1);
+});
+
+it("shows a refused message as a ghost at the transcript's end, row-conditional under the #2247 contract", async () => {
 	harness.connection = {
 		...screenConnection(pendingClient(), "ready"),
 		error: null,
@@ -207,7 +214,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 
 	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
-	await flush();
+	await settle();
 
 	// PHASE 1 - empty snapshot, connected: no ghost. Positive control first:
 	// the real connected screen rendered, so the absent ghost is a wiring
@@ -245,7 +252,7 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 		// listeners (the screen's hook re-reads) without touching the row.
 		await runtime.discardRecovery("no-such-row", targetKey);
 	});
-	await flush();
+	await settle();
 
 	const text = renderedText(tree);
 	expect(text).toContain("recover this message");
@@ -260,22 +267,22 @@ it("shows a refused message as a ghost above the composer, row-conditional under
 	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: false });
 	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
 	await act(async () => edit()?.props.onPress());
-	await flush();
+	await settle();
 	expect(composer()?.props.value).toBe("recover this message");
 
 	// The composer is occupied now: the row still offers Edit (the record
 	// fence passes) but the converter withholds, so Edit is disabled with the
 	// converter's own hint, and Discard is still actionable.
 	act(() => composer()?.props.onChangeText("a draft already in progress"));
-	await flush();
+	await settle();
 	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: true });
 	expect(renderedText(tree)).toContain("Clear or send your current draft to restore this message.");
 	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
 
 	// PHASE 4 - Discard retires exactly this row, and its ghost goes.
 	await act(async () => discard()?.props.onPress());
-	await flush();
-	await flush();
+	await settle();
+	await settle();
 	expect(renderedText(tree)).not.toContain("recover this message");
 	expect(await runtime.storage.getRecovery(record.clientMutationId)).toBeUndefined();
 });

@@ -1327,7 +1327,7 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
     // ...reported as the change it is, in the form and as a warning, never as
     // the store's own words or a "Save failed" toast...
-    await waitFor(() => expect(screen.getAllByText(/connection was replaced/).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText(/connection changed/).length).toBeGreaterThan(0));
     expect(screen.queryByText(/credentials store/)).toBeNull();
     expect(screen.queryByText(/Save failed/)).toBeNull();
     // ...the draft is kept, so the retry is the save the user typed...
@@ -2227,4 +2227,27 @@ describe("the form", () => {
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
     expect(saveButton().disabled).toBe(true);
   });
+});
+
+// The hub's sentence for a credential it found an error with (#3539) says what
+// went wrong and what to do; the sheet shows it as an alert.
+test("shows the hub's error for the instance's credential", () => {
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  renderSheet(
+    {
+      name: "lunaroute",
+      providerId: "openai",
+      protocol: "openai-chat",
+      auth: "bearer",
+      implicit: false,
+      isDefault: false,
+      activeSource: "store",
+      hasStoredFile: true,
+      hasStoredOAuth: false,
+      credentialRequired: true,
+      authModes: ["apiKey"],
+    },
+    { authError: error },
+  );
+  expect(screen.getByRole("status", { name: "Credential error" }).textContent).toBe(error);
 });

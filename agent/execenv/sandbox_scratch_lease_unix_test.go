@@ -66,7 +66,7 @@ func scratchLeaseHeld(t *testing.T, dir string) bool {
 // the daemon's uptime.
 func TestRetainSessionScratchReleasesBothLeasesAndKeepsBothDirs(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSessionScratch() })
 
 	_ = env.commandEnvironment(nil)
 	unsandboxed := env.SessionScratchDir()
@@ -109,7 +109,7 @@ func TestRetainSessionScratchReleasesBothLeasesAndKeepsBothDirs(t *testing.T) {
 // nothing.
 func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 	original := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { original.Cleanup(); original.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { original.Cleanup(); original.DisposeSessionScratch() })
 	_ = original.commandEnvironment(nil)
 	unsandboxed := original.SessionScratchDir()
 	if unsandboxed == "" {
@@ -124,7 +124,7 @@ func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 	}
 	dirs := map[string]string{"unsandboxed": unsandboxed, "owned": owned}
 	clone := original.WithWorkingDirectory(t.TempDir())
-	t.Cleanup(clone.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = clone.DisposeSessionScratch() })
 	if got := clone.SessionScratchDir(); got != "" {
 		t.Fatalf("a fresh clone reports scratch %q, want none of its own", got)
 	}
@@ -136,7 +136,7 @@ func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 	}
 	// The original owns neither any more: disposing it drops nothing, and the
 	// leases stay held (by the clone now).
-	original.DisposeUnadoptedScratch()
+	_ = original.DisposeSessionScratch()
 	for name, dir := range dirs {
 		if _, err := os.Stat(dir); err != nil {
 			t.Errorf("%s scratch %s went with the original's disposal: %v", name, dir, err)
@@ -146,7 +146,7 @@ func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 		}
 	}
 	// The clone owns both: disposing it drops both, leases included.
-	clone.DisposeUnadoptedScratch()
+	_ = clone.DisposeSessionScratch()
 	for name, dir := range dirs {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s scratch %s survived the clone's disposal: stat err = %v", name, dir, err)
@@ -161,7 +161,7 @@ func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 // for the handoff. Both kinds follow the rule.
 func TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming(t *testing.T) {
 	original := NewLocalExecutionEnvironment(t.TempDir())
-	t.Cleanup(func() { original.Cleanup(); original.DisposeUnadoptedScratch() })
+	t.Cleanup(func() { original.Cleanup(); original.DisposeSessionScratch() })
 	_ = original.commandEnvironment(nil)
 	firstUnsandboxed := original.SessionScratchDir()
 	if err := original.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
@@ -172,7 +172,7 @@ func TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming(t *testi
 		t.Fatalf("original scratch = unsandboxed %q, owned %q, want two distinct dirs", firstUnsandboxed, firstOwned)
 	}
 	clone := original.WithWorkingDirectory(t.TempDir())
-	t.Cleanup(clone.DisposeUnadoptedScratch)
+	t.Cleanup(func() { _ = clone.DisposeSessionScratch() })
 	clone.AdoptSessionScratch(original)
 
 	// The original mints both kinds afresh while the clone holds the first pair.
@@ -205,7 +205,7 @@ func TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming(t *testi
 		}
 	}
 	// The clone owns nothing any more: disposing it drops neither pair.
-	clone.DisposeUnadoptedScratch()
+	_ = clone.DisposeSessionScratch()
 	for _, dir := range []string{firstUnsandboxed, firstOwned, secondUnsandboxed, secondOwned} {
 		if _, err := os.Stat(dir); err != nil {
 			t.Errorf("the clone's disposal after the move back removed %s: %v", dir, err)

@@ -6,6 +6,8 @@
 // session's own screen isn't reading while another screen is on top.
 import {
 	type AppwireClientLike,
+	acquireThreadSubscription,
+	type ThreadSubscriptionLease,
 	hydrateThread,
 	sessionControls,
 	type ThreadCapabilities,
@@ -18,6 +20,7 @@ import { type SendAction, sendAction } from "./sendAction";
 export interface SessionState {
 	threadId: string;
 	instanceId: string;
+	cwd: string;
 	status: string;
 	capabilities: ThreadCapabilities;
 	queueDepth: number;
@@ -25,16 +28,14 @@ export interface SessionState {
 	model: string;
 }
 
-/** Another session, read from a screen above it. A connection follows one
- * thread at a time, and each subscribing thread/read replaces the last. So
- * `read({ follow: true })` makes this the followed thread and tracks its
- * status and queue as they change, while `follow: false` reads without moving
- * the subscription, for a screen that is following a different thread. */
+/** A session read from a screen above it. Following holds an additive lease
+ * on this same connection; other transcript and activity owners remain subscribed. */
 export class SessionLink {
 	private state: SessionState | null = null;
 	private listeners = new Set<() => void>();
 	private stopListening: (() => void) | null = null;
 	private generation = 0;
+	private lease: ThreadSubscriptionLease | null = null;
 
 	constructor(
 		private readonly client: ConversationClientLike,
@@ -52,15 +53,16 @@ export class SessionLink {
 
 	async read({ follow }: { follow: boolean }): Promise<SessionState> {
 		const generation = ++this.generation;
-		const response = await this.client.request("thread/read", {
-			ref: this.ref,
-			includeTurns: false,
-			...(follow ? { subscribe: true, replaceSubscription: true } : {}),
-		});
+		if (follow) this.lease ??= acquireThreadSubscription(this.client, this.ref);
+		const response =
+			follow && this.lease
+				? await this.lease.read({ includeTurns: false })
+				: await this.client.request("thread/read", { ref: this.ref, includeTurns: false });
 		const thread = response.thread;
 		const state: SessionState = {
 			threadId: thread.id,
 			instanceId: thread.evener.instanceId ?? thread.id,
+			cwd: thread.cwd,
 			status: thread.status.type,
 			capabilities: thread.evener.capabilities,
 			queueDepth: thread.evener.queue.depth ?? 0,
@@ -77,6 +79,8 @@ export class SessionLink {
 		this.generation += 1;
 		this.stopListening?.();
 		this.stopListening = null;
+		this.lease?.release();
+		this.lease = null;
 		this.listeners.clear();
 	}
 
@@ -93,6 +97,12 @@ export class SessionLink {
 				});
 			else if (notification.method === "thread/queueChanged" && notification.params.ref === this.ref)
 				this.publish({ ...state, queueDepth: notification.params.queue.depth ?? 0 });
+			else if (
+				notification.method === "evener/thread/resync" &&
+				notification.params.ref === this.ref &&
+				notification.params.threadId === state.threadId
+			)
+				void this.read({ follow: true }).catch(() => {});
 		});
 	}
 

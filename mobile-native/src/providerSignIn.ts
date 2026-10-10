@@ -98,7 +98,7 @@ export class ProviderSignIn {
 			...(interruptedWrite || interruptedPoll
 				? {
 						error:
-							"Sign-in could not be confirmed before the connection changed. Check credential status before trying again.",
+							"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
 					}
 				: {}),
 		});
@@ -168,7 +168,10 @@ export class ProviderSignIn {
 				this.publish({
 					phase: "error",
 					busy: false,
-					error: "Sign-in could not be started. Check the connection before trying again.",
+					// What happened and the one thing to do (spec 5). The sheet's title
+					// names the provider, and its status line says when the connection
+					// itself is down.
+					error: "The hub couldn't start signing in. Start again.",
 				});
 		}
 	};
@@ -204,7 +207,7 @@ export class ProviderSignIn {
 					phase: "expired",
 					busy: false,
 					device: undefined,
-					error: "Sign-in status could not be confirmed. Check credential status before trying again.",
+					error: "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
 				});
 			} else if (response.state === "pending") {
 				this.publish({ busy: false });
@@ -213,7 +216,7 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Authorization has not been confirmed. Check its status before starting again.",
+					error: "Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
 				});
 			}
 		} catch {
@@ -273,7 +276,8 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Sign-in completion could not be confirmed. Check credential status before submitting again.",
+					error:
+						"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
 				});
 				this.pendingOperation = null;
 			}
@@ -292,7 +296,7 @@ export class ProviderSignIn {
 			this.publish({
 				busy: false,
 				error: this.uncertain
-					? "Sign-in status could not be confirmed. Check credential status before trying again."
+					? "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again."
 					: null,
 				credentialState: status.signedIn && status.hasStoredOAuth ? "configured" : "unconfigured",
 			});

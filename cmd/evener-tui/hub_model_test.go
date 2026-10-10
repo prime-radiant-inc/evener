@@ -1088,6 +1088,44 @@ func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
 	}
 }
 
+// TestHubModelBrowsePrintableRunesStayInComposer pins the text-first browse
+// ruling (kata 7hh0): every printable rune is composer text at any delivery
+// timing. The coalesced batch TestHubModelBrowseKeepsComposerVisibleAndTyping
+// covers must reach the composer, and so must the same runes delivered one
+// KeyMsg at a time — before the ruling, the sequential "f" fired the fork
+// binding mid-word and the two deliveries disagreed.
+func TestHubModelBrowsePrintableRunesStayInComposer(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "question", TurnIndex: 1, TranscriptEntryIndex: 1},
+		{Kind: transcript.MsgAssistant, Text: "answer"},
+	}
+	m.session.refreshViewport()
+	m.sessionView()
+	m.enterSessionBrowse(false)
+	m.sessionView()
+
+	for _, r := range "draft" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+
+	if !m.session.scrollMode {
+		t.Fatal("sequential printable runes must not leave transcript browse")
+	}
+	if m.forkDraft != nil {
+		t.Fatal("a printable rune in browse must not fire a command binding")
+	}
+	if got := m.session.input.Value(); got != "draft" {
+		t.Fatalf("sequential printable runes should land whole in the composer, got %q", got)
+	}
+}
+
 // TestHubModelBrowseFooterStillShowsEnterSend pins the rendering fact the
 // tmux e2e sync for issue #540 depends on: the browse-mode footer keeps the
 // composer panel — including its compose-mode "enter send" hint — on screen
@@ -1113,7 +1151,7 @@ func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	m.enterSessionBrowse(false)
 
 	view := ansiPattern.ReplaceAllString(m.sessionView(), "")
-	if !strings.Contains(view, "esc/i/q: compose") {
+	if !strings.Contains(view, "esc: compose") {
 		t.Fatalf("browse footer should show the browse action bar:\n%s", view)
 	}
 	if !strings.Contains(view, "enter send") {
@@ -1250,28 +1288,39 @@ func TestHubModelBrowseEnterTogglesSelectedDetail(t *testing.T) {
 	}
 }
 
-func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		msg  tea.KeyMsg
-	}{
-		{name: "esc", msg: tea.KeyMsg{Type: tea.KeyEsc}},
-		{name: "i", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}},
-		{name: "q", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newSessionHubModel(nil)
-			m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
-			m.enterSessionBrowse(false)
-			updated, _ := m.Update(tc.msg)
-			got := updated.(hubModel)
-			if got.session.scrollMode {
-				t.Fatalf("%s should return to compose", tc.msg.String())
-			}
-			if got.browseSelected != -1 {
-				t.Fatalf("%s browse selection=%d, want -1", tc.msg.String(), got.browseSelected)
-			}
-		})
+// TestHubModelSessionBrowseEscReturnsToCompose pins the text-first exit (kata
+// 7hh0): Escape is the only key that leaves browse. The old printable exits i
+// and q are composer text now.
+func TestHubModelSessionBrowseEscReturnsToCompose(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if got.session.scrollMode {
+		t.Fatal("esc should return to compose")
+	}
+	if got.browseSelected != -1 {
+		t.Fatalf("esc browse selection=%d, want -1", got.browseSelected)
+	}
+}
+
+// TestHubModelBrowsePrintableExitLettersAreComposerText pins that i and q —
+// the browse exits removed by the text-first ruling (kata 7hh0) — are composer
+// text instead of commands.
+func TestHubModelBrowsePrintableExitLettersAreComposerText(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+	for _, r := range "iq" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+	if !m.session.scrollMode {
+		t.Fatal("i/q must not leave transcript browse")
+	}
+	if got := m.session.input.Value(); got != "iq" {
+		t.Fatalf("i/q should land in the composer, got %q", got)
 	}
 }
 
@@ -3657,7 +3706,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
@@ -3704,7 +3753,7 @@ func TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex(t *testin
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	got := updated.(hubModel)
 	if got.forkDraft != nil {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
@@ -3725,7 +3774,7 @@ func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("invalid fork selection should not call hub")
 	}
@@ -3754,7 +3803,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
@@ -3922,14 +3971,14 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
-	for _, want := range []string{"esc/i/q: compose", "f: fork selected user message", "ctrl+o: dashboard"} {
+	for _, want := range []string{"esc: compose", "ctrl+f: fork selected user message", "ctrl+o: dashboard"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
 		}
 	}
 	m.detail.Capabilities.Fork = false
 	got = m.sessionView()
-	if strings.Contains(got, "f: fork") {
+	if strings.Contains(got, "ctrl+f: fork") {
 		t.Fatalf("browse footer advertised unavailable fork:\n%s", got)
 	}
 }
@@ -3953,7 +4002,7 @@ func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
 		t.Fatal("/fork should enter transcript browse mode")
 	}
 	view := got.sessionView()
-	for _, want := range []string{"Select a user message, then press f to fork.", "f: fork selected user message", "original request"} {
+	for _, want := range []string{"Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.", "ctrl+f: fork selected user message", "original request"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("/fork view missing %q:\n%s", want, view)
 		}

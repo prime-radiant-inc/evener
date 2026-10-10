@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -121,6 +122,7 @@ type WatchStatusInfo struct {
 // DetailedStatus. AppWire maps these values into EvenerDelegateInfo without
 // deriving them from Jobs.
 type DelegateStatusInfo struct {
+	RunGeneration       uint64                       `json:"run_generation"`
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
 	RootSessionID       string                       `json:"root_session_id"`
@@ -133,6 +135,7 @@ type DelegateStatusInfo struct {
 	Status              string                       `json:"status"`
 	Outcome             string                       `json:"outcome,omitempty"`
 	Reason              string                       `json:"reason,omitempty"`
+	Error               string                       `json:"error,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
 	NeedsAttention      bool                         `json:"needs_attention"`
@@ -185,12 +188,13 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for typed diagnostics.
 type DetailedStatus struct {
-	SkillCatalog     []skill.Descriptor     `json:"skill_catalog,omitempty"`
-	SkillDiagnostics []skill.Diagnostic     `json:"skill_diagnostics,omitempty"`
-	Tools            []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
-	MCP              []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
-	Skills           []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
-	Plugins          []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
+	Commands         []appwire.CommandDescriptor `json:"commands,omitzero"`
+	SkillCatalog     []skill.Descriptor          `json:"skill_catalog,omitempty"`
+	SkillDiagnostics []skill.Diagnostic          `json:"skill_diagnostics,omitempty"`
+	Tools            []ToolInfo                  `json:"tools,omitempty"`   // every registered tool and its source
+	MCP              []mcpconfig.ServerInfo      `json:"mcp,omitempty"`     // connected MCP servers
+	Skills           []skill.SkillMeta           `json:"skills,omitempty"`  // discovered skills, sorted by name
+	Plugins          []PluginInfo                `json:"plugins,omitempty"` // loaded plugins
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
@@ -208,8 +212,22 @@ const detailedStatusTerminalJobsLimit = 50
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
-	ds := DetailedStatus{Plugins: make([]PluginInfo, 0)}
+	ds := DetailedStatus{Plugins: make([]PluginInfo, 0), Commands: make([]appwire.CommandDescriptor, 0, len(s.pluginCommands))}
 	now := s.sclock().Now().UTC()
+	// Loaded winners, not a fresh filesystem scan: completion advertises exactly
+	// the inventory this session resolves when it consumes a selected name.
+	names := make([]string, 0, len(s.pluginCommands))
+	for name := range s.pluginCommands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		cmd := s.pluginCommands[name]
+		ds.Commands = append(ds.Commands, appwire.CommandDescriptor{
+			Name: cmd.Name, PluginName: cmd.PluginName, Description: cmd.Description,
+			ArgumentHint: cmd.ArgumentHint, Source: cmd.Source,
+		})
+	}
 
 	// Build MCP tool → server name map for tool categorization.
 	mcpToolServer := map[string]string{}
@@ -307,10 +325,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID
-		for _, row := range s.delegateController.Snapshot().rows {
-			if row.descriptor.OwnerSessionID == s.ID() {
-				ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
-			}
+		for _, row := range s.delegateController.sessionSubtreeSnapshot(s.ID()) {
+			ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
 		}
 	}
 
@@ -371,6 +387,8 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 
 // SessionOwnedDelegateIDs reads the session's subtree in the root-owned
 // delegate journal without loading transcripts. Fork provenance is not ownership.
+// ctx is checked before the journal fold and again after the in-memory subtree
+// walk, so a cancellation during either is returned instead of a result.
 func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([]string, error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return nil, err
@@ -395,43 +413,26 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	}
 	// Committed descriptors remain ownership evidence after interrupted writes.
 	// A killed daemon may leave an incomplete trailing batch; it is not replayed.
-	children := make(map[string][]string)
-	var pending []string
+	// Only rows the root owns count, so a row outside that ownership, and any
+	// row whose parentage runs through one, is in no session's subtree here.
+	rootOwned := make(delegatestore.State, len(result.Value.state))
 	for delegateID, aggregate := range result.Value.state {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootID {
-			continue
-		}
-		children[aggregate.Descriptor.ParentDelegateID] = append(children[aggregate.Descriptor.ParentDelegateID], delegateID)
-		if sessionID == rootID || aggregate.Descriptor.ChildSessionID == sessionID {
-			pending = append(pending, delegateID)
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID {
+			rootOwned[delegateID] = aggregate
 		}
 	}
-	ids := make(map[string]bool)
-	visited := make(map[string]bool)
-	for len(pending) != 0 {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		delegateID := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if visited[delegateID] {
-			continue
-		}
-		visited[delegateID] = true
-		id := result.Value.state[delegateID].Descriptor.ChildSessionID
+	owners := sessionSubtreeOwners(rootOwned, sessionID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
+	// for the sessions below it.
+	delete(owners, sessionID)
+	out := make([]string, 0, len(owners))
+	for id := range owners {
 		if err := schema.ValidateSessionID(id); err != nil {
 			return nil, err
 		}
-		if id != sessionID {
-			ids[id] = true
-		}
-		pending = append(pending, children[delegateID]...)
-	}
-	out := make([]string, 0, len(ids))
-	for id := range ids {
 		out = append(out, id)
 	}
 	sort.Strings(out)
@@ -471,6 +472,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 	timing := projectStableDelegateStatus(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
+		RunGeneration:       row.generation,
 		OwnerSessionID:      descriptor.OwnerSessionID,
 		RootSessionID:       rootID,
 		ChildSessionID:      descriptor.ChildSessionID,
@@ -506,6 +508,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 	if row.lastOutcome != nil {
 		out.Outcome = string(row.lastOutcome.Status)
 		out.Reason = row.lastOutcome.Reason
+		out.Error = row.lastOutcome.Error
 		out.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
@@ -552,8 +555,8 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
 		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
 		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
-		Reason: info.Reason, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
-		ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
+		Reason: info.Reason, Error: info.Error, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
+		RunGeneration: info.RunGeneration, ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
 		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
 		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,

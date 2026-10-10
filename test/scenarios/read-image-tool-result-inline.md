@@ -104,7 +104,7 @@ captured and `rm -rf` your own run dir. Leave any real hub untouched.
 - **The gallery only exists while its row is expanded, and an image
   `read_file` is expanded on load.** `<ImageGallery images={item.outputImages}
   />` is inside `{expanded && …}`. The row's own `descriptor.autoExpand`
-  (`isImageRead`, `tools/fsTools.tsx:82`) opens it — a failure no longer does,
+  (`isImageRead`, `tools/fsTools.tsx:64`) opens it — a failure no longer does,
   and a text or PDF `read_file` keeps the usual collapsed default. So for
   *this* scenario's image read the row is usually already open: **verify it is
   expanded rather than clicking it** (a click would collapse it, and then a DOM

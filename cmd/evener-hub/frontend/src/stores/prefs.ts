@@ -80,6 +80,7 @@ import {
   type TranscriptDisplayConfigV1,
   type TranscriptViewportClass,
 } from "@evener/appwire-client";
+import { useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
@@ -424,11 +425,25 @@ function systemPrefersDark(): boolean {
     : window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
+// Pairs with systemPrefersDark for useResolvedScheme's useSyncExternalStore:
+// systemPrefersDark is the snapshot, this is the change subscription. Same
+// matchMedia-less guard as systemPrefersDark and ensureSystemSchemeListener, so
+// a jsdom environment degrades to the dark default rather than throwing.
+function subscribeSystemScheme(callback: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia("(prefers-color-scheme: dark)");
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+
 // --- document application: the DOM side effects the legacy mirrored
 // alongside localStorage (assets/theme.js; assets/settings-appearance.js's
 // two script-parse-time IIFEs) - see this file's own top comment for which
-// prefs get one.
+// prefs get one. Guarded on `document`: this store is hydrated at module load,
+// and a node-environment importer (no DOM) must not throw - the same
+// best-effort contract the localStorage access above keeps.
 function applyTheme(value: ThemePref): void {
+  if (typeof document === "undefined") return;
   if (value === "system") {
     // Resolves to one of the same two document states an explicit pick
     // would - light sets the attribute, dark removes it (never the
@@ -467,14 +482,17 @@ function ensureSystemSchemeListener(): void {
 }
 
 function applyPhoneDensity(value: PhoneDensityPref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.phoneDensity = value;
 }
 
 function applyFontSize(value: FontSizePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.fontSize = value;
 }
 
 function applyTranscriptMeasure(value: TranscriptMeasurePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.transcriptMeasure = value;
 }
 
@@ -626,6 +644,20 @@ export function usePrefsStore<T>(selector?: (state: PrefsStoreState) => T): T | 
   // `selector = identity` JS default param, so both arms run identically).
   // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(prefsStore, selector) : useStore(prefsStore);
+}
+
+/**
+ * The theme actually in effect: the theme pref, with "system" resolved live
+ * against the OS's prefers-color-scheme. The one place that resolution lives -
+ * widget consumers (the inline mermaid diagram) import this rather than
+ * re-deriving it. Stays consistent with applyTheme's own document states (an
+ * absent data-theme attribute means dark), the canonical signal paneActions
+ * watches.
+ */
+export function useResolvedScheme(): "light" | "dark" {
+  const theme = usePrefsStore((state) => state.theme);
+  const systemIsDark = useSyncExternalStore(subscribeSystemScheme, systemPrefersDark);
+  return theme === "system" ? (systemIsDark ? "dark" : "light") : theme;
 }
 
 // hydrate re-derives every field from whatever's in localStorage right now

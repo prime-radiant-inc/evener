@@ -13,21 +13,33 @@
 //
 // Both live and read-only panes now hand their hydrated model to the shared
 // TranscriptBody. The read-only surface injects only its older-row affordance
-// and deliberately omits live flow-overlay/new-content-pill machinery.
-import { resolveEffectiveConfig } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+// and deliberately omits live flow-overlay/new-content-pill machinery - but it
+// runs the SAME scroll coordinator (useTranscriptScroll) the live pane does,
+// so landing at the latest, near-top paging, following a prepend, and the
+// geometry fill behind a too-short page all behave identically on both
+// surfaces instead of drifting apart in a second implementation.
 import { useStore } from "zustand";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { connectionStore } from "../../stores/connection";
-import { threadsStore } from "../../stores/threads";
-import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
-import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
-import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
-import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
-import { TranscriptBody } from "../session/transcript/TranscriptBody";
-import { useTranscript } from "../session/transcript/useTranscript";
+import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { deriveScope } from "../../shell/statusbar/statusScope";
+import { workspaceStore } from "../../shell/workspace";
+import { navigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
+import { useThreadsStore } from "../../stores/threads";
+import { EmptyState, PaneScaffold } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
+import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
+import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
+import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
+import styles from "./transcript.module.css";
+
+const CLASS = {
+  body: requireClass(styles.body, "transcript.module.css", "body"),
+  list: requireClass(styles.list, "transcript.module.css", "list"),
+  scope: requireClass(styles.scope, "transcript.module.css", "scope"),
+};
 
 export interface TranscriptParams {
   ref: string;
@@ -47,107 +59,38 @@ export default function Transcript({ params, paneId }: PaneProps<TranscriptParam
   // thread/read, no ensureThread). Refs never change for a mounted pane, so
   // this dispatch is stable for the component's lifetime.
   if (params.ref.startsWith("job:")) {
-    return <JobLog jobRef={params.ref} parentRef={params.parentRef} />;
+    return <JobLog jobRef={params.ref} parentRef={params.parentRef} paneId={paneId} />;
   }
   return <ThreadTranscript params={params} paneId={paneId} />;
 }
 
 function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
-  const now = useNowTick(NOW_TICK_MS);
-
-  // ensureThread on mount / releaseThread on unmount, deferred until the one
-  // client is actually ready - a deep-linked open can reach this effect before
-  // the handshake finishes, and request() rejects until then. Exactly the
-  // SessionPane lifecycle (see its own comment); once the single attempt has
-  // fired it is never repeated (a reconnect blip is the store's own concern).
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(ref)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
-    };
-  }, [ref]);
-
-  // Older-turn paging is automatic here too (LoadOlderRow's own sentinel), and
-  // reports a failed page inline with a Retry rather than as a toast - see
-  // Session.tsx's own comment on the same wiring.
-  const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
-  const listRef = useRef<VirtualListHandle>(null);
-  const announcementSequence = useRef(0);
-  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
-
-  // Open at the latest turn once, when content first arrives. anchorToEnd on
-  // the VirtualList below keeps the viewport pinned to the TRUE end while the
-  // initial estimate->measured correction settles (and follows later appends
-  // only while the reader stays at the end) - without it this one-shot scroll
-  // lands at the ESTIMATED end and strands the reader mid-transcript. The ref
-  // guard keeps it a one-shot: a later "load older" prepend doesn't yank the
-  // view back to the bottom (and the list's own end-anchor keeps a prepend
-  // visually anchored either way).
-  const turnCount = model?.turns.length ?? 0;
-  const didInitialScrollRef = useRef(false);
-  useEffect(() => {
-    if (!didInitialScrollRef.current && turnCount > 0) {
-      didInitialScrollRef.current = true;
-      listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
-    }
-  }, [turnCount]);
-
-  const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
-  const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
-  const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
-  const displayConfig = useMemo(
-    () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
-    [displayHub, displayLocal, displayViewport],
+  const pane = useStore(workspaceStore, (state) =>
+    state.panes.find(
+      (record) =>
+        record.id === paneId && record.type === "transcript" && (record.params as TranscriptParams).ref === ref,
+    ),
   );
-
-  if (!model) {
-    return (
-      <PaneScaffold title={ref}>
-        <EmptyState title="Loading transcript…" />
-      </PaneScaffold>
-    );
-  }
-
-  const content = (
-    <PaneScaffold title={model.name || ref}>
-      {model.turns.length === 0 ? (
-        <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
-      ) : (
-        <TranscriptBody
-          model={model}
-          config={displayConfig}
-          surface="readOnly"
-          disclosureScope={`transcript:readOnly:${ref}`}
-          sessionRef={ref}
-          viewId={paneId}
-          onAnnounceViewChange={(summary) => {
-            announcementSequence.current += 1;
-            setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
-          }}
-          loadOlderRow={
-            model.olderCursor && (
-              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-            )
-          }
-          listRef={listRef}
-        />
-      )}
-      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
-        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+  const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
+  const model = useThreadsStore((state) => state.threads.get(ref));
+  const { snapshot: activity } = useSessionActivity(ref);
+  // Only the crumbs are shown here, so no subagent count is read.
+  const scope = deriveScope(navigationStore.getState(), ref, activity, null);
+  return (
+    <PaneScaffold title={model?.name || ref}>
+      <div className={CLASS.body}>
+        {scope.ancestryKnown && scope.path.length > 1 && (
+          <div className={CLASS.scope}>
+            <ScopeCrumbs path={scope.path} hierarchy />
+          </div>
+        )}
+        <div className={CLASS.list}>
+          <TranscriptSourcePaneContext.Provider value={paneId}>
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          </TranscriptSourcePaneContext.Provider>
+        </div>
       </div>
     </PaneScaffold>
   );
-  return <SessionNowContext.Provider value={now}>{content}</SessionNowContext.Provider>;
 }

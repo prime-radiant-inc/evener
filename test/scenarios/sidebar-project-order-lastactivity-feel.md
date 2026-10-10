@@ -88,8 +88,8 @@ verdict comes from the JSON.
 1. Create three project dirs under one scratch base: `proj-old`, `proj-mid`,
    `proj-new`.
 2. Spawn S1 in `proj-old` (`POST /api/spawn`, `working_dir` = proj-old). Poll
-   `GET /api/sessions/local:$SID1` until its turn has finished — for this
-   harness that settles on `awaiting`, not `idle` (see Sharp edges).
+   `GET /api/sessions/local:$SID1` until its turn has finished — a plain
+   reply settles on `idle` (see Sharp edges).
 3. Wait ~45s, then spawn S2 in `proj-mid`; poll to settled.
 4. Wait ~45s, then spawn S3 in `proj-new`; poll to settled. `proj-new` is now
    both the most-recently-created and most-recently-touched project.
@@ -146,8 +146,9 @@ Those numbers are the shape of the regression, not the current expectation.
 
 ## Sharp edges
 
-- **This harness settles on `awaiting`, not `idle`, after a normal turn.**
-  `awaiting` also carries `capabilities.send: false` transiently while the
+- **A normal turn settles on `idle`; it rests `awaiting` only when the agent
+  ends on `needs_response` or asks a question.** A settled session can carry
+  `capabilities.send: false` transiently while the
   daemon is between an internal loop step and its next steady state — poll for
   `capabilities.send: true` before POSTing the follow-up turn in step 6, or the
   hub replies `503 send is not available for this session`.

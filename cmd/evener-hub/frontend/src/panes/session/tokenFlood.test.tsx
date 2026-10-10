@@ -16,10 +16,11 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
-import Session from "./Session";
+import { CommittedSession as Session } from "./testing/CommittedSession";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./transcript/types";
 
 const FLOOD_SIZE = 10_000;
@@ -192,6 +193,7 @@ describe("token-flood: multi-delta streaming fast path through a mounted Session
 
   afterEach(() => {
     cleanup();
+    resetWorkspaceStoreForTests();
     if (offsetHeightDescriptor) {
       Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
     }

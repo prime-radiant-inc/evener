@@ -516,7 +516,7 @@ test("a save refused because the held listing belongs to a replaced connection r
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a save failure.
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection was replaced");
+  expect(alert.textContent).toContain("connection changed");
   expect(screen.queryByText(/could not be saved/)).toBeNull();
   // The draft was aimed at a destination that is gone, so it is dropped, and
   // the flow re-reads the listing to re-anchor on the one now on screen.
@@ -559,7 +559,7 @@ test("a sign-in refused because the held listing belongs to a replaced connectio
   ).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a failed start.
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection was replaced");
+  expect(alert.textContent).toContain("connection changed");
   expect(screen.queryByText(/Sign-in could not be started/)).toBeNull();
 });
 

@@ -1,13 +1,17 @@
-import type { ThreadModel } from "@evener/appwire-client";
-import { buildEntityView, type EntityView, watchFoldKey } from "@evener/appwire-client";
+import type { SessionActivityCollection, ThreadModel } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, projectSessionActivity, watchFoldKey } from "@evener/appwire-client";
 import { useMemo } from "react";
-import { retainedActivityTree, useActivityPanelStore } from "../../../stores/activityPanel";
+import { useSessionActivity } from "../../../stores/sessionActivity";
+
+const ENTITY_COLLECTIONS: readonly SessionActivityCollection[] = ["jobs", "delegates"];
 
 export function useEntityView(sessionRef: string, model: ThreadModel): Map<string, EntityView> {
-  const tree = useActivityPanelStore((state) => retainedActivityTree(state.entries.get(sessionRef)));
-  const load = useActivityPanelStore((state) => state.entries.get(sessionRef)?.load);
-  const stale = load?.kind === "ready" && load.staleError !== undefined;
-  const ended = load?.kind === "ended";
+  const { snapshot } = useSessionActivity(sessionRef, "session", ENTITY_COLLECTIONS);
+  const tree = useMemo(() => (snapshot ? (projectSessionActivity(snapshot).tree ?? undefined) : undefined), [snapshot]);
+  const stale = Boolean(
+    snapshot?.delegates.error || snapshot?.jobs.error || snapshot?.delegates.unavailable || snapshot?.jobs.unavailable,
+  );
+  const ended = snapshot?.context?.availability === "retained";
   const watchKey = watchFoldKey(model.turns);
 
   // watchKey represents every watch-fold input; prose-only turns changes must

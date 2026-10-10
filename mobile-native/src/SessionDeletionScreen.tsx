@@ -10,6 +10,7 @@ import { NavigationActions } from "./navigationActions";
 import { SessionDeletionEditor } from "./SessionDeletionEditor";
 import type { Routes } from "./screens";
 import { readSessionDeletion } from "./sessionDeletionNavigation";
+import { destructiveButton } from "./haptics";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -17,7 +18,7 @@ type Readback = Awaited<ReturnType<typeof readSessionDeletion>>;
 
 export function SessionDeletionScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionDeletion">) {
 	const { hubId, ref, title } = route.params;
-	const { client, activeProfile, state, retry } = useConnection();
+	const { client, activeProfile, state } = useConnection();
 	const focused = useIsFocused();
 	const ready = activeProfile?.id === hubId && !!client && state === "ready";
 	const binding = useMemo(() => ({ client, hubId, ref, ready, focused }), [client, hubId, ref, ready, focused]);
@@ -69,7 +70,6 @@ export function SessionDeletionScreen({ route, navigation }: NativeStackScreenPr
 	function refresh() {
 		setProblem(null);
 		if (ready) void actions?.reconcile();
-		else retry();
 	}
 	function openSessions() {
 		if (owner.current !== binding || !focused || activeProfile?.id !== hubId) return;
@@ -121,16 +121,7 @@ export function SessionDeletionScreen({ route, navigation }: NativeStackScreenPr
 		Alert.alert(
 			`Delete ${observed.title || title}?`,
 			"This permanently removes this session’s saved history from the hub. Other sessions and your local unsent draft are kept.",
-			[
-				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Delete saved session",
-					style: "destructive",
-					onPress: () => {
-						void remove(expected);
-					},
-				},
-			],
+			[{ text: "Cancel", style: "cancel" }, destructiveButton("Delete saved session", () => remove(expected))],
 		);
 	}
 	const checkpoint = action?.recovery;

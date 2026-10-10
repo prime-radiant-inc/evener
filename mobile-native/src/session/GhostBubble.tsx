@@ -6,9 +6,10 @@
 import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, View } from "react-native";
 import { SwipeRow } from "../board/SwipeRow";
-import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
+import { destructiveButton, haptic } from "../haptics";
 
 const BUTTON_LABELS: Record<GhostAction, string> = {
 	steerNow: "Steer now",
@@ -23,7 +24,7 @@ const BUTTON_LABELS: Record<GhostAction, string> = {
 // queue says so in full there.
 const MENU_LABELS: Record<GhostAction, string> = { ...BUTTON_LABELS, cancel: "Cancel message" };
 
-export type GhostBackdrop = "surface" | "page" | "canvas";
+type GhostBackdrop = "page" | "canvas";
 
 export interface GhostBubbleProps {
 	ghost: Ghost;
@@ -37,9 +38,8 @@ export interface GhostBubbleProps {
 	editHint: string | null;
 	/** What the message carried besides its text, such as images. */
 	attachments?: ReactNode;
-	/** What the bubble sits on: the composer's surface, the transcript's
-	 * page, or a sheet's canvas. A swipe paints it under the unfilled
-	 * bubble. */
+	/** What the bubble sits on: the transcript's page, or a sheet's canvas.
+	 * A swipe paints it under the unfilled bubble. */
 	backdrop: GhostBackdrop;
 	onAction(action: GhostAction): void;
 }
@@ -47,6 +47,7 @@ export interface GhostBubbleProps {
 export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, backdrop, onAction }: GhostBubbleProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
 	const offersEdit = ghost.buttons.includes("edit") || ghost.menu.includes("edit");
 	const menu = ghost.menu.filter((action) => !(action === "edit" && editBlocked));
@@ -65,6 +66,8 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 				},
 				(index) => {
 					const action = menu[index];
+					// Spec 16.6: the destructive choice is its own confirmation.
+					if (index === destructive) haptic("rigid");
 					if (action) onAction(action);
 				},
 			);
@@ -72,7 +75,11 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		// beneath.
 		else
 			Alert.alert(ghost.caption, ghost.text, [
-				...menu.map((action) => ({ text: MENU_LABELS[action], onPress: () => onAction(action) })),
+				...menu.map((action) =>
+					action === "cancel"
+						? destructiveButton(MENU_LABELS[action], () => onAction(action))
+						: { text: MENU_LABELS[action], onPress: () => onAction(action) },
+				),
 				{ text: "Cancel", style: "cancel" as const },
 			]);
 	}
@@ -109,9 +116,9 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 					numberOfLines={3}
 					ellipsizeMode="tail"
 					style={{
-						fontFamily: typeRoles.yourMessage.fontFamily,
-						fontSize: typeRoles.yourMessage.fontSize * scale,
-						lineHeight: typeRoles.yourMessage.lineHeight * scale,
+						fontFamily: reading.yourMessage.fontFamily,
+						fontSize: reading.yourMessage.fontSize * scale,
+						lineHeight: reading.yourMessage.lineHeight * scale,
 						color: palette.inkMid,
 					}}
 				>
@@ -124,41 +131,14 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			{offersEdit && editBlocked && editHint ? <Text {...caption}>{editHint}</Text> : null}
 			{ghost.buttons.length > 0 ? (
 				<View style={{ flexDirection: "row", gap: 4 }}>
-					{ghost.buttons.map((action) => {
-						const off = disabled || (action === "edit" && editBlocked);
-						const quiet = action === "discard" || action === "cancel";
-						return (
-							<Pressable
-								key={action}
-								accessibilityRole="button"
-								accessibilityLabel={BUTTON_LABELS[action]}
-								accessibilityState={{ disabled: off }}
-								disabled={off}
-								onPress={() => {
-									if (!off) onAction(action);
-								}}
-								style={({ pressed }) => ({
-									minHeight: 44,
-									minWidth: 44,
-									paddingHorizontal: 8,
-									alignItems: "center",
-									justifyContent: "center",
-									opacity: off ? 0.4 : pressed ? 0.6 : 1,
-								})}
-							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{
-										fontSize: 15 * scale,
-										lineHeight: 20 * scale,
-										color: quiet ? palette.inkHi : palette.accentInk,
-									}}
-								>
-									{BUTTON_LABELS[action]}
-								</Text>
-							</Pressable>
-						);
-					})}
+					{ghost.buttons.map((action) => (
+						<GhostButton
+							key={action}
+							action={action}
+							disabled={disabled || (action === "edit" && editBlocked)}
+							onPress={() => onAction(action)}
+						/>
+					))}
 				</View>
 			) : null}
 		</View>
@@ -178,5 +158,43 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		</SwipeRow>
 	) : (
 		bubble
+	);
+}
+
+/** One of a ghost's text buttons: accent, or quiet when it takes the message
+ * away. Disabled, it dims and does nothing. */
+function GhostButton({ action, disabled, onPress }: { action: GhostAction; disabled: boolean; onPress(): void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const quiet = action === "discard" || action === "cancel";
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={BUTTON_LABELS[action]}
+			accessibilityState={{ disabled }}
+			disabled={disabled}
+			onPress={() => {
+				if (!disabled) onPress();
+			}}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				minWidth: 44,
+				paddingHorizontal: 8,
+				alignItems: "center",
+				justifyContent: "center",
+				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					fontSize: 15 * scale,
+					lineHeight: 20 * scale,
+					color: quiet ? palette.inkHi : palette.accentInk,
+				}}
+			>
+				{BUTTON_LABELS[action]}
+			</Text>
+		</Pressable>
 	);
 }

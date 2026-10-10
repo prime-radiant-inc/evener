@@ -8,7 +8,7 @@
 // get tool calls rendered correctly.
 
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { displayTurnStatus, scopedDisclosureId } from "@evener/appwire-client";
+import { displayTurnStatus, entryDisplayKey, scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -88,7 +88,10 @@ export function isItemLive(item: ItemModel): boolean {
 export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: number | undefined) {
   if (viewAnchorIndex === undefined) return undefined;
   return {
-    "data-view-anchor-id": entry.id,
+    // The stable display key, not the wire id: a streamed reply keeps its
+    // anchor when history records its round (transcriptProjector's
+    // displayKeyFor).
+    "data-view-anchor-id": entryDisplayKey(entry),
     "data-view-anchor-index": viewAnchorIndex,
     "data-view-anchor-source-index": entry.sourceIndex,
     "data-view-anchor-turn-id": entry.turnId,
@@ -102,7 +105,7 @@ export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: num
 function runAnchorFor(run: ToolRun, viewAnchorIndex: number | undefined) {
   const first = run.entries[0];
   if (!first) return undefined;
-  const anchor = projectedEntryAnchor({ ...first, id: run.id }, viewAnchorIndex);
+  const anchor = projectedEntryAnchor({ ...first, id: run.id, displayKey: run.id }, viewAnchorIndex);
   if (!anchor) return undefined;
   // The ids this anchor stands in for, so a scroll position or focus
   // captured on the second or third call (useTranscriptScroll) still finds
@@ -163,7 +166,7 @@ export function ProjectedIntentGroup({
         </summary>
         <div className={transcriptStyles.intentGroupItems}>
           {entries.map((entry) => (
-            <div key={entry.id} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+            <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
               <ToolCallItem
                 item={entry.item}
                 turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
@@ -312,13 +315,18 @@ export function TurnBlock({
     );
     if (rowRoleFor(item, { opensExchange }) === "speaker") {
       renderedEntries.push(
-        <div key={entry.id} {...viewAnchorFor(entry)}>
+        <div key={entryDisplayKey(entry)} {...viewAnchorFor(entry)}>
           {renderedItem}
         </div>,
       );
     } else {
       renderedEntries.push(
-        <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
+        <div
+          key={entryDisplayKey(entry)}
+          className={CLASS.runContent}
+          data-testid="run-content"
+          {...viewAnchorFor(entry)}
+        >
           {renderedItem}
         </div>,
       );

@@ -18,7 +18,6 @@ const row = (ref: string): NavigationSessionSummary => ({
 const classified = (ref: string, state: BoardState): ClassifiedRow => ({ row: row(ref), state });
 const bands = (over: Partial<LiveBands> = {}): LiveBands => ({
 	needsYou: [],
-	finished: [],
 	working: [],
 	idle: [],
 	...over,
@@ -44,7 +43,6 @@ it("lists Live as band headers and rows keyed by ref alone, marking which sit in
 	const items = liveItems(
 		bands({
 			needsYou: [classified("local:ask", "question")],
-			finished: [classified("local:done", "finished")],
 			working: [classified("local:work", "working"), classified("local:build", "working")],
 			idle: [classified("local:old", "idle")],
 		}),
@@ -53,29 +51,36 @@ it("lists Live as band headers and rows keyed by ref alone, marking which sit in
 	expect(shape(items)).toEqual([
 		["band:needsYou", "live", "band"],
 		["live:local:ask", "live", "signal", false, true, false, 0, true],
-		["band:finished", "live", "band"],
-		["live:local:done", "live", "signal", false, false, false, 0, true],
 		["band:working", "live", "band"],
 		["live:local:work", "live", "signal", true, false, false, 0, true],
 		["live:local:build", "live", "signal", true, false, false, 0, true],
 		["idle-fold", "live", "idleFold"],
 		["live:local:old", "live", "quiet", false, false, false, 0, true],
 	]);
-	expect(items.filter((item) => item.kind === "band").map((item) => item.count)).toEqual([1, 1, 2]);
+	expect(items.filter((item) => item.kind === "band").map((item) => item.count)).toEqual([1, 2]);
 });
 
 it("leaves out empty bands, and Idle's rows while it is folded", () => {
 	const items = liveItems(
-		bands({ finished: [classified("local:done", "finished")], idle: [classified("local:old", "idle")] }),
+		bands({ working: [classified("local:work", "working")], idle: [classified("local:old", "idle")] }),
 		true,
 	);
 	expect(shape(items)).toEqual([
-		["band:finished", "live", "band"],
-		["live:local:done", "live", "signal", false, false, false, 0, true],
+		["band:working", "live", "band"],
+		["live:local:work", "live", "signal", true, false, false, 0, true],
 		["idle-fold", "live", "idleFold"],
 	]);
-	expect(items.at(-1)).toMatchObject({ count: 1, folded: true });
+	expect(items.at(-1)).toMatchObject({ count: 1, folded: true, unseen: false });
 	expect(liveItems(bands(), false)).toEqual([]);
+});
+
+it("says on Idle's fold whether any session inside is unseen", () => {
+	const fold = (idle: ClassifiedRow[]) => liveItems(bands({ idle }), true).at(-1);
+	expect(fold([classified("local:old", "idle")])).toMatchObject({ kind: "idleFold", unseen: false });
+	expect(fold([classified("local:old", "idle"), { ...classified("local:new", "idle"), unseen: true }])).toMatchObject({
+		kind: "idleFold",
+		unseen: true,
+	});
 });
 
 it("lists each pinned category as its header, then its sessions as quiet still rows, even a working one", () => {
@@ -131,7 +136,7 @@ it("lists each project section as its header and its tree, session rows keyed wi
 });
 
 it("groups a list by section, in order", () => {
-	const live = liveItems(bands({ finished: [classified("local:done", "finished")] }), false);
+	const live = liveItems(bands({ working: [classified("local:work", "working")] }), false);
 	const pinned = pinnedItems(
 		[{ id: "pins-1", name: "Mine", count: 0 }],
 		{},
@@ -140,5 +145,19 @@ it("groups a list by section, in order", () => {
 	);
 	const groups = groupItems([...live, ...pinned]);
 	expect([...groups.keys()]).toEqual(["live", "pin:pins-1"]);
-	expect(groups.get("live")?.map((item) => item.key)).toEqual(["band:finished", "live:local:done"]);
+	expect(groups.get("live")?.map((item) => item.key)).toEqual(["band:working", "live:local:work"]);
+});
+
+it("gives an archived project session no blue dot, though it may still be running", () => {
+	const items = projectItems(
+		[
+			{
+				section: { key: "p" } as never,
+				folded: false,
+				items: [{ kind: "session", key: "s", row: row("local:archived"), depth: 0, archived: true } as never],
+			},
+		],
+		(summary) => ({ row: summary, state: "working", unseen: true }),
+	);
+	expect(items.flatMap((item) => (item.kind === "row" ? [item.item.unseen] : []))).toEqual([false]);
 });

@@ -105,6 +105,9 @@ type slot struct {
 	item appwire.OverlayItem
 	// order is the slot's creation order, which Snapshot follows.
 	order uint64
+	// text is a stream or preview's text, kept apart from item so a delta
+	// appends in amortized time under the leaf lock; view copies it in.
+	text []byte
 	// output is a tool call's output, kept apart from item so a delta
 	// appends in amortized time under the leaf lock; view copies it in.
 	output []byte
@@ -117,8 +120,11 @@ type slot struct {
 // nothing with the overlay.
 func (s *slot) view() appwire.OverlayItem {
 	item := appwire.CloneOverlayItem(s.item)
-	if s.item.Kind == appwire.OverlayTool {
+	switch s.item.Kind {
+	case appwire.OverlayTool:
 		item.Item.Output = string(s.output)
+	case appwire.OverlayStream, appwire.OverlayPreview:
+		item.Item.Text = string(s.text)
 	}
 	return item
 }
@@ -355,14 +361,16 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 	if _, ok := o.slots[key]; ok {
 		return o.appendText(key, text)
 	}
-	return o.upsert(o.newSlot(appwire.OverlayItem{
+	s := o.newSlot(appwire.OverlayItem{
 		Key:      key,
 		Kind:     appwire.OverlayStream,
 		TurnID:   o.runningTurnID,
 		RoundID:  o.roundID,
 		StreamID: streamID,
-		Item:     appwire.ThreadItem{Type: kind, ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, Text: text, Status: appwire.TurnStatusInProgress},
-	}))
+		Item:     appwire.ThreadItem{Type: kind, ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, Status: appwire.TurnStatusInProgress},
+	})
+	s.text = append(s.text, text...)
+	return o.upsert(s)
 }
 
 // resetStream discards one attempt's streams and previews, telling clients
@@ -418,7 +426,7 @@ func (o *Overlay) resetPreview(callID string) []Change {
 	roundID := preview.item.RoundID
 	if _, covered := o.coveredRounds.get(roundID); !covered {
 		for _, s := range o.slots {
-			if s.item.Kind == appwire.OverlayStream && s.item.StreamID == preview.item.StreamID && s.item.Item.Text != "" {
+			if s.item.Kind == appwire.OverlayStream && s.item.StreamID == preview.item.StreamID && len(s.text) > 0 {
 				o.discardedRounds.put(roundID, struct{}{})
 				break
 			}
@@ -433,7 +441,7 @@ func (o *Overlay) appendText(key, text string) []Change {
 	if !ok || text == "" {
 		return nil
 	}
-	s.item.Item.Text += text
+	s.text = append(s.text, text...)
 	return []Change{{Method: appwire.NotifyOverlayDelta, Params: appwire.OverlayDeltaParams{Key: key, Field: appwire.OverlayDeltaText, Delta: text}}}
 }
 
@@ -558,7 +566,7 @@ func (o *Overlay) endRound(roundID string) []Change {
 		if s.item.RoundID != roundID {
 			continue
 		}
-		if s.item.Kind == appwire.OverlayTool || (s.item.Kind == appwire.OverlayStream && s.item.Item.Text != "") {
+		if s.item.Kind == appwire.OverlayTool || (s.item.Kind == appwire.OverlayStream && len(s.text) > 0) {
 			interrupted = true
 		}
 		delete(o.slots, key)

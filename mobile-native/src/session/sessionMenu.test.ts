@@ -13,7 +13,6 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 	const chosen: SessionMenuAction[] = [];
 	const items = sessionMenu({
 		current: "intent",
-		hasSubagents: true,
 		hasDocuments: true,
 		connected: true,
 		sharedNotes: true,
@@ -60,16 +59,23 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
 			"Find in session",
-			"Files & artifacts",
-			"Subagents",
+			"Files",
+			"Activity",
 			"Tasks",
 			"Notes & links",
 			"Session info",
 			"Ask aside…",
+			"New session like this",
 			"Pin to category…",
 			"Archive",
 			"Shut down",
 		]);
+	});
+
+	it("starts a new session like this one (ruling 24)", () => {
+		const { items, chosen } = menu();
+		action(only(items).menu.items, "New session like this").onPress();
+		expect(chosen).toEqual([{ kind: "like" }]);
 	});
 
 	it("leaves Delete to the Session sheet", () => {
@@ -118,21 +124,27 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
-		["hasDocuments", "Files & artifacts"],
-		["hasSubagents", "Subagents"],
-		["connected", "Tasks"],
+		["hasDocuments", "Files"],
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
+		expect(entries).toHaveLength(11);
+	});
+
+	// Activity and Tasks both read the hub live, so both wait for a connection.
+	it("shows neither Activity nor Tasks while disconnected", () => {
+		const entries = only(menu({ connected: false }).items).menu.items;
+		expect(labels(entries)).not.toContain("Activity");
+		expect(labels(entries)).not.toContain("Tasks");
 		expect(entries).toHaveLength(10);
 	});
 
-	it("opens Files & artifacts", () => {
+	it("opens Files", () => {
 		const { items, chosen } = menu();
-		action(only(items).menu.items, "Files & artifacts").onPress();
+		action(only(items).menu.items, "Files").onPress();
 		expect(chosen).toEqual([{ kind: "files" }]);
 	});
 
@@ -148,7 +160,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it.each([
 		["Find in session", { kind: "find" }],
-		["Subagents", { kind: "subagents" }],
+		["Activity", { kind: "activity" }],
 		["Tasks", { kind: "tasks" }],
 		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],

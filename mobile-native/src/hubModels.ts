@@ -47,7 +47,7 @@ export class HubModels {
 		} catch {
 			if (version === this.version)
 				this.publish({
-					error: "Could not load this hub's models. Try again when connected.",
+					error: "Could not load this hub's models.",
 				});
 		} finally {
 			if (version === this.version) this.publish({ loading: false });

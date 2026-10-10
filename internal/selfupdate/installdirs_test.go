@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+// symlinkResolvedTempDir resolves a fixture root through symlinks before it
+// is compared. The install derivation resolves the executable path before
+// matching a layout, so a root reached through a symlinked ancestor (macOS
+// TMPDIR sits under /var, which resolves to /private/var) would otherwise
+// name the same directory with a different string, and bare `go test` on
+// macOS would fail on the mismatch.
+func symlinkResolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 // TestInstallDirsFromExecutableDerivesSystemPrefix proves the hub upgrades
 // the installation it actually runs from: a hub executing as
 // /usr/local/share/evener/bin/evener must install into /usr/local, not the

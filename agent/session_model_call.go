@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -267,7 +268,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+				s.emit(events.EventWarning, bareWarningDataFromError("context strategy error", err))
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
@@ -338,6 +339,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// notification wake, delegate attention) funnels through, so the refresh
 	// covers entry paths whose accept step projects nothing.
 	s.maybeAppendNotesContext()
+	// Independent scope reads share one finite wait for this boundary. Workers
+	// only return observations, the owner loop appends currentness transitions.
+	s.maybeAppendMemoryContext(ctx, round == 0)
 	// Re-snapshot so the request expands the refreshed history. The
 	// in-flight boundary is re-captured alongside the final history copy
 	// under the same lock: a concurrent compaction landing between the two
@@ -351,7 +355,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns = append([]schema.Turn{}, s.history...)
 	inFlightFrom = s.turnHistoryBaseline
+	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
+	if afterSnapshot != nil {
+		afterSnapshot()
+	}
 
 	// historyTurns already holds this round's refreshed copy, re-snapshotted
 	// above under s.mu; replayScope and the request expand that copy directly
@@ -366,12 +374,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		protocolOf:     s.instanceProtocol,
 		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
+	// presentedTurns is the history this request projects: a leased delegate
+	// turn projects the controller's own later snapshot, which can hold turns
+	// appended after historyTurns was taken.
+	presentedTurns := historyTurns
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
+		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
@@ -426,6 +439,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		for _, notification := range appended {
 			history = append(history, scope.projectTurnMessage(notification, true))
 		}
+		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
@@ -481,9 +495,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
-	// follows anchor planning because credit belongs to what the request
+	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stageRootDelegateAttentionCoverage(req, historyTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -837,7 +851,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// Content filter recovery: compaction often removes the offending content,
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
-		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
+		s.emit(events.EventWarning, bareWarningDataFromError("Content filter hit — compacting context and retrying", err))
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the round loop's own
 		// ManageContext); forceCompactForModelRecovery publishes through the
@@ -865,7 +879,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
 	if dec.EmitContextLenWarn && !contextWarningEmitted {
-		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
+		s.emit(events.EventWarning, bareWarningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
@@ -1176,6 +1190,18 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
+	// The round's fallback chain is fixed here, at the round's model-call
+	// boundary, from a copy taken under s.mu. SetModel revalidates and may
+	// rewrite s.cfg.ModelFallbacks while this round's primary call is
+	// outstanding (a cross-surface switch drops same-surface entries), so
+	// reading the live slice in the fallback chain below both raced that write
+	// and let the in-flight round run the configuration a later switch left
+	// behind — including silently losing a fallback it was dispatched with
+	// (CORE-02). Future rounds re-snapshot, so SetModel still affects only
+	// subsequent calls.
+	s.mu.Lock()
+	fallbacks := append([]string(nil), s.cfg.ModelFallbacks...)
+	s.mu.Unlock()
 	req, attempt := singleAttemptRequestMetadata(req)
 	// Every request up to the round's first recorded assistant entry belongs
 	// to its round: the attempts, the retries and the fallback groups.
@@ -1258,14 +1284,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// wait out and returns immediately with zero retries spent (kata r128).
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
-	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err, policy) {
+	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		origEffort := requestedEffort
-		for _, fbModel := range s.cfg.ModelFallbacks {
+		for _, fbModel := range fallbacks {
 			// validateModelFallbacks keeps a cross-instance entry whose surface
 			// matches the session's (spec §7.5), so this is where the session
 			// resolver first runs for such an entry — it is no longer the
@@ -1440,7 +1466,24 @@ func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Req
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {
-	if s == nil || profile == nil || !budget.LimitedOutput {
+	if s == nil || profile == nil {
+		return
+	}
+	// A clamp that holds round after round is one fact: a long conversation
+	// clamps every round, and a notice each time floods the transcript. Once
+	// input fills the window the admitted allocation is what the window
+	// leaves, so it shrinks every round and cannot tell one clamp from the
+	// next. Warn when the clamp first applies, when its model or requested
+	// allocation changes, and when it returns after an unclamped round.
+	clamp := ""
+	if budget.LimitedOutput {
+		clamp = fmt.Sprintf("%s/%s:%d", profile.ID(), profile.Model(), budget.RequestedOutput)
+	}
+	s.outputReductionMu.Lock()
+	unchanged := clamp == s.outputReductionWarned
+	s.outputReductionWarned = clamp
+	s.outputReductionMu.Unlock()
+	if clamp == "" || unchanged {
 		return
 	}
 	// An explicit neutral title and hint, both because this is budget
@@ -1683,7 +1726,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)

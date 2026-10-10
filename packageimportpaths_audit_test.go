@@ -85,9 +85,9 @@ func TestPackageImportPathsCheckPassesACleanTree(t *testing.T) {
 }
 
 // Every path shape and quote style the gate has to catch, each in its own file
-// so one gate run over one tree checks the whole set. The gate is a substring
-// grep over quoted literals, so what varies is the path and the quote, not the
-// import syntax around it -- that is the whole point of dropping the parser.
+// so one gate run over one tree checks the whole set. The gate keys on the
+// quoted literal's own shape -- a relative path into the package -- not on the
+// import syntax around it, so what varies is the path and the quote.
 func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 	cases := []struct {
 		path    string
@@ -101,6 +101,19 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 		{"cmd/evener-hub/frontend/src/singleQuote.ts", "import { errorText } from '../../protocol/errors';\n", "by path"},
 		{"mobile-native/src/noTrailingSlash.tsx", "import { AppwireClient } from \"../../appwire-client/typescript\";\n", "by path"},
 		{"cmd/evener-hub/frontend/src/seamDirItself.ts", "import { errorText } from \"../protocol\";\n", "by path"},
+		{"mobile-native/src/requirePath.cjs", "const wire = require(\"../../appwire-client/typescript/errors\");\nvoid wire;\n", "by path"},
+		{"mobile-native/src/viMockPath.test.ts", "vi.mock(\"../../appwire-client/typescript/errors\", () => ({}));\n", "by path"},
+		{"mobile-native/src/viDoMockPath.test.ts", "vi.doMock(\"../../appwire-client/typescript/errors\", () => ({}));\n", "by path"},
+		{"mobile-native/src/viImportActualPath.test.ts", "vi.importActual(\"../../appwire-client/typescript/errors\");\n", "by path"},
+		{"mobile-native/src/jestMockPath.test.ts", "jest.mock(\"../../appwire-client/typescript/errors\");\n", "by path"},
+		{"mobile-native/src/sideEffect.ts", "import \"../../appwire-client/typescript/errors\";\n", "by path"},
+		{"mobile-native/src/reExport.ts", "export { errorText } from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		// A wrapped statement puts the specifier on a line with no `import`
+		// keyword on it; the rule reads the literal, not the keyword.
+		{"mobile-native/src/multiline.ts", "import {\n\terrorText,\n} from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		// A wrapped mocking call puts the specifier on its own line inside the
+		// call's parentheses, where no keyword is on the specifier's line.
+		{"mobile-native/src/multilineMock.test.ts", "vi.mock(\n\t\"../../appwire-client/typescript/errors\",\n\t() => ({}),\n);\n", "by path"},
 	}
 	files := cleanPackageImportTree()
 	for _, c := range cases {
@@ -149,6 +162,28 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
 	if !passed {
 		t.Fatalf("the gate fired on a tree that never names the package by path:\n%s", output)
+	}
+}
+
+// The gate reads import specifiers, not every quoted string that happens to
+// name the seam. A demo URL or a fixture label that quotes the path is data,
+// not an import, and #3107's false positive renamed working demo paths to
+// appease it. Only a literal shaped like a relative specifier (`./` or `../`)
+// is treated as an import, so absolute paths and prose labels pass.
+func TestPackageImportPathsCheckIgnoresPathTextOutsideASpecifier(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/src/dev/demoDoc.ts"] = strings.Join([]string{
+		"// a docs URL and a demo label: neither is an import specifier",
+		"export const demoDoc = \"/home/jesse/sites/docs/reference/appwire/protocol/v6/index.html\";",
+		"export const label = \"appwire-client/typescript state/navigation\";",
+		"export const hint = \"loaded from 'appwire-client/typescript/errors'\";",
+		"export const dotdir = \".config/appwire-client/typescript state\";",
+		"export const abs = \"/workspace/appwire-client/typescript/errors\";",
+		"",
+	}, "\n")
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if !passed {
+		t.Fatalf("the gate fired on string data that names no import specifier:\n%s", output)
 	}
 }
 

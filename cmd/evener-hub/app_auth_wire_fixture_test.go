@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -188,6 +189,30 @@ func withOAuthRecordRefreshToken(build func(t *testing.T) *hubAuthController, na
 	}
 }
 
+// withRefreshRejection notes that the issuer permanently refused the stored
+// refresh token (authopenai.RecordRefreshRejection, #2479) on top of a saved
+// record: the fixture records a session whose access token is still valid but
+// which will fail on its next refresh, the state #2785 distinguished from an
+// actually-expired access token.
+func withRefreshRejection(build func(t *testing.T) *hubAuthController, name, email string, expiresIn time.Duration) func(t *testing.T) *hubAuthController {
+	return func(t *testing.T) *hubAuthController {
+		t.Helper()
+		ctrl := build(t)
+		record := makeOAuthRecord(name, email)
+		record.Expiry = time.Now().Add(expiresIn)
+		if err := ctrl.saveAuth(ctrl.stateDir, name, record); err != nil {
+			t.Fatalf("save OAuth record for %s: %v", name, err)
+		}
+		if err := authopenai.RecordRefreshRejection(ctrl.stateDir, name, record, time.Now()); err != nil {
+			t.Fatalf("record refresh rejection for %s: %v", name, err)
+		}
+		if err := ctrl.reloadRegistry(); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		return ctrl
+	}
+}
+
 // gatewayToml is one authored gateway carrying its own Authorization header.
 const gatewayToml = `[providers.gateway]
 base = "openai-compatible"
@@ -266,6 +291,11 @@ func authWireScenarios() []authWireScenario {
 			name: "status/oauth-login-required",
 			note: "a Codex record whose access token has expired and whose refresh token cannot recover it",
 			run:  statusOf("openai-codex", withOAuthRecordRefreshToken(authControllerOver("", nil), "openai-codex", "bot@example.com", -time.Minute, "   ")),
+		},
+		{
+			name: "status/oauth-refused",
+			note: "a Codex record whose refresh token the issuer permanently refused while the access token is still valid",
+			run:  statusOf("openai-codex", withRefreshRejection(authControllerOver("", nil), "openai-codex", "bot@example.com", time.Hour)),
 		},
 		{
 			name: "status/oauth-none",

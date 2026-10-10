@@ -58,6 +58,9 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
+	if kind == events.EventJobStarted || kind == events.EventJobFinished {
+		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
+	}
 }
 
 // noteJobTreeShapeChange moves the activity clock for a change that adds or
@@ -104,27 +107,8 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id  string
-	cfg SessionConfig
-	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
-	// reacquired by prepareRetainedScratch before root/child initialization
-	// launches work. It holds historical or not-yet-reconstructed handles until
-	// adoption or release. It is an atomic pointer (a single swapped reference,
-	// never held across work), so it is not a sampling-relevant mutex.
-	retainedScratch atomic.Pointer[retainedScratchPool]
-	// retainedScratchSealed is set once the terminal scratch release begins,
-	// before the pool is detached: a refresh pass still mid-install at that
-	// point must decline its seed publish and hand its reacquired leases back
-	// rather than leave a pool nothing will ever sweep. It only ever
-	// transitions false→true (a session is sealed at most once) and is read
-	// after the publish CAS, so a plain atomic Bool is sufficient.
-	retainedScratchSealed atomic.Bool
-	// scratchRetentionErr records the first sticky scratch-retention
-	// publication failure this session observed after an environment swap: the
-	// durable manifest diverged from the live environment and no later swap
-	// repaired it, so preparation must fail closed rather than trust the
-	// manifest. Guarded by mu.
-	scratchRetentionErr    error
+	id                     string
+	cfg                    SessionConfig
 	delegateController     *delegateTreeController
 	delegateRootSessionID  string
 	owningDelegateID       string
@@ -266,6 +250,32 @@ type Session struct {
 	// from restored history on resume alongside notesLastProjected.
 	// Guarded by mu.
 	notesEverProjected bool
+
+	// Memory environments are independent of workspace policy and cwd.
+	memoryMu            sync.Mutex
+	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryRoots         map[string]*execenv.ConfinedFileRoot
+	memoryEnvUsers      map[*execenv.LocalExecutionEnvironment]int
+	memoryEnvFlights    map[string]*memoryEnvironmentFlight
+	memoryClosed        bool
+	memoryLastProjected map[string]memoryProjection
+	memoryEverProjected map[string]bool
+	// memoryBaseline holds, per scope, the index the session already knows: the
+	// last current one projected to it, or the one it wrote or deleted itself.
+	// Compaction and any non-current projection clear it; a resumed session
+	// starts without one.
+	memoryBaseline map[string]memoryIndexBaseline
+	// memoryReadPages holds, per scope and page path, what the session last
+	// knew of each page it read with memory_read; only these pages get change
+	// notices. Compaction keeps them; a resumed session starts without any.
+	memoryReadPages map[string]map[string]memoryPageRecord
+	// memoryReadPageOrder lists, per scope, the tracked pages from least to
+	// most recently read with memory_read; it bounds memoryReadPages.
+	memoryReadPageOrder map[string][]string
+	memoryIndexFlights  map[string]*memoryIndexFlight
+	// The sole automatic reader per scope owns cleanup until it returns.
+	// Admission and retirement share memoryMu, including the pre-read window.
+	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
 
 	// --- Synchronization / lock discipline ---
 	//
@@ -625,6 +635,41 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
+	// emit atomic against a turn advancing restGeneration: either the turn
+	// starts first and the rest stays idle, or the announcement reaches the
+	// event feed before anything the turn emits.
+	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
+	restMu sync.Mutex
+	// restGeneration counts turn starts and drain-loop settles. A
+	// needs_response rest arms awaiting only if neither happened during its
+	// quiet period. Guarded by s.mu.
+	restGeneration uint64
+	// restBeforeInput is the resting state the session had when the current
+	// input started, read only by finishNotificationNoop: a notification wake
+	// that turns out to have nothing to deliver runs no turn, so it settles
+	// back to it. Guarded by s.mu.
+	restBeforeInput SessionState
+	// restOwedGeneration is the restGeneration of the settle that last found a
+	// needs_response turn with output (or a wake that resumed its rest),
+	// whether it scheduled the quiet period or something held the session
+	// idle; 0 before any. A fresh
+	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
+	// by s.mu.
+	restOwedGeneration uint64
+	// quietRestBeforeInput records that the current input started while that
+	// rest was still owed: no turn or settle since, and the session idle. The
+	// input's turn start cancelled it. Guarded by s.mu.
+	quietRestBeforeInput bool
+	// endReasonBeforeInput is the communicate end reason the current input's
+	// turn start reset. A wake that runs no turn puts it back, so the
+	// drain-loop settle reads the end reason of the last turn that ran.
+	// Guarded by s.mu.
+	endReasonBeforeInput string
+	// resumeQuietRest tells the drain-loop settle that a wake which ran no
+	// turn left that cancelled rest standing, so the settle arms it again.
+	// Guarded by s.mu.
+	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -649,6 +694,21 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// askPendingCallArgs holds each pending ask_user call's own arguments
+	// (already normalized, spec §5.1's shape), one entry per call, in call
+	// order — appended alongside askPending by registerAskTool's Exec and
+	// cleared alongside it (clearAskPending). It exists for an external
+	// ask-responder (evener run --ask-responder, PendingAskArguments) that
+	// needs the full question detail (option details included) a live call
+	// carried: Session.Events() is best-effort (session_events.go: "a full
+	// buffer drops"), so a caller for whom missing a call would leave state
+	// permanently wrong — a real pending question it never answers — must
+	// read durable session state instead of the event stream. Guarded by
+	// mu, like askPending above. Not persisted or restored: a resumed
+	// session's pending questions are read back from askPending/the
+	// transcript, and this feature does not (yet) support --resume.
+	askPendingCallArgs [][]byte
+
 	// steeringCarrierClaimClientMutationID is the client mutation id of the
 	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is
 	// currently draining, set for the duration of that one call. It tells
@@ -660,6 +720,19 @@ type Session struct {
 	// restore.
 	// Guarded by mu, like askPending above.
 	steeringCarrierClaimClientMutationID string
+
+	// steeringCarrierStoodDowns is the set of steering-carrier turn ids that
+	// stood down without running a model turn (processOneInput's swallow of
+	// errSteeringCarrierStoodDown). ProcessPendingUserInput reads it to report
+	// ran=false truthfully for the carrier it claimed -- a stood-down carrier
+	// ran nothing, so the daemon must not keep an interrupt runner armed for it
+	// (issue #185 item 3). A SET, not a single slot: one ProcessPendingUserInput
+	// call can process more than one carrier (the drain ladder may claim an
+	// inline carrier behind the claimed one), so a later stand-down must not
+	// erase an earlier one. Reset at the start of each ProcessPendingUserInput
+	// carrier run; a stand-down marked elsewhere lingers harmlessly until then
+	// (turn ids are unique). Guarded by mu, like askPending above.
+	steeringCarrierStoodDowns map[string]struct{}
 
 	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
 	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
@@ -711,6 +784,11 @@ type Session struct {
 	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
+	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
+	// on its own keeps its scratch in (restoredScratchTreeRoot in
+	// session_init.go). Set once during restore and read like cfg; empty
+	// otherwise.
+	restoredScratchTreeRoot string
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
@@ -897,7 +975,6 @@ type Session struct {
 	// task reminder tracking
 	taskToolLastRound int  // totalRounds value at last task_list tool call
 	taskToolEverUsed  bool // whether task_list has ever been called
-	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool). The transient round request is the
@@ -908,7 +985,7 @@ type Session struct {
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
-	agentNote   string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
 	// notesCommitted is the last committed notes cut — human note, agent note,
 	// URL list, and ever-projected flag installed together. Readers (Meta, the
@@ -955,21 +1032,28 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
-	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
+	// rootAttentionPaused records that a permanent provider failure deferred
+	// the pending root attention and the session has said so (see
+	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
+	// the episode. Guarded by attentionMu.
+	rootAttentionPaused bool
+	// attentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
-	// lives on stageRootDelegateAttentionCoverage and
-	// unionCoveredRootDelegateAttention. Reset at each turn start.
-	rootAttentionCoveredIDs map[string]struct{}
-	// rootAttentionStagedIDs is one round's candidate coverage: the attention
+	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
+	// Reset at each turn start.
+	attentionCoveredIDs map[string]struct{}
+	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
-	// rootAttentionCoveredIDs only when the round's call settles, so a failed
+	// attentionCoveredIDs only when the round's call settles, so a failed
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
-	rootAttentionStagedIDs map[string]struct{}
-	// rootAttentionPreTurnArmIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetRootDelegateAttentionCoverage). Marking consults it to separate
-	// deliveries armed mid-turn from attention already owed a dedicated wake.
-	rootAttentionPreTurnArmIDs map[string]struct{}
+	attentionStagedIDs map[string]struct{}
+	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetAttentionCoverage). Marking consults it to separate the root's
+	// deliveries armed mid-turn from attention already owed a dedicated
+	// notification turn. A delegate session arms no root wakes, so for it
+	// the snapshot is empty.
+	attentionPreTurnIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -993,7 +1077,17 @@ type Session struct {
 	// runningTurnReleaseRetry paces re-attempts of a release write the client
 	// mutation store refused. See scheduleRunningTurnReleaseRetry
 	// (session_active_turn.go).
-	runningTurnReleaseRetry   runningTurnReleaseRetryState
+	runningTurnReleaseRetry runningTurnReleaseRetryState
+	// outputReductionMu guards outputReductionWarned alone: the output clamp
+	// the session last warned about (see warnOutputReduction), empty while no
+	// clamp applies.
+	outputReductionMu     sync.Mutex
+	outputReductionWarned string
+	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
+	// failing delegate-attention action and delegate, the error the session
+	// last warned about (see warnDelegateAttentionFailed).
+	delegateAttentionWarnMu   sync.Mutex
+	delegateAttentionWarned   map[delegateAttentionWarning]string
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
@@ -1342,6 +1436,7 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
+	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -1636,6 +1731,7 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
+	s.resumeRootAttentionAfterModelSwitch()
 	return nil
 }
 
@@ -1835,6 +1931,14 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 	return s.comm.structured, s.comm.structured != nil
 }
 
+// communicateEndReason is why this input's terminal communicate call ended
+// the turn: "" when none was accepted, or on a delegate.
+func (s *Session) communicateEndReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.endReason
+}
+
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
 // communicate tool (issue #570). A call's message, reply, canonical output,
 // and raw structured value are accepted together under s.mu — the first
@@ -1843,7 +1947,7 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
@@ -1855,6 +1959,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		reply:      reply,
 		output:     output,
 		structured: structured,
+		endReason:  endReason,
 	}
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)

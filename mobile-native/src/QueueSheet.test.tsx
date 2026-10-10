@@ -1,11 +1,10 @@
 // The Queue sheet (ruling 37): every queued message the session's ghosts
 // carry, with the same actions, over the session that provides them.
-import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
 import { type QueueHost, QueueSheet, queueHosts } from "./QueueSheet";
-import { pressable, render, renderedText } from "./renderNative.testkit";
+import { pressable, render, renderedText, settle, unmountMountedTrees } from "./renderNative.testkit";
 import type { Ghost } from "./session/ghosts";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -45,14 +44,13 @@ const heldGhost = (n: number): Ghost => ({
 
 const KEY = sheetKey("hub-1", "local:s1");
 const owner = {};
-const sheets: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.dispatch.mockReset();
 });
 afterEach(() => {
-	for (const tree of sheets.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	queueHosts.release(KEY, owner);
 });
 
@@ -74,17 +72,10 @@ function mountSheet(provided: QueueHost | undefined) {
 			navigation={navigation as never}
 		/>,
 	);
-	sheets.push(tree);
 	return tree;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-it("lists every queued message the session carries, not only the three above the composer", () => {
+it("lists every queued message the session carries, not only the three the transcript shows", () => {
 	const tree = mountSheet(host());
 	const text = renderedText(tree);
 	expect(text).toContain("Queued messages");
@@ -115,7 +106,7 @@ it("runs Cancel through the host and shows the toast it returns in the sheet", a
 	const tree = mountSheet(provided);
 	const cancel = pressable(tree, "Cancel");
 	await act(async () => cancel?.props.onPress());
-	await flush();
+	await settle();
 	expect(act_).toHaveBeenCalledWith(provided.ghosts[0], "cancel");
 	expect(renderedText(tree)).toContain("Couldn't take this message out of the queue.");
 	expect(navigation.goBack).not.toHaveBeenCalled();
@@ -150,7 +141,7 @@ it("shows an Edit's toast on the session, since the sheet has closed", async () 
 		(index: number) => void,
 	];
 	await act(async () => pick(0));
-	await flush();
+	await settle();
 	expect(showOnSession).toHaveBeenCalledWith(moved);
 	expect(renderedText(tree)).not.toContain(moved.text);
 });
@@ -159,9 +150,13 @@ it("closes when the queue empties, or when its session is gone", () => {
 	mountSheet(host({ ghosts: [] }));
 	expect(navigation.goBack).toHaveBeenCalledOnce();
 	navigation.goBack.mockClear();
-	queueHosts.release(KEY, owner);
+	// The open sheet leaves when its screen lets the session go...
+	act(() => queueHosts.release(KEY, owner));
+	expect(navigation.goBack).toHaveBeenCalledOnce();
+	navigation.goBack.mockClear();
+	// ...and a sheet opened with no session leaves at once.
 	mountSheet(undefined);
-	expect(navigation.goBack).toHaveBeenCalled();
+	expect(navigation.goBack).toHaveBeenCalledOnce();
 });
 
 it("has no refresh and never asks you to reconnect: it follows the queue live", () => {

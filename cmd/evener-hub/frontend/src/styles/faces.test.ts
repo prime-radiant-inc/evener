@@ -53,7 +53,9 @@ test("editorial prose has a distinct serif face and body-scaled size", () => {
 
 test("Markdown reads in serif while code retains its machine face", () => {
   const prose = rule("widgets/markdown/markdown.module.css", ".root");
-  expect(prose).toMatch(/font-family:\s*var\(--font-prose\);/);
+  // Serif is the default reading face; --markdown-font is the one host hook
+  // (the delegate card's sans report bubble) that may override it.
+  expect(prose).toMatch(/font-family:\s*var\(--markdown-font, var\(--font-prose\)\);/);
   expect(prose).toMatch(/font-size:\s*var\(--prose-font-size, 1em\);/);
   expect(rule("widgets/markdown/markdown.module.css", ".inlineCode")).toMatch(/font-family:\s*var\(--font-mono\);/);
   expect(rule("widgets/codeblock/codeblock.module.css", ".pre")).toMatch(/font-family:\s*var\(--font-mono\);/);

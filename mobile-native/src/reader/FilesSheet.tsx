@@ -1,37 +1,43 @@
-// Files & artifacts (spec 10.1, ruling 26): every document the session wrote
+// Files (spec 10.1, ruling 26): every document the session wrote
 // or linked, newest write first, each with a blue dot while it's new or
 // changed since you last opened it. The list is the one the sheet opened
 // with (its params are plain data), so it needs no host. Tapping a row closes
 // the sheet, then opens the document in the Reader over the session.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { useDocumentFacts } from "./DocumentChip";
 import { FreshDot } from "./FreshDot";
 import type { SessionDocument } from "./sessionDocuments";
 
 export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes, "FilesSheet">) {
-	const { hubId, ref, title, documents } = route.params;
+	const { hubId, ref, title, cwd, documents } = route.params;
 	const sheet = useSheet();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const open = ({ path, updatedAt }: SessionDocument) =>
+	const open = ({ path, updatedAt }: SessionDocument) => {
+		const reference = bindFilePath(path, cwd);
+		if (!reference) return;
 		sheet.finish(() => {
 			navigation.goBack();
 			navigation.navigate("Reader", {
 				hubId,
 				sessionRef: ref,
-				path,
-				reviewRef: ref,
-				reviewTitle: title,
+				path: reference.path,
+				reference,
+				sessionTitle: title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		});
+	};
 	return (
-		<Sheet title="Files & artifacts" done={{ onPress: () => sheet.finish() }}>
+		<Sheet title="Files" done={{ onPress: () => sheet.finish() }}>
 			<FlatList
 				data={documents}
 				keyExtractor={(document) => document.path}
@@ -65,6 +71,7 @@ function DocumentRow({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { kind, title, lines, age, spokenAge, freshness } = useDocumentFacts(
 		hubId,
 		sessionRef,
@@ -102,7 +109,7 @@ function DocumentRow({
 					numberOfLines={1}
 					style={{
 						flexShrink: 1,
-						fontFamily: fonts.serifSemibold,
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,

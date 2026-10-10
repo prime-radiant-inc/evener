@@ -1,3 +1,4 @@
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 // ToolCallItem is the item renderer for tool-call items - the wire's
 // "commandExecution" ThreadItem.type (internal/appprojector/
 // appwire_projection.go). It dispatches into the tool-renderer registry
@@ -91,8 +92,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
+  const entities = useEntityViews();
   const isDelegate = item.toolName === "delegate";
-  const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread) : undefined;
+  const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread, entities) : undefined;
   const delegateStatus =
     isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
       <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />

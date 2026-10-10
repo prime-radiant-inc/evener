@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The Session's own read of the fleet (ruling 33), against the real Board
 // controller and the real seen markers.
 import type { AnyNotification } from "@evener/appwire-client";
@@ -5,7 +6,7 @@ import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { seenMarkers } from "../board/nativeBoardMemory";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, settleMicrotasks } from "../renderNative.testkit";
 import { othersNeedingYou } from "./fleetOrder";
 import { answerFleetRead, type FleetShape, fleetSession } from "./fleetTestUtils";
 import { useFleet } from "./useFleet";
@@ -21,8 +22,8 @@ vi.mock("expo-sqlite/kv-store", () => ({
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
 const failing = fleetSession("local:fail", { title: "Fix retry loop", state: "errored", updated_at: at(5) });
-const read = fleetSession("local:read", { title: "Read already", state: "awaiting", updated_at: at(8) });
-const unread = fleetSession("local:unread", { title: "Not read yet", state: "awaiting", updated_at: at(9) });
+const read = fleetSession("local:read", { title: "Read already", state: "idle", updated_at: at(8) });
+const unread = fleetSession("local:unread", { title: "Not read yet", state: "idle", updated_at: at(9) });
 const fleet: FleetShape = {
 	live: [failing, read, unread],
 	needsYou: [failing],
@@ -37,7 +38,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 	const listeners = new Set<(event: AnyNotification) => void>();
 	// Every subscription a binding makes: a rebind subscribes afresh.
 	let subscriptions = 0;
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) => {
 			methods.push(method);
 			const section = (params as { section?: string }).section;
@@ -49,7 +50,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	/** The hub says Needs you changed, at the shape's revision. */
 	const invalidateNeedsYou = (sequence: number) => {
 		for (const listener of [...listeners])
@@ -63,10 +64,6 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 			} as AnyNotification);
 	};
 	return { client, methods, invalidateNeedsYou, listening: () => listeners.size, subscriptions: () => subscriptions };
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await Promise.resolve();
 }
 
 let hubCount = 0;
@@ -91,13 +88,14 @@ it("reads nothing without a client", () => {
 it("classifies the fleet with the Board's seen function", async () => {
 	const { client } = hub();
 	const { hook } = mount(client);
-	await act(settle);
+	await settleMicrotasks();
 	const { bands, sources } = hook.result.current;
 	expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["local:fail"]);
-	// A session already opened is Idle; one not opened since it changed is
-	// Finished.
-	expect(bands.idle.map((item) => item.row.ref)).toEqual(["local:read"]);
-	expect(bands.finished.map((item) => item.row.ref)).toEqual(["local:unread"]);
+	// Both rest Idle; one not opened since it changed carries the blue dot.
+	expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([
+		["local:unread", true],
+		["local:read", false],
+	]);
 	expect(sources?.map((source) => source.label)).toEqual(["Laptop"]);
 	hook.unmount();
 });
@@ -107,11 +105,11 @@ it("reads nothing while another screen is in front", async () => {
 	const { hook, view } = mount(null, false);
 	view.client = client;
 	hook.rerender();
-	await act(settle);
+	await settleMicrotasks();
 	expect(methods).toEqual([]);
 	view.inFront = true;
 	hook.rerender();
-	await act(settle);
+	await settleMicrotasks();
 	expect(methods).toContain("evener/navigation/read");
 	hook.unmount();
 });
@@ -121,13 +119,13 @@ it("retries a failed read on its own, so Back's count appears", async () => {
 	try {
 		const { client } = hub({ failOnce: ["live", "needs_you"] });
 		const { hook } = mount(client);
-		await act(settle);
+		await settleMicrotasks();
 		expect(othersNeedingYou(hook.result.current.bands, "local:here")).toEqual([]);
 		// The Board's backoff: the first retry waits a second.
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(1000);
 		});
-		await act(settle);
+		await settleMicrotasks();
 		expect(othersNeedingYou(hook.result.current.bands, "local:here").map((row) => row.ref)).toEqual(["local:fail"]);
 		hook.unmount();
 	} finally {
@@ -143,13 +141,13 @@ describe("the fleet's lifecycle", () => {
 		const shape: FleetShape = { live: [], needsYou: [failing] };
 		const { client, invalidateNeedsYou } = hub({ shape });
 		const { hook } = mount(client);
-		await act(settle);
+		await settleMicrotasks();
 		expect(count(hook)).toBe(1);
 		const asking = fleetSession("local:ask", { state: "awaiting", ask_pending: true, updated_at: at(3) });
 		shape.needsYou = [failing, asking];
 		shape.revision = 2;
 		act(() => invalidateNeedsYou(1));
-		await act(settle);
+		await settleMicrotasks();
 		expect(count(hook)).toBe(2);
 		hook.unmount();
 	});
@@ -158,14 +156,14 @@ describe("the fleet's lifecycle", () => {
 		const shape: FleetShape = { live: [], needsYou: [failing] };
 		const { client, methods, invalidateNeedsYou } = hub({ shape });
 		const { hook, view } = mount(client);
-		await act(settle);
+		await settleMicrotasks();
 		view.inFront = false;
 		hook.rerender();
 		const before = methods.length;
 		shape.needsYou = [];
 		shape.revision = 2;
 		act(() => invalidateNeedsYou(1));
-		await act(settle);
+		await settleMicrotasks();
 		expect(methods.length).toBe(before);
 		expect(count(hook)).toBe(1);
 		hook.unmount();
@@ -176,7 +174,7 @@ describe("the fleet's lifecycle", () => {
 		try {
 			const { client, methods, invalidateNeedsYou, listening } = hub();
 			const { hook } = mount(client);
-			await act(settle);
+			await settleMicrotasks();
 			expect(listening()).toBeGreaterThan(0);
 			hook.unmount();
 			expect(listening()).toBe(0);
@@ -196,7 +194,7 @@ describe("the fleet's lifecycle", () => {
 		try {
 			const { client, subscriptions } = hub({ failOnce: ["live", "needs_you"] });
 			const { hook, view } = mount(client);
-			await act(settle);
+			await settleMicrotasks();
 			const bound = subscriptions();
 			view.inFront = false;
 			hook.rerender();

@@ -50,21 +50,23 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 	return turns, olderCursor, snapshot, overlay, nil
 }
 
-// before pages the limit items before cursor from the transcript. A cursor
-// naming another thread or an incarnation other than the current one is
+// before pages the request's ItemLimit items before its cursor from the
+// transcript, or before its Before boundary when it has no cursor, taken under
+// the current incarnation (appitempaging.Boundary). A
+// cursor naming another thread or an incarnation other than the current one is
 // appwire.TranscriptItemCursorStale(): the client re-reads the latest window.
-func (h *threadHistory) before(threadRef, cursor string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
+func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Index) error {
 		incarnation, err := idx.Incarnation()
 		if err != nil {
 			return err
 		}
-		position, err := appitempaging.DecodeCursor(cursor, historyCursorIdentity(threadRef, incarnation))
+		position, err := appitempaging.Boundary(params, historyCursorIdentity(threadRef, incarnation))
 		if err != nil {
 			return err
 		}
-		window, err = idx.Before(position, limit)
+		window, err = idx.Before(position, params.ItemLimit)
 		if err != nil {
 			return err
 		}
@@ -85,8 +87,13 @@ func (h *threadHistory) before(threadRef, cursor string, limit int) (turns []app
 //
 // A read of a failed thread first tries to recover it by rebuilding
 // (recoverForRead); if that fails the read is appwire.TranscriptHistoryFailed,
-// naming the entry, and pushes nothing.
+// naming the entry, and pushes nothing. A read that starts once the history
+// began closing is refused with errThreadHistoryClosed.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
+	if err := h.beginRead(); err != nil {
+		return err
+	}
+	defer h.reads.Done()
 	if err := h.recoverForRead(); err != nil {
 		return err
 	}

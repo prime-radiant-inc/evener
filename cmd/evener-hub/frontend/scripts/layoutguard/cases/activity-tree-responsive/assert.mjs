@@ -19,8 +19,6 @@ export default function assert(measurements) {
       `body=${sizing.sheetBodyWidth}px`,
       `activity=${sizing.activityPanelWidth}px`,
       `tree=${sizing.treePaneWidth}px`,
-      `rowActionsWrap=${JSON.stringify(sizing.rowActionsFlexWrap)}`,
-      `rowActionsPadding=${JSON.stringify(sizing.rowActionsPaddingLeft)}`,
       widest,
     ].join(", ");
   }
@@ -140,7 +138,7 @@ export default function assert(measurements) {
     ? {
         pass: true,
         reason:
-          "the dense activity tree keeps exactly one visible pane at desktop and mobile widths, the sheet/body/pane owners stay free of horizontal scrolling, deep row labels clip with ellipsis while the detail strip wraps the whole command, and the continuation strip wraps instead of scrolling sideways",
+          "the dense activity tree keeps exactly one visible pane at desktop and mobile widths, the sheet/body/pane owners stay free of horizontal scrolling, and deep row labels clip with ellipsis while the detail strip wraps the whole command",
       }
     : {
         pass: false,

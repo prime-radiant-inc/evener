@@ -958,3 +958,34 @@ test("a folded run keeps a view anchor so scroll coordination still has a positi
   expect(anchor).not.toBeNull();
   expect(anchor?.getAttribute("data-view-anchor-index")).toBe("7");
 });
+
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id.
+// Both carry the round's id, so the reply keys by its round and keeps one React
+// key through the change: React reconciles the row instead of remounting it, so
+// the markdown keeps its DOM and a text selection survives.
+test("a streamed reply keeps its DOM node when history records its round", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  const itemStatus = (status: string) => item({ type: "agentMessage", text: "Looking", roundId: "r1", status });
+  const live = turn(
+    [
+      {
+        ...itemStatus("inProgress"),
+        id: "stream:r1/0:agentMessage",
+        // The overlay display item mints pendingText from the stream's text
+        // (reducer's overlayDisplayItem); the live branch renders from it.
+        pendingText: ["Looking"],
+      },
+    ],
+    {},
+    config,
+  );
+  const recorded = turn([{ ...itemStatus("completed"), id: "item_assistant_1_0" }], {}, config);
+
+  const { container, rerender } = render(withConfig(config, <TurnBlock turn={live} />));
+  const before = container.querySelector('[data-testid="agent-message-item"]');
+  expect(before).not.toBeNull();
+
+  rerender(withConfig(config, <TurnBlock turn={recorded} />));
+  expect(container.querySelector('[data-testid="agent-message-item"]')).toBe(before);
+});

@@ -126,15 +126,26 @@ overlay field-wise, and later always wins regardless of level: a curated
 provider glob beats an upstream row fact, and a user-layer instance-wide
 `context_window` rewrites every row of that instance.
 
-The live layer sits between the curated overlay and the user config. It
-establishes existence for models the catalog lacks and supplies `Tools`,
-`InputModalities`, `ContextWindow`, `MaxOutputTokens`, `EffortValues`, `DefaultEffort`,
-`Cost`, `Reasoning`, plus `ThinkingAlwaysOn` (only when OpenRouter's
-`reasoning.mandatory` is `true`). It overrides catalog and curated facts but
-**never a field the user layer (layer 4) set**, and it never touches any
-other wire-shaping cap. Live rows matching the non-chat pattern list
-(`embedding`, `whisper`, `tts`, `dall-e`, `moderation`, `audio`,
-`transcribe`, `image`, `realtime`, `davinci`, `babbage`, `sora`) are dropped.
+Model visibility and fact precedence are separate. A non-empty usable live
+listing makes the visible ID set **live IDs + exact curated-overlay rows +
+exact user-config rows**; snapshot/cache-only IDs disappear. If the endpoint
+is unsupported, errors, times out, or returns no usable chat rows, the visible
+set falls back to **snapshot/cache + curated overlay + user config**. The
+original fetch error remains available to diagnostics while callers such as
+the hub picker can still display the fallback. A successful response remains
+a live endpoint and credential signal even when every row is unusable and the
+visible IDs fall back. A caller-cancelled hub prefetch does not erase a
+previously healthy live snapshot.
+
+For facts on a visible ID, the live layer sits between the curated overlay and
+the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
+`MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
+`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`). It
+overrides catalog and curated facts but **never a field the user layer (layer
+4) set**, and it never touches any other wire-shaping cap. Live rows matching
+the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,
+`moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`, `babbage`,
+`sora`) are unusable for model selection and are dropped.
 
 ## Instances
 
@@ -353,6 +364,23 @@ lowest supported value, the top tier resolves to the model's own spelling, and
 a level the ladder does not list sends no effort name at all.
 
 ## `providers.toml`
+
+The hub observes external edits on its five-second notice interval. A valid
+repair is adopted automatically and updates open provider settings and launch
+forms. While an edit cannot load, the hub retains its active configuration,
+shows the specific load error, and refuses instance writes to preserve the
+edited bytes. New launches, model lists and credential checks use a private
+copy of the last successfully loaded user file until the source is repaired;
+new children then return to the source file. Credential-store selection keeps
+project overrides: a nonempty override selects that store, while an empty or
+whitespace override selects the original provider file's sibling store.
+Copies are kept beside the source
+so they retain its directory visibility, and are removed after the owning child
+or probe exits. Creating a copy needs a writable config directory; if the hub
+exits before its detached child, the copy can remain. An invalid file at startup
+uses implicit instances until repaired. A launch before the next notice tick
+can still encounter the edited source before the hub observes its invalidity.
+
 
 ```toml
 default = "groq"

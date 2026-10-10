@@ -451,6 +451,30 @@ func TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped(t *testing.
 	}
 }
 
+// TestBuildDashboardRows_WarningOutranksActiveInProjectRollup: issue #2569.
+// A project's dashboard row is a rollup decision, so it must rank with
+// hubapi.RollupRank (warning outranks active), not hubapi.AttentionRank (a
+// live-row sort, where active outranks warning). Under AttentionRank an active
+// sibling masked a warning one in the collapsed project row; both wire orders
+// must surface the warning.
+func TestBuildDashboardRows_WarningOutranksActiveInProjectRollup(t *testing.T) {
+	for _, threads := range [][]appwire.Thread{
+		{
+			coordinatorThread("01WARN", appwire.ThreadStatusWarning),
+			coordinatorThread("01ACTIVE", appwire.ThreadStatusActive),
+		},
+		{
+			coordinatorThread("01ACTIVE", appwire.ThreadStatusActive),
+			coordinatorThread("01WARN", appwire.ThreadStatusWarning),
+		},
+	} {
+		rows := buildDashboardRows(hubTreeFromThreads(threads))
+		if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "warning" {
+			t.Errorf("project row state = %q, want warning (a project rollup uses RollupRank, where warning outranks active)", got)
+		}
+	}
+}
+
 // dashboardProjectRowState returns the state of the hubRowProject row whose
 // title matches, failing the test if no such row exists.
 func dashboardProjectRowState(t *testing.T, rows []hubRow, title string) string {

@@ -41,7 +41,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   resetWorkspaceStoreForTests();
   // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
   vi.stubGlobal(
@@ -101,7 +101,7 @@ describe("hide / show", () => {
   test("the chip surfaces the needs-you count in its accessible name (color-is-attention badge)", () => {
     prefsStore.getState().setSidebarHidden(true);
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       manifest: {
         key: { kind: "manifest" },
         data: navigationManifest({
@@ -125,7 +125,7 @@ describe("hide / show", () => {
 test("v1 badge ignores stale legacy tree attention and uses manifest section count", () => {
   prefsStore.getState().setSidebarHidden(true);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     manifest: {
       key: { kind: "manifest" },
       data: navigationManifest({

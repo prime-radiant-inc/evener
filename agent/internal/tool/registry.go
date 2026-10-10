@@ -440,7 +440,10 @@ type RegisteredTool struct {
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
-	// validation. It must preserve all non-normalized caller values.
+	// validation. It must preserve all non-normalized caller values. The failure
+	// breaker's fingerprint runs it too, on a copy whose numbers are int64,
+	// float64, or json.Number (an integer past int64), so it must not mutate its
+	// input or depend on a number's Go type.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
 	// PreValidate optionally rejects a tool-specific argument shape before the
 	// generic JSON schema validator renders its diagnostic.
@@ -523,17 +526,10 @@ func (r *Registry) Register(t RegisteredTool) error {
 		t.Limit = defaultToolLimit(t.Definition.Name)
 	}
 	if t.Schema == nil {
-		// Reuse already-compiled schema when re-registering a tool (e.g.
-		// registerCoreTools re-registers tools from NewRegistry). This
-		// avoids recompilation and guards against transient jsonschema
-		// library panics from os.Getwd() failures in ephemeral worktrees.
-		r.mu.RLock()
-		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil {
-			t.Schema = existing.Schema
-		}
-		r.mu.RUnlock()
-	}
-	if t.Schema == nil {
+		// compileSchema memoizes by parameters, so a re-registration with
+		// unchanged parameters gets the schema already compiled for them and
+		// one that changes them (a root's communicate gains end_reason)
+		// compiles its own.
 		s, err := compileSchema(t.Definition.Parameters)
 		if err != nil {
 			return fmt.Errorf("tool %s schema: %w", t.Definition.Name, err)
@@ -717,7 +713,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	// A signature that has already failed the same way twice is refused here,
-	// before the tool is even looked up, and is deliberately not recorded:
+	// after the tool is resolved (its NormalizeArgs feeds the key) and the key
+	// is computed, but before any validation or execution. The refusal is
+	// deliberately not recorded:
 	// recording the refusal's own body would replace the stored hash and
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world
@@ -725,10 +723,16 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	r.mu.RUnlock()
 	// Compute both ledger keys once for this dispatch. check, clearFailures,
 	// and record all consult the same two keys, so the argument body is
 	// canonicalized at most once per call instead of once per ledger operation.
-	key := newDispatchKey(name, call.Arguments)
+	// The fingerprint applies the tool's NormalizeArgs, the same rule dispatch
+	// applies below; an unknown tool's zero RegisteredTool has none, so it is
+	// still judged on its raw arguments.
+	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
@@ -743,9 +747,6 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		r.breaker.clearFailures(key)
 	}
 
-	r.mu.RLock()
-	t, ok := r.tools[name]
-	r.mu.RUnlock()
 	if !ok {
 		msg := "unknown tool: " + name
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
@@ -993,7 +994,9 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 	total := len(lines)
 	if total > maxEntries {
 		shown := lines[:maxEntries]
-		summary := fmt.Sprintf("\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
+		// Like the search tools' own notes, the summary follows a blank
+		// line (searchresult.WithNotes), so no reader counts it as a hit.
+		summary := fmt.Sprintf("\n\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
 		out = strings.Join(shown, "\n") + summary
 		truncated = true
 	}
@@ -1016,7 +1019,7 @@ func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	}
 	removed := len(runes) - limit
 	for {
-		marker := fmt.Sprintf("\n[Output truncated: %d characters removed from the end.]", removed)
+		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the end.]", removed)
 		keep := max(limit-len([]rune(marker)), 0)
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {
@@ -1050,19 +1053,19 @@ func truncateLinesWithStatus(s string, limit int) (string, bool) {
 
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	switch toolName {
-	case "read_file":
+	case "read_file", "memory_read":
 		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHeadTail}
 	case "shell":
 		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
-	case "grep":
+	case "grep", "memory_search":
 		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount}
 	case "glob":
 		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 500, Strategy: schema.TruncHeadCount}
-	case "edit_file":
+	case "edit_file", "memory_edit":
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "apply_patch":
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
-	case "write_file":
+	case "write_file", "memory_write", "memory_delete":
 		return schema.ToolOutputLimit{MaxChars: 1_000, Strategy: schema.TruncTail}
 	case "delegate":
 		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}

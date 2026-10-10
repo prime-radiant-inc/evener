@@ -1,4 +1,5 @@
 import {
+	createNavigationContainerRef,
 	DarkTheme,
 	DefaultTheme,
 	NavigationContainer,
@@ -9,38 +10,38 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { AlertBannerHost } from "./src/alerts/AlertBannerHost";
+import { AlertsProvider } from "./src/alerts/AlertsProvider";
+import { useReportRoutes } from "./src/alerts/alertsContext";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { DisplayProvider } from "./src/display/displayContext";
+import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
 import { HubSheet } from "./src/hub/HubSheet";
+import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
-import { HubSettingsScreen } from "./src/HubSettingsScreen";
-import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
-import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
-import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
+import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
+import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
+import { useRootStackOptions } from "./src/rootStack";
 import {
 	PinnedSectionScreen,
 	PinSectionsScreen,
 } from "./src/PinSectionsScreen";
-import { PluginsScreen } from "./src/PluginsScreen";
 import {
 	ProjectScreen,
 	ProjectsScreen,
 	SessionLocationScreen,
 } from "./src/ProjectsScreen";
-import { ProvidersScreen } from "./src/ProvidersScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
-import {
-	ConversationScreen,
-	HubsScreen,
-	type Routes,
-} from "./src/screens";
+import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
@@ -54,35 +55,69 @@ import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
 import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
 import { SubagentScreen } from "./src/subagents/SubagentScreen";
+import { ShellJobScreen } from "./src/subagents/ShellJobScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
-import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
+const navigationRef = createNavigationContainerRef<Routes>();
+
+/** The root stack's routes up to the focused one, as alerts read them. */
+function stackRoutes(state: NavigationState) {
+	return state.routes
+		.slice(0, state.index + 1)
+		.map((route) => ({ name: route.name, params: route.params }));
+}
+
+// Runs before the first render, so the first frame already has the
+// appearance chosen in Display (spec 12), native chrome included.
+followAppearanceChoice();
 
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
-	// everything, and it fills the screen.
+	// everything, and it fills the screen. The keyboard controller reports the
+	// keyboard's frames to what moves with it (the Session's composer).
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
-			<SafeAreaProvider>
-				<ConnectionProvider>
-					<NativePreferencesProvider>
-						<Navigation />
-					</NativePreferencesProvider>
-				</ConnectionProvider>
-			</SafeAreaProvider>
+			<KeyboardProvider>
+				<SafeAreaProvider>
+					<DisplayProvider value={displayPreferences}>
+						<ConnectionProvider>
+							<NativePreferencesProvider>
+								<AlertsProvider>
+									<Navigation />
+								</AlertsProvider>
+							</NativePreferencesProvider>
+						</ConnectionProvider>
+					</DisplayProvider>
+				</SafeAreaProvider>
+			</KeyboardProvider>
 		</GestureHandlerRootView>
 	);
 }
 function Navigation() {
-	const { loading, initialLocation, activeProfile, restorationError } =
-		useConnection();
+	const {
+		loading,
+		initialLocation,
+		activeProfile,
+		restorationError,
+		client,
+		state: connectionState,
+	} = useConnection();
 	const [state, setState] = useState<NavigationState>();
+	// What no open session is sending goes on a ready connection (ruling 17).
+	useEffect(() => {
+		outboxFlush.bind(
+			activeProfile?.id ?? null,
+			connectionState === "ready" ? client : null,
+		);
+	}, [activeProfile?.id, connectionState, client]);
 	const [saveError, setSaveError] = useState<string | null>(null);
+	// In-app alerts follow what is on screen (spec 13.3).
+	const reportRoutes = useReportRoutes();
 	useEffect(() => {
 		if (!state || loading) return;
 		const route = routeToSave(state);
@@ -97,6 +132,7 @@ function Navigation() {
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
+	const rootStackOptions = useRootStackOptions();
 	const dark = useColorScheme() === "dark";
 	if (loading)
 		return (
@@ -114,25 +150,24 @@ function Navigation() {
 		<View style={{ flex: 1, backgroundColor: colors.background }}>
 			<ErrorMessage message={saveError || restorationError} />
 			<NavigationContainer
+				ref={navigationRef}
 				initialState={restoredStack(initialLocation)}
-				onStateChange={setState}
+				onReady={() => {
+					const root = navigationRef.getRootState();
+					if (root) reportRoutes(stackRoutes(root));
+				}}
+				onStateChange={(next) => {
+					setState(next);
+					if (next) reportRoutes(stackRoutes(next));
+				}}
 				theme={dark ? DarkTheme : DefaultTheme}
 			>
 				<StatusBar style={dark ? "light" : "dark"} />
-				<Stack.Navigator
-					screenOptions={{
-						headerStyle: { backgroundColor: colors.background },
-						headerTintColor: colors.accent,
-						headerTitleStyle: { color: colors.text },
-						headerShadowVisible: false,
-						headerBackButtonDisplayMode: "minimal",
-						contentStyle: { backgroundColor: colors.background },
-					}}
-				>
+				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen
 						name="Hubs"
-						component={HubsScreen}
-						options={{ title: "Evener · Hubs" }}
+						component={FirstRunScreen}
+						options={{ headerShown: false }}
 					/>
 					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen
@@ -167,33 +202,6 @@ function Navigation() {
 						options={{ title: "Pin session" }}
 					/>
 					<Stack.Screen
-						name="LaunchSettings"
-						component={LaunchSettingsScreen}
-						options={({ route }) => ({
-							title:
-								route.params.projectCwd === undefined
-									? "Launch defaults"
-									: "Project launch settings",
-						})}
-					/>
-					<Stack.Screen
-						name="KeybindingPreferences"
-						component={KeybindingPreferencesScreen}
-						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="TranscriptPreferences"
-						component={TranscriptPreferencesScreen}
-						options={{ title: "Transcript display" }}
-					/>
-					<Stack.Screen name="Providers" component={ProvidersScreen} />
-					<Stack.Screen name="Plugins" component={PluginsScreen} />
-					<Stack.Screen
-						name="HubSettings"
-						component={HubSettingsScreen}
-						options={{ title: "Hub settings" }}
-					/>
-					<Stack.Screen
 						name="SessionLocation"
 						component={SessionLocationScreen}
 						options={({ route }) => ({ title: route.params.location.title })}
@@ -212,8 +220,8 @@ function Navigation() {
 					/>
 					<Stack.Screen
 						name="NewSession"
-						component={NewSessionScreen}
-						options={{ title: "New session" }}
+						component={NewSessionSheet}
+						options={{ presentation: "modal", headerShown: false }}
 					/>
 					<Stack.Screen
 						name="Conversation"
@@ -237,6 +245,11 @@ function Navigation() {
 						name="Subagent"
 						component={SubagentScreen}
 						options={({ route }) => ({ title: route.params.title || "Subagent" })}
+					/>
+					<Stack.Screen
+						name="ShellJob"
+						component={ShellJobScreen}
+						options={({ route }) => ({ title: route.params.title || "Shell job" })}
 					/>
 					<Stack.Group
 						screenOptions={{
@@ -310,6 +323,7 @@ function Navigation() {
 						/>
 					</Stack.Group>
 				</Stack.Navigator>
+				<AlertBannerHost navigation={navigationRef} />
 			</NavigationContainer>
 		</View>
 	);

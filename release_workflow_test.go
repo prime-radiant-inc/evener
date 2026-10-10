@@ -63,11 +63,17 @@ func TestBinariesWorkflowSnapshotJobRefreshesTheChannel(t *testing.T) {
 	if !workflowUsesPrefix(job.Steps, "actions/download-artifact@") {
 		t.Error("snapshot job does not download the signed artifact")
 	}
-	if !workflowRuns(job.Steps, "refs/tags/snapshot") {
-		t.Error("snapshot job does not move the snapshot tag")
-	}
 	if !workflowRuns(job.Steps, `gh release upload "snapshot"`) {
 		t.Error("snapshot job does not upload assets to the snapshot release")
+	}
+	if workflowRuns(job.Steps, "refs/tags/snapshot") || workflowRuns(job.Steps, "git tag -f") {
+		t.Error("snapshot job must not create or move a git tag; the channel resolves through the release's version.txt asset")
+	}
+	if !workflowRuns(job.Steps, `echo "$GITHUB_SHA" > dist/version.txt`) {
+		t.Error("snapshot job does not stamp the built commit into version.txt")
+	}
+	if !workflowRuns(job.Steps, "dist/version.txt --clobber") {
+		t.Error("snapshot job does not upload version.txt with the release assets")
 	}
 }
 

@@ -1,7 +1,9 @@
-import type { TurnModel } from "@evener/appwire-client";
+import type { ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
+import { type GhostSource, ghosts } from "./ghosts";
 import {
 	answerTo,
 	hideAnswerMessages,
@@ -10,9 +12,11 @@ import {
 	newRowCount,
 	runSummary,
 	runSummaryText,
+	sessionListGap,
+	sessionListKey,
 	sessionRows,
-	stepTarget,
 	timeMarkerText,
+	withGhostRows,
 } from "./transcriptRows";
 
 type Activity = Extract<MobileTimelineItem, { kind: "activity" }>;
@@ -138,7 +142,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u1", "turn_1"), user("u2", "turn_2"), user("u3", "turn_3"), user("u4", "turn_4")],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -151,13 +155,45 @@ describe("time markers", () => {
 		]);
 	});
 
-	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
+	it("splits a run at a marked turn boundary (the first turn of a whole history is marked)", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
+	});
+
+	it("leaves the first loaded turn unmarked while older history is still to load", () => {
+		const rows = sessionRows([user("u2", "turn_2"), user("u3", "turn_3")], turns, {
+			timeZone: "UTC",
+			olderToLoad: true,
+		});
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"u2",
+			"time:turn_3",
+			"u3",
+		]);
+	});
+
+	it("keeps the first row's key across an older page, with steps and a delegate_send among them", () => {
+		// Before: the latest page, with more above. After: the page above
+		// prepended. The first key before must still be in the list after, so
+		// the list can find where its window moved to.
+		const latest = [
+			user("u2", "turn_2"),
+			step("s2", "delegate_send", { turnId: "turn_2" }),
+			step("s3", "shell", { turnId: "turn_2" }),
+			user("u3", "turn_3"),
+		];
+		const before = sessionRows(latest, turns, { timeZone: "UTC", olderToLoad: true });
+		const after = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC", olderToLoad: true });
+		const first = before[0]?.id;
+		expect(first).toBeDefined();
+		expect(after.map((row) => row.id)).toContain(first);
+		// Once nothing older is left, the first turn gets its marker back.
+		const whole = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC" });
+		expect(whole[0]).toMatchObject({ kind: "time", turnId: "turn_1" });
 	});
 
 	// The reducer can seat a notice in the display turn that holds its recorded
@@ -179,7 +215,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u", "turn_1"), notice, reply("r", "turn_1")],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -197,7 +233,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_1" }), step("b", "grep", { turnId: "turn_2" })],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2", at(12, 8))],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "run"]);
 		expect(rows[1]?.kind === "run" && rows[1].steps.map((s) => s.id)).toEqual(["a"]);
@@ -256,8 +292,13 @@ describe("the live run", () => {
 });
 
 describe("a run's one line", () => {
-	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep =>
-		step(id, "shell", { detail: command === undefined ? {} : { arguments: JSON.stringify({ command }) }, ...over });
+	// A shell step as projectedRows builds it: its arguments, and its words,
+	// whose target is the command with the session's own cd left out.
+	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep => {
+		const detail =
+			command === undefined ? {} : { arguments: JSON.stringify({ command }), words: { verb: "Ran", target: command } };
+		return step(id, "shell", { ...over, detail: { ...detail, ...over.detail } });
+	};
 
 	it("counts steps, says what they did, and how long the run took", () => {
 		const steps: RunStep[] = [
@@ -288,9 +329,9 @@ describe("a run's one line", () => {
 			steps: 12,
 			durationMs: 480_000,
 			parts: [
-				{ family: "read", text: "read 6 files", failed: 0 },
-				{ family: "shell", text: "ran go test", failed: 2 },
-				{ family: "edit", text: "edited 3 files", failed: 0 },
+				{ key: "read", family: "read", text: "read 6 files", failed: 0 },
+				{ key: "shell", family: "shell", text: "ran go test", failed: 2 },
+				{ key: "edit", family: "edit", text: "edited 3 files", failed: 0 },
 			],
 			failed: 2,
 		});
@@ -300,12 +341,21 @@ describe("a run's one line", () => {
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
 		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
 		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([
-			{ family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
 		]);
-		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
+		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
+			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
+		]);
+	});
+
+	it("names the program a command ran, not the cd to the session's own directory", () => {
+		const cd = shell("a", "go test ./...", {
+			detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) },
+		});
+		expect(runSummary([cd]).parts).toEqual([{ key: "shell", family: "shell", text: "ran go test", failed: 0 }]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no
@@ -369,27 +419,182 @@ describe("a run's one line", () => {
 				step("a", "web_fetch"),
 				step("b", "task_list"),
 				step("c", "web_search"),
-				step("d", "use_skill"),
+				step("d", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "brainstorming" }) } }),
 			]).parts.map((part) => part.text),
-		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
+		).toEqual(["fetched 1 page", "checked the task list", "searched the web once", "used skill brainstorming"]);
+	});
+
+	// Never "N other steps": MCP tools share one part, which names their
+	// server when there is one, and each tool no summary covers gets a part
+	// of its own in words.
+	it("names the MCP tools and each tool no summary covers", () => {
+		expect(
+			runSummary([
+				step("a", "github__create_issue"),
+				step("b", "github__list_issues"),
+				step("c", "linear_app__list_issues"),
+				step("d", "reindex_workspace"),
+				step("e", "reindex_workspace"),
+				step("f", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "a" }) } }),
+				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
+			]).parts.map((part) => [part.key, part.text]),
+		).toEqual([
+			["mcp", "used 3 MCP tools"],
+			["tool:reindex workspace", "used reindex workspace 2 times"],
+			["skill", "used 2 skills"],
+		]);
+		expect(
+			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
+		).toEqual(["used github 2 times"]);
+	});
+
+	// The session's housekeeping tools say what they did in a run's line, in
+	// the same words as their own step lines (the package's housekeeping
+	// words), each tool a part of its own.
+	it("says what each housekeeping tool did", () => {
+		expect(
+			runSummary([
+				step("a", "notes_agent_set", { detail: { arguments: JSON.stringify({ note: "Drain first." }) } }),
+				step("b", "urls_add"),
+				step("c", "urls_add"),
+				step("d", "update_goal"),
+				step("e", "communicate"),
+			]).parts.map((part) => part.text),
+		).toEqual([
+			"updated its note once",
+			"added a link 2 times",
+			"updated the goal once",
+			"reported to its parent once",
+		]);
+	});
+
+	// A call that only clears a note says so in the run's line, as its own
+	// step line does, apart from calls that set one.
+	it("says a housekeeping call that only cleared a note apart", () => {
+		const note = (id: string, text: string) =>
+			step(id, "notes_agent_set", { detail: { arguments: JSON.stringify({ note: text }) } });
+		expect(
+			runSummary([
+				note("a", "Drain first."),
+				note("b", ""),
+				step("c", "compact_context", {
+					detail: { arguments: JSON.stringify({ note_to_self: "" }), output: "Note cleared. No compaction requested." },
+				}),
+				step("d", "compact_context", { detail: { arguments: JSON.stringify({ note_to_self: "Next: race." }) } }),
+			]).parts.map((part) => part.text),
+		).toEqual([
+			"updated its note once",
+			"cleared its note once",
+			"cleared its compaction note once",
+			"asked for a context compaction once",
+		]);
+	});
+
+	// At Intent a settled step with a rationale keeps its words but not its
+	// arguments or output (projectedRows' intentRow), so a run can't tell a
+	// clear from a set: it says what the tool usually does, never a clear.
+	it("says a summary-only housekeeping step's usual action", () => {
+		const summarized = (id: string, label: string, verb: string) =>
+			step(id, label, { summaryOnly: true, detail: { description: `Rationale ${id}`, words: { verb } } });
+		expect(
+			runSummary([
+				summarized("a", "notes_agent_set", "Updated its note"),
+				summarized("b", "compact_context", "Asked for a context compaction"),
+			]).parts.map((part) => part.text),
+		).toEqual(["updated its note once", "asked for a context compaction once"]);
+	});
+
+	it("says a run updated the task list, or only checked it", () => {
+		const tasks = (id: string, args: Record<string, unknown>): RunStep =>
+			step(id, "task_list", { detail: { arguments: JSON.stringify(args) } });
+		const update = { update: [{ id: 1, status: "done" }] };
+		expect(runSummary([tasks("a", update)]).parts.map((part) => part.text)).toEqual(["updated the task list"]);
+		expect(runSummary([tasks("a", {}), tasks("b", {})]).parts.map((part) => part.text)).toEqual([
+			"checked the task list 2 times",
+		]);
+		// One change among the reads makes the part an update.
+		expect(runSummary([tasks("a", {}), tasks("b", update)]).parts.map((part) => part.text)).toEqual([
+			"updated the task list 2 times",
+		]);
+	});
+
+	it("says whether a run read or updated memory, with mutation taking precedence", () => {
+		const memory = (id: string, label: string) => step(id, label);
+		expect(runSummary([memory("a", "memory_read")]).parts.map((part) => part.text)).toEqual(["read memory"]);
+		expect(
+			runSummary([memory("a", "memory_read"), memory("b", "memory_search")]).parts.map((part) => part.text),
+		).toEqual(["read memory 2 times"]);
+		expect(runSummary([memory("a", "memory_write")]).parts.map((part) => part.text)).toEqual(["updated memory"]);
+		expect(
+			runSummary([memory("a", "memory_read"), memory("b", "memory_edit"), memory("c", "memory_delete")]).parts.map(
+				(part) => part.text,
+			),
+		).toEqual(["updated memory twice"]);
 	});
 });
 
-describe("a step's target", () => {
-	it.each([
-		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
-		["shell", { file_path: "agent/session.go" }, undefined],
-		["read_file", { file_path: "agent/session.go" }, "agent/session.go"],
-		["edit_file", { file_path: "agent/session.go", path: "agent" }, "agent/session.go"],
-		["grep", { path: "agent", pattern: "Turn" }, "agent"],
-		["web_search", { query: "evener" }, undefined],
-	])("a %s step with %j reads %s", (label, args, target) => {
-		expect(stepTarget(label, JSON.stringify(args))).toBe(target);
+describe("a run's transcript reads and session searches", () => {
+	const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+
+	it("counts the transcripts a run read", () => {
+		expect(texts([step("a", "read_transcript")])).toEqual(["read a transcript"]);
+		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual(["read 2 transcripts"]);
 	});
 
-	it("reads nothing from arguments that are missing or don't parse", () => {
-		expect(stepTarget("read_file", undefined)).toBeUndefined();
-		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
+	it("says how often a run searched sessions", () => {
+		expect(texts([step("a", "find_session_transcripts")])).toEqual(["searched sessions"]);
+		expect(texts([step("a", "find_session_transcripts"), step("b", "find_session_transcripts")])).toEqual([
+			"searched sessions 2 times",
+		]);
+	});
+});
+
+// An ask_user call takes a row of its own (QuestionHistory), so it only
+// reaches a run's line when a caller hands one over directly.
+describe("a run's questions", () => {
+	it("says how many questions a run asked", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		const asking = (id: string, headers: string[]) =>
+			step(id, "ask_user", {
+				detail: {
+					arguments: JSON.stringify({
+						questions: headers.map((header) => ({ header, question: "?", options: [{ label: "Yes", detail: "." }] })),
+					}),
+				},
+			});
+		expect(texts([asking("a", ["Deploy"])])).toEqual(["asked a question"]);
+		// Questions, not calls: one call can ask several.
+		expect(texts([asking("a", ["Deploy", "Notify"])])).toEqual(["asked 2 questions"]);
+		expect(texts([asking("a", ["Deploy"]), asking("b", ["Notify", "Tag"])])).toEqual(["asked 3 questions"]);
+		// A call whose questions don't parse, or that lists none, still asked
+		// something: parseAskUserQuestions gives no list rather than an empty one.
+		expect(texts([step("a", "ask_user")])).toEqual(["asked a question"]);
+		expect(texts([asking("a", [])])).toEqual(["asked a question"]);
+	});
+});
+
+describe("a run's messages to subagents", () => {
+	// A send reads the same under the live name and the retired one.
+	it("says how many messages a run sent to subagents", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "delegate_send")])).toEqual(["sent a message"]);
+		expect(texts([step("a", "delegate_send"), step("b", "job_send_message")])).toEqual(["sent 2 messages"]);
+	});
+});
+
+describe("a run's job steps", () => {
+	it("says how often a run managed jobs", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "job_status")])).toEqual(["managed jobs once"]);
+		expect(texts([step("a", "job_list"), step("b", "job_stop")])).toEqual(["managed jobs 2 times"]);
+	});
+});
+
+describe("a run's worktree steps", () => {
+	it("says how often a run managed worktrees", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "manage_worktree")])).toEqual(["managed worktrees once"]);
+		expect(texts([step("a", "manage_worktree"), step("b", "manage_worktree")])).toEqual(["managed worktrees 2 times"]);
 	});
 });
 
@@ -522,5 +727,109 @@ describe("the answer you gave a question", () => {
 		expect(answerTo(model([asked]), "ask-1")).toBeUndefined();
 		expect(answerTo(model([asked, answered]), "gone")).toBeUndefined();
 		expect(answerTo(null, "ask-1")).toBeUndefined();
+	});
+});
+
+// Everything waiting to reach the agent sits at the transcript's end, just
+// above the composer, and scrolls with it (spec 8.5; Jesse, 2026-10-03).
+describe("ghosts as the transcript's last rows", () => {
+	const working = (texts: string[]): GhostSource => ({
+		status: { type: "active" },
+		capabilities: { queue: true, steer: true, send: true } as ThreadCapabilities,
+		queue: { revision: 1, depth: texts.length, ids: texts.map((_, index) => `queue_${index + 1}`), texts },
+	});
+	const mine = (id: string, over: Partial<PendingTurnEntry>): PendingTurnEntry => ({
+		id,
+		ref: "ref-1",
+		method: "send",
+		text: id,
+		imageCount: 0,
+		skillNames: [],
+		state: "submitting",
+		source: "outbox",
+		fromThisClient: true,
+		...over,
+	});
+	const refused = {
+		clientMutationId: "refused",
+		status: "rejected" as const,
+		reason: "",
+		text: "refused",
+		actions: [],
+	};
+	const streaming: TimelineRow = {
+		kind: "assistant",
+		id: "r",
+		markdown: "half a repl",
+		streaming: true,
+		turnId: "turn_1",
+	};
+
+	it("follows the last real row, a streaming reply included, in the order ghosts() lists them", () => {
+		const all = ghosts(
+			working(["queued"]),
+			[mine("steer", { method: "steer", state: "accepted" }), mine("sending", {})],
+			{ text: "unsure", sentText: "unsure" },
+			[refused],
+			true,
+		);
+		const rows = withGhostRows([user("u"), streaming], all);
+		expect(rows.map((row) => (row.kind === "ghost" ? row.ghost.state : row.kind))).toEqual([
+			"user",
+			"assistant",
+			"steering",
+			"queued",
+			"sending",
+			"unconfirmed",
+			"refused",
+		]);
+		expect(rows.slice(2).map((row) => (row.kind === "ghost" ? row.ghost : null))).toEqual(all);
+	});
+
+	it("shows three queued messages, then one quiet row that counts the rest (ruling 18)", () => {
+		const all = ghosts(working(["1", "2", "3", "4", "5"]), [], { text: "unsure", sentText: "unsure" }, [], true);
+		const rows = withGhostRows([user("u")], all);
+		expect(rows.map((row) => (row.kind === "ghost" ? row.ghost.text : row.kind))).toEqual([
+			"user",
+			"1",
+			"2",
+			"3",
+			"unsure",
+			"moreQueued",
+		]);
+		expect(rows.at(-1)).toMatchObject({ kind: "moreQueued", count: 2 });
+	});
+
+	// With token counts or the estimated cost shown, those lines close the
+	// conversation and the ghosts still come last.
+	it("puts the usage lines after the conversation and before the ghosts", () => {
+		const usage = { derived: null, cumulative: null, cost: "$0.12" };
+		const rows = withGhostRows([user("u"), streaming], ghosts(working(["queued"]), [], null, [], true), usage);
+		expect(rows.map((row) => row.kind)).toEqual(["user", "assistant", "usage", "ghost"]);
+		expect(rows.map((row, index) => sessionListGap(row, rows[index + 1]))).toEqual([24, 0, 24, 0]);
+		expect(new Set(rows.map(sessionListKey)).size).toBe(rows.length);
+		expect(withGhostRows([user("u")], [], usage).map((row) => row.kind)).toEqual(["user", "usage"]);
+	});
+
+	it("leaves the rows as they are with nothing waiting", () => {
+		const rows = [user("u"), reply("r")];
+		expect(withGhostRows(rows, [])).toBe(rows);
+	});
+
+	it("keys each ghost row apart from every transcript row", () => {
+		const rows = withGhostRows([user("queue:queue_1")], ghosts(working(["1", "2", "3", "4"]), [], null, [], true));
+		const keys = rows.map(sessionListKey);
+		expect(new Set(keys).size).toBe(rows.length);
+		expect(keys[0]).toBe("queue:queue_1");
+	});
+
+	// A ghost stands where your message will land, so it keeps the gap that
+	// message gets there, and landing doesn't move it.
+	it("spaces the first ghost as your message would be, and the ghosts 8pt apart", () => {
+		const all = ghosts(working(["1", "2"]), [], null, [], true);
+		const afterReply = withGhostRows([reply("r")], all);
+		expect(afterReply.map((row, index) => sessionListGap(row, afterReply[index + 1]))).toEqual([24, 8, 0]);
+		const afterRun = withGhostRows(sessionRows([user("u"), step("a", "read_file")], [turn("turn_1")]), all);
+		expect(afterRun.map((row, index) => sessionListGap(row, afterRun[index + 1]))).toEqual([8, 8, 8, 0]);
 	});
 });

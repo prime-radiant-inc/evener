@@ -15,7 +15,6 @@ describe("state marks pair shape with color (spec 13.1)", () => {
 		["approval", "hand.raised.circle.fill", "attention", 20],
 		["warning", "exclamationmark.triangle.fill", "attention", 20],
 		["restartNeeded", "arrow.triangle.2.circlepath.circle.fill", "attention", 20],
-		["finished", "circle.fill", "accent", 8],
 	] as const)("%s", (state, name, tint, size) => {
 		expect(markFor(state, false)).toMatchObject({ name, tint, size });
 		expect(markFor(state, true)).toEqual(markFor(state, false));
@@ -26,7 +25,7 @@ describe("state marks pair shape with color (spec 13.1)", () => {
 		expect(markFor("working", false)).toMatchObject({ name: "circle.fill", tint: "alive", size: 8 });
 	});
 
-	it("draws nothing for idle and shut-down rows", () => {
+	it("draws nothing for idle and shut-down rows: an idle row's dot is the row's unseen dot", () => {
 		expect(markFor("idle", false)).toBeNull();
 		expect(markFor("shutDown", false)).toBeNull();
 	});

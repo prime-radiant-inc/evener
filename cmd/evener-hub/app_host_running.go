@@ -13,17 +13,13 @@ package hub
 // probe — and refuses a browser-origin or forwarded request. It never forwards
 // onward to a third hub: the answer is this process's own state.
 //
-// FENCING BOUNDARY. §10 calls the running probe's write half a fully fenced
-// mutating step (lease takeover, bounded kill/wait, guard advance per the
-// crash-fencing spec §4). That execution belongs to the fencing slice (S17+,
-// after S4); this slice ships the epoch's persistence and validation — the
-// serving hub admits and persists the presented epoch before the write half and
-// refuses stale epochs without probing — and runs the write probe authorized by
-// that epoch under the caller's host gate. The orphan fence §10 cites
-// (an open `orphan-unverified` record or quarantine refusing the probe) is the
-// fencing slice's state too, and does not exist in this build; the fencing
-// slice adds the guard-file compare-and-advance, the takeover/kill/wait steps,
-// and that fence at the call site this file's comments name.
+// EPOCH ADMISSION. The serving hub validates the presented epoch against the
+// guard epoch it last admitted, refuses a stale same-boot epoch without
+// persisting it or probing, persists the admitted epoch, then runs the write
+// probe authorized by that epoch under the caller's host gate. The
+// crash-fencing execution that once sat behind this boundary (the remote
+// guard-file compare-and-advance and the takeover/kill/wait steps) was removed
+// with the rest of the program (comp08).
 
 import (
 	"context"
@@ -103,10 +99,11 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	// The admission-plus-probe window is serialized on this hub: the guard row
 	// is hub-wide (v1 admits one calling controller), so a second call must not
 	// advance the admitted epoch while the first is still probing with the
-	// epoch it admitted. FENCING BOUNDARY: the fencing slice's per-host remote
-	// lease and guard-file compare-and-advance replace this mutex; until then
-	// this is the serialization that keeps "persisted before the write half"
-	// true for the probe that actually runs.
+	// epoch it admitted. This mutex is the admitted posture: the per-host remote
+	// lease and guard-file compare-and-advance that once would have replaced it
+	// were withdrawn with the crash-fencing program (comp08), and this
+	// serialization keeps "persisted before the write half" true for the probe
+	// that actually runs.
 	m.cfg.runningProbeMu.Lock()
 	defer m.cfg.runningProbeMu.Unlock()
 	epoch := params.FencingEpoch
@@ -129,13 +126,12 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	return response, nil
 }
 
-// admitPresentedEpoch validates and persists the epoch the caller presented
-// (§10: "the serving hub persists the presented epoch per calling host before
-// the write half runs, validates it against the host's current fencing epoch,
-// and refuses stale epochs without probing"). An absent or malformed epoch —
-// what a defaulted or omitted wire field decodes to — is refused with the
-// typed `probe-failed` family before anything is persisted, and a stale epoch
-// is refused without probing.
+// admitPresentedEpoch validates the epoch the caller presented and persists the
+// admitted one before the probe's write half runs (§10: a stale same-boot epoch
+// is refused without persisting or probing, and only an admitted epoch is
+// written). An absent or malformed epoch — what a defaulted or omitted wire
+// field decodes to — is refused with the typed `probe-failed` family before
+// anything is persisted, and a stale epoch is refused without probing.
 //
 // A hub with no operation store cannot persist the epoch, so it refuses rather
 // than authorizing an unfenced write; the same is true of a store write that
@@ -232,11 +228,11 @@ func (c hostRunningConfig) writeProbeIn(root string) error {
 // removed. No probe temp survives the probe window past its remove except a
 // crash orphan the boot prune owns.
 //
-// FENCING BOUNDARY: §10 requires the complete fencing protocol before this
-// write half — lease takeover, bounded kill/wait, guard advance (crash-fencing
-// spec §4). That execution is the fencing slice's; until it lands this probe is
-// authorized by the caller's presented epoch, which the serving hub persisted
-// before calling this function, and serialized by the caller's host gate.
+// The complete fencing protocol an earlier revision anticipated before this
+// write half — lease takeover, bounded kill/wait, guard advance — was withdrawn
+// with the crash-fencing program (comp08). This probe is authorized by the
+// caller's presented epoch, which the serving hub admitted before calling this
+// function, and serialized by the caller's host gate.
 func hostStateRootWriteProbe(dir string) error {
 	suffix, err := probeNonce()
 	if err != nil {

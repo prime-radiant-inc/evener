@@ -53,6 +53,12 @@ func (s *Session) isSubagentSession() bool {
 	return s.cfg.spawn.parentSessionID != "" || s.restoredMetaIsSubagent
 }
 
+// hasHumanPartnerToAsk reports whether someone can answer this session: an
+// interactive root. It gates ask_user and communicate's end_reason alike.
+func (s *Session) hasHumanPartnerToAsk() bool {
+	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
+}
+
 // askPendingCount returns the number of questions currently pending this turn
 // (spec §5.1's per-turn pending set) — a later round-boundary check uses this
 // to decide whether the round just posted question(s).
@@ -65,12 +71,10 @@ func (s *Session) askPendingCount() int {
 // HasPendingAsk reports whether the session has an unresolved ask_user
 // question. Exported so a cross-module gate can mirror the entry gate's
 // refusal predicate (session_lifecycle.go's processInputKindWithProvenance,
-// spec §5.3) exactly: cmd/evener/serve.go's pre-dispatch status shadow-write
-// hold must skip the write for precisely the wakes the entry gate will
-// refuse. Keying on the pending set rather than raw SessionState matters
-// since attention-status-model v5: SessionAwaiting no longer implies a
-// pending question on its own (the general inbox-semantics upgrade also
-// rests a session awaiting after any clean, output-producing turn).
+// spec §5.3) exactly: cmd/evener/serve.go must skip marking processing for
+// precisely the wakes the entry gate will refuse. Keying on the pending set rather than raw SessionState matters:
+// SessionAwaiting does not imply a pending question on its own (a turn that
+// ended on needs_response also rests awaiting).
 func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
@@ -90,14 +94,62 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 	return &question
 }
 
+// setAskPendingLocked REPLACES the pending-ask set — a clear (pending ==
+// nil) or a restore's re-derivation — keeping askPendingCallArgs in step so
+// the two can never independently drift. Every replacement also clears
+// askPendingCallArgs: pending's raw call arguments are never
+// reconstructible from it (parsed questions, not the calls' original
+// JSON — deriveRestoredAskPending recovers only the former), so a live-only
+// cache that no longer matches what is pending is worse than an absent
+// one. Two call sites used to assign s.askPending directly instead of
+// going through a clearer — the steering-carrier entry clear
+// (session_lifecycle.go's acceptSteeringCarrierInput) and the
+// restored-failure boundary (session_state.go's
+// finishProcessingAtRestoredFailureBoundary) — leaving askPendingCallArgs
+// stale after either ran; every replacement site now calls this instead.
+// Callers hold s.mu already.
+func (s *Session) setAskPendingLocked(pending []askQuestion) {
+	s.askPending = pending
+	s.askPendingCallArgs = nil
+}
+
+// appendAskPendingLocked is the live ask_user Exec's own mutation: it
+// appends this call's parsed questions to askPending and this call's own
+// (already normalized) arguments to askPendingCallArgs — one entry per
+// call, not per question, so the two slices generally differ in length.
+// Callers hold s.mu already.
+func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte) {
+	s.askPending = append(s.askPending, parsed...)
+	s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+}
+
 // clearAskPending empties the pending set. Callers: durable user-input
 // admission, the interrupt branch (session_lifecycle.go, directly), and
 // clearAskPendingForResolvingSteer below (a drained user-sourced steer,
-// mid-round).
+// mid-round). askPendingCallArgs is cleared in lockstep — the two never
+// disagree about what is still pending.
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.askPending = nil
+	s.setAskPendingLocked(nil)
+}
+
+// PendingAskArguments returns each pending ask_user call's own arguments —
+// already normalized, one entry per call, in call order — for an external
+// ask-responder that needs the full question detail (options and their
+// detail text) a live call carried. Session.Events() drops on a full buffer
+// (session_events.go); this reads durable session state instead, so a
+// caller for whom missing a call would leave state permanently wrong (a
+// real pending question it never answers) cannot miss one. Each entry
+// parses with ParseAskUserCallArguments. Empty while nothing is pending.
+func (s *Session) PendingAskArguments() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, len(s.askPendingCallArgs))
+	for i, args := range s.askPendingCallArgs {
+		out[i] = append([]byte(nil), args...)
+	}
+	return out
 }
 
 // clearAskPendingForResolvingSteer clears the pending set the moment a
@@ -324,6 +376,90 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 	return parsed, nil
 }
 
+// AskUserOption is one option of a pending ask_user question, with its full
+// detail text. askQuestion above (the session's own pending-set state, and
+// PendingQuestion's wire projection) deliberately carries only option
+// labels — this type exists for an external ask-responder
+// (`evener run --ask-responder`) that needs to see exactly what the model
+// asked, detail and recommendation included.
+type AskUserOption struct {
+	Label       string `json:"label"`
+	Detail      string `json:"detail,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
+}
+
+// AskUserQuestion is one question from a pending ask_user call, with full
+// option detail and the call's optional fields: whether several options may
+// be chosen, why the answer matters, and the fallback the model would take.
+type AskUserQuestion struct {
+	Header       string          `json:"header,omitempty"`
+	Question     string          `json:"question"`
+	MultiSelect  bool            `json:"multi_select,omitempty"`
+	Why          string          `json:"why,omitempty"`
+	IfUnanswered string          `json:"if_unanswered,omitempty"`
+	Options      []AskUserOption `json:"options,omitempty"`
+}
+
+// ParseAskUserCallArguments parses one ask_user call's arguments, as the
+// session records them for PendingAskArguments (already normalized; parsing
+// them again is a no-op), into its full questions, including each
+// option's detail text. It accepts both the batch ("questions") and
+// shorthand ("question"+"options") forms via normalizeAskArgs, the same
+// normalization the live tool call goes through, and applies
+// parseAskQuestions' same semantic checks (unique labels, at most one
+// recommended option). It exists for an external ask-responder: neither
+// PendingQuestion (bounded to the wire's shape, one question, labels only)
+// nor the session's own askPending (labels only, spec §5.1) carries enough
+// for a responder to answer well.
+func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
+	var args map[string]any
+	if err := json.Unmarshal(argsJSON, &args); err != nil {
+		return nil, fmt.Errorf("ask_user arguments: %w", err)
+	}
+	normalized, err := normalizeAskArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseAskQuestions(normalized)
+	if err != nil {
+		return nil, err
+	}
+	// parseAskQuestions validated the shape and carries header, question, and
+	// labels; the optional fields (detail, recommended, multi_select, why,
+	// if_unanswered) are read from the same normalized call.
+	raw, _ := normalized["questions"].([]any)
+	out := make([]AskUserQuestion, 0, len(parsed))
+	for i, q := range parsed {
+		var qm map[string]any
+		if i < len(raw) {
+			qm, _ = raw[i].(map[string]any)
+		}
+		rawOpts, _ := qm["options"].([]any)
+		options := make([]AskUserOption, 0, len(q.Options))
+		for j, label := range q.Options {
+			var om map[string]any
+			if j < len(rawOpts) {
+				om, _ = rawOpts[j].(map[string]any)
+			}
+			detail, _ := om["detail"].(string)
+			recommended, _ := om["recommended"].(bool)
+			options = append(options, AskUserOption{Label: label, Detail: detail, Recommended: recommended})
+		}
+		multiSelect, _ := qm["multi_select"].(bool)
+		why, _ := qm["why"].(string)
+		ifUnanswered, _ := qm["if_unanswered"].(string)
+		out = append(out, AskUserQuestion{
+			Header:       q.Header,
+			Question:     q.Question,
+			MultiSelect:  multiSelect,
+			Why:          why,
+			IfUnanswered: ifUnanswered,
+			Options:      options,
+		})
+	}
+	return out, nil
+}
+
 // registerAskTool registers ask_user. registerCoreTools calls this only when
 // the session is interactive and root (spec §7 point 1); the exec-time guard
 // below is defense in depth for config drift (spec §7 point 4).
@@ -340,7 +476,7 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
-			if s.cfg.NonInteractive || s.isSubagentSession() {
+			if !s.hasHumanPartnerToAsk() {
 				return nil, errors.New(askUserUnavailableErr)
 			}
 
@@ -350,9 +486,18 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err != nil {
 				return nil, err
 			}
+			// Recorded here, in the tool itself, rather than read back off the
+			// event stream: this is the one place this call's own arguments are
+			// in hand, and it is durable session state an external
+			// ask-responder can poll (PendingAskArguments) with no risk of the
+			// best-effort event channel dropping the call it needs.
+			argsJSON, err := json.Marshal(args)
+			if err != nil {
+				return nil, fmt.Errorf("ask_user: marshal arguments: %w", err)
+			}
 
 			s.mu.Lock()
-			s.askPending = append(s.askPending, parsed...)
+			s.appendAskPendingLocked(parsed, argsJSON)
 			s.mu.Unlock()
 
 			return askUserAckText, nil
@@ -476,13 +621,11 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 }
 
 // deriveRestoredState re-derives a restored session's at-rest state from its
-// history tail. It is the single resume-derivation function, unifying two
-// rules that were designed independently and must both hold everywhere:
-// ask_user's pending definition (spec §6: "an interrupted ack-less ask is
-// never pending") and attention-status-model v5's general resume rule ("agent
-// moved last" resumes awaiting, round-3 A2) — the ask rule is that general
-// rule's specific instance, not a competing one, since an ack is just the
-// terminal tool result of the round the agent last moved in.
+// history tail. It is the single resume-derivation function, and it derives
+// what the live settle (armAwaitingAtSettle) decided: awaiting while a
+// question is pending (spec §6: "an interrupted ack-less ask is never
+// pending") or when the agent's last completed turn ended on needs_response,
+// idle otherwise.
 //
 // Walking backward from the most recent turn, the first decisive turn wins:
 //
@@ -490,7 +633,7 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     TurnSteering, a steering-carrier TurnFailure) resolve to idle — a
 //     reply already resolved whatever was pending, or nothing ever was.
 //   - TurnAssistant with no tool calls: a plain final response with nothing
-//     else after it — the agent moved last — awaiting.
+//     else after it — the agent moved last, asking nothing — idle.
 //   - TurnAssistant WITH tool calls: not decisive, the scan continues past
 //     it. Ordinarily a tool call is immediately followed by a matching
 //     TurnToolResults, so the scan reaches that turn first — but when every
@@ -500,8 +643,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     plain completed response: it is the same interrupted round, not a
 //     second, earlier one.
 //   - TurnToolResults carrying at least one completed (non-error) result:
-//     the round ended its turn on a real completion — a communicate, an
-//     ask_user ack, or any other terminal tool — awaiting.
+//     the round ended its turn on a real completion. It rests awaiting only
+//     when its communicate said needs_response (endedOnNeedsResponse), as
+//     the live settle does; any other completion rests idle.
 //   - TurnToolResults carrying ONLY error results: not decisive: the scan
 //     continues past it. This is the ask-specific carve-out generalized:
 //     when a tool call (ask_user or otherwise) is interrupted before its
@@ -519,6 +663,10 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 //     resume anchor ResumeHistory already truncated to, not a new decisive
 //     event.
 //
+// A pending question outranks all of this: when deriveRestoredAskPending
+// finds an ask round, the session rests awaiting, as the live settle does
+// whenever a question is pending.
+//
 // No decisive turn anywhere in the (possibly compacted) history defaults to
 // idle, matching a fresh session. origins is turnResolvesAskBoundary's same
 // steering-provenance lookup (nil when there is nothing to look up).
@@ -528,6 +676,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 // reused client mutation id in the child's OWN journal must never reclassify
 // a turn the parent wrote.
 func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) SessionState {
+	if _, isAskRound := deriveRestoredAskPending(history, divergenceTurn, origins); isAskRound {
+		return SessionAwaiting
+	}
 	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	for i := range slices.Backward(history) {
 		turn := history[i]
@@ -541,15 +692,21 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 		switch turn.Kind {
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
-				return SessionAwaiting
+				return SessionIdle
 			}
 			// This turn's calls resolved to an all-error placeholder we
 			// already scanned past (or repair guarantees one exists ahead of
 			// it) — not a completion. Keep scanning past it too.
 		case schema.TurnToolResults:
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && !part.ToolResult.IsError {
-					return SessionAwaiting
+				// An accepted turn-ending communicate is a completion even when
+				// a PostToolUse hook failure turned its result into an error:
+				// its tool state still carries the end reason.
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && (!part.ToolResult.IsError || communicateEndReasonOf(part.ToolResult) != "") {
+					if endedOnNeedsResponse(history, i) {
+						return SessionAwaiting
+					}
+					return SessionIdle
 				}
 			}
 			// Every result here is an error placeholder (orphan repair, a
@@ -558,6 +715,53 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 		}
 	}
 	return SessionIdle
+}
+
+// endedOnNeedsResponse reports whether the input whose last round's tool
+// results sit at toolResultsIdx ended its turn on needs_response. The live
+// settle reads the turn-ending communicate call the input accepted
+// (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
+// input on past it), and that call alone records its end reason in its
+// result's tool state, so this looks for that state among the input's
+// rounds: the turns sharing the decisive turn's TurnID. The latest state
+// wins, because a recovery reopen reruns an input under the same TurnID and
+// the rerun's own accepted call is the one live settled on. A history
+// without turn ids predates end_reason, so only the decisive round is read
+// there. Two cases can still differ from live: rounds a mid-input
+// compaction dropped, and a rerun that failed before accepting a
+// communicate, where this can return the earlier attempt's reason. The
+// second is harmless: restingFailureLocked makes the session publish
+// systemError whether it rests idle or awaiting.
+func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
+	turnID := history[toolResultsIdx].TurnID
+	for j := toolResultsIdx; j >= 0; j-- {
+		turn := history[j]
+		if j != toolResultsIdx && (turnID == "" || turn.TurnID != turnID) {
+			break
+		}
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			if reason := communicateEndReasonOf(part.ToolResult); reason != "" {
+				return reason == tool.CommunicateEndReasonNeedsResponse
+			}
+		}
+	}
+	return false
+}
+
+// communicateEndReasonOf is the end reason an accepted turn-ending
+// communicate call recorded in its result's tool state, or "".
+func communicateEndReasonOf(result *llm.ToolResultData) string {
+	var state communicateEndState
+	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	return state.EndReason
 }
 
 // deriveRestoredAskPending rebuilds the pending-ask SET from a restored
