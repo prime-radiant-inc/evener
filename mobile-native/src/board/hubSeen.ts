@@ -2,9 +2,10 @@
 // turn_ended_at is the hub's to decide: it is Finished while the hub says
 // unseen. Marks this phone makes go to the hub through
 // evener/session/seen/set and show at once through a pending map until the
-// hub's rows catch up. A row without a readable turn_ended_at (an older hub,
-// or a daemon that hasn't stamped a turn end) keeps the device's own
-// SeenMarkers.
+// hub's rows catch up. A mark reads a session through a turn end or, on a hub
+// that sends seen_through, its last motion. A row without a readable
+// turn_ended_at (an older hub, or a daemon that hasn't stamped a turn end)
+// also keeps the device's own SeenMarkers.
 import {
 	isMethodNotFound,
 	type NavigationSessionSummary,
@@ -25,12 +26,13 @@ const MAX_MARKS_PER_CALL = 500;
 const INVALID_PARAMS = -32602;
 
 interface PendingEntry {
-	/** The turn end the mark reads the session through, in ms. */
+	/** The hub time the mark reads the session through (a turn end or a last
+	 * motion), in ms. */
 	seenThrough: number;
 	/** The hub answered a call carrying this very entry. */
 	acknowledged: boolean;
 }
-type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen">;
+type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen" | "seen_through">;
 
 // Clients whose hub answered seen/set with method not found: an older hub.
 // Per client object, so a reconnect to an upgraded hub tries again.
@@ -90,8 +92,10 @@ export class HubSeenMarks {
 	}
 
 	/** Drops each pending mark the hub's rows show landed, or show no longer
-	 * applies: once the row reads seen or a newer turn ended. Only a row the
-	 * hub decides can show either, so a row without a readable turn_ended_at
+	 * applies. On a hub that sends seen_through, a mark has landed once the
+	 * row's seen_through reaches it; on an older one, once the row reads seen.
+	 * A newer turn end supersedes it either way. A row that shows neither (no
+	 * seen_through and no readable turn_ended_at) can't show a mark landed and
 	 * is skipped. */
 	prune(rows: Iterable<HubRow>): void {
 		let changed = false;
@@ -99,8 +103,10 @@ export class HubSeenMarks {
 			const entry = this.pending.get(row.ref);
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
-			if (ended === null) continue;
-			if (row.unseen !== true || ended > entry.seenThrough) {
+			const mark = hubTime(row.seen_through);
+			if (ended === null && mark === null) continue;
+			const landed = mark !== null ? mark >= entry.seenThrough : row.unseen !== true;
+			if (landed || (ended !== null && ended > entry.seenThrough)) {
 				this.pending.delete(row.ref);
 				changed = true;
 			}

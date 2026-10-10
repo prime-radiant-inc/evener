@@ -327,22 +327,38 @@ it("doesn't mark the fleet row again for a turn end the snapshot already marked 
 	hook.unmount();
 });
 
-// Output streaming while you watch is seen too: the in-front mark follows the
-// session's last motion as each activity read moves it, sending only marks
-// that advance, and only to a hub that tracks seen-through marks.
-it("marks a session in front seen through its last motion as it moves", async () => {
+// Output streaming while you watch is seen too. The screen keeps the newest
+// last motion after the hub's seen mark while it is in front and marks it once
+// when it leaves the front, so a working session doesn't rebuild the hub's
+// navigation on every activity read.
+it("marks a session seen through its newest motion once, when it leaves the front", async () => {
 	const { sent, view, hook } = setup();
 	view.row = fleetRow({ state: "active", seen_through: iso(T - 60_000) });
 	view.lastMovedAt = T;
 	hook.rerender();
-	await settleMicrotasks();
 	view.lastMovedAt = T + 10_000;
 	hook.rerender();
 	await settleMicrotasks();
+	expect(sent).toEqual([]);
+	view.inFront = false;
 	hook.rerender();
 	await settleMicrotasks();
-	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 10_000 }]]);
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T + 10_000 }]]);
 	hook.unmount();
+});
+
+it("marks no motion that came before the hub's seen mark, or reached while not in front", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T) });
+	view.lastMovedAt = T - 1;
+	hook.rerender();
+	view.inFront = false;
+	hook.rerender();
+	view.lastMovedAt = T + 5;
+	hook.rerender();
+	hook.unmount();
+	await settleMicrotasks();
+	expect(sent).toEqual([]);
 });
 
 it("sends no motion mark to a hub without seen-through marks", async () => {
@@ -350,7 +366,7 @@ it("sends no motion mark to a hub without seen-through marks", async () => {
 	view.row = fleetRow({ state: "active" });
 	view.lastMovedAt = T;
 	hook.rerender();
+	hook.unmount();
 	await settleMicrotasks();
 	expect(sent).toEqual([]);
-	hook.unmount();
 });

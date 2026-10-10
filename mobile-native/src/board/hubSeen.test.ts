@@ -491,3 +491,23 @@ describe("motion since the seen mark", () => {
 		expect(markers.isSeen(row("no-turn-end"))).toBe(true);
 	});
 });
+
+describe("pruning a motion mark", () => {
+	it("keeps a mark until the hub's seen_through reaches it, though the row already reads seen", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T + 5) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
+	});
+
+	it("keeps a motion mark on a row with no turn end until its seen_through lands", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { seen_through: iso(T + 9) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
+	});
+});

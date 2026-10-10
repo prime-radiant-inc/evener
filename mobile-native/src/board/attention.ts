@@ -134,14 +134,15 @@ export function rowClassifier(
 }
 
 /** The blue dot (Jesse's ruling): only a live session that has run, and
- * whenever anything is new since you last opened it. A working row reads the
- * hub alone (its unseen flag, or motion after its seen mark), never this
- * device's own markers; a resting one also counts a turn the device's
- * fallback hasn't seen. */
+ * whenever anything is new since you last opened it. A session mid-turn
+ * (working, or reporting active) reads the hub alone: a turn end the hub
+ * decides (with this phone's pending marks applied), or motion after its seen
+ * mark, never this device's own markers. A resting one also counts a turn the
+ * device's fallback hasn't seen. */
 function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
 	// An offline row is shutDown (boardState).
 	if (!row.live || row.dormant || state === "shutDown") return false;
-	if (state === "working") return row.unseen === true || moved;
+	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
 	return !seen || moved;
 }
 

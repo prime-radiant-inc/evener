@@ -92,6 +92,7 @@ describe("the preview card (spec 7.3)", () => {
 			/>,
 		);
 		expect(unseen.root.findAllByType(FreshDot)).toHaveLength(1);
+		expect(unseen.root.findByType("Pressable" as never).props.accessibilityLabel).toMatch(/, unread$/);
 		const seen = render(
 			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
 		);

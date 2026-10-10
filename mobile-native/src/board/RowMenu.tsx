@@ -70,7 +70,7 @@ export function RowPreviewCard({
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Open ${row.title}`}
+			accessibilityLabel={`Open ${row.title}${item.unseen ? ", unread" : ""}`}
 			onPress={onPress}
 			style={({ pressed }) => ({
 				marginHorizontal: 16,

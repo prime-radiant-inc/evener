@@ -280,7 +280,7 @@ describe("Live bands (spec 7.1)", () => {
 
 	it("dots a live session with anything new since you last looked, and nothing else (Jesse's ruling)", () => {
 		const live = [
-			row("work-hub-unseen", { state: "active", unseen: true }),
+			row("work-hub-unseen", { state: "active", unseen: true, turn_ended_at: at(1) }),
 			row("work-device-unseen", { state: "active" }),
 			row("work-moved", { state: "active" }),
 			row("ask-unseen", { state: "awaiting", ask_pending: true }),
@@ -302,13 +302,33 @@ describe("Live bands (spec 7.1)", () => {
 		expect(dotted).toEqual(["ask-unseen", "done-unseen", "seen-moved", "work-hub-unseen", "work-moved"]);
 	});
 
-	it("dots no session that isn't live", () => {
+	it("dots no session that isn't live, is offline, or has never run, however new its output", () => {
 		const classify = rowClassifier(
 			[],
 			() => false,
 			() => true,
 		);
-		expect(classify(row("ended", { state: "ended", live: false })).unseen).toBe(false);
+		for (const over of [
+			{ state: "ended", live: false },
+			{ state: "idle", live: false },
+			{ state: "idle", offline: true },
+			{ state: "notLoaded" },
+			{ state: "idle", dormant: true },
+		] as const) {
+			expect(classify(row("r", over)).unseen).toBe(false);
+		}
+	});
+
+	it("reads an active session's turn from the hub alone, with this phone's pending marks", () => {
+		const moved = () => false;
+		// The hub decides a row with a turn end: seen through this phone's mark.
+		const hubSeen = rowClassifier([], () => true, moved);
+		expect(
+			hubSeen(row("asking", { state: "active", ask_pending: true, turn_ended_at: at(1), unseen: true })).unseen,
+		).toBe(false);
+		// Without a turn end the device's markers never dot an active row.
+		const deviceUnseen = rowClassifier([], () => false, moved);
+		expect(deviceUnseen(row("approval", { state: "active", approval_pending: true })).unseen).toBe(false);
 	});
 
 	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {

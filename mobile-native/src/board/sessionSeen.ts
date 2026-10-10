@@ -60,15 +60,27 @@ export function useMarkSeenInFront(
 		marked.current.add(rowKey);
 		if (fleetRow && !seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
 	});
-	// Output streaming while you watch is seen too: the mark follows the
-	// session's last motion as each activity read moves it, and the hub's
-	// controller sends only a mark that advances. Only a hub that tracks
-	// seen-through marks (the row carries seen_through) takes one.
-	const tracksMotion = fleetRow !== undefined && tracksSeenThrough(fleetRow);
+	// Output streaming while you watch is seen too. The newest last motion is
+	// kept while the screen is in front and marked once, when it leaves the
+	// front: a mark on every activity read would rebuild the hub's navigation
+	// every ten seconds while a session works. Only a hub that tracks
+	// seen-through marks (the row carries seen_through) takes one, and only
+	// motion after its mark is new.
+	const newestMotion = useRef<{ through: number; client: ConversationClientLike | null } | null>(null);
+	const seenMark = fleetRow && tracksSeenThrough(fleetRow) ? (hubTime(fleetRow.seen_through) ?? 0) : null;
 	useEffect(() => {
-		if (!inFront || lastMovedAt === undefined || !tracksMotion) return;
-		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: lastMovedAt }]);
-	}, [inFront, lastMovedAt, tracksMotion, hubId, ref, client]);
+		if (!inFront || lastMovedAt === undefined || seenMark === null) return;
+		const kept = newestMotion.current?.through ?? seenMark;
+		if (lastMovedAt > kept) newestMotion.current = { through: lastMovedAt, client };
+	}, [inFront, lastMovedAt, seenMark, client]);
+	useEffect(() => {
+		if (!inFront) return;
+		return () => {
+			const motion = newestMotion.current;
+			newestMotion.current = null;
+			if (motion) hubSeenMarks(hubId).markSeen(motion.client, [{ ref, seenThrough: motion.through }]);
+		};
+	}, [inFront, hubId, ref]);
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);
