@@ -391,7 +391,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		backend = chosen
 	}
 
-	masked := policy.EffectiveDenylist(host.Home)
+	masked := withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host)
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
@@ -633,6 +633,19 @@ func dedupeRoots(roots []string) []string {
 		return nil
 	}
 	return out
+}
+
+// withEvenerConfigMask adds Evener's config root to the masked set where
+// XDG_CONFIG_HOME moved it (HostFacts.EvenerConfigRoot), alongside
+// ~/.config/evener, since hub configuration and credentials live wherever that
+// root is. A user who removed ~/.config/evener from the denylist removed both.
+func withEvenerConfigMask(masked []string, host HostFacts) []string {
+	def := filepath.Join(host.Home, ".config", "evener")
+	cr := filepath.Clean(host.EvenerConfigRoot)
+	if !slices.Contains(masked, def) || !filepath.IsAbs(host.EvenerConfigRoot) || slices.Contains(masked, cr) {
+		return masked
+	}
+	return append(slices.Clone(masked), cr)
 }
 
 // filterMasked drops any root that is at or beneath a masked path, upholding the

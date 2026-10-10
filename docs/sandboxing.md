@@ -323,7 +323,10 @@ file tool nor a spawned process can read them:
 
 - **Credential directories and files** (resolved against `$HOME`): `~/.ssh`,
   `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
-  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`.
+  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. When
+  `$XDG_CONFIG_HOME` moves Evener's config root, `$XDG_CONFIG_HOME/evener` is
+  masked as well, since hub configuration and credentials live wherever that root
+  is; removing `~/.config/evener` from the denylist removes both.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
