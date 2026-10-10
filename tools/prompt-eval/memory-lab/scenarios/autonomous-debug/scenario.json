@@ -17,8 +17,16 @@
           "run": "cat > zz_heldout_test.go <<'EOF'\npackage receipts\n\nimport \"testing\"\n\nfunc TestHeldoutParsePrice(t *testing.T) {\n\tfor in, want := range map[string]int{\"2.5\": 250, \"12.05\": 1205, \"3\": 300, \"0.40\": 40} {\n\t\tif got, err := ParsePrice(in); err != nil || got != want {\n\t\t\tt.Errorf(\"ParsePrice(%q) = %d, %v; want %d\", in, got, err, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
         },
         {
-          "name": "changelog entry",
-          "run": "grep -q 'Fix receipt totals' CHANGELOG.md"
+          "name": "changelog entry under Unreleased",
+          "run": "awk '/^## Unreleased/{f=1;next} /^## /{f=0} f && /Fix receipt totals/{ok=1} END{exit !ok}' CHANGELOG.md"
+        },
+        {
+          "name": "changelog script works here",
+          "run": "s=\"$PWD/scripts/changelog.sh\"; d=$(mktemp -d) && cp CHANGELOG.md \"$d/\" && (cd \"$d\" && sh \"$s\" 'probe entry' >/dev/null 2>&1 && grep -q 'probe entry' CHANGELOG.md); rc=$?; rm -f \"$d\"/CHANGELOG.md* && rmdir \"$d\"; exit $rc"
+        },
+        {
+          "name": "fix committed",
+          "run": "test \"$(git rev-list --count HEAD)\" -gt 1 && git diff --quiet HEAD"
         },
         {
           "name": "at most 1 memory page",
