@@ -26,7 +26,7 @@
         },
         {
           "name": "fix committed",
-          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; git rev-parse --verify -q HEAD >/dev/null || exit 1; st=$(git status --porcelain) || exit 1; test -z \"$st\" || exit 1; m=$(git show HEAD:money.go) || exit 1; r=$(git show HEAD:receipt.go) || exit 1; ! { printf '%s\\n' \"$m\" | cmp -s - \"$fx/money.go\" && printf '%s\\n' \"$r\" | cmp -s - \"$fx/receipt.go\"; }"
+          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; git rev-parse --verify -q HEAD >/dev/null || exit 1; st=$(git status --porcelain) || exit 1; test -z \"$st\" || exit 1; changed=0; for f in money.go receipt.go; do test -r \"$fx/$f\" && git cat-file -e \"HEAD:$f\" || exit 1; git show \"HEAD:$f\" | cmp -s - \"$fx/$f\"; rc=$?; test \"$rc\" -le 1 || exit 1; test \"$rc\" -eq 0 || changed=1; done; test \"$changed\" -eq 1"
         },
         {
           "name": "at most 1 memory page",
