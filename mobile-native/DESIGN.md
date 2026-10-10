@@ -232,7 +232,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### The Idle fold
 - **Shape:** A single 48-unit row: "Idle · 3" in ink-mid at 15px (title case, not the band headers' uppercase), with a chevron that rotates 90° when open.
-- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows.
+- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows. Folded, it shows the blue dot while any session inside has something new; VoiceOver says "unread sessions inside".
 
 ### Section rows
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.

@@ -80,7 +80,7 @@ Every screen is checked against these.
 | Hub (only in connection and settings) | server, endpoint |
 | Question, Approval | ask_user, escalation, sandbox exemption |
 | Needs you | awaiting, attention level |
-| Idle (the agent's turn ended; a blue dot means something is new since you looked) | finished, your move |
+| Idle (the agent's turn ended; a blue dot means something is new since you looked) | finished (as a session's state), your move |
 | Working, Quiet, May be stuck | active, streaming, stalled |
 | Failed | errored, systemError, error (as a state) |
 | Steer (arrives at the agent's next step) | inject, interrupt and redirect |
@@ -780,4 +780,4 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 
 ## Appendix B: fixture content
 
-Use content shaped like real usage (section 2): about 17 live top-level sessions across evener and a few other projects, two hosts (magic-kingdom, paradise-park), subagent trees from 0 to 54 with at least one of 467 in Archived, models from several provider profiles (lunaroute: deepseek-4.1-flash, glm-5.3-vision; codex-jesse-fsck.com: gpt-5.6; meta: muse-spark-1.3; kimi-code: k3), effort mostly xhigh and high, sessions running 6 to 13 of these plugins: superpowers, elements-of-style, frontend-design, go, go-release, go-spec-reviewer, fileflow-pathologize, claude-session-driver, private-journal-mcp, shepherd-pr, iterative-development, study-skills, simplify-code, superpowers-chrome. Titles are four to six words in title case, auto-named from the prompt. Shared notes on a few sessions: both notes and three links (PR, CI checks, plan file) on the PR session, a lone file link on a finished one, an agent note and a PR link on another, and read-only notes on a shut-down one. The prototype's `data.js` is the canonical fixture.
+Use content shaped like real usage (section 2): about 17 live top-level sessions across evener and a few other projects, two hosts (magic-kingdom, paradise-park), subagent trees from 0 to 54 with at least one of 467 in Archived, models from several provider profiles (lunaroute: deepseek-4.1-flash, glm-5.3-vision; codex-jesse-fsck.com: gpt-5.6; meta: muse-spark-1.3; kimi-code: k3), effort mostly xhigh and high, sessions running 6 to 13 of these plugins: superpowers, elements-of-style, frontend-design, go, go-release, go-spec-reviewer, fileflow-pathologize, claude-session-driver, private-journal-mcp, shepherd-pr, iterative-development, study-skills, simplify-code, superpowers-chrome. Titles are four to six words in title case, auto-named from the prompt. Shared notes on a few sessions: both notes and three links (PR, CI checks, plan file) on the PR session, a lone file link on an idle one, an agent note and a PR link on another, and read-only notes on a shut-down one. The prototype's `data.js` is the canonical fixture.
