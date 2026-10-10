@@ -1113,6 +1113,14 @@ func (d *checkpointData) collectCompaction(text string, summary bool) {
 	d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
 }
 
+// isPartnerSteering reports whether a steering turn is the human partner's own
+// message, sent during a turn, rather than a daemon nudge. The checkpoint's
+// verbatim carry and the summarizer's "User:" label both use it, so they agree
+// on whose words a steer is.
+func isPartnerSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
+}
+
 // checkpointWriteStatus classifies a write tool call by the outcome of its
 // paired tool result. The checkpoint may only report a file as modified when a
 // result confirmed the write; an attempted write that failed or whose result is
@@ -1155,9 +1163,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
 
 		case schema.TurnSteering:
-			// Steering the human partner sent during a turn is their message
-			// too; daemon nudges are not.
-			if text := t.Message.Text(); t.SteeringSource == events.SteeringSourceUser && text != "" {
+			if text := t.Message.Text(); isPartnerSteering(t) && text != "" {
 				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 			}
 
@@ -2046,9 +2052,8 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			// Steering the human partner sent is their message, labeled as such
-			// for the summary prompt's quoting rule; daemon nudges are not.
-			if t.SteeringSource == events.SteeringSourceUser {
+			// Labeled for the summary prompt's quoting rule.
+			if isPartnerSteering(t) {
 				b.WriteString("User: ")
 			} else {
 				b.WriteString("System: ")
