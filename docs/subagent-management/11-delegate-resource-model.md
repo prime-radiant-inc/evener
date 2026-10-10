@@ -1539,9 +1539,11 @@ its next model request. A settled request that presented it covers it: when the
 turn ends successfully, still inside the generation's lease, the runtime appends
 and fsyncs a generation-less consumed marker for each covered ID that is still
 pending, so the delegate is not driven again for attention its model has
-already seen. The lease is the delegate's only start claim (no attention
-reservation is admitted while a generation holds a live binding), so the marker
-cannot conflict with a reserved generation. A failed turn leaves its covered
+already seen. Attention already pending when a generation starts is consumed
+the same way once one of that generation's settled requests shows it. The lease
+is the delegate's only start claim (no attention reservation is admitted while a
+generation holds a live binding), so the marker cannot conflict with a reserved
+generation. A failed turn leaves its covered
 IDs pending; attention appended after the generation's last request was built
 stays pending and starts its own attention generation; a turn outside a lease
 covers nothing.
