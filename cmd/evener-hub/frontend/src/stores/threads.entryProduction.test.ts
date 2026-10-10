@@ -1046,3 +1046,101 @@ it("ordinary mutation-pin release saves a fresh final read before removing the l
     outbox.close();
   }
 });
+
+it("ordinary invalidating history input automatically reads a fresh baseline before caching its new identity", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  let recoveryStarted = false;
+  let finish: (() => void) | undefined;
+  client.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        recoveryStarted = true;
+        finish = () => {
+          const fresh = response("local:a", [turn("fresh-baseline", 3)]);
+          fresh.epoch = 2;
+          fresh.snapshot = { incarnation: "inc-b", length: 4 };
+          resolve({ ...fresh, requestGeneration: params.requestGeneration });
+        };
+      }),
+  );
+  try {
+    client.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:a",
+        threadId: "thread-a",
+        bootGeneration: "1",
+        epoch: 2,
+        snapshot: { incarnation: "inc-b", length: 4 },
+        items: turn("invalidating-poison", 3).items,
+      },
+    });
+    // Observe the real wake before any settlement helper can drive parked work.
+    await vi.waitFor(() => expect(recoveryStarted).toBe(true), { timeout: 500 });
+    expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeDefined();
+    const oldKey = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest(oldKey, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+    const freshKey = entryHistoryKey({ ...identity, clientId: location.origin, incarnation: "inc-b" });
+    expect(await storage.getLatest(freshKey, 10)).toEqual([]);
+    if (!finish) throw new Error("recovery read was not started");
+    finish();
+    await settleEntryTranscriptForTests("local:a");
+    expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual(["fresh-baseline"]);
+    expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("invalidating-poison");
+  } finally {
+    finish?.();
+  }
+});
+
+it("ordinary suppression-only acquisition still cold-reads but never caches until every holder releases", async () => {
+  const storage = cache();
+  const channel = Object.assign(new EventTarget(), {
+    name: "evener.session-cache.v1",
+    onmessage: null,
+    onmessageerror: null,
+    postMessage(_message: unknown) {},
+    close() {},
+  });
+  setCacheChannelFactoryForTests(() => channel);
+  channel.dispatchEvent(
+    new MessageEvent("message", {
+      data: { version: 1, sourceId: "sibling-tab", kind: "deletion", refs: ["local:a"] },
+    }),
+  );
+  await settleProjectionWorkForTests();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(0);
+  expect(threadsStore.getState().threads.has("local:a")).toBe(true);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  await threadsStore.getState().ensureThread("local:a");
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("suppressed-live", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).toContain("suppressed-live");
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().cacheLifetimes.has("local:a")).toBe(false);
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+});
