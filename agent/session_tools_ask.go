@@ -54,10 +54,14 @@ func (s *Session) isSubagentSession() bool {
 }
 
 // canSendToCaller reports whether this session is a delegate that can steer
-// its caller with delegate_send. It gates the caller-route guidance in both the
-// system prompt and communicate's end_turn description.
+// its caller with delegate_send: the tool is registered and the session is a
+// stable delegate with a controller, which stableDelegateSendTool's caller
+// route requires. A bare `serve --resume <delegate-id>` is a subagent without
+// a controller, so its caller route refuses and it gets no guidance. It gates
+// the caller-route guidance in both the system prompt and communicate's
+// end_turn description.
 func (s *Session) canSendToCaller() bool {
-	return s.isSubagentSession() && s.reg.Get("delegate_send") != nil
+	return s.owningDelegateID != "" && s.delegateController != nil && s.reg.Get("delegate_send") != nil
 }
 
 // hasHumanPartnerToAsk reports whether someone can answer this session: an

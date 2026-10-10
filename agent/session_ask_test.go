@@ -5222,3 +5222,36 @@ func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(
 		t.Fatal("roundEntryResolvesAskBoundary = false, want true (a non-carrier TurnFailure is transparent bookkeeping before the resolving TurnUserInput entry)")
 	}
 }
+
+// TestCallerRouteGuidance_RestoredSubagentWithoutController covers a bare
+// `serve --resume <delegate-id>`: the session is a subagent and registers
+// delegate_send, but no delegate controller is attached, so the caller route
+// refuses. The caller-route guidance must follow the route, not the flag.
+func TestCallerRouteGuidance_RestoredSubagentWithoutController(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:         "restored-subagent-caller-route",
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		IsSubagent: true,
+		Config:     (SessionConfig{}).toSnapshot(),
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	if restored.reg.Get("delegate_send") == nil {
+		t.Fatal("test setup: delegate_send is not registered, so the gate would be false for the wrong reason")
+	}
+
+	if _, err := stableDelegateSendTool(context.Background(), restored, map[string]any{"to": runtimeMessageAliasCaller, "message": "need input"}, 0); err == nil {
+		t.Fatal("caller route delivered without a delegate controller; the case under test requires it to refuse")
+	}
+	if restored.canSendToCaller() {
+		t.Fatal("caller-route guidance offered to a session whose caller route refuses")
+	}
+}

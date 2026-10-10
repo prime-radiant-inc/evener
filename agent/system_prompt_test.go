@@ -11,10 +11,12 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 // Opaque sentinels for the operator inputs the prompt must carry. They prove
@@ -113,7 +115,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
-			checkPromptInput(t, "CanSendToCaller", d.CanSendToCaller, true)
+			checkPromptInput(t, "CanSendToCaller without a delegate controller", d.CanSendToCaller, false)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
@@ -127,6 +129,11 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the bundled subagent body", d.Role == bundledAgentBody(t, "subagent"), true)
+			checkPromptInput(t, "CanSendToCaller without a delegate controller", d.CanSendToCaller, false)
+		}},
+		{"stable delegate", buildPromptStableDelegate, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "CanSendToCaller", d.CanSendToCaller, true)
 		}},
 		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
@@ -282,6 +289,21 @@ func buildPromptDelegate(t *testing.T, allowance int, agentType string) *Session
 		child.Close()
 	})
 	return child
+}
+
+// buildPromptStableDelegate is the retained runtime of a stable delegate after
+// one scripted generation: it has a delegate controller, an owning delegate
+// identity and delegate_send, so its caller route works.
+func buildPromptStableDelegate(t *testing.T) *Session {
+	t.Helper()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.ToolNameCeiling = []string{"communicate", "delegate_send"}
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	return warmStableDelegateUnservedRoot(t, root, fixture).sess
 }
 
 // buildDelegateWithRoleOverrideSession is a hand-built depth-1 delegate
