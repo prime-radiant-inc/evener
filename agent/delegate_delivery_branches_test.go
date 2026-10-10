@@ -790,7 +790,7 @@ func TestDelegateNotificationContentNamesItsKind(t *testing.T) {
 	}
 }
 
-// Review Focus 2: an update's text can neither close its frame nor open
+// An update's text can neither close its frame nor open
 // another. appwire-client's steeringNotifications test parses this exact frame.
 func TestDelegateUpdateFrameCannotCloseOrForgeAFrame(t *testing.T) {
 	t.Parallel()
@@ -812,8 +812,8 @@ func TestDelegateUpdateFrameCannotCloseOrForgeAFrame(t *testing.T) {
 	}
 }
 
-// Review Focus 3: an update whose text looks like a terminal packet or like
-// the quiet watchdog's sentence is written as itself; the kind attribute is
+// An update whose text looks like a terminal packet or like the quiet
+// watchdog's sentence is written as itself; the kind attribute is
 // what says it is an update. appwire-client's steeringNotifications test
 // parses these exact frames.
 func TestDelegateUpdateFrameKeepsLookalikeMessagesWhole(t *testing.T) {

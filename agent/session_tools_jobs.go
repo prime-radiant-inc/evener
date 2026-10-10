@@ -1822,6 +1822,9 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 			earlier.Action = "update"
 			message, err := delegateUpdateMessage(packet)
 			if err != nil {
+				// Unreachable by construction: the journal fold writes every
+				// update message with json.Marshal of a string. The reply has
+				// no error channel, so the decode error stands in as output.
 				message = err.Error()
 			}
 			earlier.Output = message
