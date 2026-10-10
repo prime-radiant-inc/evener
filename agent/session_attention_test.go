@@ -3300,7 +3300,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		t.Fatalf("arm pre-turn attention: %v", err)
 	}
 	// Turn start: the reset snapshots {preTurnID} as armed before this turn.
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(midTurnID, midContent); err != nil {
 		t.Fatalf("append mid-turn attention: %v", err)
 	}
@@ -3326,9 +3326,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		steeringFor(midTurnID, midContent),
 		steeringFor(unarmedID, midContent),
 	}
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
 	root.attentionMu.Lock()
-	staged := maps.Clone(root.rootAttentionStagedIDs)
+	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
 	if _, ok := staged[preTurnID]; ok {
 		t.Fatal("attention armed before the turn was staged")
@@ -3339,9 +3339,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		}
 	}
 	// Staging is candidacy, not credit: only a settled round promotes.
-	root.promoteStagedRootDelegateAttention()
+	root.promoteStagedAttentionCoverage()
 	root.attentionMu.Lock()
-	covered := root.rootAttentionCoveredIDs
+	covered := root.attentionCoveredIDs
 	root.attentionMu.Unlock()
 	if _, ok := covered[preTurnID]; ok {
 		t.Fatal("attention armed before the turn was marked covered")
@@ -3368,7 +3368,7 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
@@ -3382,18 +3382,18 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 		steering,
 	}
 
-	root.stageRootDelegateAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, historyTurns)
 	root.attentionMu.Lock()
-	staged := maps.Clone(root.rootAttentionStagedIDs)
+	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
 	if len(staged) != 0 {
 		t.Fatalf("delta request staged coverage: %v, want nothing", staged)
 	}
 
 	// The full-history round that follows credits normally.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
 	root.attentionMu.Lock()
-	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
+	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
 		t.Fatal("full-history request did not stage the presented attention")
 	}
@@ -3415,7 +3415,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
@@ -3433,13 +3433,13 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	// content-filter retry whose compaction folds the steering turn away is
 	// the production shape). No promotion happens, and finish must not
 	// consume: the model never saw it in a settled call.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
 	root.attentionMu.Lock()
-	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
+	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
 		t.Fatal("built request did not stage the presented attention")
 	}
-	if len(root.rootAttentionCoveredIDs) != 0 {
+	if len(root.attentionCoveredIDs) != 0 {
 		root.attentionMu.Unlock()
 		t.Fatal("staging alone credited coverage before any call settled")
 	}
@@ -3457,8 +3457,8 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 	// The retry's round settles with the item presented: promotion credits
 	// it, and finish consumes.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
-	root.promoteStagedRootDelegateAttention()
+	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
+	root.promoteStagedAttentionCoverage()
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
 	}
@@ -3562,7 +3562,7 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 		t.Fatalf("append attention: %v", err)
 	}
 	root.attentionMu.Lock()
-	root.rootAttentionCoveredIDs = map[string]struct{}{attentionID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{attentionID: {}}
 	root.attentionMu.Unlock()
 	panicErr := errors.New("injected turn panic")
 	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"panic": panicErr})
@@ -3660,7 +3660,7 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 	}
 	root.attentionMu.Lock()
 	root.rootAttentionWakeIDs = map[string]struct{}{snapshotID: {}, coveredID: {}}
-	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
 	var foldReads int
@@ -3699,7 +3699,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	}
 	root.attentionMu.Lock()
 	root.rootAttentionWakeIDs = map[string]struct{}{coveredID: {}}
-	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
 	var foldReads int

@@ -486,7 +486,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows anchor planning because credit belongs to what the request
 	// actually carries.
-	s.stageRootDelegateAttentionCoverage(req, historyTurns)
+	s.stagePresentedAttentionCoverage(ctx, req, historyTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
