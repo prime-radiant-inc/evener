@@ -70,6 +70,19 @@ func (s SessionSeenSnapshot) Unseen(key ArchiveKey, turnEndedAt time.Time) bool 
 	return turnEndedAt.After(s.Epoch) && turnEndedAt.After(record.SeenThrough)
 }
 
+// SeenThrough is the session's seen-through mark floored at the store's
+// epoch: anything that happened after it is new to the person. Zero when there
+// is no store.
+func (s SessionSeenSnapshot) SeenThrough(key ArchiveKey) time.Time {
+	if s.Epoch.IsZero() {
+		return time.Time{}
+	}
+	if mark := s.Records[key].SeenThrough; mark.After(s.Epoch) {
+		return mark
+	}
+	return s.Epoch
+}
+
 // Clone returns a snapshot whose records the caller owns.
 func (s SessionSeenSnapshot) Clone() SessionSeenSnapshot {
 	s.Records = maps.Clone(s.Records)

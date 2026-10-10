@@ -2565,6 +2565,13 @@ export interface NavigationSessionSummary {
    */
   unseen?: boolean;
   /**
+   * SeenThrough is the hub's seen-through mark for a live row, floored at
+   * the seen store's start, so a client can tell output that moved after it
+   * (an activity time) from output already seen, even mid-turn. Absent on a
+   * row that isn't live, and from a hub with no seen store or an older hub.
+   */
+  seen_through?: string;
+  /**
    * Own-session activity counts are captured before navigation fitting.
    * RunningJobCommand is the first available command, bounded for display.
    */
