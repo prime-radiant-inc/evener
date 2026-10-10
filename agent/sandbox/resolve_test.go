@@ -405,7 +405,7 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 		{"explicit caches", HostFacts{Home: home, GoModCache: "/custom/modcache", GoCache: "/custom/gocache"}, []string{"/custom/modcache", "/custom/gocache"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			roots := cacheRootsFor(ModeWorkspaceWrite, tc.host)
+			roots := cacheRootsFor(ModeWorkspaceWrite, tc.host, "/work/project")
 			for _, want := range tc.want {
 				if !slices.Contains(roots, want) {
 					t.Errorf("cache roots %v must include %q", roots, want)
@@ -413,8 +413,36 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 			}
 		})
 	}
-	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}); slices.Contains(roots, "relative") {
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}, "/work/project"); slices.Contains(roots, "relative") {
 		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)
+	}
+}
+
+// Go's default GOCACHE is under $XDG_CACHE_HOME when that is set, so the
+// overlay serves $XDG_CACHE_HOME in place of ~/.cache.
+func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
+	if !slices.Contains(roots, "/xdg/cache") || slices.Contains(roots, "/home/tester/.cache") {
+		t.Errorf("cache roots %v must serve XDG_CACHE_HOME in place of ~/.cache", roots)
+	}
+}
+
+// An overlay over a directory that holds the worktree would hide the real
+// worktree behind a discarded upper layer, so edits would vanish at session end.
+// A cache root at or above the worktree (or home, or a temp root) is dropped.
+func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
+	const worktree = "/home/tester/src/project"
+	for _, host := range []HostFacts{
+		{Home: "/home/tester", GoModCache: "/home/tester/src"},
+		{Home: "/home/tester", GoCache: worktree},
+		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
+		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
+	} {
+		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
+			if r == worktree || pathUnder(worktree, r) || r == host.Home {
+				t.Errorf("cache root %q covers the worktree %q or home (host %+v)", r, worktree, host)
+			}
+		}
 	}
 }
 

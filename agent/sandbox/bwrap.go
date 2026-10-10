@@ -166,6 +166,12 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// Only on an overlay-capable host (this dev box's bubblewrap lacks overlay, so
 	// CacheStrategy is CacheSessionPrivate here and the env floor redirects the
 	// cache vars into the session tmp instead — same no-poisoning floor, cold).
+	//
+	// A cache root that does not exist yet has no lower to overlay and a mount
+	// target bwrap cannot create in the read-only tree, so it is skipped and stays
+	// read-only, as every default root always has when absent. Serving it some
+	// other way (degrading to the session-private redirect) is the same fallback
+	// a root that cannot be overlaid needs, tracked in #4220.
 	if rp.CacheStrategy == CacheOverlay {
 		for _, c := range rp.CacheRoots {
 			if pathExists(c) {

@@ -396,11 +396,15 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, `~/.npm`,
-  `~/.cargo`, the `pkg` directory of your first GOPATH entry, and a `GOMODCACHE`
-  or `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where
-  the host's bubblewrap supports it: builds read warm from the real cache, but
-  writes land in a per-session tmpfs that is discarded at session end. The Go
+- `workspace-write` serves the language cache roots (`~/.cache`, or
+  `$XDG_CACHE_HOME` when set, `~/.npm`, `~/.cargo`, the `pkg` directory of your
+  first GOPATH entry, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
+  **read-real, write-private overlay** where the host's bubblewrap supports it:
+  builds read warm from the real cache, but writes land in a per-session tmpfs
+  that is discarded at session end. A root at or above the worktree, your home
+  directory or a temp root is never overlaid, since the discarded upper layer
+  would swallow edits made under it; a root that does not exist yet is skipped
+  and stays read-only. The Go
   settings are resolved once at session start the way the go command resolves
   them: the environment, then `go env -w` settings (the go env file `$GOENV`
   names, `<user config dir>/go/env` by default), then Go's defaults (`$HOME/go`

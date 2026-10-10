@@ -400,7 +400,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host),
+		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
@@ -509,20 +509,27 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME. Go's roots follow the host's go settings
-// instead (goCacheRoots).
-var defaultCacheRoots = []string{".cache", ".npm", ".cargo"}
+// strategy, expressed relative to $HOME. ~/.cache gives way to $XDG_CACHE_HOME
+// when that is set, and Go's roots follow the host's go settings (goCacheRoots).
+var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
-// serve caches (overlaid or redirected), off/read-only need none.
-func cacheRootsFor(mode Mode, host HostFacts) []string {
+// serve caches (overlaid or redirected), off/read-only need none. Every root
+// passes the shared-tree guard: an overlay over a directory holding the
+// worktree, the home directory or a temp root would hide the real files behind
+// an upper layer discarded at session end, so edits there would silently vanish.
+func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots)+3)
+		cache := filepath.Join(host.Home, ".cache")
+		if filepath.IsAbs(host.XDGCacheHome) {
+			cache = host.XDGCacheHome
+		}
+		out := []string{cache}
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return append(out, goCacheRoots(host)...)
+		return guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
 	default:
 		return nil
 	}

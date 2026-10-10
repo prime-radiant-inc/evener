@@ -51,6 +51,7 @@ var coreEnvVars = []envvars.Var{
 	envvars.Lang,
 	envvars.Term,
 	envvars.TmpDir,
+	envvars.XDGConfigHome,
 	envvars.GoEnv,
 	envvars.GoPath,
 	envvars.GoModCache,

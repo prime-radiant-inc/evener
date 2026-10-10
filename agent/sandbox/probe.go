@@ -121,6 +121,10 @@ type HostFacts struct {
 	GoModCache string
 	GoCache    string
 
+	// XDGCacheHome is $XDG_CACHE_HOME, which moves ~/.cache and with it Go's
+	// default GOCACHE; empty when unset.
+	XDGCacheHome string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -234,6 +238,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, goCacheVar)
+	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path

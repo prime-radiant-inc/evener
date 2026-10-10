@@ -103,7 +103,7 @@ process environments.
 | Variable | Description |
 |---|---|
 | `XDG_CACHE_HOME` | Base for Evener cache data. |
-| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery. |
+| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery; inherited by core-only command environments, so a spawned `go` finds the same go env file the sandbox read. |
 | `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
