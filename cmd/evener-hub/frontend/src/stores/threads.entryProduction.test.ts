@@ -957,6 +957,7 @@ it("ordinary content clear retires the old entry history so a late old push cann
   });
   await threadsStore.getState().clearThread("local:a");
   await settleProjectionWorkForTests();
+  expect(threadsStore.getState().threads.get("local:a")?.history).toBeUndefined();
   expect(await storage.getLatest(key, 10)).toEqual([]);
   client.emitNotification({
     method: "history/updated",
@@ -1177,4 +1178,29 @@ it("ordinary failed source refresh preserves only the prior committed rows until
   await threadsStore.getState().refreshThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("recovered-source");
+});
+
+it("ordinary empty source cold-opens and accepts later recorded input without a blob anchor", async () => {
+  const storage = cache();
+  const empty = response("local:a", []);
+  empty.snapshot = { incarnation: "inc-a", length: 0 };
+  const client = connect(empty);
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(threadsStore.getState().threads.get("local:a")?.turns).toEqual([]);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 1 },
+      items: turn("first-recorded", 0).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["first-recorded"]);
 });

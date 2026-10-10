@@ -1121,76 +1121,14 @@ describe("cached write seam", () => {
     }
   });
 
-  it("live-notification capture: a history/updated fold refreshes the record with no putThreadModel, within the max-wait", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:live");
-      await resolveEverything(fake);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await cacheRecord("local:live"), "the debounced write landed").toBeDefined();
-      for (let i = 0; i < 6; i += 1) {
-        // sub-second notifications keep resetting the trailing timer
-        emitHistoryUpdated("local:live", { fold: `turn_x${i}` });
-        await vi.advanceTimersByTimeAsync(700);
-      }
-      await vi.advanceTimersByTimeAsync(5_000); // ...but the max-wait fired within it
-      const record = await cacheRecord("local:live");
-      expect(record?.history.turns.length).toBeGreaterThan(1); // the busy session's record did not starve
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 1: mapped. Original: live-notification capture: a history/updated fold refreshes the record with no putThreadModel, within the max-wait
+  // Non-starvation and input-owned persistence survive, the whole-blob debounce/max-wait mechanism does not.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary recorded notifications persist during busy input without a whole-model publication or debounce".
 
-  it("write gating: failed, invalidated, and mid-resync histories write nothing until the resync settles", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:gated");
-      await resolveEverything(fake);
-      const model = threadsStore.getState().threads.get("local:gated");
-      if (model === undefined) throw new Error("local:gated must be published before the write-gate edits");
-      const history = model.history;
-      if (history === undefined)
-        throw new Error("local:gated must hold a versioned history before the write-gate edits");
-      threadsStore.setState((s) => ({
-        threads: new Map(s.threads).set("local:gated", { ...model, history: { ...history, failed: "history failed" } }),
-      }));
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:gated")).toBeUndefined(); // failed gate
-
-      const settled = threadsStore.getState().threads.get("local:gated");
-      if (settled === undefined) throw new Error("local:gated must stay published between the write-gate edits");
-      const settledHistory = settled.history;
-      if (settledHistory === undefined) {
-        throw new Error("local:gated must keep a versioned history between the write-gate edits");
-      }
-      threadsStore.setState((s) => ({
-        threads: new Map(s.threads).set("local:gated", {
-          ...settled,
-          history: {
-            ...settledHistory,
-            failed: undefined,
-            invalidatedAtGeneration: settledHistory.issuedGeneration,
-            awaited: { bootGeneration: settledHistory.bootGeneration, epoch: settledHistory.epoch },
-          },
-        }),
-      }));
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:gated")).toBeUndefined(); // invalidated gate
-
-      // The resync read the invalidation asked for settles it: a fresh
-      // authoritative read replaces the mid-transition pair (the delayed-
-      // reconciliation case), and the settled pair then persists.
-      await driveResyncRead("local:gated");
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:gated")).toBeDefined(); // the settled pair persists
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 2: mapped. Original: write gating: failed, invalidated, and mid-resync histories write nothing until the resync settles
+  // Reject speculative persistence while failed or invalidated and recover from real source input, direct renderer-map mutation no longer controls repository-owned writes.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary invalidating history input automatically reads a fresh baseline before caching its new identity".
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary failed source refresh preserves only the prior committed rows until a successful baseline".
 
   it("a fire retires its whole schedule: a stale max-wait never collapses a later window (fix round 1)", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1253,54 +1191,12 @@ describe("cached write seam", () => {
     }
   });
 
-  it("the connection gate: a write firing while the adapter is still opening skips, and the next publication retries", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      installWedgedCacheAdapter();
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      // The wedged lookup can only lose its own 250 ms deadline race, and
-      // that deadline is a faked timer: drive it, then await the cold read it
-      // armed (Task 5's deadline-test shape — awaiting the ensureThread
-      // outright would deadlock on the faked deadline).
-      const pending = threadsStore.getState().ensureThread("local:conn");
-      await vi.advanceTimersByTimeAsync(250);
-      await pending;
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:conn")).toBeUndefined(); // skipped: the open never settled
-      restoreCacheAdapter();
-      // The restored adapter was never opened in this test — the wedged
-      // override owned the only lookup — so warm the connection with a
-      // pane-mount-shaped lookup before the retrying write meets the gate.
-      await threadsStore.getState().ensureThread("local:conn_warm");
-      emitHistoryUpdated("local:conn", { fold: "turn_z" }); // the next publication retries
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:conn")).toBeDefined();
-    } finally {
-      vi.useRealTimers();
-      // Same as the deadline test above: the wedged lookup this test armed
-      // can never settle its registered storage work, so forget it before
-      // any later test settles the tracker.
-      clearProjectionWorkForTests();
-      restoreCacheAdapter();
-    }
-  });
+  // Ruling 33 disposition 3: retired. Original: the connection gate: a write firing while the adapter is still opening skips, and the next publication retries
+  // The legacy adapter isOpen skip gate does not exist on the entry write path, which awaits its own IDB transaction rather than skipping a debounced blob write.
 
-  it("flush: releaseThread commits a pending debounced write ordered before removal", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:flushed");
-      await resolveEverything(fake);
-      // no debounce advance yet: the write is still pending
-      threadsStore.getState().releaseThread("local:flushed");
-      expect(await cacheRecord("local:flushed")).toBeDefined(); // the flush committed the tail before removal
-      expect(threadsStore.getState().threads.has("local:flushed")).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 4: mapped. Original: flush: releaseThread commits a pending debounced write ordered before removal
+  // Save the finite final source cut before model removal, there is no pending whole-blob debounce to flush.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary final pane release saves its fresh finite read before dropping the model".
 
   it("flush: a ref closed by deletion flushes nothing (the deletedRefs gate)", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1392,43 +1288,9 @@ describe("cached write seam", () => {
     }
   });
 
-  it("flush: the pinned drain (dropUnpinnedModel) commits a pending debounced write before the model leaves the map", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      // A durable queued row pins the ref: a pinned model outlives its pane's
-      // final releaseThread and leaves only when the row settles and the pin
-      // refresh drops it (dropUnpinnedModel) — the path the spec calls "the
-      // path a pinned ref's model finally leaves through".
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-drain" });
-      await storage.enqueueIntent({
-        targetRef: "local:pinned",
-        method: "turn/queue",
-        payload: { ref: "local:pinned", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
-        attachments: [],
-        optimisticDisplay: { text: "queued" },
-      });
-      storage.close();
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {})); // the row stays durable
-      // The ready discovery's rejoin read publishes the pinned ref's model.
-      await nextModelPublished("local:pinned");
-      // The connection gate needs an open adapter, and a pane's arming lookup
-      // is what opens it: warm it with a second pane the way a workspace
-      // mount does.
-      await threadsStore.getState().ensureThread("local:pinned_warm");
-      void threadsStore.getState().ensureThread("local:pinned"); // the pane claim; the model exists, so no read
-      threadsStore.getState().releaseThread("local:pinned"); // pinned: the model stays
-      expect(threadsStore.getState().threads.has("local:pinned")).toBe(true);
-      const drained = nextModelRemoved("local:pinned");
-      emitAppliedQueuedNotification("local:pinned", "mutation-drain"); // the row settles: the pin drops
-      await drained;
-      expect(await cacheRecord("local:pinned")).toBeDefined(); // the flush committed the tail before removal
-      expect(threadsStore.getState().threads.has("local:pinned")).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 5: mapped. Original: flush: the pinned drain (dropUnpinnedModel) commits a pending debounced write before the model leaves the map
+  // The final mutation pin is a real owner, its fresh final source cut must persist before removal.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary mutation-pin release saves a fresh final read before removing the last pinned model".
 
   it("clear suppresses a restored pinned ref without an ensureThread claim until its final release", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1707,93 +1569,28 @@ async function settleReload(ref: string): Promise<void> {
 }
 
 describe("the live gap rule", () => {
-  it("scenario 6: an overlapping window merges and the deepest cursor is kept (the pinned reducer rule)", async () => {
-    await seedPositionedRecord("local:gap");
-    const { resolveRead } = await reloadWithDeferredRead("local:gap");
-    resolveRead(windowResponse(25, 3, "cur-shallow")); // start 25 is below the anchor 30: the merge is gapless
-    await settleReload("local:gap");
-    const { model, history } = requireOpenHistory("the live gap rule: scenario 6 overlap", "local:gap");
-    // The pages survived and the window arrived: the merge interleaves the
-    // window's own turns (w25-w27) between the held pages and the record's
-    // window newest — a fresh turn with a new id is never dropped, so the
-    // window's turns appear alongside the held ones the scenario pins.
-    expect(history.turns.map((t) => t.id)).toEqual(["turn_p2", "turn_p1", "w25", "w26", "w27", "turn_w"]);
-    expect(model.olderCursor).toBe("cur-deep"); // 792c379eca's rule, now pinned in the reload scenario
-  });
-
-  it("scenario 6: a window beginning exactly at the captured position's successor replaces (the accepted abut cost)", async () => {
-    await seedPositionedRecord("local:gap");
-    const { resolveRead } = await reloadWithDeferredRead("local:gap");
-    resolveRead(windowResponse(31, 3, "cur-abut")); // start 31 > anchor 30: one-item adjacency is indistinguishable from a one-item hole
-    await settleReload("local:gap");
-    const { model, history } = requireOpenHistory("the live gap rule: scenario 6 abut", "local:gap");
-    expect(history.turns.map((t) => t.id)).toEqual(["w31", "w32", "w33"]); // the cached pages were dropped
-    expect(model.olderCursor).toBe("cur-abut"); // the response's cursor is taken
-  });
-
-  it("scenario 7: a window starting entirely above the anchor replaces, and the response's cursor is taken", async () => {
-    await seedPositionedRecord("local:gap");
-    const { resolveRead } = await reloadWithDeferredRead("local:gap");
-    resolveRead(windowResponse(40, 3, "cur-new")); // disjoint: start 40 > anchor 30, no changes
-    await settleReload("local:gap");
-    const { model, history } = requireOpenHistory("the live gap rule: scenario 7 replace", "local:gap");
-    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // replaced, pages dropped
-    expect(model.olderCursor).toBe("cur-new"); // no silent hole: nothing merged around the gap
-  });
-
-  it("scenario 7: a fold newer than the response replaces and replays the fold tail", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      await seedPositionedRecord("local:gap");
-      await reloadWithFailedFirstRead("local:gap"); // the shell's read fails; the retry is the scenario's to drive
-      emitHistoryUpdated("local:gap", { fold: "turn_fold", entry: 50 }); // the fold lands above the incoming window's end
-      runScheduledHydrationRetryForThisFile();
-      await awaitReadArmed();
-      resolveReloadRead(windowResponse(40, 3, "cur-new")); // the window's end (42) is below the fold (50)
-      await settleReload("local:gap");
-      const { history } = requireOpenHistory("the live gap rule: scenario 7 fold", "local:gap");
-      expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_fold"]); // replace, then replay
-      expect(threadsStore.getState().cacheLifetimes.get("local:gap")?.shell).toBeUndefined(); // the first authoritative read cleared the shell
-      await vi.advanceTimersByTimeAsync(1_000);
-      const record = await cacheRecord("local:gap");
-      if (record === undefined) throw new Error("scenario 7 fold: the debounced write must have landed");
-      expect(record.history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_fold"]); // no hole was written
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("scenario 7: a fold arriving with a dropped notification behind it replays what arrived, carrying today's hole", async () => {
-    await seedPositionedRecord("local:gap");
-    await reloadWithFailedFirstRead("local:gap"); // the shell's read fails; the retry is the scenario's to drive
-    // The first push (entry 48) is dropped — only the second (entry 50) arrives.
-    emitHistoryUpdated("local:gap", { fold: "turn_keep", entry: 50 });
-    runScheduledHydrationRetryForThisFile();
-    await awaitReadArmed();
-    resolveReloadRead(windowResponse(40, 3, "cur-new"));
-    await settleReload("local:gap");
-    const { history } = requireOpenHistory("the live gap rule: scenario 7 dropped", "local:gap");
-    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_keep"]); // exactly what arrived: today's hole, mirrored faithfully
-  });
-
-  it("scenario 8: stale identity: the server rejects the held snapshot, the retry replaces, and the cached turns do not survive", async () => {
-    await seedPositionedRecord("local:gap");
-    const { resolveRetry, calls } = await reloadWithStaleSnapshot("local:gap"); // the first read rejects TranscriptItemCursorStale
-    resolveRetry(windowResponse(40, 3, "cur-new"));
-    await settleReload("local:gap");
-    expect(calls()[1]?.heldSnapshot).toBeUndefined(); // the retry carried no held identity
-    const { history } = requireOpenHistory("the live gap rule: scenario 8 stale", "local:gap");
-    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // the cached turns did not survive
-  });
-
-  it("an empty record takes the ordinary cold merge and the predicate holds (the gap rule's empty case, scenario 15's tail)", async () => {
-    await seedPositionedRecord("local:gap", { turns: [] }); // a zero-turn record: no anchor to compare against
-    const { resolveRead } = await reloadWithDeferredRead("local:gap");
-    resolveRead(windowResponse(40, 3, "cur-new"));
-    await settleReload("local:gap");
-    const { history } = requireOpenHistory("the live gap rule: empty record", "local:gap");
-    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // the ordinary cold path, no crash, no replace branch
-  });
+  // Ruling 33 disposition 6: mapped. Original: scenario 6: an overlapping window merges and the deepest cursor is kept (the pinned reducer rule)
+  // Overlapping recorded windows preserve both older pages and the deepest cursor, without a blob-shell anchor.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
+  // Ruling 33 disposition 7: retired. Original: scenario 6: a window beginning exactly at the captured position's successor replaces (the accepted abut cost)
+  // The accepted one-item abut cost is specific to the blob captured-position predicate, entry paging uses causal certificates and reconciles an uncertain boundary instead.
+  // Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
+  // Ruling 33 disposition 8: retired. Original: scenario 7: a window starting entirely above the anchor replaces, and the response's cursor is taken
+  // The entirely-above-blob-anchor replacement predicate is retired, currentness instead follows the new source baseline and its returned cursor.
+  // Entry protection: src/stores/threads.history.test.ts — "a same-thread reconnect with unchanged source identifiers retires the outgoing page authority".
+  // Ruling 33 disposition 9: mapped. Original: scenario 7: a fold newer than the response replaces and replays the fold tail
+  // Preserve actual arrived input outside a delayed response window in UI and disk, blob-shell replacement and timer plumbing are retired.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
+  // Ruling 33 disposition 10: mapped. Original: scenario 7: a fold arriving with a dropped notification behind it replays what arrived, carrying today's hole
+  // Mirror the tail that arrived and do not invent the missing item, the original assertion did not prohibit a later suffix certificate.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
+  // Ruling 33 disposition 11: mapped. Original: scenario 8: stale identity: the server rejects the held snapshot, the retry replaces, and the cached turns do not survive
+  // A real stale-cursor rejection still drops held identity and stale older turns, its replacement intent now reaches the entry owner.
+  // Entry protection: src/stores/threads.history.test.ts — "a stale-cursor rejection retries thread/read without the held snapshot".
+  // Entry protection: src/stores/threads.history.test.ts — "a stale-cursor retry discards an older held turn outside the recovered window, not merges it".
+  // Ruling 33 disposition 12: mapped. Original: an empty record takes the ordinary cold merge and the predicate holds (the gap rule's empty case, scenario 15's tail)
+  // An empty history still cold-opens safely and accepts later input, the empty whole-blob anchor predicate itself is retired.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary empty source cold-opens and accepts later recorded input without a blob anchor".
 });
 
 // The scroll-back bed (Task 8; spec, "Scroll-back: the deepest held cursor",
@@ -1856,34 +1653,12 @@ function settledWindowResponse(ref: string): ThreadReadResponse {
 }
 
 describe("scroll-back, the volume case", () => {
-  it("renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor", async () => {
-    // Scenario 12: a prior session hydrated, paged back twice, and its
-    // record carries window plus both pages. The reload paints all of it
-    // from the shell while the reconciling read stays parked.
-    await seedScrollbackRecord("local:scroll");
-    const { resolveRead } = await reloadWithDeferredRead("local:scroll");
-    const fake = requireConnectedClient("scroll-back: the volume case");
-    const listCalls: Array<{ ref?: string; cursor?: string }> = [];
-    fake.on("thread/turns/list", (params) => {
-      listCalls.push({ ref: params.ref, cursor: params.cursor });
-      return olderPageResponse();
-    });
-    const { model: shell, history } = requireOpenHistory("scroll-back: the shell", "local:scroll");
-    expect(history.turns).toHaveLength(3 + 3 + 3); // the window plus the two pages the prior session paged in
-    expect(shell.olderCursor).toBe("cur-page-3"); // the deepest held cursor: scroll-back continues below page 2
-    // The shell gate: the shell's cursor belongs to whichever window the
-    // reconcile settles on, so scroll-back refuses while the read is pending.
-    await threadsStore.getState().loadOlderTurns("local:scroll");
-    expect(listCalls).toEqual([]); // refused: nothing was fetched against the unverified cursor
-    // The reconcile settles on a window entirely above the record, so the
-    // gap rule replaces the shell and the response's cursor is taken.
-    resolveRead(settledWindowResponse("local:scroll"));
-    await settleReload("local:scroll");
-    expect(threadsStore.getState().cacheLifetimes.get("local:scroll")?.shell).toBeUndefined(); // the authoritative read ended the shell
-    await threadsStore.getState().loadOlderTurns("local:scroll");
-    expect(listCalls).toHaveLength(1); // one page: the two already-held pages were never re-requested
-    expect(listCalls[0]?.cursor).toBe("cur-settled"); // continues from where the settled window left off
-  });
+  // Ruling 33 disposition 13: mapped. Original: renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor
+  // Retain older-page volume and causal continuation, block stale paging publication during hydration, the pre-authoritative whole-blob shell and its boolean gate are retired.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
+  // Entry protection: src/stores/threads.history.test.ts — "a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor".
+  // Entry protection: src/stores/threads.history.test.ts — "an already-read local page does not publish across a pending hydration".
+  // Entry protection: src/stores/threads.history.test.ts — "a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor".
 });
 
 // The deletion bed (Task 9; spec, "The write seam" deletion bullets): the
@@ -2012,27 +1787,9 @@ function installNoCacheChannel(): void {
 }
 
 describe("deletion", () => {
-  it("a deleteSession success removes the record, cancels the pending timer, and arms deletedRefs", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:thr_1");
-      await resolveEverything(fake);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await cacheRecord("local:thr_1")).toBeDefined();
-      fake.on("evener/session/delete", () => ({
-        deleted: ["thr_1"],
-        skipped: [],
-        navigation: { generation_id: "generation_test", targets: [] },
-      }));
-      await deleteSession(fake, "local:thr_1");
-      expect(threadsStore.getState().deletedRefs.has("local:thr_1")).toBe(true);
-      expect(await cacheRecord("local:thr_1")).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 14: mapped. Original: a deleteSession success removes the record, cancels the pending timer, and arms deletedRefs
+  // The actual deleteSession success fences deletedRefs, deletes every requested-ref entry history and durably rejects a pre-delete write, no debounce remains to cancel.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary deletion removes bound histories and durably refuses the captured pre-delete write".
 
   it("a debounce task already queued when the deletion ran is refused by the fire-time deletedRefs gate", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2069,24 +1826,9 @@ describe("deletion", () => {
     }
   });
 
-  it("the deletion fence removes the record and propagates on a read-proven deletion", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const { posted } = installTestCacheChannel();
-      await seedCacheDirect("local:fenced", { incarnation: "inc-1", length: 1, turns: [turnFixture("turn_1")] });
-      const fake = connectFakeClient();
-      fake.on("thread/read", () => {
-        throw fencedReadError("local:fenced"); // mutationOutcome "targetDeleted"
-      });
-      await threadsStore.getState().ensureThread("local:fenced");
-      expect(threadsStore.getState().threads.has("local:fenced")).toBe(true); // the shell's content stays visible
-      expect(threadsStore.getState().deletedRefs.has("local:fenced")).toBe(true); // the fence armed
-      expect(await cacheRecord("local:fenced")).toBeUndefined(); // the fence deleted the record
-      expect(posted).toEqual([{ version: 1, sourceId: expect.any(String), kind: "deletion", refs: ["local:fenced"] }]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 15: mapped. Original: the deletion fence removes the record and propagates on a read-proven deletion
+  // Read-proven targetDeleted still fences, heals storage and broadcasts once, painting a legacy shell before that failed cold read is retired.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary read-proven deletion fences the model, heals entry storage and broadcasts once".
 
   it("a record delete whose transaction aborted is retried by the fence's next firing", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2146,63 +1888,13 @@ describe("deletion", () => {
     expect(await cacheRecord(ref)).toBeUndefined();
   });
 
-  it("a suppression-only ref still cold-reads, stays suppressed while owned, and expires on final release", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const ref = "local:suppression-only";
-      const { peer } = installTestCacheChannel();
-      peer.post({ version: 1, sourceId: "peer", kind: "deletion", refs: [ref] });
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBeUndefined();
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeUndefined();
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler());
-      await threadsStore.getState().ensureThread(ref);
-      const reads = fake.calls.filter((call) => call.method === "thread/read");
-      expect(reads).toHaveLength(1);
-      expect(reads[0]?.params).not.toHaveProperty("heldSnapshot");
-      expect(threadsStore.getState().threads.has(ref)).toBe(true);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
-      await threadsStore.getState().ensureThread(ref); // a second pane shares this lifetime
-      threadsStore.getState().releaseThread(ref);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord(ref)).toBeUndefined();
-      threadsStore.getState().releaseThread(ref);
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
-      expect(threadsStore.getState().cacheLifetimes.has(ref)).toBe(false);
-      expect(await cacheRecord(ref)).toBeUndefined(); // the pre-release flush was suppressed too
-      await threadsStore.getState().ensureThread(ref);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await cacheRecord(ref)).toBeDefined();
-      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 16: mapped. Original: a suppression-only ref still cold-reads, stays suppressed while owned, and expires on final release
+  // Keep the real suppression-only lifetime protection, one cold read without heldSnapshot, two-holder suppression including final retirement, then fresh reacquisition writes again.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary suppression-only acquisition still cold-reads but never caches until every holder releases".
 
-  it("the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const { peer } = installTestCacheChannel(); // TestBroadcastChannel: posts from a "peer" tab reach the handler
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:sib");
-      await resolveEverything(fake);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await cacheRecord("local:sib")).toBeDefined();
-      peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:sib"] });
-      emitHistoryUpdated("local:sib", { fold: "turn_w" }); // the sibling keeps receiving pushes
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:sib")).toBeUndefined(); // suppressed + healed: never re-created
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 17: mapped. Original: the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record
+  // A sibling deletion heals real entry rows and prevents held-lifetime resurrection, now through durable generation and retired repository claims.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary sibling deletion heals entry rows and retires the still-held publication and write claims".
 
   it("the heal: a message arriving after a racing write re-created the record deletes it in the same step", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2596,24 +2288,9 @@ describe("the clear", () => {
     }
   });
 
-  it("14c sibling: a ref closed before the clear and re-opened after its commit is a fresh lease and caches again", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:fresh");
-      await resolveEverything(fake);
-      threadsStore.getState().releaseThread("local:fresh"); // closed BEFORE the clear: the lease is gone
-      expect(await clearCachedSessions()).toEqual({ committed: true }); // the durable epoch is now 1
-      await threadsStore.getState().ensureThread("local:fresh"); // re-opened AFTER the commit: a fresh lease by construction
-      await resolveEverything(fake);
-      emitHistoryUpdated("local:fresh", { fold: "turn_f" });
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:fresh")).toBeDefined(); // the feature working, not the remedy failing
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 18: mapped. Original: 14c sibling: a ref closed before the clear and re-opened after its commit is a fresh lease and caches again
+  // A closed ref reacquired after a committed sibling Clear captures the new durable epoch and can cache.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary sibling Clear permits a genuinely fresh explicit acquisition to cache the new epoch".
 
   it("14d the missed message: the delayed clear delivery changes nothing after the backstop already armed", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2643,22 +2320,9 @@ describe("the clear", () => {
     }
   });
 
-  it("the session-content clear (applyClearResponse) deletes the ref's record in the same step", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:cc");
-      await resolveEverything(fake);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await cacheRecord("local:cc")).toBeDefined();
-      await driveThreadClear("local:cc", fake); // the thread/clear driver threads.test.ts's own coverage uses
-      expect(await cacheRecord("local:cc")).toBeUndefined(); // gone in the same step: no pre-clear shell on the next reload
-      expect(threadsStore.getState().threads.get("local:cc")?.history).toBeUndefined(); // the model is the bare hydrate
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // Ruling 33 disposition 19: mapped. Original: the session-content clear (applyClearResponse) deletes the ref's record in the same step
+  // The actual clearThread receipt retires old entry storage before late old input, preserves the bare history and permits new-incarnation recovery.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary content clear retires the old entry history so a late old push cannot restore it".
 
   it("the session-content clear retires shell metadata, admits paging, and re-caches after reopen", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2947,48 +2611,9 @@ describe("cache privacy and history regressions", () => {
       vi.useRealTimers();
     }
   });
-  it("gap replacement keeps a fold tail within a turn that spans the window", async () => {
-    await seedPositionedRecord("local:gap");
-    await reloadWithFailedFirstRead("local:gap");
-    const { model, history } = requireOpenHistory("probe", "local:gap");
-    requireConnectedClient("probe").emitNotification({
-      method: "history/updated",
-      params: {
-        ref: "local:gap",
-        threadId: model.threadId,
-        bootGeneration: history.bootGeneration,
-        epoch: history.epoch,
-        snapshot: { incarnation: history.incarnation, length: history.length },
-        turns: [{ id: "turn_w", status: "completed", itemsView: "full", version: 3 }],
-        items: [
-          {
-            id: "fold-tail-50",
-            type: "agentMessage",
-            turnId: "turn_w",
-            text: "latest live content",
-            status: "completed",
-            position: { entry: 50, item: 0 },
-          },
-        ],
-      },
-    } as AnyNotification);
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:gap")
-        ?.history?.turns.flatMap((t) => t.items.map((i) => i.id)),
-    ).toContain("fold-tail-50");
-    runScheduledHydrationRetryForThisFile();
-    await awaitReadArmed();
-    resolveReloadRead(windowResponse(40, 3, "cur-new"));
-    await settleReload("local:gap");
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:gap")
-        ?.history?.turns.flatMap((t) => t.items.map((i) => i.id)),
-    ).toContain("fold-tail-50");
-  });
+  // Ruling 33 disposition 20: mapped. Original: gap replacement keeps a fold tail within a turn that spans the window
+  // An arrived tail in the same turn as the recovering window survives in both display and keyed storage.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row".
 
   it("an oversized release flush cannot memoize a later model lifetime", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
