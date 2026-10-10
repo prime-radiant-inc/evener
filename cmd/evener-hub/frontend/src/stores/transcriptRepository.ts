@@ -1,5 +1,6 @@
 import {
   type AnyNotification,
+  applyHistoryReadFailure,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
   applyReadResponse,
@@ -521,6 +522,18 @@ export class TranscriptRepository {
   /** The owner calls this after lifting reversible persistence suppression. */
   resumePersistence(): void {
     this.#continueBackground();
+  }
+
+  /** Adopt a source failure under the same captured lifetime as a read. */
+  acceptReadFailure(message: string, generation: number, context: { lifetime: number }): void {
+    if (!this.#acceptsLifetime(context.lifetime) || !this.#model) return;
+    const failed = applyHistoryReadFailure(this.#model, message, generation);
+    if (failed === this.#model) return;
+    this.#model = failed;
+    this.#advanceSourceRevision();
+    this.#recoveryNeeded = true;
+    this.#publish();
+    this.#reclaimBackgroundModel();
   }
 
   /** Accept a complete wire read under its captured reader lifetime. */

@@ -2832,7 +2832,20 @@ async function hydrateAndSubscribe(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      putThreadModel(ref, applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0));
+      const entry = productionEntryRoutes.get(ref);
+      if (entry?.repository) {
+        if (
+          pending.client === wiredClient &&
+          pending.epoch === readyEpoch &&
+          pendingThreadHydrations.get(ref) === pending
+        ) {
+          entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
+            lifetime: entry.lifetime,
+          });
+        }
+      } else {
+        putThreadModel(ref, applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0));
+      }
     } else {
       scheduleOwnedHydrationRetry("thread", ref, pending);
     }
