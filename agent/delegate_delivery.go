@@ -1143,16 +1143,42 @@ func resolveDelegateInlineClaim(waiter *delegateInlineWaiter, resolution delegat
 	})
 }
 
-func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
-	packet, err := json.Marshal(plan.packet)
-	if err != nil {
-		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+// delegateUpdateMessage decodes the delegate's own words from an update
+// packet, whose Message holds a JSON string.
+func delegateUpdateMessage(packet delegatestore.TerminalPacket) (string, error) {
+	var message string
+	if err := json.Unmarshal(packet.Message, &message); err != nil {
+		return "", fmt.Errorf("decode delegate update message: %w", err)
 	}
+	return message, nil
+}
+
+func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	// The name attribute is display-only: the frame stays addressable by
 	// delegate_id alone, and an unnamed delegate renders no name attribute.
 	attrs := []string{notificationAttr("delegate_id", plan.delegateID)}
 	if plan.name != "" {
 		attrs = append(attrs, notificationAttr("name", plan.name))
 	}
-	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), packet), nil
+	kind, body := "report", ""
+	if plan.packet.Kind == delegatestore.PacketUpdate {
+		message, err := delegateUpdateMessage(plan.packet)
+		if err != nil {
+			return "", err
+		}
+		// An update's body is the delegate's own words, with "<" escaped so
+		// they can neither close this frame nor open another. Like a job
+		// output excerpt, only "<" is escaped: a literal entity the delegate
+		// types (say "&amp;") decodes once on clients, a known remainder that
+		// issue #4245 tracks for every notification body.
+		kind, body = "update", escapeNotificationBody(message)
+	} else {
+		packet, err := json.Marshal(plan.packet)
+		if err != nil {
+			return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+		}
+		body = string(packet)
+	}
+	attrs = append(attrs, notificationAttr("kind", kind))
+	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), body), nil
 }

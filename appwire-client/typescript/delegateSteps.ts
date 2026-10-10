@@ -164,8 +164,9 @@ export function delegateSendResponse(step: DelegateSendResult): string | undefin
 
 /** An earlier result a send's wait carried, in words for a client to show
  * where it shows a reply: its text, else its reason (a failed run may have
- * only a reason), else that it had none; and its status. */
-export type DelegateSendEarlierResponse = { text: string; status?: string };
+ * only a reason), else that it had none; and its status. A mid-work update
+ * (action "update") is marked update and has no status: it settled nothing. */
+export type DelegateSendEarlierResponse = { text: string; status?: string; update?: true };
 
 /** The earlier results a send's wait carried ahead of its own reply, oldest
  * first: results of the same delegate the caller had not yet received
@@ -176,17 +177,20 @@ export function delegateSendEarlierResponses(step: DelegateSendResult): Delegate
   if (!isDelegateSendResult(step.raw)) return [];
   const earlier = step.raw.earlier_results;
   if (!Array.isArray(earlier)) return [];
-  return earlier.flatMap((entry) => {
+  return earlier.flatMap((entry): DelegateSendEarlierResponse[] => {
     const state = asJsonObject(entry);
     if (state === undefined) return [];
     const text = nonblank(str(state, "output")) ?? nonblank(str(state, "reason")) ?? "(no reply)";
+    if (str(state, "action") === "update") return [{ text, update: true }];
     return [{ text, status: nonblank(str(state, "status")) }];
   });
 }
 
 /** How a client heads an earlier result: "earlier reply 2 of 3", with its
- * status when it didn't complete ("earlier reply 2 of 3 · failed"). */
+ * status when it didn't complete ("earlier reply 2 of 3 · failed"); an update
+ * is "earlier update 2 of 3". */
 export function delegateSendEarlierLabel(earlier: DelegateSendEarlierResponse, index: number, count: number): string {
+  if (earlier.update) return `earlier update ${index + 1} of ${count}`;
   const which = `earlier reply ${index + 1} of ${count}`;
   return earlier.status && earlier.status !== "completed" ? `${which} · ${earlier.status}` : which;
 }
