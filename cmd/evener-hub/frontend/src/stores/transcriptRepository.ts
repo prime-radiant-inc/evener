@@ -136,8 +136,12 @@ export class TranscriptRepository {
   #retryAttempt = 0;
   // Explicit disposition of recovery work that will never run: a cancelled
   // (invalidate/dispose/last-reader) or unadmitted (no demand) failed batch.
-  // Settlement must report it rather than resolving as void success.
-  #recoveryAbandoned: "cancelled" | "failed" | undefined;
+  // Settlement must report it rather than resolving as void success. It carries
+  // the abandoned work's coverage reach (representedSnapshot): an `extended`
+  // commit clears it only when that commit's coverage reaches at least as far,
+  // i.e. actually carries the abandoned suffix forward. A bare "something is
+  // abandoned" flag cannot decide that.
+  #recoveryAbandoned: { kind: "cancelled" | "failed"; snapshot: number } | undefined;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -694,8 +698,8 @@ export class TranscriptRepository {
     }
     // Recovery work that was cancelled or never admitted is an explicit
     // disposition, not silent success.
-    if (this.#recoveryAbandoned === "cancelled") throw new Error("transcript recovery was cancelled");
-    if (this.#recoveryAbandoned === "failed") throw new Error("transcript recovery failed");
+    if (this.#recoveryAbandoned?.kind === "cancelled") throw new Error("transcript recovery was cancelled");
+    if (this.#recoveryAbandoned?.kind === "failed") throw new Error("transcript recovery failed");
   }
 
   invalidate(): void {
@@ -1037,13 +1041,23 @@ export class TranscriptRepository {
         if (!superseded && batch.coverage && outcome.coverage === "extended") {
           this.#cacheContinuityLost = false;
           // Clearing the abandonment disposition is a claim that this commit
-          // repaired the abandoned work. Only a repository that can still accept
-          // input can repair anything: an invalidated or disposed repository
-          // takes no further work, so a late completion of its own commit
-          // cannot repair a *different* batch that was cancelled and dropped.
-          // Leave the disposition so settled() keeps reporting it. Continuity,
-          // by contrast, is a local durability fact about this commit's chain.
-          if (!this.#invalidated && !this.#disposed) this.#recoveryAbandoned = undefined;
+          // repaired the abandoned work, not merely that the repository is live.
+          // A dead repository takes no further work, so its own late completion
+          // can never repair a different cancelled batch. Live, clear only when
+          // this commit's coverage reaches at least as far as the abandoned work
+          // would have contributed, so a predecessor finishing ahead of an
+          // abandoned suffix leaves the disposition for settled() to report.
+          // Continuity is a local durability fact about this commit's chain and
+          // is always restored.
+          const abandoned = this.#recoveryAbandoned;
+          if (
+            !this.#invalidated &&
+            !this.#disposed &&
+            abandoned !== undefined &&
+            batch.coverage.representedSnapshot >= abandoned.snapshot
+          ) {
+            this.#recoveryAbandoned = undefined;
+          }
         }
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverageBoundary = batch.coverage.boundary;
@@ -1093,16 +1107,27 @@ export class TranscriptRepository {
   // with no reader, or after cancel, the failure is an explicit disposition.
   #enqueueRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0], revision: number, atFront: boolean): void {
     if (this.#disposed || this.#invalidated) {
-      this.#recoveryAbandoned = "cancelled";
+      this.#recoveryAbandoned = { kind: "cancelled", snapshot: batch.coverage?.representedSnapshot ?? 0 };
       return;
     }
     if (this.#readerCount <= 0) {
-      this.#recoveryAbandoned = "failed";
+      this.#recoveryAbandoned = { kind: "failed", snapshot: batch.coverage?.representedSnapshot ?? 0 };
       return;
     }
     const entry = { batch, revision };
     if (atFront) this.#retryQueue.unshift(entry);
     else this.#retryQueue.push(entry);
+  }
+
+  // Record an abandonment that drops the queued batches, remembering the
+  // furthest coverage reach they would have contributed so a later commit can
+  // be checked against it.
+  #abandonQueue(kind: "cancelled" | "failed"): void {
+    let snapshot = 0;
+    for (const entry of this.#retryQueue) {
+      snapshot = Math.max(snapshot, entry.batch.coverage?.representedSnapshot ?? 0);
+    }
+    this.#recoveryAbandoned = { kind, snapshot };
   }
 
   // One paced timer drains the queue in order, one batch at a time: a retried
@@ -1133,12 +1158,12 @@ export class TranscriptRepository {
 
   #drainRetry(): void {
     if (this.#disposed || this.#invalidated) {
-      if (this.#retryQueue.length > 0) this.#recoveryAbandoned = "cancelled";
+      if (this.#retryQueue.length > 0) this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
       return;
     }
     if (this.#readerCount <= 0) {
-      if (this.#retryQueue.length > 0) this.#recoveryAbandoned = "cancelled";
+      if (this.#retryQueue.length > 0) this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
       return;
     }
@@ -1160,7 +1185,7 @@ export class TranscriptRepository {
   }
 
   #cancelRetry(): void {
-    if (this.#retryQueue.length > 0 || this.#retryScheduled) this.#recoveryAbandoned = "cancelled";
+    if (this.#retryQueue.length > 0 || this.#retryScheduled) this.#abandonQueue("cancelled");
     this.#retryQueue.length = 0;
     this.#retryScheduled = false;
     const cancel = this.#retryCancel;

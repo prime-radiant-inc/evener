@@ -647,6 +647,105 @@ it("does not clear a cancelled disposition when a late predecessor commit comple
   owner.dispose();
 });
 
+// Task 3c: a *live* repository can also lose an unadmitted failed suffix's
+// disposition when a predecessor finishes. The disposition records *that*
+// something was abandoned, not *what*, so clearing it because the repository is
+// live cannot know whether this commit repaired the abandoned work. A's held
+// commit extends only its own suffix (snapshot 2); B was abandoned at snapshot
+// 3, so A must not clear it and settled() must still report the failure.
+it("does not clear a failed disposition from a live repository when a predecessor commit completes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // Suffix A's initial write fails and enters the retry queue.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort A") });
+  owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
+  await vi.waitFor(() => expect(scheduled).toHaveLength(1));
+  failure.mockRestore();
+
+  // Fire A's retry under a gate that later runs the real commit, so A leaves the
+  // queue, sets #retryInFlight, and stays pending in the write set.
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const gate = deferred<void>();
+  const commits = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockImplementationOnce(async (batch) => {
+      await gate.promise;
+      return realCommit(batch);
+    })
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort B") });
+  scheduled[0]!.fire();
+
+  // Dispose the reader only; the repository stays live (#invalidated/#disposed
+  // remain false).
+  reader.dispose();
+
+  // B, chained after A, fails through the ordinary path with no reader demand and
+  // is never admitted to the queue. This records "failed".
+  owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
+  // Event-loop barrier: B's failed-outcome handler has run by now.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Release A. Its real commit extends R through A only (snapshot 2).
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+
+  // B was abandoned and never committed, so settled() must still report it.
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  expect(await keysInCache(fixture.cache)).toContain("item-alpha");
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  commits.mockRestore();
+  owner.dispose();
+});
+
+// Task 3c positive control: the new condition must not make every live
+// abandonment permanent. A live repository that re-covers the abandoned suffix's
+// window with a real extended commit clears the disposition and settles cleanly.
+it("clears a failed disposition when a live repository re-covers the abandoned work", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+
+  // An unadmitted failed suffix with no reader demand records "failed".
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(historyNotification("beta", 2, 2), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  failure.mockRestore();
+
+  // A fresh live read re-covers snapshot 3 including beta, and its real commit
+  // extends read coverage past the abandoned suffix's reach.
+  owner.acceptRead(readItems("repair", 3, [item("base", 1), item("beta", 2), item("repair", 3)]), {
+    lifetime: 1,
+    readId: "read-repair",
+    boundary: "boundary-repair",
+  });
+  await owner.settled();
+  expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-base", "item-beta", "item-repair"]);
+  owner.dispose();
+});
+
 // N2 (P2): the drain is serial. While a retried batch is in flight, a normal
 // settled write must not arm the next retry.
 it("does not issue the next retry while a retried batch is in flight", async () => {
