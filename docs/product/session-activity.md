@@ -11,7 +11,13 @@ with viewport-aware above/below fallback in the sessions drawer or a narrow
 window. Scroll and resize cancel visible and pending reveals; a fresh gesture
 opens it at the new position. See the [placement contract](../web-ui/design-system.md).
 Reading a session's activity is a separate operation, so
-browsing navigation does not load every session's work tree.
+browsing navigation does not load every session's work tree. A session's seen
+mark lives on the hub: a live navigation row carries its `seen_through`, and
+the activity read carries when the session's tree last moved (`lastMovedAt`).
+Opening a session (on the web, a pane opening or the page becoming visible
+with it open) marks it seen through the later of an unseen turn end and motion
+after that mark. The web reads that session's activity once per open for this,
+and a read whose connection was replaced is read again through the new one.
 
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
