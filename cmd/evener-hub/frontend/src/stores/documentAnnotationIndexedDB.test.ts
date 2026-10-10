@@ -3043,3 +3043,150 @@ it.each([
     expect.soft(f.source.getDraftToken()).toEqual(tokenBefore);
   },
 );
+
+// A failed FIRST save must stay retryable through a genuine identical reread:
+// the immutable operation captured from the first accepted lease is reused
+// verbatim, and an exactly identical acceptance preserves the accepted head
+// revision and displayed snapshot identity, so the unchanged operation still
+// matches the durable head at the retry save. Runs on the SAME adapter and on a
+// second real adapter that shares the SAME database, against the real
+// repository, draft/source/handoff and fake-indexeddb.
+it.each(["same-adapter", "second-adapter"] as const)(
+  "reuses the original immutable operation after a failed first save and an identical reread (%s)",
+  async (adapterCase) => {
+    let fail = false;
+    const f = await fixture(`identical-read-${adapterCase}`, {
+      beforeCommit: (operation) => {
+        if (operation === "save" && fail) throw new Error("first-save fault");
+      },
+    });
+    // A second real adapter shares the fixture's factory/database and drafts;
+    // beginRead/acceptRead never resolve a destination source.
+    const second =
+      adapterCase === "second-adapter"
+        ? createDocumentAnnotationRepository({
+            indexedDB: f.factory,
+            databaseName: f.databaseName,
+            drafts: f.drafts,
+            targetFor: () => null,
+          })
+        : undefined;
+    if (second) cleanupAfterTest(() => second.close());
+    const reader = second ?? f.repo;
+
+    // 1. Settle op-1 through its real handoff BEFORE observing the new operation,
+    // so FIFO ordering cannot mask the attempted operation, then record the full
+    // ordinary/recovery/source/annotation baseline.
+    expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+    const ordinaryBefore = await f.drafts.load(f.key);
+    const recoveryBefore = await f.outbox.getRecovery("rec-1");
+    if (!ordinaryBefore || !recoveryBefore) throw new Error("fixture baseline rows missing");
+    const recoveryAttachmentBefore = recoveryBefore.attachments[0];
+    if (!recoveryAttachmentBefore) throw new Error("fixture recovery attachment missing");
+    const recoveryBytesBefore = await blobBytes(recoveryAttachmentBefore.blob);
+    const sourceBefore = f.source.getSnapshot();
+    const rowsBefore = await annotationRows(f);
+    const op1RowBefore = rowsBefore.operations.find((row) => row.operationKey === f.operationKey);
+    if (!op1RowBefore) throw new Error("fixture op-1 row missing");
+    expect(op1RowBefore.state).toBe("applied");
+    const sequenceBefore = rowsBefore.sequences[0]?.lastSequence;
+    if (sequenceBefore === undefined) throw new Error("baseline sequence missing");
+    const outboxBefore = await rowsForTests<unknown>(f.factory, f.databaseName, MUTATION_OUTBOX_STORE);
+
+    // 2. Capture a NEW operation from a genuine accepted lease of the existing
+    // SOURCE/rev-A with the fixture capture/note/destination, and clone its value.
+    const capture = await reader.acceptRead(await reader.beginRead(f.document), docContent(SOURCE, "rev-A"));
+    expect(capture.state).toBe("accepted");
+    if (capture.state !== "accepted") throw new Error("capture read not accepted");
+    const operation = preparedAnnotationFromLease(
+      capture.lease,
+      "op-retry",
+      "Keep this scope.",
+      f.destination,
+      "rev-A",
+    );
+    const original = structuredClone(operation);
+    const operationKey = annotationOperationKey(f.document.namespace, "op-retry");
+
+    // 3. Abort the FIRST save of the new operation through the real storage fault
+    // boundary: no payload/operation row and no sequence allocation, op-1 intact.
+    fail = true;
+    await expect(f.repo.saveAnnotation(operation)).rejects.toThrow("first-save fault");
+    const afterFault = await annotationRows(f);
+    expect(afterFault.payloads.filter((row) => row.payloadKey === operationKey)).toEqual([]);
+    expect(afterFault.operations.filter((row) => row.operationKey === operationKey)).toEqual([]);
+    expect(afterFault).toEqual(rowsBefore);
+    expect(afterFault.operations.find((row) => row.operationKey === f.operationKey)).toEqual(op1RowBefore);
+    expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+    expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
+    expect(operation).toEqual(original);
+    expect(f.source.getSnapshot()).toEqual(sourceBefore);
+    expect(await rowsForTests<unknown>(f.factory, f.databaseName, MUTATION_OUTBOX_STORE)).toEqual(outboxBefore);
+
+    // 4. A genuine current ticket accepts exactly identical SOURCE/rev-A: the
+    // namespace and epoch are unchanged, with durable ticket supersession left to
+    // the existing neighboring guards.
+    const reread = await reader.acceptRead(await reader.beginRead(f.document), docContent(SOURCE, "rev-A"));
+    expect(reread.state).toBe("accepted");
+    if (reread.state !== "accepted") throw new Error("identical reread not accepted");
+    expect(reread.lease.namespaceIncarnation).toBe(original.lease.namespaceIncarnation);
+    expect(reread.lease.epoch).toBe(original.lease.epoch);
+    expect(reread.lease.key).toEqual(f.document);
+
+    // 5. Recover the fault and save the ORIGINAL immutable operation: exactly one
+    // exact payload, one pending receipt and one sequence allocation, with a
+    // repeat save duplicating nothing. This save is the primary behavioral
+    // assertion.
+    fail = false;
+    const receipt = await f.repo.saveAnnotation(operation);
+    expect(receipt.operationId).toBe(operation.operationId);
+    expect(operation).toEqual(original);
+    // The exact identical-acceptance contract, asserted after the save so the
+    // retry save stays the primary RED: the reread preserved the accepted head
+    // revision and displayed snapshot identity the immutable operation owns,
+    // which is why the unchanged retry save can match the durable head.
+    expect(reread.lease.headRevision).toBe(original.lease.headRevision);
+    expect(reread.lease.displayedSnapshotId).toBe(original.lease.displayedSnapshotId);
+    const savedRows = await annotationRows(f);
+    const savedPayloads = savedRows.payloads.filter((row) => row.payloadKey === operationKey);
+    expect(savedPayloads).toHaveLength(1);
+    expect(savedPayloads[0]?.operation).toEqual(original);
+    const savedOperations = savedRows.operations.filter((row) => row.operationKey === operationKey);
+    expect(savedOperations).toHaveLength(1);
+    expect(savedOperations[0]?.state).toBe("pending");
+    expect(savedOperations[0]?.sessionSequence).toBe(sequenceBefore + 1);
+    expect(receipt.sessionSequence).toBe(sequenceBefore + 1);
+    expect(savedRows.sequences[0]?.lastSequence).toBe(sequenceBefore + 1);
+    expect((await f.repo.saveAnnotation(operation)).sessionSequence).toBe(receipt.sessionSequence);
+    expect(await annotationRows(f)).toEqual(savedRows);
+
+    // 6. Handoff once through the original eligible source: the full ordinary row
+    // equals the baseline plus the literal fixture reference, one revision advance,
+    // and recovery/attachment bytes/outbox are preserved.
+    const expectedText = `${ordinaryBefore.text}\n\n${REFERENCE}`;
+    expect((await f.repo.handoff(f.document, operation.operationId)).state).toBe("applied");
+    const ordinaryAfter = await f.drafts.load(f.key);
+    expect(ordinaryAfter).toEqual({
+      ...ordinaryBefore,
+      text: expectedText,
+      token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+    });
+    expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedText });
+    const recoveryAfter = await f.outbox.getRecovery("rec-1");
+    expect(recoveryAfter).toEqual(recoveryBefore);
+    const attachmentAfter = recoveryAfter?.attachments[0];
+    if (!attachmentAfter) throw new Error("post-append recovery attachment missing");
+    expect(attachmentAfter).toMatchObject(attachmentIdentity);
+    expect(await blobBytes(attachmentAfter.blob)).toEqual(recoveryBytesBefore);
+    expect(await rowsForTests<unknown>(f.factory, f.databaseName, MUTATION_OUTBOX_STORE)).toEqual(outboxBefore);
+
+    const appliedRows = await annotationRows(f);
+    expect(appliedRows.operations.find((row) => row.operationKey === operationKey)?.state).toBe("applied");
+    // Replay: no second append, no second revision advance, no duplicated rows.
+    expect((await f.repo.handoff(f.document, operation.operationId)).state).toBe("already-applied");
+    expect((await f.repo.saveAnnotation(operation)).sessionSequence).toBe(receipt.sessionSequence);
+    expect(await annotationRows(f)).toEqual(appliedRows);
+    expect(await f.drafts.load(f.key)).toEqual(ordinaryAfter);
+    expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryAfter);
+  },
+);

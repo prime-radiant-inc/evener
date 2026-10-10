@@ -16,6 +16,7 @@ import type {
   SaveReceipt,
 } from "@evener/appwire-client";
 import {
+  type AnnotationSaveCancellation,
   annotationDocumentKey,
   annotationOperationKey,
   type BrowserDocumentAnnotationRepository,
@@ -28,6 +29,12 @@ export interface DocumentAnnotationRuntime {
   whenIdle(): Promise<void>;
   storageSucceeded(): void;
   invalidate(key: DocumentKey): void;
+  // Retire exactly ONE retained failed operation, keyed by its existing
+  // namespace-qualified operation identity, leaving every other operation in the
+  // shared failed-work set untouched. Cancel uses this to dismiss only its own
+  // unsaved attempt without discarding a different reader's failed work for the
+  // same document.
+  retireAttempted(operation: PreparedAnnotation): void;
   dispose(): void;
 }
 
@@ -44,6 +51,38 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   let alive = true;
   const id = (operation: PreparedAnnotation) =>
     annotationOperationKey(operation.lease.key.namespace, operation.operationId);
+  // One operation-scoped cancellation handle per operation, alive only while a
+  // save for it is in flight (reference-counted so concurrent saves for the same
+  // operation share it). retireAttempted/dispose cancel it so the repository's
+  // active save transaction aborts before commit; each save releases it at
+  // settlement so no listener or handle outlives the save.
+  const cancellations = new Map<string, { token: AnnotationSaveCancellation; cancel: () => void; active: number }>();
+  const createCancellation = (): { token: AnnotationSaveCancellation; cancel: () => void } => {
+    const state = { cancelled: false, listeners: new Set<() => void>() };
+    const cancel = (): void => {
+      if (state.cancelled) return;
+      state.cancelled = true;
+      const listeners = [...state.listeners];
+      state.listeners.clear();
+      for (const listener of listeners) listener();
+    };
+    const token: AnnotationSaveCancellation = {
+      get cancelled() {
+        return state.cancelled;
+      },
+      onCancel: (listener) => {
+        if (state.cancelled) {
+          listener();
+          return () => {};
+        }
+        state.listeners.add(listener);
+        return () => {
+          state.listeners.delete(listener);
+        };
+      },
+    };
+    return { token, cancel };
+  };
   const needRetry = () => {
     if (alive) {
       retryNeeded = true;
@@ -55,14 +94,28 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     // Retain the immutable operation BEFORE the fallible await; a later caller
     // mutation cannot change what a retry persists.
     const operation = failed.get(id(input)) ?? structuredClone(input);
-    failed.set(id(operation), operation);
+    const operationKey = id(operation);
+    failed.set(operationKey, operation);
+    let entry = cancellations.get(operationKey);
+    if (entry === undefined) {
+      const created = createCancellation();
+      entry = { token: created.token, cancel: created.cancel, active: 0 };
+      cancellations.set(operationKey, entry);
+    }
+    entry.active += 1;
     try {
-      const receipt = await repo.saveAnnotation(operation);
-      if (failed.get(id(operation)) === operation) failed.delete(id(operation));
+      const receipt = await repo.saveAnnotation(operation, entry.token);
+      if (failed.get(operationKey) === operation) failed.delete(operationKey);
       return receipt;
     } catch {
+      // A cancelled save is a handled dismissal, never retryable work: its
+      // operation was already retired from the failed set by retireAttempted.
+      if (entry.token.cancelled) return null;
       needRetry();
       return null;
+    } finally {
+      entry.active -= 1;
+      if (entry.active === 0 && cancellations.get(operationKey) === entry) cancellations.delete(operationKey);
     }
   };
   const retryPending = (reason: AnnotationRetryReason): Promise<void> => {
@@ -105,9 +158,18 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       for (const [operationKey, operation] of failed)
         if (annotationDocumentKey(operation.lease.key) === annotationDocumentKey(key)) failed.delete(operationKey);
     },
+    retireAttempted: (operation) => {
+      failed.delete(id(operation));
+      // Reach the operation's in-flight persistence: abort its active save
+      // transaction before commit. A save that has not yet opened observes the
+      // cancellation at its next boundary.
+      cancellations.get(id(operation))?.cancel();
+    },
     dispose: () => {
       alive = false;
       failed.clear();
+      for (const entry of cancellations.values()) entry.cancel();
+      cancellations.clear();
       retryNeeded = false;
       pendingDuringPass = false;
     },
