@@ -64,7 +64,7 @@ func DaemonLifecycleFromSnapshot(snap agent.RetirementSnapshot) appwire.DaemonLi
 	out := appwire.DaemonLifecycle{
 		Phase:         snap.Phase,
 		TimeoutMillis: appwire.DurationMillis(snap.Timeout),
-		Blockers:      make([]appwire.DaemonBlocker, 0, len(snap.Blockers)),
+		Blockers:      daemonBlockersFromSnapshot(snap.Blockers),
 		Failure:       snap.Failure,
 	}
 	if !snap.EligibleSince.IsZero() {
@@ -73,8 +73,22 @@ func DaemonLifecycleFromSnapshot(snap agent.RetirementSnapshot) appwire.DaemonLi
 	if !snap.Deadline.IsZero() {
 		out.Deadline = snap.Deadline.UTC().Format(time.RFC3339Nano)
 	}
-	for _, blocker := range snap.Blockers {
-		out.Blockers = append(out.Blockers, appwire.DaemonBlocker{
+	if attempt := snap.LastAttempt; attempt != nil {
+		out.LastAttempt = &appwire.DaemonRetirementAttempt{
+			At:       attempt.At.UTC().Format(time.RFC3339Nano),
+			Blockers: daemonBlockersFromSnapshot(attempt.Blockers),
+			Error:    attempt.Error,
+		}
+	}
+	return out
+}
+
+// daemonBlockersFromSnapshot converts retirement blockers to their wire form,
+// always as a non-nil array.
+func daemonBlockersFromSnapshot(blockers []agent.RetirementBlocker) []appwire.DaemonBlocker {
+	out := make([]appwire.DaemonBlocker, 0, len(blockers))
+	for _, blocker := range blockers {
+		out = append(out, appwire.DaemonBlocker{
 			Category:   blocker.Category,
 			SessionID:  blocker.SessionID,
 			DelegateID: blocker.DelegateID,

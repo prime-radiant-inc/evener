@@ -41,6 +41,20 @@ type RetirementSnapshot struct {
 	Deadline      time.Time
 	Blockers      []RetirementBlocker
 	Failure       string
+	// LastAttempt is the outcome of the most recent automatic retirement
+	// attempt, nil until the idle timer has made one.
+	LastAttempt *RetirementAttempt
+}
+
+// RetirementAttempt records why an automatic retirement attempt did not
+// retire the process: the full-evidence blockers that refused the claim, the
+// error that failed it, or both. Blockers carry obligations that hold no
+// admission lease (a running job, a watch, pending attention), which the live
+// snapshot cannot show.
+type RetirementAttempt struct {
+	At       time.Time
+	Blockers []RetirementBlocker
+	Error    string
 }
 
 // RetirementController owns the process admission fence. Its mutex is held only
@@ -63,6 +77,7 @@ type RetirementController struct {
 	timeoutWrites     uint64
 	eligibleSince     time.Time
 	failure           string
+	lastAttempt       *RetirementAttempt
 	claim             *RetirementClaim
 	// evidenceGate is a test-only observation seam: when set it runs inside
 	// nonBlockingEvidence, with the caller's captured root and generation already
@@ -414,9 +429,10 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 // settled obligation as current and cannot wait on admitted work. root and
 // generation are the controller identity captured under c.mu; a nil root yields no
 // Session evidence (the snapshot's own root check reports the missing root
-// instead). The automatic (manual=false) path skips the read because Run discards
-// that snapshot (retirement.go Run tick); only the manual response at
-// cmd/evener/serve.go renders it.
+// instead). The automatic (manual=false) path skips the read: Run records only
+// the refusal's blockers, and an early return carries the leases that refused
+// it, which explain the refusal on their own. The manual response at
+// cmd/evener/serve.go renders the full read.
 //
 // AttachRoot replaces c.root and advances c.generation under c.mu, so it can run
 // entirely within the window where c.mu is dropped for the evidence read. The read
@@ -466,6 +482,11 @@ func (c *RetirementController) nonBlockingEvidence(root *Session) []RetirementBl
 func (c *RetirementController) snapshotWithBlockersLocked(extra []RetirementBlocker) RetirementSnapshot {
 	state := RetirementSnapshot{Phase: c.phase, Timeout: c.timeout,
 		EligibleSince: c.eligibleSince, Failure: c.failure}
+	if c.lastAttempt != nil {
+		attempt := *c.lastAttempt
+		attempt.Blockers = slices.Clone(attempt.Blockers)
+		state.LastAttempt = &attempt
+	}
 	if c.root == nil {
 		state.Blockers = append(state.Blockers, RetirementBlocker{Category: "unsupported"})
 	}
@@ -627,9 +648,14 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // ultimately fires started at the most recent settled instant. A preparation
 // failure is survivable — the consumer aborts the claim, evaluate observes
 // the settled process again and arms a fresh full interval, and Run lives on.
-// Run returns nil when ctx is done; consumer errors are the consumer's
-// responsibility (it owns Abort/Commit), not the loop's.
-func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
+// Run returns nil when ctx is done; the consumer owns Abort/Commit.
+//
+// Every tick that reaches an attempt and does not retire is recorded as the
+// snapshot's LastAttempt: the full-evidence blockers of a refusal, or the
+// error of a failed claim or consumer. report, when non-nil, receives the
+// attempt only when its reason differs from the previous attempt's, so a
+// daemon refused for the same reason every interval logs it once.
+func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error, report func(RetirementAttempt)) error {
 	var timer clock.Timer
 	disarm := func() {
 		if timer != nil {
@@ -671,6 +697,9 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 		c.mu.Unlock()
 		arm(remaining)
 	}
+	// previous is the last attempt Run recorded, the baseline report compares
+	// a new attempt's reason against.
+	var previous *RetirementAttempt
 	defer disarm()
 	evaluate()
 	for {
@@ -684,11 +713,50 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 		case <-c.changed:
 			evaluate()
 		case <-tick:
-			claim, _, err := c.TryClaim(false)
-			if err == nil && claim != nil {
-				_ = retire(ctx, claim)
+			if attempt := c.attemptRetirement(ctx, retire); attempt != nil {
+				if report != nil && (previous == nil || !sameRetirementReason(*previous, *attempt)) {
+					report(*attempt)
+				}
+				previous = attempt
+				// Recorded after the report, so a reader that sees this
+				// attempt in a snapshot knows its report was already made.
+				c.mu.Lock()
+				c.lastAttempt = attempt
+				c.mu.Unlock()
 			}
 			evaluate()
 		}
 	}
+}
+
+// attemptRetirement makes one automatic attempt and returns why it did not
+// retire, or nil when it retired or the tick was not an attempt. A tick that
+// arrives before the deadline (stale, or re-armed by a Retarget) gets no
+// claim, no blockers and no error from TryClaim: nothing was evaluated, so it
+// is not recorded as a refusal with no reason.
+func (c *RetirementController) attemptRetirement(ctx context.Context, retire func(context.Context, *RetirementClaim) error) *RetirementAttempt {
+	// The injected clock is a callback boundary; never call it under mu.
+	at := c.clock.Now()
+	claim, refusal, err := c.TryClaim(false)
+	if claim != nil {
+		if err := retire(ctx, claim); err != nil {
+			return &RetirementAttempt{At: at, Error: err.Error()}
+		}
+		return nil
+	}
+	if err == nil && len(refusal.Blockers) == 0 {
+		return nil
+	}
+	attempt := &RetirementAttempt{At: at, Blockers: refusal.Blockers}
+	if err != nil {
+		attempt.Error = err.Error()
+	}
+	return attempt
+}
+
+// sameRetirementReason reports whether two attempts failed for the same
+// reason. Snapshot blockers are sorted and deduplicated, so equal sets
+// compare equal.
+func sameRetirementReason(a, b RetirementAttempt) bool {
+	return a.Error == b.Error && slices.Equal(a.Blockers, b.Blockers)
 }

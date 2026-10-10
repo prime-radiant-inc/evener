@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/llm"
 )
 
@@ -32,6 +34,36 @@ func serveLogf(w io.Writer, sessionID, format string, args ...any) {
 func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "[serve %s session=%s] %s\n",
 		at.UTC().Format(serveLogTimeLayout), sessionID, fmt.Sprintf(format, args...))
+}
+
+// retirementAttemptSummary renders an automatic retirement attempt that did
+// not retire the process for the daemon log: the error that failed it and the
+// blockers that refused it, each with the session and delegate it belongs to.
+func retirementAttemptSummary(attempt agent.RetirementAttempt) string {
+	blockers := make([]string, 0, len(attempt.Blockers))
+	for _, blocker := range attempt.Blockers {
+		owners := []string{}
+		if blocker.SessionID != "" {
+			owners = append(owners, "session "+blocker.SessionID)
+		}
+		if blocker.DelegateID != "" {
+			owners = append(owners, "delegate "+blocker.DelegateID)
+		}
+		if len(owners) == 0 {
+			blockers = append(blockers, blocker.Category)
+			continue
+		}
+		blockers = append(blockers, fmt.Sprintf("%s (%s)", blocker.Category, strings.Join(owners, ", ")))
+	}
+	refused := strings.Join(blockers, ", ")
+	switch {
+	case attempt.Error == "":
+		return "automatic retirement refused: " + refused
+	case refused == "":
+		return "automatic retirement failed: " + attempt.Error
+	default:
+		return "automatic retirement failed: " + attempt.Error + "; refused: " + refused
+	}
 }
 
 // turnFailureSummary renders a failed turn for the daemon log. A provider

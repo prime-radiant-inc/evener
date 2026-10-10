@@ -113,6 +113,21 @@ func TestCloneDaemonLifecycleIsolation(t *testing.T) {
 	}
 }
 
+// TestCloneDaemonLifecycleIsolatesLastAttempt pins that the last automatic
+// attempt is deep-copied too: the clone owns its own attempt and blockers.
+func TestCloneDaemonLifecycleIsolatesLastAttempt(t *testing.T) {
+	src := &appwire.DaemonLifecycle{Phase: "resident", LastAttempt: &appwire.DaemonRetirementAttempt{
+		At:       "2026-10-10T21:34:19Z",
+		Blockers: []appwire.DaemonBlocker{{Category: "watch", SessionID: "sess_a"}},
+	}}
+	clone := cloneDaemonLifecycle(src)
+	clone.LastAttempt.Error = "corrupted"
+	clone.LastAttempt.Blockers[0].Category = "corrupted"
+	if src.LastAttempt.Error != "" || src.LastAttempt.Blockers[0].Category != "watch" {
+		t.Fatalf("mutating the clone corrupted the source: %+v", src.LastAttempt)
+	}
+}
+
 // TestRosterLifecycleSnapshotCloneIsolation pins that the roster never aliases
 // a lifecycle it ingested or handed out: mutating a probe result after Refresh
 // must not corrupt the roster (liveEntryFromProbe clones), and mutating a

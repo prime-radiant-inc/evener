@@ -1927,7 +1927,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim)
+			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
+				serveLogf(os.Stderr, getSession().ID(), "%s", retirementAttemptSummary(attempt))
+			})
 		}()
 	}
 

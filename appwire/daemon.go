@@ -28,6 +28,20 @@ type DaemonLifecycle struct {
 	Deadline      string          `json:"deadline,omitempty"`
 	Blockers      []DaemonBlocker `json:"blockers"`
 	Failure       string          `json:"failure,omitempty"`
+	// LastAttempt is why the most recent automatic retirement attempt did not
+	// retire the process; absent until the idle timer has made one.
+	LastAttempt *DaemonRetirementAttempt `json:"lastAttempt,omitempty"`
+}
+
+// DaemonRetirementAttempt is one automatic retirement attempt that did not
+// retire the process. Blockers are the full-evidence obligations that refused
+// it, including ones that hold no admission lease and so never appear in
+// DaemonLifecycle.Blockers; Error is the failure of a claim or its
+// preparation. Either or both may be set.
+type DaemonRetirementAttempt struct {
+	At       string          `json:"at"`
+	Blockers []DaemonBlocker `json:"blockers"`
+	Error    string          `json:"error,omitempty"`
 }
 
 type DaemonResident struct {
