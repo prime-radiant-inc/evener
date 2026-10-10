@@ -295,6 +295,7 @@ export class TranscriptRepository {
   #committedCoverageSnapshot: number | undefined;
   #committedCoverageReadId: string | undefined;
   #committedCoverageContinuityId: string | undefined;
+  #retirementWrite: { boundary: string; persisted: boolean } | undefined;
   #seedSnapshot: number | undefined;
   #seedAuthorityInvalid = false;
   #recoveryNeeded = false;
@@ -1108,6 +1109,8 @@ export class TranscriptRepository {
       if (!current()) return { kind: "cancelled" };
       if (!response.snapshot || !this.#matchesRead(response)) throw new Error("final read has no authority");
       const boundary = `final:${this.#boundary}:${response.snapshot.length}`;
+      const finalWrite = { boundary, persisted: false };
+      this.#retirementWrite = finalWrite;
       if (
         !this.acceptRead(response, {
           lifetime: this.#binding.lifetime,
@@ -1123,7 +1126,10 @@ export class TranscriptRepository {
       const unresolvedEnd = Object.values(this.#model?.overlay ?? {}).some(
         (item) => item.kind !== "notice" && item.roundId && this.#endClaims.has(item.roundId),
       );
-      return { kind: this.#recoveryNeeded || unresolvedEnd ? "stale" : "saved" };
+      // Settlement can also mean a policy refusal dropped the work. Track this
+      // read's commit, not the last-completing (possibly earlier) suffix.
+      const persisted = !this.#cacheContinuityLost && finalWrite.persisted;
+      return { kind: this.#recoveryNeeded || unresolvedEnd || !persisted ? "stale" : "saved" };
     })();
     this.#retirement = Promise.race([
       work,
@@ -1688,6 +1694,9 @@ export class TranscriptRepository {
     this.#inFlight.set(batch, bodies);
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       const superseded = isRetry && issuedRevision !== this.#sourceRevision;
+      if (batch.coverage?.boundary === this.#retirementWrite?.boundary && this.#retirementWrite) {
+        this.#retirementWrite.persisted = outcome.outcome === "committed" && outcome.coverage !== "not-extended";
+      }
       if (outcome.outcome === "committed") {
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered

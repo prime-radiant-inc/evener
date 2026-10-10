@@ -5,6 +5,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { entryHistoryKey } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
@@ -577,3 +578,143 @@ test("a hung final read finishes stale at the read deadline and its late result 
   }
   await repo.settled();
 });
+
+test.each(["background", "pane"])("offline final %s release finishes stale without a fresh read", async (kind) => {
+  const value = fixture();
+  const route = installEntryTranscriptFixtureForTests({
+    ref,
+    cache: value.cache,
+    clientId: identity.clientId,
+    hostId: identity.hostId,
+  });
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => readOf());
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner =
+    kind === "background"
+      ? acquireBackgroundThread(ref)
+      : {
+          ready: threadsStore.getState().ensureThread(ref),
+          release: () => threadsStore.getState().releaseThreadAndWait(ref),
+        };
+  await owner.ready;
+  await route.settled();
+  client.emitStateChange("reconnecting");
+  expect(await owner.release()).toEqual({ kind: "stale" });
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  client.emitReady();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  route.dispose();
+});
+
+test("a real Clear epoch refusal makes final retirement stale rather than saved", async () => {
+  const value = fixture();
+  const sibling = new SessionEntryCache({ indexedDB: value.indexedDB, databaseName: value.name });
+  const repo = repoOf(value.cache, {
+    readHistory: async () => ({ ...readOf([recorded("refused-final")], 42), overlay: [], requestGeneration: 2 }),
+  });
+  const reader = repo.attachReader();
+  repo.acceptRead(readOf([recorded("before-clear")], 41), { lifetime: 1, readId: "initial", boundary: "initial" });
+  await repo.settled();
+  expect(await value.cache.getLatest(historyKey, 100)).toHaveLength(1);
+  try {
+    expect(await sibling.clear()).toEqual({ committed: true, epoch: 1 });
+    const writes = vi.spyOn(value.cache, "commitBatch");
+    const outcome = await repo.retire();
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(await writes.mock.results[0]!.value).toMatchObject({ outcome: "refused", reason: "clear-epoch" });
+    expect(await value.cache.getLatest(historyKey, 100)).toEqual([]);
+    expect(outcome).toEqual({ kind: "stale" });
+  } finally {
+    sibling.close();
+    reader.dispose();
+  }
+});
+
+test("pending end and final release finish stale with a committed finite cut and ownership cleanup", async () => {
+  const value = fixture();
+  const route = installEntryTranscriptFixtureForTests({
+    ref,
+    cache: value.cache,
+    clientId: identity.clientId,
+    hostId: identity.hostId,
+  });
+  const client = new FakeClient("ready");
+  const pendingEnd = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads++;
+    if (reads === 2) return pendingEnd.promise;
+    return reads === 1 ? readOf() : { ...readOf([recorded("finite-final")], 42), overlay: [], requestGeneration: 3 };
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner = acquireBackgroundThread(ref);
+  await owner.ready;
+  await route.settled();
+  client.emitNotification(tool);
+  client.emitNotification(end);
+  await vi.waitFor(() => expect(reads).toBe(2));
+  const writes = vi.spyOn(value.cache, "commitBatch");
+  const releasing = owner.release();
+  expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+  pendingEnd.resolve({ ...readOf([], 41), overlay: [], requestGeneration: 2 });
+  expect(await releasing).toEqual({ kind: "stale" });
+  expect(reads).toBe(3);
+  expect(writes).toHaveBeenCalledTimes(1);
+  expect(await writes.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+  expect((await value.cache.getLatest(historyKey, 100)).map((row) => row.item)).toEqual([
+    expect.objectContaining({ text: "finite-final" }),
+  ]);
+  expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0);
+  expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
+  route.dispose();
+});
+
+test.each(["reconnect", "replace"])(
+  "a final waiter cannot issue after client %s changes its lifetime",
+  async (change) => {
+    const value = fixture();
+    const route = installEntryTranscriptFixtureForTests({
+      ref,
+      cache: value.cache,
+      clientId: identity.clientId,
+      hostId: identity.hostId,
+    });
+    const client = new FakeClient("ready");
+    const pendingEnd = deferred<ThreadReadResponse>();
+    let reads = 0;
+    client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+    client.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(client);
+    const owner = acquireBackgroundThread(ref);
+    await owner.ready;
+    await route.settled();
+    client.emitNotification(tool);
+    client.emitNotification(end);
+    await vi.waitFor(() => expect(reads).toBe(2));
+    const releasing = owner.release();
+    const next = change === "replace" ? new FakeClient("ready") : client;
+    if (change === "replace") {
+      next.on("thread/read", () => readOf());
+      next.on("thread/unsubscribe", () => ({}));
+      connectionStore.getState().connect(next);
+    } else {
+      client.emitStateChange("reconnecting");
+      client.emitReady();
+    }
+    pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
+    expect(await releasing).toEqual({ kind: "stale" });
+    expect(reads).toBe(2);
+    expect(await value.cache.getLatest(historyKey, 100)).toEqual([]);
+    const renewed = acquireBackgroundThread(ref);
+    await renewed.ready;
+    expect(next.calls.filter((call) => call.method === "thread/read")).toHaveLength(change === "replace" ? 1 : 3);
+    expect(await renewed.release()).toEqual({ kind: "saved" });
+    route.dispose();
+  },
+);

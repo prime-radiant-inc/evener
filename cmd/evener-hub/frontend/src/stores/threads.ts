@@ -801,6 +801,7 @@ async function runEntryHistoryRequest<T>(
     fixture.repository === repository &&
     !fixture.clearInert &&
     client === wiredClient &&
+    client?.state === "ready" &&
     epoch === readyEpoch;
   const residency = transcriptResidency();
   residency.connection(epoch, client?.state === "ready");
