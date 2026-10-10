@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -88,7 +89,7 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 	readAnywhere := func(host HostFacts) ResolvedPolicy {
 		return ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
 	}
-	host := HostFacts{OS: "linux", Home: "/home/u", GoPath: "/from/go/env", GoEnvFile: "/home/u/.config/go/env"}
+	host := HostFacts{OS: "linux", Home: "/home/u", GoPath: "/from/go/env", GoEnvFile: "/home/u/.config/go/env", GoEnvFileSettings: map[string]string{"GOPATH": "/from/go/env"}}
 	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}, resolveHost: host}
 	for _, tc := range []struct {
 		name   string
@@ -126,10 +127,10 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 }
 
 func TestEnvFloorKeepsRealCacheUnderOverlay(t *testing.T) {
-	// With an overlay cache strategy the real cache paths stay (bwrap overlays
-	// them read-real/write-private); the floor must not redirect the env.
+	// With an overlay cache strategy the real cache paths the overlay serves stay
+	// (bwrap overlays them read-real/write-private); the floor must not redirect.
 	in := []string{"GOCACHE=/home/u/.cache/go-build"}
-	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay}, "/tmp/s")
+	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache"}}, "/tmp/s")
 	if v, _ := envValue(out, "GOCACHE"); v != "/home/u/.cache/go-build" {
 		t.Errorf("overlay strategy must not redirect GOCACHE, got %q", v)
 	}
@@ -245,5 +246,211 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 		if got, _ := envValue(out, name); got != want {
 			t.Errorf("%s = %q, want unchanged %q", name, got, want)
 		}
+	}
+}
+
+// Under the overlay strategy a Go cache variable the overlay does not serve (its
+// root was dropped, say inside the worktree) would stay persistently writable,
+// so it goes to the session scratch like the session-private strategy's. One the
+// overlay serves keeps its real path.
+func TestEnvFloorRedirectsGoCacheVarsTheOverlayDoesNotServe(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/go/pkg", "/home/u/.cache"}}
+	out := ApplyEnvFloor([]string{"GOMODCACHE=/work/project/.mod", "GOCACHE=/home/u/.cache/go-build"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved GOMODCACHE must move into the session scratch, got %q", v)
+	}
+	if v, _ := envValue(out, "GOCACHE"); v != "/home/u/.cache/go-build" {
+		t.Errorf("a served GOCACHE must keep its real path, got %q", v)
+	}
+}
+
+// When the go env file exists but could not be read at session start, the
+// overlay cannot know where go will write, so the Go caches go to the session
+// scratch instead.
+func TestEnvFloorRedirectsGoCachesWhenTheGoEnvFileWasUnreadable(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/go/pkg"}, resolveHost: HostFacts{GoEnvUnreadable: true}}
+	out := ApplyEnvFloor(nil, policy, tmp)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if v, ok := envValue(out, name); !ok || !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("%s must move into the session scratch, got %q (ok=%v)", name, v, ok)
+		}
+	}
+}
+
+// An unreadable go env file (a FIFO, a device) would block or flood any go the
+// session spawns, as it would have blocked the probe, so the floor turns the
+// file off for them.
+func TestEnvFloorTurnsAnUnreadableGoEnvFileOff(t *testing.T) {
+	for _, strategy := range []CacheStrategy{CacheOverlay, CacheSessionPrivate} {
+		policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: strategy, resolveHost: HostFacts{GoEnvUnreadable: true}}
+		out := ApplyEnvFloor([]string{"GOENV=/tmp/fifo"}, policy, "/tmp/s")
+		if v, _ := envValue(out, "GOENV"); v != "off" {
+			t.Errorf("%v: GOENV must be off, got %q", strategy, v)
+		}
+	}
+}
+
+// Under the overlay, a Go cache go resolves from the host's settings rather
+// than the spawn's environment (a go env -w GOMODCACHE, or the default under a
+// GOPATH) is redirected too when the overlay does not serve it, such as one
+// dropped for lying inside the worktree.
+func TestEnvFloorRedirectsResolvedGoCachesTheOverlayDoesNotServe(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", GoModCache: "/work/project/.mod", GoPath: "/work/project/gopath", GoEnvFile: "/home/u/.config/go/env",
+		GoEnvFileSettings: map[string]string{"GOMODCACHE": "/work/project/.mod", "GOPATH": "/work/project/gopath"}}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	out := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved go env -w GOMODCACHE must move into the session scratch, got %q", v)
+	}
+	if v, _ := envValue(out, "GOPATH"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved GOPATH must get the session scratch first, got %q", v)
+	}
+	if _, ok := envValue(out, "GOCACHE"); ok {
+		t.Errorf("a GOCACHE the overlay serves (~/.cache/go-build) must be left alone: %v", out)
+	}
+}
+
+// A spawn that points GOENV at a different file may configure its caches
+// anywhere, so the host's resolved settings say nothing about it: under the
+// overlay its Go caches go to the session scratch.
+func TestEnvFloorRedirectsGoCachesForAnAlternateGoEnvFile(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "/home/u/.config/go/env"}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=/work/project/go.env"}, policy, tmp)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if v, _ := envValue(out, name); !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("%s must move into the session scratch for an alternate GOENV, got %q", name, v)
+		}
+	}
+	// The same file the probe read keeps the host's served settings.
+	same := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	if _, ok := envValue(same, "GOCACHE"); ok {
+		t.Errorf("the host's own go env file must not redirect a served GOCACHE: %v", same)
+	}
+}
+
+// The caches a spawned command writes follow its own environment: a child with
+// its own XDG_CACHE_HOME (here inside the worktree, which the overlay does not
+// serve) gets its GOCACHE redirected rather than judged by the host's value,
+// and a GOPATH list is read past a leading relative entry.
+func TestEnvFloorJudgesTheChildsOwnCacheLocations(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", XDGCacheHome: "/home/u/.cache", GoEnvFile: "/home/u/.config/go/env"}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg", "/home/u/.npm", "/home/u/.cargo"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "XDG_CACHE_HOME=/work/project/.cache"}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a child's own unserved XDG_CACHE_HOME must send GOCACHE to the scratch, got %q", v)
+	}
+
+	// A child with its own HOME and no XDG_CACHE_HOME uses that HOME's .cache,
+	// not the host's XDG_CACHE_HOME.
+	out = ApplyEnvFloor([]string{"HOME=/work/project/home"}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a child's own HOME decides its default GOCACHE; an unserved one must go to the scratch, got %q", v)
+	}
+
+	sep := string(filepath.ListSeparator)
+	out = ApplyEnvFloor([]string{"HOME=/home/u", "GOPATH=relative" + sep + "/work/project/gopath"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("the first absolute GOPATH entry decides GOMODCACHE; an unserved one must go to the scratch, got %q", v)
+	}
+
+	out = ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if _, ok := envValue(out, name); ok {
+			t.Errorf("a served default %s must be left alone: %v", name, out)
+		}
+	}
+}
+
+// A child reads the go env file's values, not the host process's environment
+// overrides: a GOMODCACHE the host overrode in its environment, but which the
+// shared env file sets inside the worktree, is redirected for a child that
+// does not carry the override.
+func TestEnvFloorJudgesAChildByTheEnvFileNotTheHostsOverrides(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "/home/u/.config/go/env",
+		GoModCache:        "/home/u/go/pkg/mod",
+		GoEnvFileSettings: map[string]string{"GOMODCACHE": "/work/project/.mod"}}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	out := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("the env file's worktree GOMODCACHE must go to the scratch, got %q", v)
+	}
+}
+
+// A cache directory under a served root that is a symlink into the worktree is
+// not served: the overlay covers the root, but writes follow the link into the
+// persistent workspace.
+func TestEnvFloorRedirectsACacheSymlinkedOutOfItsServedRoot(t *testing.T) {
+	home := t.TempDir()
+	worktree := t.TempDir()
+	cacheHome := filepath.Join(home, ".cache")
+	if err := os.MkdirAll(cacheHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(worktree, filepath.Join(cacheHome, "go-build")); err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{cacheHome}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env")}}
+	out := ApplyEnvFloor([]string{"HOME=" + home}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a GOCACHE symlinked out of its served root must go to the scratch, got %q", v)
+	}
+}
+
+// A cache root the wrapper cannot create is not served, so the floor falls back
+// to the scratch for what names it.
+func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unmakeable := filepath.Join(blocker, "gocache")
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: unmakeable}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(w.Policy().CacheRoots, unmakeable) {
+		t.Errorf("a cache root that could not be created must not stay served: %v", w.Policy().CacheRoots)
+	}
+}
+
+// A Go cache that cannot be a directory (an existing file, or one below a
+// file) is not served by an overlaid ancestor: go would fail on it, so it
+// goes to the scratch instead.
+func TestEnvFloorRedirectsAGoCacheThatCannotBeADirectory(t *testing.T) {
+	home := t.TempDir()
+	cacheHome := filepath.Join(home, ".cache")
+	if err := os.MkdirAll(cacheHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(cacheHome, "go-build")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{cacheHome}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env")}}
+	for _, gocache := range []string{file, filepath.Join(file, "below")} {
+		out := ApplyEnvFloor([]string{"HOME=" + home, "GOCACHE=" + gocache}, policy, tmp)
+		if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("GOCACHE=%s cannot be a directory and must go to the scratch, got %q", gocache, v)
+		}
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOCACHE=" + filepath.Join(cacheHome, "not-yet")}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); v != filepath.Join(cacheHome, "not-yet") {
+		t.Errorf("a served GOCACHE not created yet must be left alone, got %q", v)
 	}
 }

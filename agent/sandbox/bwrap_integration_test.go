@@ -26,6 +26,7 @@ func requireRealBwrap(t *testing.T) HostFacts {
 	// settings would put real directories (on whatever filesystem the runner
 	// keeps them) under the overlay instead.
 	facts.GoPath, facts.GoModCache, facts.GoCache, facts.XDGCacheHome = "", "", "", ""
+	facts.GoEnvUnreadable = false
 	return facts
 }
 

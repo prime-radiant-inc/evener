@@ -1,6 +1,9 @@
 package sandbox
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -41,16 +44,19 @@ var floorPrefixDrops = []string{
 //     system directories, so a spawned `git` is the real git and not the
 //     /usr/bin xcrun shim (which is loud and slow under a sandbox),
 //   - points TMPDIR and EVENER_SCRATCH_DIR at the per-session scratch, and
-//   - redirects the language cache vars (GOCACHE / GOMODCACHE / GOPATH /
-//     npm_config_cache / CARGO_HOME) into the session tmp when the cache strategy
-//     is session-private, so a sandboxed build can never poison a cache a later
-//     build consumes.
+//   - redirects the language cache vars into the session tmp so a sandboxed
+//     build can never poison a cache a later build consumes: all of them
+//     (GOCACHE / GOMODCACHE / GOPATH / npm_config_cache / CARGO_HOME) under the
+//     session-private strategy, and under the overlay the Go caches it does not
+//     serve (see redirectedCacheVars).
 //
-// It is a pure function of its inputs and returns a fresh slice; it never reads
-// the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
-// servers, hook commands) so no spawned process escapes the floor.
+// It returns a fresh slice and never reads the process environment; the overlay
+// branch inspects the filesystem at the cache paths it judges (overlayServes).
+// Called at EVERY spawn site (shell jobs, rg, stdio MCP servers, hook commands)
+// so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
+	redirected := redirectedCacheVars(env, policy)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -63,26 +69,168 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if policy.CacheStrategy == CacheSessionPrivate && isRedirectedCacheVar(name) {
+		if redirected[name] {
 			continue // re-added below, pointing into the session scratch
+		}
+		if name == envvars.GoEnv.Name && policy.resolveHost.GoEnvUnreadable {
+			continue // re-added below as off
 		}
 		out = append(out, kv)
 	}
 
+	// The go env file the probe refused (a FIFO, a device) would block or
+	// flood any go the session spawns, so it is turned off for them.
+	if policy.resolveHost.GoEnvUnreadable {
+		out = append(out, envvars.GoEnv.Assignment("off"))
+	}
 	out = applyToolchainPath(out, policy.ToolchainBinDir)
 	out = ApplySessionScratchEnv(out, sessionScratch)
 	if sessionScratch != "" {
-		if policy.CacheStrategy == CacheSessionPrivate {
-			out = append(out,
-				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
-				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
-				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
-				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
-				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
-			)
+		for _, r := range []struct{ name, value string }{
+			{envvars.GoCache.Name, filepath.Join(sessionScratch, goCacheDirName)},
+			{envvars.GoModCache.Name, filepath.Join(sessionScratch, goModCacheDirName)},
+			{envvars.GoPath.Name, sessionGoPath(env, policy, sessionScratch)},
+			{"npm_config_cache", filepath.Join(sessionScratch, npmCacheDirName)},
+			{envvars.CargoHome.Name, filepath.Join(sessionScratch, cargoHomeDirName)},
+		} {
+			if redirected[r.name] {
+				out = append(out, r.name+"="+r.value)
+			}
 		}
 	}
 	return out
+}
+
+// redirectedCacheVars names the cache variables the floor points into the
+// session scratch: every one under the session-private strategy. Under the
+// overlay, the Go caches when the go env file was unreadable at session start
+// (the overlay cannot know where go will write), and any Go cache whose
+// directory the overlay does not serve (overlayCacheDirs; its root was
+// dropped, say inside the worktree), which would otherwise stay persistently
+// writable.
+//
+// GOMODCACHE goes alongside GOCACHE because an ambient value can name any
+// directory. GOPATH goes because Go writes the checksum database's tree heads to
+// its first entry's pkg/sumdb whatever GOMODCACHE says (see sessionGoPath), yet
+// GOMODCACHE stays set explicitly: an environment value overrides one written
+// with `go env -w`, which deriving it from GOPATH would not. PATH is left alone,
+// so `go install` output in the scratch GOPATH's bin runs by its path: a
+// session-writable directory on PATH would let anything the model writes there
+// shadow the commands every spawn site runs, hooks included.
+func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
+	out := map[string]bool{}
+	switch policy.CacheStrategy {
+	case CacheSessionPrivate:
+		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name} {
+			out[name] = true
+		}
+	case CacheOverlay:
+		if policy.resolveHost.GoEnvUnreadable {
+			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
+		}
+		dirs, goKnown := overlayGoCacheDirs(env, policy.resolveHost)
+		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
+			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && !overlayServes(policy.CacheRoots, dir)) {
+				out[name] = true
+			}
+		}
+	}
+	return out
+}
+
+// overlayServes reports whether the overlay covers writes to dir: dir lies under
+// a cache root by spelling, can be a directory, and its real destination
+// (following any symlink on the way, existing or not yet created) still lies
+// under one, so a link from a served root into the worktree does not count.
+func overlayServes(roots []string, dir string) bool {
+	if !isUnderAnyRoot(dir, roots) || !canBeDirectory(dir) {
+		return false
+	}
+	dest := resolveExistingPrefix(dir)
+	for _, r := range roots {
+		if pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r)) {
+			return true
+		}
+	}
+	return false
+}
+
+// canBeDirectory reports whether dir is a directory or could be created as
+// one: its nearest existing ancestor (following symlinks) is a directory. An
+// existing file, a path below one, or a dangling symlink on the way cannot be,
+// and a go pointed at it fails rather than caching.
+func canBeDirectory(dir string) bool {
+	for p := dir; ; p = filepath.Dir(p) {
+		fi, err := os.Stat(p)
+		if err == nil {
+			return fi.IsDir()
+		}
+		if _, lerr := os.Lstat(p); lerr == nil || !errors.Is(err, fs.ErrNotExist) {
+			return false // a dangling symlink, or a path that cannot be inspected
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
+}
+
+// overlayGoCacheDirs returns, for each Go cache variable, the directory a
+// spawned go would write that cache to: the spawn's own setting, else the
+// host's resolved one (env or go env -w), else Go's default under the spawn's
+// own HOME and XDG_CACHE_HOME. GOPATH maps to its first absolute entry's pkg,
+// where the checksum database lives. The host's settings count only when the
+// spawn's go reads the same go env file the probe read; a spawn pointing at
+// another file (an alternate GOENV) may configure its caches anywhere, which it
+// reports as not known.
+func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
+	vars := map[string]string{}
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		vars[name] = val
+	}
+	firstOr := func(values ...string) string {
+		for _, v := range values {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	// Defaults follow the spawn's own HOME and XDG_CACHE_HOME, never the
+	// host's: a child run with its own (or none) writes where its tools decide.
+	home := vars[envvars.Home.Name]
+	out := map[string]string{}
+
+	// Go settings come from the spawn's environment, then the go env file it
+	// reads: the host's file values only (never the host process's own
+	// environment overrides), and only when it is the file the probe read.
+	file := map[string]string{}
+	if spawnFile := goEnvFileFor(vars, host.OS); spawnFile != "" {
+		if spawnFile != host.GoEnvFile {
+			return out, false
+		}
+		file = host.GoEnvFileSettings
+	}
+	gopath := ""
+	if entries := goPathEntries(HostFacts{Home: home, GoPath: firstOr(vars[envvars.GoPath.Name], file[envvars.GoPath.Name])}); len(entries) > 0 {
+		gopath = entries[0]
+	}
+	cacheHome := vars[envvars.XDGCacheHome.Name]
+	if cacheHome == "" && home != "" {
+		cacheHome = filepath.Join(home, ".cache")
+	}
+	out[envvars.GoModCache.Name] = firstOr(vars[envvars.GoModCache.Name], file[envvars.GoModCache.Name])
+	out[envvars.GoCache.Name] = firstOr(vars[envvars.GoCache.Name], file[envvars.GoCache.Name])
+	if gopath != "" {
+		out[envvars.GoPath.Name] = filepath.Join(gopath, "pkg")
+		if out[envvars.GoModCache.Name] == "" {
+			out[envvars.GoModCache.Name] = filepath.Join(gopath, "pkg", "mod")
+		}
+	}
+	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
+		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
+	}
+	return out, true
 }
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
@@ -116,7 +264,7 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		host := policy.resolveHost
 		configured := ""
 		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
-			configured = host.GoPath
+			configured = host.GoEnvFileSettings[envvars.GoPath.Name]
 		}
 		ambient = goPathEntries(HostFacts{Home: vars[envvars.Home.Name], GoPath: configured})
 	}
@@ -245,30 +393,6 @@ func floorDrops(name string) bool {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
-	}
-	return false
-}
-
-// isRedirectedCacheVar reports whether name is a language cache var the floor
-// redirects into the session tmp under a session-private cache strategy.
-// GOMODCACHE is included alongside GOCACHE: an ambient GOMODCACHE can name any
-// directory, and only the session scratch is writable under this strategy.
-//
-// GOPATH is included because Go writes the checksum database's tree heads to
-// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so its first entry must be
-// writable too (see sessionGoPath).
-// GOMODCACHE stays set explicitly: an environment value overrides one written to
-// the user's go env file with `go env -w`, which deriving it from GOPATH would not.
-//
-// PATH is deliberately left alone, so `go install` output in the scratch GOPATH's
-// bin is run by its path rather than found on PATH. The real GOPATH's bin is
-// read-only under this strategy, so `go install` could not land anywhere before.
-// Putting a session-writable directory on PATH would let anything the model
-// writes there shadow the commands every spawn site runs, hooks included.
-func isRedirectedCacheVar(name string) bool {
-	switch name {
-	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
-		return true
 	}
 	return false
 }

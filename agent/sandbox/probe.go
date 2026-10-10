@@ -2,8 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +131,10 @@ type HostFacts struct {
 	GoModCache string
 	GoCache    string
 
+	// GoEnvUnreadable reports that the go env file exists but was refused (not
+	// a small regular file), so the go command's settings could not be known.
+	GoEnvUnreadable bool
+
 	// XDGCacheHome is $XDG_CACHE_HOME, which moves ~/.cache and with it Go's
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
@@ -136,6 +142,10 @@ type HostFacts struct {
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
 	// so the env floor can tell whether a spawn's go would read the same one.
 	GoEnvFile string
+
+	// GoEnvFileSettings holds the GOPATH, GOMODCACHE and GOCACHE lines of that
+	// go env file alone, without the host process's environment overrides.
+	GoEnvFileSettings map[string]string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -277,9 +287,11 @@ func probeHost(system probeSystem) HostFacts {
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
+	facts.GoEnvFileSettings = goEnvFileSettings(system)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
+	facts.GoEnvUnreadable = goEnvFileUnreadable(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -359,21 +371,28 @@ func goEnvValue(system probeSystem, name string) string {
 	if value := system.getenv(name); value != "" {
 		return value
 	}
+	return goEnvFileSettings(system)[name]
+}
+
+// goEnvFileSettings returns the GOPATH, GOMODCACHE and GOCACHE lines of the go
+// env file alone, parsed as goEnvValue describes (nil when there is no file).
+func goEnvFileSettings(system probeSystem) map[string]string {
 	file := goEnvFile(system)
 	if file == "" {
-		return ""
+		return nil
 	}
 	data, err := system.readFile(file)
 	if err != nil {
-		return ""
+		return nil
 	}
-	value := ""
+	settings := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
-		if key, val, ok := strings.Cut(line, "="); ok && key == name {
-			value = val
+		key, val, ok := strings.Cut(line, "=")
+		if ok && (key == envvars.GoPath.Name || key == envvars.GoModCache.Name || key == envvars.GoCache.Name) {
+			settings[key] = val
 		}
 	}
-	return value
+	return settings
 }
 
 // goEnvFile returns the go env file the go command reads: $GOENV, or
@@ -391,6 +410,17 @@ func goEnvFile(system probeSystem) string {
 		file = filepath.Join(dir, "go", "env")
 	}
 	return file
+}
+
+// goEnvFileUnreadable reports that the go env file exists but was refused (see
+// hostProbeSystem.readFile), so the go command's settings cannot be known.
+func goEnvFileUnreadable(system probeSystem) bool {
+	file := goEnvFile(system)
+	if file == "" {
+		return false
+	}
+	_, err := system.readFile(file)
+	return err != nil && !errors.Is(err, fs.ErrNotExist)
 }
 
 // goPathEntries returns the GOPATH entries the go command uses on this host: the

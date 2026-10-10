@@ -411,26 +411,30 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   root at, above or inside the worktree, at or above your home directory or a
   temp root, or one that is not a directory, is never overlaid; a root that does
   not exist yet is created empty at session start (as the go command itself
-  would) so it can be; a file or a dangling symlink is left out.
+  would) so it can be; a file or a dangling symlink is left out. A Go cache the
+  overlay does not serve (set in the spawn's environment, with `go env -w`, or by
+  Go's defaults under the spawn's own `HOME`), or one that cannot be a directory,
+  is redirected into the session scratch instead. When the go env file exists
+  but cannot be read (a FIFO, a device, an oversized file), all three Go
+  settings go to the scratch and spawned go commands get `GOENV=off`, since
+  reading it would block them too.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
-  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
-  granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
-  session scratch as its first entry too: Go records the checksum database's tree
-  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH stays after it, so GOPATH-mode builds still find the packages already
-  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
-  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
-  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
-  `$HOME/go`). Evener reads that file rather than running `go env`, which would
-  run whichever go is first on PATH, and any toolchain it downloads, before the
-  sandbox exists. A spawn whose environment gives go no way to find those
-  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
-  does `restricted`, which cannot read it.
+  redirected alongside GOCACHE, because an ambient value can name any directory.
+  `GOPATH` gets the session scratch as its first entry too: Go records the checksum
+  database's tree heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE`
+  says, so a cold module or toolchain download needs it writable. In
+  `workspace-write` the ambient GOPATH stays after it, so GOPATH-mode builds still
+  find the packages already there: the spawn's own `$GOPATH`, else the host's
+  resolved once at session start the way the go command resolves it (`$GOPATH`,
+  then a `go env -w` setting in the go env file `$GOENV` names,
+  `<user config dir>/go/env` by default, then `$HOME/go`). Evener reads that file
+  rather than running `go env`, which would run whichever go is first on PATH, and
+  any toolchain it downloads, before the sandbox exists. A spawn whose environment
+  gives go no way to find those settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`)
+  gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -448,9 +452,10 @@ spawned process:
   `GCLOUD_*`, and `VAULT_*`.
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
-- Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
-  `CARGO_HOME` there.
+- Points `TMPDIR` at the per-session temp and redirects the language cache
+  variables (`GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/`CARGO_HOME`)
+  there: all of them under the session-private cache strategy, and under the
+  overlay the Go ones whose directory it does not serve.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

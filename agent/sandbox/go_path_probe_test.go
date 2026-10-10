@@ -14,6 +14,7 @@ type goPathProbeSystem struct {
 	stubProbeSystem
 	configDir string
 	files     map[string]string
+	refuse    map[string]bool
 }
 
 func (s goPathProbeSystem) userConfigDir() (string, error) {
@@ -24,6 +25,9 @@ func (s goPathProbeSystem) userConfigDir() (string, error) {
 }
 
 func (s goPathProbeSystem) readFile(path string) ([]byte, error) {
+	if s.refuse[path] {
+		return nil, errors.New("not a regular file of at most 64 KiB")
+	}
 	if data, ok := s.files[path]; ok {
 		return []byte(data), nil
 	}
@@ -86,5 +90,37 @@ func TestGoPathEntriesApplyGosDefault(t *testing.T) {
 				t.Errorf("goPathEntries = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A go env file that exists but is refused (not a small regular file) leaves the
+// session unable to know go's settings, which the probe records.
+func TestProbeRecordsAnUnreadableGoEnvFile(t *testing.T) {
+	t.Parallel()
+	const config = "/home/u/.config"
+	refused := goPathProbeSystem{configDir: config, files: map[string]string{}, refuse: map[string]bool{filepath.Join(config, "go", "env"): true}}
+	if !goEnvFileUnreadable(refused) {
+		t.Error("a refused go env file must be recorded as unreadable")
+	}
+	if goEnvFileUnreadable(goPathProbeSystem{configDir: config}) {
+		t.Error("an absent go env file is not unreadable")
+	}
+}
+
+// The probe records the go env file's own GOPATH/GOMODCACHE/GOCACHE lines apart
+// from the host process's environment, which a spawned child may not share.
+func TestProbeRecordsTheGoEnvFileSettingsApartFromTheEnvironment(t *testing.T) {
+	t.Parallel()
+	const config = "/home/u/.config"
+	system := goPathProbeSystem{
+		env:       map[string]string{"GOMODCACHE": "/from/env"},
+		configDir: config,
+		files:     map[string]string{filepath.Join(config, "go", "env"): "GOMODCACHE=/from/file\nGOPROXY=direct\n"},
+	}
+	if got := goEnvFileSettings(system); got["GOMODCACHE"] != "/from/file" || len(got) != 1 {
+		t.Errorf("goEnvFileSettings = %v, want only GOMODCACHE=/from/file", got)
+	}
+	if got := goEnvValue(system, "GOMODCACHE"); got != "/from/env" {
+		t.Errorf("goEnvValue(GOMODCACHE) = %q, want the environment's /from/env", got)
 	}
 }
