@@ -97,11 +97,20 @@ function commitCarriesCoverage(coverage: EntryCoverageInput, reach: AbandonedCov
   return coverage.representedSnapshot >= reach.snapshot;
 }
 
-/** Whether `inner` lies within `outer`, so a reconciliation for `outer` answers it. */
+/**
+ * Whether `inner` lies within `outer`, so a reconciliation for `outer` answers
+ * it. As with `commitCarriesCoverage`, the positions must contain `inner` AND the
+ * snapshot must reach it: a position identifies a slot, not a version, so a newer
+ * obligation at the same positions is not already answered.
+ */
 function reachWithin(outer: AbandonedCoverage, inner: AbandonedCoverage): boolean {
   if (inner.start !== null && inner.end !== null) {
     if (outer.start === null || outer.end === null) return false;
-    return comparePosition(outer.start, inner.start) <= 0 && comparePosition(outer.end, inner.end) >= 0;
+    return (
+      comparePosition(outer.start, inner.start) <= 0 &&
+      comparePosition(outer.end, inner.end) >= 0 &&
+      outer.snapshot >= inner.snapshot
+    );
   }
   return outer.snapshot >= inner.snapshot;
 }

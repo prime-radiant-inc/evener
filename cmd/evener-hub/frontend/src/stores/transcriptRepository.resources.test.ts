@@ -2196,3 +2196,71 @@ it("does not clear a failed disposition when an older version commits at the sam
   expect(JSON.stringify(durable?.item)).not.toContain("beta-v3");
   owner.dispose();
 });
+
+// Task 3h: reachWithin must compare the snapshot too. A newer abandoned
+// obligation at the same positions is not answered by an earlier reconciliation
+// request, so it arms exactly one fresh request; identical repeats are still
+// suppressed.
+it("arms a fresh reconciliation for a newer snapshot at the same positions and suppresses identical repeats", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  let reconciles = 0;
+  const admission = new EntryWriteAdmission(3_000);
+  const owner = repository(fixture.cache, 1, undefined, scheduler, admission, () => (reconciles += 1));
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // Occupy the aggregate with an unrelated held write so the reads below overflow.
+  const held = deferred<EntryWriteOutcome>();
+  const heldWrite = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(() => held.promise);
+  owner.acceptRead(readItems("occupier", 2, [item("base", 1), bigItem("occupier", 2, 2_000)]), {
+    lifetime: 1,
+    readId: "read-occupier",
+    boundary: "boundary-occupier",
+  });
+  await vi.waitFor(() => expect(admission.retainedBytes).toBeGreaterThan(0));
+
+  // Version 2 at position P, snapshot 2: overflows and arms a reconciliation.
+  const betaV2 = { ...bigItem("beta", 2, 1_000), version: 2 } as ThreadItem;
+  owner.acceptRead(readItems("beta", 2, [betaV2]), { lifetime: 1, readId: "read-v2", boundary: "boundary-v2" });
+  await Promise.resolve();
+  const armedAfterV2 = scheduled.length;
+  expect(armedAfterV2).toBeGreaterThanOrEqual(1);
+
+  // Fire it: the request now remembers position P at snapshot 2.
+  scheduled.at(-1)!.fire();
+  expect(reconciles).toBe(1);
+
+  // Version 3 at the SAME position P, snapshot 3: overflows again and raises the
+  // abandonment snapshot, so it must arm exactly one fresh request.
+  const betaV3 = { ...bigItem("beta", 2, 1_000), version: 3 } as ThreadItem;
+  owner.acceptRead(readItems("beta", 3, [betaV3]), { lifetime: 1, readId: "read-v3", boundary: "boundary-v3" });
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterV2 + 1);
+
+  // Fire the fresh request, then re-feed the identical v3 content twice: an
+  // identical repeat is suppressed and arms nothing further.
+  scheduled.at(-1)!.fire();
+  expect(reconciles).toBe(2);
+  const armedAfterV3 = scheduled.length;
+  owner.acceptRead(readItems("beta", 3, [betaV3]), {
+    lifetime: 1,
+    readId: "read-v3-again",
+    boundary: "boundary-v3-again",
+  });
+  await Promise.resolve();
+  owner.acceptRead(readItems("beta", 3, [betaV3]), {
+    lifetime: 1,
+    readId: "read-v3-again2",
+    boundary: "boundary-v3-again2",
+  });
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterV3);
+
+  held.resolve({ outcome: "committed", coverage: "extended", encodedBytes: 0 });
+  heldWrite.mockRestore();
+  reader.dispose();
+  owner.dispose();
+});
