@@ -267,3 +267,41 @@ func TestFileToolsAnchorAReadGrantInsideACarveOutAtTheCarveOut(t *testing.T) {
 	_, err = env.ReadFile(filepath.Join(cache, "mkt", "private.txt"), nil, nil)
 	mustDenied(t, err, "read_file through a read grant inside a carve-out redirected after resolution")
 }
+
+// On macOS the file tools read a skill named through the data-volume firmlink
+// spelling of a configured config root, in every mode.
+func TestFileToolsReadACarveOutThroughTheFirmlinkSpelling(t *testing.T) {
+	home := realTempDir(t)
+	alias := "/System/Volumes/Data" + home
+	if _, err := os.Stat(alias); err != nil {
+		t.Skip("no data-volume firmlink spelling on this host")
+	}
+	worktree := filepath.Join(home, "project")
+	skill := filepath.Join(home, ".config", "evener", "skills", "mine", "SKILL.md")
+	for _, dir := range []string{worktree, filepath.Dir(skill)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(skill, []byte("user skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range sandboxedModes {
+		t.Run(mode.String(), func(t *testing.T) {
+			host := sandbox.HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}
+			host.EvenerConfigRoot = filepath.Join(alias, ".config", "evener")
+			host.EvenerContentRoots = []string{filepath.Join(alias, ".config", "evener", "skills")}
+			rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode}, host, worktree)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			env := NewLocalExecutionEnvironment(worktree)
+			env.Sandbox = &rp
+			t.Cleanup(env.Cleanup)
+			path := filepath.Join(alias, ".config", "evener", "skills", "mine", "SKILL.md")
+			if got, err := env.ReadFile(path, nil, nil); err != nil || !strings.Contains(got, "user skill") {
+				t.Errorf("read_file %s: got %q err %v", path, got, err)
+			}
+		})
+	}
+}

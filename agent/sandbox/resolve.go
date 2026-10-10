@@ -459,7 +459,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
-		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree)
+		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
 	// Read roots are filtered against the whole mask, carve-outs included: a
@@ -803,7 +803,7 @@ func sameDir(a, b string) bool {
 // through it, the same documented residual as a hard link in the worktree
 // (docs/sandboxing.md, "Known residuals"); the sandboxed session cannot create
 // one, since it can neither write the carve-out nor see the masked file.
-func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string) ([]string, map[string]string) {
+func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string, darwin bool) ([]string, map[string]string) {
 	// A writable root can alias a content root through a symlink, so overlap is
 	// judged by resolved location as well as by spelling.
 	for _, w := range slices.Clone(writeRoots) {
@@ -843,6 +843,14 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// held to this location (CarveOutResolvesTo), even one not created yet.
 		out = append(out, root, resolved)
 		at[root], at[resolved] = resolved, resolved
+		// guardedHostRoots strips the macOS data-volume firmlink spelling
+		// (/System/Volumes/Data/Users/...), which names the same directory and
+		// which a configured XDG_CONFIG_HOME, and so a skill's path, may carry.
+		if darwin {
+			alias := firmlinkAlias(root)
+			out = append(out, alias)
+			at[alias] = resolved
+		}
 	}
 	return dedupeRoots(out), at
 }
@@ -862,8 +870,10 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// A root is held to where it resolved at session start (or, not created
 	// yet, where creating it would land), so redirecting an enclosing
 	// directory later cannot move the grant.
+	// The macOS data-volume firmlink spelling names the same directory, and
+	// EvalSymlinks does not collapse it, so both sides compare stripped.
 	at, ok := rp.carveOutAt[root]
-	return ok && resolved == at
+	return ok && StripDataVolumeAlias(resolved) == at
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the

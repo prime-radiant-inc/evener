@@ -563,3 +563,29 @@ func TestEvenerContentRootsHonourAnExplicitMaskOfAMissingRealConfigRoot(t *testi
 		}
 	}
 }
+
+// A config root configured through the macOS data-volume firmlink spelling
+// (/System/Volumes/Data/Users/...) keeps that spelling: skill paths that carry
+// it read through the carve-out, while the rest of the config stays masked.
+func TestEvenerContentRootsKeepTheFirmlinkSpelling(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := dataVolumePrefix + home
+	if _, err := os.Stat(alias); err != nil {
+		t.Skip("no data-volume firmlink spelling on this host")
+	}
+	host := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}
+	host.EvenerConfigRoot = filepath.Join(alias, ".config", "evener")
+	host.EvenerContentRoots = []string{filepath.Join(alias, ".config", "evener", "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if rp.Masks(filepath.Join(alias, ".config", "evener", "plugins", "cache", "p", "SKILL.md")) {
+		t.Errorf("a skill under the firmlink spelling must be readable: %v", rp.UnmaskedRoots)
+	}
+	if !rp.Masks(filepath.Join(alias, ".config", "evener", "hub.toml")) {
+		t.Errorf("the rest of the config must stay masked under the firmlink spelling")
+	}
+}
