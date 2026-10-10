@@ -155,3 +155,40 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 		t.Fatalf("callback turn missing checkpoint text: %q", callbackTurns[0].Message.Text())
 	}
 }
+
+// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole pins that a
+// re-compaction shows the summarizer the whole previous summary. That summary
+// is the only record of the conversation it folded, so a permission or hold it
+// quotes past its opening lines must still reach the summarizer, or the next
+// summary drops it (#4173).
+func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole(t *testing.T) {
+	var prompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				prompt = req.Messages[0].Text()
+				return llm.Response{Message: llm.Assistant("## Progress\nre-summarized")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+
+	previous := "[CONTEXT SUMMARY]\n## Conversation Timeline\n" + strings.Repeat("timeline ", 400) +
+		"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]"
+	history := []schema.Turn{
+		{Kind: schema.TurnSummary, Message: llm.User(previous)},
+		{Kind: schema.TurnUserInput, Message: llm.User("keep going")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if !strings.Contains(prompt, "PREVIOUS_SUMMARY_QUOTE_SENTINEL") {
+		t.Fatalf("the summarizer did not see the end of the previous summary:\n%s", prompt)
+	}
+}

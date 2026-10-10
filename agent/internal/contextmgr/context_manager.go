@@ -1903,8 +1903,11 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
+			// A previous compaction is the only record of the conversation it
+			// folded, including the permissions and holds it quotes, so it goes
+			// in whole; maxHistoryChars still bounds the history as a whole.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
