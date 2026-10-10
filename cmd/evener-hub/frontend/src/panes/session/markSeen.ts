@@ -38,13 +38,13 @@ export function seenThroughWithMotion(
  * open marks the row as the pane first finds it, once: a turn that ends while
  * the pane stays open is not "opened since". A row still loading is marked
  * when it arrives. On a hub that tracks seen-through marks the mark also
- * covers the session's last motion, read once per open; a mark that would not
- * advance the last one sent is skipped. The hub's mark is idempotent, so a
+ * covers the session's last motion, read once per open; a read that fails or
+ * can't be decoded falls back to the turn alone. The hub's mark is idempotent
+ * (and also clears a "Mark as unread"), so each open sends its mark, and a
  * failed one is left for the next open. */
 export function useMarkSessionSeenOnOpen(ref: string): void {
   useEffect(() => {
     let awaitingRow = true;
-    let lastSent = 0;
     let disposed = false;
     const markOnce = () => {
       if (!awaitingRow || document.visibilityState !== "visible") return;
@@ -54,8 +54,7 @@ export function useMarkSessionSeenOnOpen(ref: string): void {
       if (!summary) return;
       awaitingRow = false;
       const send = (seenThrough: number | undefined) => {
-        if (disposed || seenThrough === undefined || seenThrough <= lastSent) return;
-        lastSent = seenThrough;
+        if (disposed || seenThrough === undefined) return;
         client.request("evener/session/seen/set", { sessions: [{ ref, seenThrough }] }).catch(() => {});
       };
       // An older hub sends no seen_through, so its motion can't be compared.
@@ -63,13 +62,16 @@ export function useMarkSessionSeenOnOpen(ref: string): void {
         send(seenThroughToMark(summary));
         return;
       }
-      client.request("evener/activity/read", { refs: [ref] }).then(
-        (read) => {
-          const lastMovedAt = decodeActivityRead(read).find((activity) => activity.ref === ref)?.lastMovedAt;
-          send(seenThroughWithMotion(summary, lastMovedAt));
-        },
-        () => send(seenThroughToMark(summary)),
-      );
+      client
+        .request("evener/activity/read", { refs: [ref] })
+        .then((read) =>
+          seenThroughWithMotion(
+            summary,
+            decodeActivityRead(read).find((activity) => activity.ref === ref)?.lastMovedAt,
+          ),
+        )
+        .catch(() => seenThroughToMark(summary))
+        .then(send);
     };
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;

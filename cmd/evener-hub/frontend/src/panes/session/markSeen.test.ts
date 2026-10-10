@@ -195,11 +195,61 @@ test("opening a pane marks a session seen through output that streamed after its
   await settle();
   expect(fake.calls.find((call) => call.method === ACTIVITY_READ)?.params).toEqual({ refs: [REF] });
   expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
-  // Coming back with nothing newer sends no mark again.
+});
+
+// Another device can mark the session unread at the very mark this pane sent;
+// coming back sends it again, which clears the unread (the hub's mark is
+// idempotent otherwise).
+test("coming back to the page sends its mark again, clearing an unread set elsewhere", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => activityFor());
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
   setVisibility("hidden");
   setVisibility("visible");
   await settle();
-  expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(FIRST_TURN)]);
+});
+
+test("a read it can't decode still marks the unseen turn", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => ({ nope: true }) as never);
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
+});
+
+test("the mark reads this session's motion, not another's in the same answer", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => ({
+    sessions: [
+      {
+        ref: "local:other",
+        minutes: [0, 0, 0, 0, 0, 0, 0],
+        runningSubagents: 0,
+        lastMovedAt: Date.parse(SEEN_MARK) + 60_000,
+      },
+      { ref: REF, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0, lastMovedAt: Date.parse(SEEN_MARK) - 1 },
+    ],
+  }));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(fake)).toEqual([]);
+});
+
+test("a pane closed while its read is out sends nothing", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  let answer: (value: never) => void = () => {};
+  fake.on(ACTIVITY_READ, () => new Promise<never>((resolve) => (answer = resolve)));
+  const pane = renderHook(() => useMarkSessionSeenOnOpen(REF));
+  pane.unmount();
+  answer(activityFor(Date.parse(SEEN_MARK) + 60_000) as never);
+  await settle();
+  expect(marks(fake)).toEqual([]);
 });
 
 test("a failed activity read still marks the unseen turn", async () => {
