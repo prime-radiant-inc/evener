@@ -10,20 +10,15 @@ import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type BackgroundTranscriptsOwner, eligibleLiveRefs, startBackgroundTranscripts } from "./backgroundTranscripts";
 import { connectionStore } from "./connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./navigation/store";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import * as threads from "./threads";
-import {
-  backgroundTranscriptSnapshotForTests,
-  resetThreadsStoreForTests,
-  setSessionCacheAdapterForTests,
-  threadsStore,
-} from "./threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
 
 const GENERATION = "generation_test";
 const REPLACEMENT_GENERATION = "generation_replacement";
@@ -58,7 +53,7 @@ interface World {
 let world: World;
 let sequence: number;
 let fake: FakeClient;
-let cache: SessionCacheIndexedDB;
+let cache: SessionEntryCache;
 
 // A held overview page: the next read of `holdOffset` blocks on `holdGate`
 // until releaseHeldPage(), so a test can interleave an invalidation or a
@@ -158,7 +153,7 @@ function connectFake(capabilityVersion = 1): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.on("thread/read", (params) => ({
     ...currentRead(params.ref ?? "local:root"),
-    requestGeneration: (params as { requestGeneration?: number }).requestGeneration ?? 1,
+    requestGeneration: params.requestGeneration,
   }));
   client.on("thread/unsubscribe", () => ({}));
   connectionStore.getState().connect(client);
@@ -238,12 +233,13 @@ function combineTestAndCleanupErrors(primary: unknown, cleanup: unknown): unknow
   return new AggregateError([primary, cleanup], "test body and cleanup both failed");
 }
 
-// A one-shot hold over the first background cache write. `disarm()` stops any
+// A one-shot hold over local:a's first finite-final-read entry write, not its
+// initial ingestion. `disarm()` stops any
 // FUTURE hold from being armed; cleanup must call it before disposal can start
 // a fresh flush. A hold armed after cleanup began is recorded and signalled, so
 // a failure proof can detect an orphaned hold and release it rather than
 // hanging the suite.
-function holdFirstWrite(cache: SessionCacheIndexedDB) {
+function holdFirstWrite(cache: SessionEntryCache) {
   let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
   let consumed = false;
   let disarmed = false;
@@ -256,15 +252,32 @@ function holdFirstWrite(cache: SessionCacheIndexedDB) {
   const writeEntered = new Promise<void>((resolve) => {
     signalWriteEntered = resolve;
   });
-  const realPut = cache.put.bind(cache);
-  const spy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
-    if (!disarmed && !consumed) {
+  const realPut = cache.commitBatch.bind(cache);
+  const spy = vi.spyOn(cache, "commitBatch").mockImplementation(async (batch) => {
+    const finalReadStarted =
+      fake.calls.filter((call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === "local:a")
+        .length > 1;
+    if (
+      !disarmed &&
+      !consumed &&
+      finalReadStarted &&
+      batch.historyKey === threads.productionEntryTranscriptForTests("local:a").historyKey
+    ) {
       consumed = true;
-      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      held = holdNextWriteTransaction([
+        "transcriptItems",
+        "transcriptTurns",
+        "transcriptCoverage",
+        "transcriptMeta",
+        "records",
+        "meta",
+        "current",
+        "currentMeta",
+      ]);
       signalWriteEntered?.();
       if (cleanupBegan) signalArmedDuringCleanup?.();
     }
-    return realPut(record, scheduledEpoch, now);
+    return realPut(batch);
   });
   return {
     writeEntered,
@@ -349,8 +362,12 @@ function livePageHas(ref: string): boolean {
 
 // A thread read carrying one recorded, positioned turn, so the hydrated model
 // has versioned history and its release drains a real cache write.
-function versionedRead(ref: string, requestGeneration: number) {
+function versionedRead(ref: string, requestGeneration: number | undefined) {
   const base = currentRead(ref);
+  base.thread.status = { type: "idle" };
+  delete base.thread.evener.activeTurnId;
+  base.overlay = [];
+  delete base.olderCursor;
   base.snapshot = { incarnation: "inc-1", length: 1 };
   base.thread.turns = [
     {
@@ -364,7 +381,7 @@ function versionedRead(ref: string, requestGeneration: number) {
           id: "turn_1-item-0",
           transcriptKey: "apptranscript-item-v2:turn_1:0:0",
           turnId: "turn_1",
-          position: { entry: 2, item: 0 },
+          position: { entry: 0, item: 0 },
           version: 1,
           text: "recorded",
         },
@@ -385,8 +402,12 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
-  cache = new SessionCacheIndexedDB({ indexedDB: new IDBFactory(), databaseName: `bg-roster-${crypto.randomUUID()}` });
-  setSessionCacheAdapterForTests(cache);
+  cache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `bg-roster-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(cache);
   world = { generation: GENERATION, revision: 1, pages: new Map() };
   sequence = 0;
   holdOffset = null;
@@ -401,7 +422,6 @@ beforeEach(() => {
 afterEach(() => {
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
-  setSessionCacheAdapterForTests(undefined);
   cache.close();
 });
 
@@ -671,14 +691,11 @@ describe("startBackgroundTranscripts", () => {
   test("a reappearance during a held real release re-acquires the ref before the write settles", async () => {
     world.pages = onePage([liveRow("local:a")]);
     fake = connectFake();
-    // Open the cache connection: a background model's release only drains a
-    // cache write while the adapter is open.
+    // Open real entry storage before arming the final-release transaction hold.
     await cache.count();
-    // Give every read a recorded turn so the resident model's release drains a
-    // real versioned cache write (an unversioned model skips the write gate).
-    fake.on("thread/read", (params) =>
-      versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
-    );
+    // Every current read carries the same positioned recorded turn, so the
+    // finite final read reaches a real entry write rather than a metadata-only cut.
+    fake.on("thread/read", (params) => versionedRead(params.ref ?? "local:a", params.requestGeneration));
 
     // Observe the real background thread lease acquisitions as a call-through
     // wrapper: the reappearance below must call acquireBackgroundThread again,
@@ -701,7 +718,8 @@ describe("startBackgroundTranscripts", () => {
       await owner.settled();
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
       // A resident model makes release drain a final cache write we can hold.
-      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
       expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
       const acquisitionsBeforeRelease = acquisitionsOf("local:a");
 
@@ -739,6 +757,11 @@ describe("startBackgroundTranscripts", () => {
       const serialized = JSON.stringify(survived?.history);
       expect(serialized).toContain("recorded");
       expect(serialized.split("recorded").length - 1).toBe(1);
+      const key = threads.productionEntryTranscriptForTests("local:a").historyKey;
+      if (!key) throw new Error("reappeared ordinary owner lost its history identity");
+      const recorded = JSON.stringify(await cache.getLatest(key, 10));
+      expect(recorded).toContain("recorded");
+      expect(recorded.split("recorded").length - 1).toBe(1);
     } catch (error) {
       primaryError = error;
     } finally {
@@ -760,9 +783,7 @@ describe("startBackgroundTranscripts", () => {
     world.pages = onePage([liveRow("local:a")]);
     fake = connectFake();
     await cache.count();
-    fake.on("thread/read", (params) =>
-      versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
-    );
+    fake.on("thread/read", (params) => versionedRead(params.ref ?? "local:a", params.requestGeneration));
     const hold = holdFirstWrite(cache);
     const owner = startBackgroundTranscripts(navigationStore);
 
@@ -772,7 +793,8 @@ describe("startBackgroundTranscripts", () => {
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
       // A resident, versioned model exists, so disposal would drain a real
       // cache write; no release write has been held yet.
-      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
       expect(threadsStore.getState().threads.get("local:a")?.history?.incarnation).toBeDefined();
       expect(hold.consumed()).toBe(false);
       throw new Error("injected early failure before the first release write");
@@ -805,7 +827,8 @@ describe("startBackgroundTranscripts", () => {
       await healthy.settled();
       expect(threadReadRefs().has("local:healthy")).toBe(true);
       expect(threadsStore.getState().threads.get("local:healthy")?.history?.incarnation).toBeDefined();
-      expect(backgroundTranscriptSnapshotForTests().refs.get("local:healthy")?.resident).toBe(true);
+      expect(threads.productionEntryTranscriptForTests("local:healthy").baseline).toBeDefined();
+      expect(threads.productionEntryTranscriptForTests("local:healthy").model).toBeDefined();
     } finally {
       await healthy.dispose();
       await healthy.settled();
@@ -816,9 +839,7 @@ describe("startBackgroundTranscripts", () => {
     world.pages = onePage([liveRow("local:a")]);
     fake = connectFake();
     await cache.count();
-    fake.on("thread/read", (params) =>
-      versionedRead(params.ref ?? "local:a", (params as { requestGeneration?: number }).requestGeneration ?? 1),
-    );
+    fake.on("thread/read", (params) => versionedRead(params.ref ?? "local:a", params.requestGeneration));
 
     // Observe the real lease acquisitions and capture the disappeared lease's
     // real release promise: releaseAbsent() moves that lease out of the owner
@@ -879,7 +900,8 @@ describe("startBackgroundTranscripts", () => {
     try {
       await owner.settled();
       expect(threadReadRefs()).toEqual(new Set(["local:a"]));
-      expect(backgroundTranscriptSnapshotForTests().refs.get("local:a")?.resident).toBe(true);
+      expect(threads.productionEntryTranscriptForTests("local:a").baseline).toBeDefined();
+      expect(threads.productionEntryTranscriptForTests("local:a").model).toBeDefined();
       const acquisitionsBeforeRelease = acquisitionsOf("local:a");
 
       // a leaves Live; the coherent sweep starts a's final release, which
@@ -1150,7 +1172,9 @@ describe("startBackgroundTranscripts", () => {
     }
   });
   test("bounded backoff keeps retrying past the attempt cap and recovers a later Live ref", async () => {
-    vi.useFakeTimers();
+    // Keep fake-indexeddb's setImmediate tasks real, and control only the clock
+    // and pacing/deadline timers. Ordinary acquisition waits on real storage.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const RETRY_CAP_MS = 5_000;
       world.pages = onePage([liveRow("local:a")]);
@@ -1200,7 +1224,7 @@ describe("startBackgroundTranscripts", () => {
   // --- Task7c: paced, useful incomplete Live discovery --------------------
 
   test("an incomplete sweep does not spin on its own fresh hidden page, and a later coherent shrink retires it", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       world.pages = onePage([liveRow("local:a")]);
       fake = connectFake();
@@ -1257,7 +1281,7 @@ describe("startBackgroundTranscripts", () => {
   });
 
   test("control: a page-zero failure with no fresh hidden page stays quiet", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       world.pages = onePage([liveRow("local:a")]);
       fake = connectFake();
@@ -1280,7 +1304,7 @@ describe("startBackgroundTranscripts", () => {
   });
 
   test("a paced retry over an accepted truncated page reaches recovered host authority", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       world.pages = onePage([liveRow("local:a")]);
       fake = connectFake();
@@ -1315,7 +1339,7 @@ describe("startBackgroundTranscripts", () => {
   });
 
   test("control: an unchanged truncated page retains its ref with bounded paced reads", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       world.pages = onePage([liveRow("local:a")]);
       fake = connectFake();
@@ -1345,7 +1369,7 @@ describe("startBackgroundTranscripts", () => {
   });
 
   test("control: dispose cancels a retry pending over an incomplete page", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     let owner: BackgroundTranscriptsOwner | undefined;
     try {
       world.pages = onePage([liveRow("local:a")]);
@@ -1402,7 +1426,7 @@ describe("startBackgroundTranscripts", () => {
   });
 
   test("a complete sweep superseded by a same-sequence page refresh schedules paced recovery", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     let owner: BackgroundTranscriptsOwner | undefined;
     try {
       // rev1 coherent two-page roster: page0 = [a] remaining 1; page1 empty
