@@ -186,10 +186,8 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 			return
 		}
 		for _, root := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
-			for _, masked := range rp.MaskedPaths {
-				if root == masked || pathUnder(root, masked) {
-					t.Fatalf("Resolve granted masked path %q through %q", masked, root)
-				}
+			if rp.Masks(root) {
+				t.Fatalf("Resolve granted masked path %q through %q", rp.MaskedPaths, root)
 			}
 		}
 	})
@@ -323,7 +321,7 @@ func fuzzSandboxResidualBranches(t *testing.T) {
 	resolveAbs = oldAbs
 	_, _ = ResolveNamed("read-only", nil, HostFacts{OS: "linux", Home: "relative"}, root, nil)
 	_, _ = chooseBackend(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "plan9"}, true)
-	_ = filterMasked([]string{"/secret"}, []string{"/secret"})
+	_ = filterMasked([]string{"/secret"}, ResolvedPolicy{MaskedPaths: []string{"/secret"}})
 	faultPolicy := ResolvedPolicy{resolveInputs: SandboxPolicy{Mode: ModeReadOnly}, resolveHost: HostFacts{OS: "linux"}}
 	_, _ = faultPolicy.ControlPolicy(root)
 	_, _ = (&Wrapper{policy: faultPolicy}).ReRoot(root)

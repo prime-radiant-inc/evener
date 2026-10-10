@@ -16,7 +16,7 @@ func memoryWritesSession(t *testing.T) (*Session, string) {
 	t.Helper()
 	root := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}))
-	return s, filepath.Join(root, "memory", "personal")
+	return s, filepath.Join(root, "memory")
 }
 
 // memoryOwnStamps is the frontmatter a session's own write of a page sets:
@@ -350,7 +350,7 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	if got := search(map[string]any{"output_mode": "content", "context_lines": 1}); strings.Contains(got, "[p](p.md)") {
 		t.Fatalf("content: root index reported: %q", got)
 	}
-	capped := files[0] + "\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
+	capped := files[0] + "\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
 	if got := search(map[string]any{"output_mode": "files_with_matches", "max_results": float64(1)}); got != capped {
 		t.Fatalf("capped: got %q, want %q", got, capped)
 	}

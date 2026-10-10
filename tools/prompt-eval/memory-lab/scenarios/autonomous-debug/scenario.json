@@ -17,12 +17,20 @@
           "run": "cat > zz_heldout_test.go <<'EOF'\npackage receipts\n\nimport \"testing\"\n\nfunc TestHeldoutParsePrice(t *testing.T) {\n\tfor in, want := range map[string]int{\"2.5\": 250, \"12.05\": 1205, \"3\": 300, \"0.40\": 40} {\n\t\tif got, err := ParsePrice(in); err != nil || got != want {\n\t\t\tt.Errorf(\"ParsePrice(%q) = %d, %v; want %d\", in, got, err, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
         },
         {
-          "name": "changelog entry",
-          "run": "grep -q 'Fix receipt totals' CHANGELOG.md"
+          "name": "changelog entry under Unreleased",
+          "run": "awk '/^## Unreleased/{f=1;next} /^## /{f=0} f && /Fix receipt totals/{ok=1} END{exit !ok}' CHANGELOG.md"
+        },
+        {
+          "name": "changelog script works here",
+          "run": "d=$(mktemp -d) || exit 1; cp -R . \"$d/w\" && cd \"$d/w\" && for e in 'Fix receipt totals' 'probe entry'; do grep -vF \"$e\" CHANGELOG.md > CHANGELOG.probe && mv CHANGELOG.probe CHANGELOG.md && sh scripts/changelog.sh \"$e\" >/dev/null 2>&1 && awk -v e=\"$e\" '/^## Unreleased/{f=1;next} /^## /{f=0} f && index($0, e){ok=1} END{exit !ok}' CHANGELOG.md || exit 1; done"
+        },
+        {
+          "name": "fix committed",
+          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; git rev-parse --verify -q HEAD >/dev/null || exit 1; st=$(git status --porcelain) || exit 1; test -z \"$st\" || exit 1; changed=0; for f in money.go receipt.go; do test -r \"$fx/$f\" && git cat-file -e \"HEAD:$f\" || exit 1; git show \"HEAD:$f\" | cmp -s - \"$fx/$f\"; rc=$?; test \"$rc\" -le 1 || exit 1; test \"$rc\" -eq 0 || changed=1; done; test \"$changed\" -eq 1"
         },
         {
           "name": "at most 1 memory page",
-          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
+          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" \"$XDG_STATE_HOME\"/evener/projects/*/memory -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
         }
       ],
       "trace": [

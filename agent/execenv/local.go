@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/execsupport/procgroup"
@@ -51,6 +52,8 @@ var coreEnvVars = []envvars.Var{
 	envvars.Lang,
 	envvars.Term,
 	envvars.TmpDir,
+	envvars.XDGConfigHome,
+	envvars.GoEnv,
 	envvars.GoPath,
 	envvars.GoModCache,
 	envvars.CargoHome,
@@ -2189,15 +2192,14 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// escape on any platform.
 	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
-		// Best-effort cap: keep first maxResults lines. In content mode that
-		// counts context lines and "--" separators too, which is what the grep
-		// tool's max_results promises ("lines, file paths, or count entries by
-		// output mode", tool.DefGrep), so with context_lines a cut can fall
-		// inside a match's context; the note still says the result was cut.
-		// The native walk counts matches instead; that divergence is #3284.
+		// Keep the first maxResults lines. In content mode that counts context
+		// lines and "--" separators too, which is what the grep tool's
+		// max_results promises ("lines, file paths, or count entries by output
+		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
+		// context_lines a cut can fall inside a match's context.
 		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
 		if len(lines) > maxResults {
-			lines = append(lines[:maxResults], grepTruncationNote(maxResults))
+			return searchresult.WithNotes(strings.Join(lines[:maxResults], "\n"), grepTruncationNote(maxResults)), nil
 		}
 		return strings.Join(lines, "\n"), nil
 	}
@@ -2225,30 +2227,75 @@ func grepTargetsOneFile(dir string) bool {
 // groups) is plain text. A single named file is "." to the fallback, where rg
 // names it in files-with-matches mode; content and count lines for a single
 // file carry no path from either.
+//
+// rg searches files in parallel and prints each file's lines together, in
+// the order the files finish, so the lines come back sorted by path in the
+// native walk's order, each file's own lines in order: the cap then keeps the
+// same lines on every run, with or without ripgrep (#3284). Sorting here rather than with rg's --sort path keeps the search
+// parallel. A "--" between two files' lines is set again between them after
+// the sort; one inside a file stays where it is.
 func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 	if oneFile {
 		if filesOnly {
 			return []string{"."}
 		}
-		return strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+		return fileLines(stdout)
 	}
 	prefix := strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)
-	var lines []string
+	type fileBlock struct {
+		rel   string
+		lines []string
+	}
+	var blocks []fileBlock
+	pendingSeparator, separated := false, false
 	for rest := stdout; rest != ""; {
-		var line string
+		var rel, line string
 		path, afterPath, cut := strings.Cut(rest, "\x00")
-		hasPath := cut && strings.HasPrefix(path, prefix)
 		switch {
-		case hasPath && filesOnly:
-			line, rest = OneLinePath(path[len(prefix):]), afterPath
-		case hasPath:
+		case cut && strings.HasPrefix(path, prefix) && filesOnly:
+			rel, rest = path[len(prefix):], afterPath
+			line = OneLinePath(rel)
+		case cut && strings.HasPrefix(path, prefix):
 			var text string
+			rel = path[len(prefix):]
 			text, rest, _ = strings.Cut(afterPath, "\n")
-			line = OneLinePath(path[len(prefix):]) + ripgrepPathSeparator(text) + text
+			line = OneLinePath(rel) + ripgrepPathSeparator(text) + text
 		default:
 			line, rest, _ = strings.Cut(rest, "\n")
+			if line == "--" {
+				// A separator between context groups belongs inside a
+				// block only when the next line is the same file's.
+				pendingSeparator = true
+				continue
+			}
+			// Any other line without a path stays with the lines around it.
+			if n := len(blocks); n > 0 {
+				rel = blocks[n-1].rel
+			}
 		}
-		lines = append(lines, line)
+		if n := len(blocks); n > 0 && blocks[n-1].rel == rel {
+			if pendingSeparator {
+				blocks[n-1].lines = append(blocks[n-1].lines, "--")
+			}
+			blocks[n-1].lines = append(blocks[n-1].lines, line)
+		} else {
+			separated = separated || pendingSeparator
+			blocks = append(blocks, fileBlock{rel: rel, lines: []string{line}})
+		}
+		pendingSeparator = false
+	}
+	// Compare one path segment at a time, the native walk's order: a
+	// directory's files come before a sibling file whose name extends the
+	// directory's ("ctx/m.txt" before "ctx.txt").
+	slices.SortStableFunc(blocks, func(a, b fileBlock) int {
+		return slices.Compare(strings.Split(a.rel, string(filepath.Separator)), strings.Split(b.rel, string(filepath.Separator)))
+	})
+	var lines []string
+	for i, block := range blocks {
+		if i > 0 && separated {
+			lines = append(lines, "--")
+		}
+		lines = append(lines, block.lines...)
 	}
 	return lines
 }
@@ -2397,15 +2444,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	result := a.finish()
-	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
-	// "no matches among the files searched, but N were skipped by the
-	// default dotfile/gitignore exclusion" — grep has no include_ignored
-	// knob, so this is informational rather than a suggestion to retry.
-	if result == "" && excludedByIgnore > 0 {
-		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
-	}
-	return result, nil
+	return a.finishWalk(excludedByIgnore), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,

@@ -14,17 +14,19 @@ The session engine owns binding, native tools and index refresh:
 host's [`DefaultStateRoot`](../../cmdutil/statedir.go) supplies these roots:
 
 ```text
-<state-root>/memory/personal/
-<state-root>/memory/projects/<Project.ID>/
+<state-root>/memory/
+<state-root>/projects/<Project.ID>/memory/
 ```
 
 The state root is `$XDG_STATE_HOME/evener`, normally
-`~/.local/state/evener`. A history `StateDir`, `--state-dir` or
-`EVENER_STATE_DIR` override does not relocate memory. Local and remote hosts
-own separate storage. Personal memory crosses projects on that host; project
-memory belongs to its bound project identity. Earlier builds also kept
-per-session memory under `memory/sessions/<id>/`; Evener no longer reads those
-directories, and they can be deleted by hand.
+`~/.local/state/evener`. Personal pages sit directly in `memory/`, and any
+subdirectory there is part of personal memory, so nothing else is kept in it.
+Project memory sits in the project's default state directory, beside its
+session history, under the same `Project.ID`. A history `StateDir`,
+`--state-dir` or `EVENER_STATE_DIR` override does not relocate memory, and
+deleting a project's sessions never removes its `memory/` directory. Local and
+remote hosts own separate storage. Personal memory crosses projects on that
+host; project memory belongs to its bound project identity.
 
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
@@ -322,7 +324,8 @@ root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
 still an error. A search result names a file whose path holds a control
 character as a JSON string, so each result stays one line. A search cut off at
-its result cap ends with a line saying so and how to see the rest. `memory_write`,
+its result cap ends, after a blank line, with a note saying so and how to see
+the rest. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an

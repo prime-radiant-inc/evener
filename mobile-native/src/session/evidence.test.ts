@@ -322,6 +322,30 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// An update the wait carried (action "update", no status) is titled as an
+	// update, never as an earlier reply.
+	it("titles an update a send's wait carried as an earlier update", () => {
+		const waited = subagentWireStep("call_send_2");
+		const raw = {
+			...(waited.raw as Record<string, unknown>),
+			earlier_results: [
+				{
+					delegate_id: "dlg_x",
+					type: "delegate",
+					running_in_background: false,
+					action: "update",
+					output: "Which table?",
+					truncated: false,
+				},
+			],
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail({ ...waited, raw }) })).toContainEqual({
+			kind: "markdown",
+			title: "Earlier update 1 of 1",
+			markdown: "Which table?",
+		});
+	});
+
 	// A wait the send couldn't honour says why, from its footer.
 	it("says why a send's wait was ignored", () => {
 		const ignored = {
