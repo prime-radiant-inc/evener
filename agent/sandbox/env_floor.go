@@ -90,7 +90,8 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
 // follows, so GOPATH-mode builds still find the packages already there,
 // read-only: the spawn's own GOPATH when it has one, else the host's as resolved
-// at session start (goPathEntries, which covers one set with `go env -w`).
+// at session start (goPathEntries, which covers one set with `go env -w`) when
+// the spawn's environment would let go find those settings at all.
 // Restricted mode cannot read it, so it gets the scratch alone. Entries inside
 // the scratch are dropped from the ambient value, so flooring an already-floored
 // env does not repeat them.
@@ -99,11 +100,22 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 	if policy.Spawned.Read != ReadAnywhere {
 		return scratchGoPath
 	}
-	ambient := goPathEntries(policy.resolveHost)
+	var ambient []string
+	canFindGoSettings := false
 	for _, kv := range env {
-		if name, val, _ := strings.Cut(kv, "="); name == envvars.GoPath.Name && val != "" {
+		name, val, _ := strings.Cut(kv, "=")
+		switch {
+		case name == envvars.GoPath.Name && val != "":
 			ambient = filepath.SplitList(val)
+		case val != "" && (name == envvars.Home.Name || name == envvars.XDGConfigHome.Name || (name == envvars.GoEnv.Name && val != "off")):
+			canFindGoSettings = true
 		}
+	}
+	// The host's resolved GOPATH stands in for what the spawned go would read
+	// from its env file or default. A clean environment (EnvPolicyNone) gives it
+	// no HOME, XDG_CONFIG_HOME or GOENV to find either, so it gets none.
+	if ambient == nil && canFindGoSettings {
+		ambient = goPathEntries(policy.resolveHost)
 	}
 	entries := []string{scratchGoPath}
 	for _, entry := range ambient {

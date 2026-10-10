@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -53,8 +54,26 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 		if err := prepareGitSurfaces(policy); err != nil {
 			return nil, err
 		}
+		prepareCacheRoots(policy)
 	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
+}
+
+// prepareCacheRoots creates, empty, each overlaid cache root that does not exist
+// yet. Such a root has no lower to overlay and a mount target bwrap cannot create
+// in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
+// still point at it; the go command would create the same empty directory on its
+// first unsandboxed run. An empty directory cannot poison a cache. Best-effort:
+// a root that cannot be created stays skipped, as before.
+func prepareCacheRoots(rp ResolvedPolicy) {
+	if rp.CacheStrategy != CacheOverlay {
+		return
+	}
+	for _, root := range rp.CacheRoots {
+		if !pathExists(root) {
+			_ = os.MkdirAll(root, 0o755)
+		}
+	}
 }
 
 // Policy returns the resolved policy this wrapper enforces.

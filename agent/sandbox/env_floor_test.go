@@ -96,9 +96,13 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 		want   string
 	}{
 		{"spawn env", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
-		{"go env -w", readAnywhere(HostFacts{GoPath: "/from/go/env"}), nil, scratchGoPath + sep + "/from/go/env"},
-		{"default", readAnywhere(HostFacts{Home: "/home/u"}), nil, scratchGoPath + sep + "/home/u/go"},
-		{"no home", readAnywhere(HostFacts{}), nil, scratchGoPath},
+		{"go env -w", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/from/go/env"},
+		{"default", readAnywhere(HostFacts{Home: "/home/u"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
+		{"no home", readAnywhere(HostFacts{}), []string{"HOME=/home/u"}, scratchGoPath},
+		// A clean environment (EnvPolicyNone) carries neither the host's GOPATH
+		// nor anything a go command could find its env file or default with, so
+		// the host's settings stay out of it too.
+		{"clean env", readAnywhere(HostFacts{Home: "/home/u", GoPath: "/from/go/env"}), nil, scratchGoPath},
 		{"restricted", restricted, []string{"GOPATH=/custom/a"}, scratchGoPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

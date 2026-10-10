@@ -204,7 +204,9 @@ func (hostProbeSystem) userConfigDir() (string, error) { return os.UserConfigDir
 // few lines; anything near this size is not one.
 const goEnvFileLimit = 64 << 10
 
-// readFile reads a small regular file. GOENV can name anything, and the probe
+// readFile reads a small regular file. syscall.O_NONBLOCK is defined for every
+// GOOS this module builds on, Windows included (syscall/types_windows.go), so
+// this needs no build tag. GOENV can name anything, and the probe
 // runs before any sandbox exists, so a FIFO (which would block session start),
 // a device such as /dev/zero (which never ends) or an oversized file is refused.
 func (hostProbeSystem) readFile(path string) ([]byte, error) {
@@ -335,6 +337,11 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 // which is what `go env -w` writes. $GOENV names that file, GOENV=off disables
 // it, and otherwise it is <user config dir>/go/env; like the go command, a later
 // line overrides an earlier one. It returns "" for an unset setting.
+//
+// The line handling deliberately matches cmd/go/internal/cfg.readEnvFile: a
+// line is split at its first "=" with no trimming, quote or "\r" stripping, and
+// comment or blank lines never match a name. Normalizing more than go does
+// would make the sandbox disagree with the go command it serves.
 //
 // It reads the file rather than running `go env`: host facts feed Resolve, so a
 // `go env` here would run before any sandbox exists, executing whichever go is

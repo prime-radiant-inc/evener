@@ -466,3 +466,28 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 		})
 	}
 }
+
+// A configured Go cache directory that does not exist yet has no lower to
+// overlay, and bwrap cannot create its mount target in the read-only tree. The
+// wrapper creates it (empty, as the go command itself would) so it is overlaid
+// rather than left read-only under a GOMODCACHE still pointing at it.
+func TestNewWrapperCreatesAMissingCacheRootSoItIsOverlaid(t *testing.T) {
+	home := t.TempDir()
+	modCache := filepath.Join(t.TempDir(), "absent", "modcache")
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoModCache: modCache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	if fi, err := os.Stat(modCache); err != nil || !fi.IsDir() {
+		t.Fatalf("the missing cache root must be created: %v", err)
+	}
+	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); !hasSeq(args, "--overlay-src", modCache, "--tmp-overlay", modCache) {
+		t.Errorf("the created cache root must be overlaid: %v", args)
+	}
+}
