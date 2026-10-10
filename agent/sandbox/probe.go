@@ -139,13 +139,10 @@ type HostFacts struct {
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
 
-	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
-	// so the env floor can tell whether a spawn's go would read the same one.
+	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
+	// The env floor reads it again at each spawn whose go reads the same file,
+	// since go reads it at every run.
 	GoEnvFile string
-
-	// GoEnvFileSettings holds the GOPATH, GOMODCACHE and GOCACHE lines of that
-	// go env file alone, without the host process's environment overrides.
-	GoEnvFileSettings map[string]string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -287,7 +284,6 @@ func probeHost(system probeSystem) HostFacts {
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
-	facts.GoEnvFileSettings = goEnvFileSettings(system)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
@@ -381,9 +377,19 @@ func goEnvFileSettings(system probeSystem) map[string]string {
 	if file == "" {
 		return nil
 	}
-	data, err := system.readFile(file)
+	settings, err := readGoEnvFileSettings(system, file)
 	if err != nil {
 		return nil
+	}
+	return settings
+}
+
+// readGoEnvFileSettings reads the GOPATH, GOMODCACHE and GOCACHE lines of the go
+// env file at path, through the probe's bounded, non-blocking read.
+func readGoEnvFileSettings(system probeSystem, path string) (map[string]string, error) {
+	data, err := system.readFile(path)
+	if err != nil {
+		return nil, err
 	}
 	settings := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -392,7 +398,7 @@ func goEnvFileSettings(system probeSystem) map[string]string {
 			settings[key] = val
 		}
 	}
-	return settings
+	return settings, nil
 }
 
 // goEnvFile returns the go env file the go command reads: $GOENV, or

@@ -414,9 +414,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   since the discarded upper layer would swallow writes there; a root that does
   not exist yet is created empty at session start (as the go command itself
   would) so it can be; a file or a dangling symlink is left out. A Go cache the
-  overlay does not serve (set in the spawn's environment, with `go env -w`, or by
-  Go's defaults under the spawn's own `HOME`), or one that cannot be a directory,
-  is redirected into the session scratch instead. When the go env file exists
+  overlay does not serve (set in the spawn's environment, with `go env -w`, which
+  is read again at each spawn as go itself does, or by Go's defaults under the
+  spawn's own `HOME`), or one that cannot be a directory, is redirected into the
+  session scratch instead. When the go env file exists
   but cannot be read (a FIFO, a device, an oversized file), all three Go
   settings go to the scratch and spawned go commands get `GOENV=off`, since
   reading it would block them too.

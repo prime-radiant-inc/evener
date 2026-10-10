@@ -202,14 +202,17 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 	out := map[string]string{}
 
 	// Go settings come from the spawn's environment, then the go env file it
-	// reads: the host's file values only (never the host process's own
-	// environment overrides), and only when it is the file the probe read.
+	// reads: that file's own values (never the host process's environment
+	// overrides) as they are now, and only when it is the file the probe read.
 	file := map[string]string{}
 	if spawnFile := goEnvFileFor(vars, host.OS); spawnFile != "" {
 		if spawnFile != host.GoEnvFile {
 			return out, false
 		}
-		file = host.GoEnvFileSettings
+		var ok bool
+		if file, ok = currentGoEnvSettings(spawnFile); !ok {
+			return out, false
+		}
 	}
 	gopath := ""
 	if entries := goPathEntries(HostFacts{Home: home, GoPath: firstOr(vars[envvars.GoPath.Name], file[envvars.GoPath.Name])}); len(entries) > 0 {
@@ -231,6 +234,18 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
 	return out, true
+}
+
+// currentGoEnvSettings reads the go env file at path as it is now, since the
+// spawned go reads it at every run (a `go env -w` mid-session changes what the
+// next spawn does). ok is false when the file exists but cannot be read; a
+// missing file has no settings.
+func currentGoEnvSettings(path string) (map[string]string, bool) {
+	settings, err := readGoEnvFileSettings(hostProbeSystem{}, path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]string{}, true
+	}
+	return settings, err == nil
 }
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
@@ -264,7 +279,9 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		host := policy.resolveHost
 		configured := ""
 		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
-			configured = host.GoEnvFileSettings[envvars.GoPath.Name]
+			if settings, ok := currentGoEnvSettings(file); ok {
+				configured = settings[envvars.GoPath.Name]
+			}
 		}
 		ambient = goPathEntries(HostFacts{Home: vars[envvars.Home.Name], GoPath: configured})
 	}
