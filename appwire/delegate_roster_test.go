@@ -41,17 +41,42 @@ func TestSlimDelegateForRosterKeepsEverythingElse(t *testing.T) {
 		RunningForMS: &running, StructuredValid: &valid, StructuredReason: "why", Warnings: []string{"w"},
 		Diagnostics: []string{"d"}, Usage: &EvenerUsage{InputTokens: 3}, PacketKind: "final",
 		Message: json.RawMessage(`"done"`), StructuredResult: json.RawMessage(`{"a":1}`),
+		ReportPreview: "done", ReportPreviewTruncated: true, LogicalOwnerSessionID: "owner-session",
 	}
 	got := SlimDelegateForRoster(in)
 	if len(got.Message) != 0 || len(got.StructuredResult) != 0 || got.PacketKind != "" {
 		t.Fatalf("final packet payload survived: %+v", got)
 	}
+	if got.ReportPreview != "" || got.ReportPreviewTruncated || got.LogicalOwnerSessionID != "" {
+		t.Fatalf("activity-store fields survived the roster: %+v", got)
+	}
 	want := in
 	want.Message, want.StructuredResult, want.PacketKind = nil, nil, ""
+	want.ReportPreview, want.ReportPreviewTruncated, want.LogicalOwnerSessionID = "", false, ""
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("slim row = %+v, want %+v", got, want)
 	}
 	if len(in.Message) == 0 {
 		t.Fatal("input row was mutated through its shared slices")
+	}
+}
+
+// The roster carries no report payload and no activity-scoping identity, so its
+// wire form must never contain the preview or logical-owner keys.
+func TestSlimDelegateForRosterOmitsPreviewKeys(t *testing.T) {
+	in := EvenerDelegateInfo{
+		DelegateID: "dlg_1", OwnerSessionID: "root", ChildSessionID: "child", Type: "delegate",
+		RunGeneration: 1, ProjectionRevision: 3, PacketKind: "reported",
+		Message: json.RawMessage(`"done"`), ReportPreview: "done", ReportPreviewTruncated: true,
+		LogicalOwnerSessionID: "owner-session",
+	}
+	encoded, err := json.Marshal(SlimDelegateForRoster(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"reportPreview", "reportPreviewTruncated", "logicalOwnerSessionId"} {
+		if strings.Contains(string(encoded), key) {
+			t.Fatalf("roster wire carries %q: %s", key, encoded)
+		}
 	}
 }

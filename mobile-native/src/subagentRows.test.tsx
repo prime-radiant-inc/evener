@@ -5,6 +5,7 @@ import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
 import {
+	type AnyNotification,
 	type EvenerDelegateInfo,
 	parseActivityTree,
 	hydrateThread,
@@ -418,6 +419,13 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			const actual = subagentOutcomesDelegatesResponse();
 			return {
 				...actual,
+				// The recorded response advertises the push capability, but the
+				// summary side of this harness (installActivityFixture) stays
+				// retained, and a live answer followed by a retained one flips the
+				// store's eligibility and reads an extra time. Hold this fixture on
+				// the read path the tests below pin; the pushed-frame path has its
+				// own describe.
+				context: { ...actual.context, availability: "retained", reportPreview: undefined },
 				delegates: actual.delegates.map((row) => {
 					const entry = parsed.root.entries.find(
 						(entry) => entry.kind === "delegate" && entry.delegate.delegateId === row.delegateId,
@@ -651,5 +659,79 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} />);
 		});
 		expect(jobsLists(client)).toHaveLength(reads);
+	});
+
+	// The pushed-frame path. The harness above holds the read path on purpose;
+	// this client's context advertises the bounded preview and is live, so the
+	// store merges an `evener/delegate/updated` frame into the loaded row and
+	// skips the delegates read (spec: session-activity push updates).
+	const pushedFrame = (delegate: EvenerDelegateInfo): AnyNotification => ({
+		method: "evener/delegate/updated",
+		params: { threadId: COORDINATOR.threadId, ref: COORDINATOR.ref, delegate },
+	});
+	const frame = (over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo => ({
+		delegateId: "dlg_reported",
+		runGeneration: 1,
+		ownerSessionId: "root",
+		logicalOwnerSessionId: "root",
+		rootSessionId: "root",
+		childSessionId: "local:child-dlg_reported",
+		transcriptRef: "local:child-dlg_reported",
+		type: "delegate",
+		lifecycle: "idle",
+		phase: "idle",
+		status: "idle",
+		terminal: true,
+		resumable: true,
+		needsAttention: false,
+		projectionRevision: 4,
+		...over,
+	});
+	function pushHub() {
+		const client = new FakeClient("ready");
+		installActivityFixture(client, () => subagentOutcomesResponse().data, {
+			availability: "live",
+			reportPreview: true,
+		});
+		client.on("thread/read", ({ ref }) => ({
+			thread: wireThread(ref, { id: "root", sessionId: "root", modelProvider: "scripted" }),
+		}));
+		harness.client = client;
+		return client;
+	}
+
+	it("patches a loaded row from a pushed frame without a delegates read", async () => {
+		const client = pushHub();
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("The frame carried this report.");
+		const reads = jobsLists(client).length;
+		expect(reads).toBeGreaterThan(0);
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame({ reportPreview: "The frame carried this report." })));
+		});
+		expect(jobsLists(client)).toHaveLength(reads);
+		expect(renderedText(screen)).toContain("The frame carried this report.");
+	});
+
+	it("reads once for an unknown delegate's frame, and not again for the same id", async () => {
+		const client = pushHub();
+		transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		const reads = jobsLists(client).length;
+		const unknown = {
+			delegateId: "dlg_new",
+			childSessionId: "local:child-dlg_new",
+			transcriptRef: "local:child-dlg_new",
+		};
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame(unknown)));
+		});
+		expect(jobsLists(client)).toHaveLength(reads + 1);
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame({ ...unknown, projectionRevision: 5 })));
+		});
+		expect(jobsLists(client)).toHaveLength(reads + 1);
 	});
 });

@@ -286,9 +286,18 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
-Scoped activity consumers refresh only resources named by
+Scoped activity consumers refresh the resources named by
 `evener/thread/activity/changed`, honoring its logical owner and the selected
-session/subtree scope. Legacy job lifecycle, delegate-update and tree-update
+session/subtree scope. Delegate field changes are instead applied from the
+pushed `evener/delegate/updated` row when the owning source advertises the
+bounded report preview and is live (`SessionActivityContext.reportPreview` and
+`availability`): the store merges the frame into loaded rows by the delegate's
+logical owner, and reads the collection only for a delegate it has not loaded,
+on observe/paging/resync/reconnect, and when an epoch change clears its push
+state. A source that does not advertise the capability, or a retained context
+whose released runtime receives invalidations but no frames, keeps the
+invalidation read. Delegate membership is append-only within a source epoch;
+jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these
 reads. The domain APIs and scoped invalidations form one contract; resync and
 reconnect still refresh observed demand.
@@ -617,7 +626,10 @@ subtree summary (for the Agents count) by explicit ref, so side-by-side panes
 retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
-while the shared store retains and retries an interrupted continuation. When a
+while the shared store retains and retries an interrupted continuation. The
+boundary control reports only a page it asked for: a background refresh of the
+collection changes neither its label nor its disabled state, so a refresh the
+user did not request presents nothing. When a
 collection's last observer leaves, the store drops that collection's read in
 flight and any demand queued or walking behind it, explicit loads included, so
 a store another holder keeps alive takes in no late page for a view that has

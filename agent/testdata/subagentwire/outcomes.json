@@ -133,7 +133,8 @@
       "ancestors": [],
       "ancestryKnown": true,
       "epoch": "fixture",
-      "availability": "live"
+      "availability": "live",
+      "reportPreview": true
     },
     "scope": "subtree",
     "page": {
@@ -144,6 +145,7 @@
       {
         "name": "stopped-delegate",
         "runGeneration": 1,
+        "projectionRevision": 3,
         "delegateId": "dlg_stopped",
         "ownerRef": "local:root",
         "rootRef": "local:root",
@@ -166,6 +168,7 @@
       {
         "name": "reported-delegate",
         "runGeneration": 1,
+        "projectionRevision": 3,
         "reportPreview": "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
         "delegateId": "dlg_reported",
         "ownerRef": "local:root",
@@ -188,6 +191,7 @@
       {
         "name": "failed-delegate",
         "runGeneration": 1,
+        "projectionRevision": 3,
         "delegateId": "dlg_failed",
         "ownerRef": "local:root",
         "rootRef": "local:root",
@@ -218,7 +222,8 @@
       "ancestors": [],
       "ancestryKnown": true,
       "epoch": "fixture",
-      "availability": "live"
+      "availability": "live",
+      "reportPreview": true
     },
     "scope": "subtree",
     "page": {
@@ -229,6 +234,7 @@
       {
         "name": "stopped-delegate",
         "runGeneration": 1,
+        "projectionRevision": 3,
         "delegateId": "dlg_stopped",
         "ownerRef": "local:root",
         "rootRef": "local:root",
@@ -251,6 +257,7 @@
       {
         "name": "reported-delegate",
         "runGeneration": 2,
+        "projectionRevision": 5,
         "reportPreview": "Second run report.",
         "delegateId": "dlg_reported",
         "ownerRef": "local:root",
@@ -273,6 +280,7 @@
       {
         "name": "failed-delegate",
         "runGeneration": 1,
+        "projectionRevision": 3,
         "delegateId": "dlg_failed",
         "ownerRef": "local:root",
         "rootRef": "local:root",

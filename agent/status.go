@@ -468,6 +468,18 @@ func LoadSessionDelegateStatus(ctx context.Context, stateDir, sessionID string) 
 }
 
 func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
+	return delegateStatusInfo(now, rootID, row, false)
+}
+
+// delegateFrameStatusInfo is the status a pushed `evener/delegate/updated`
+// frame carries. Like the activity read, it omits the usage and worktree of a
+// terminal packet whose metadata runs past the payload cap and never parses such
+// a document; a diagnostics status is not that frame, so it keeps them.
+func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
+	return delegateStatusInfo(now, rootID, row, true)
+}
+
+func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
 	timing := projectStableDelegateStatus(now, row)
 	out := DelegateStatusInfo{
@@ -524,7 +536,10 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 		out.StructuredValid = cloneBool(packet.StructuredResultValid)
 		out.StructuredReason = packet.StructuredResultReason
 		out.Warnings = append([]string(nil), packet.Warnings...)
-		if len(packet.Metadata) != 0 {
+		// The activity read parses metadata only when it fits the cap, so a pushed
+		// frame omits the same usage and worktree -- and, like the read, never
+		// parses an oversized document at all.
+		if len(packet.Metadata) != 0 && (!boundedMetadata || len(packet.Metadata) <= activityMaxDelegatePayloadBytes) {
 			var metadata delegateTerminalPacketMetadata
 			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
 				out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")

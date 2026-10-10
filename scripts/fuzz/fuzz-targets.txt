@@ -33,6 +33,7 @@ native:execsupport:./valueexpr:FuzzValueexprScan
 native:execsupport:./valueexpr:FuzzValueexprTokenExpiry
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
+native:agent:./activitybound:FuzzReportPreview
 native:agent:./schema:FuzzSessionMetaRoundTrip
 native:agent:./schema:FuzzSessionDisplayName
 native:agent:./schema:FuzzHookAnnouncement

@@ -1697,56 +1697,68 @@ type EvenerWatchInfo struct {
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
 	// RunGeneration identifies the current activation; zero means no run has started.
-	RunGeneration       uint64               `json:"runGeneration"`
-	DelegateID          string               `json:"delegateId"`
-	OwnerSessionID      string               `json:"ownerSessionId"`
-	RootSessionID       string               `json:"rootSessionId"`
-	ChildSessionID      string               `json:"childSessionId"`
-	TranscriptRef       string               `json:"transcriptRef"`
-	ParentDelegateID    string               `json:"parentDelegateId,omitempty"`
-	Type                string               `json:"type"`
-	Lifecycle           string               `json:"lifecycle"`
-	Phase               string               `json:"phase"`
-	Status              string               `json:"status"`
-	Outcome             string               `json:"outcome,omitempty"`
-	Reason              string               `json:"reason,omitempty"`
-	Error               string               `json:"error,omitempty"`
-	Terminal            bool                 `json:"terminal,omitempty"`
-	Resumable           bool                 `json:"resumable"`
-	NeedsAttention      bool                 `json:"needsAttention"`
-	NotResumableReason  string               `json:"notResumableReason,omitempty"`
-	ProjectionRevision  uint64               `json:"projectionRevision"`
-	Task                string               `json:"task,omitempty"`
-	Description         string               `json:"description,omitempty"`
-	AgentType           string               `json:"agentType,omitempty"`
-	RequestedModel      string               `json:"requestedModel,omitempty"`
-	ResolvedProfileID   string               `json:"resolvedProfileId,omitempty"`
-	ResolvedModel       string               `json:"resolvedModel,omitempty"`
-	Model               string               `json:"model,omitempty"`
-	ReasoningEffort     string               `json:"reasoningEffort,omitempty"`
-	OriginTurnID        string               `json:"originTurnId,omitempty"`
-	OriginToolCallID    string               `json:"originToolCallId,omitempty"`
-	OriginItemID        string               `json:"originItemId,omitempty"`
-	RunStartedAt        string               `json:"runStartedAt,omitempty"`
-	RunEndedAt          string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt    string               `json:"latestActivityAt,omitempty"`
-	RunningForMS        *int64               `json:"runningForMs,omitempty"`
-	QuietForMS          *int64               `json:"quietForMs,omitempty"`
-	DurationMS          *int64               `json:"durationMs,omitempty"`
-	PacketKind          string               `json:"packetKind,omitempty"`
-	Message             json.RawMessage      `json:"message,omitempty"`
-	StructuredResult    json.RawMessage      `json:"structuredResult,omitempty"`
-	StructuredValid     *bool                `json:"structuredResultValid,omitempty"`
-	StructuredReason    string               `json:"structuredResultReason,omitempty"`
-	Warnings            []string             `json:"warnings,omitempty"`
-	Diagnostics         []string             `json:"diagnostics,omitempty"`
-	ExhaustionBudget    string               `json:"exhaustionBudget,omitempty"`
-	ExhaustionLimit     int                  `json:"exhaustionLimit,omitempty"`
-	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
-	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
-	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
-	Usage               *EvenerUsage         `json:"usage,omitempty"`
-	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
+	RunGeneration  uint64 `json:"runGeneration"`
+	DelegateID     string `json:"delegateId"`
+	OwnerSessionID string `json:"ownerSessionId"`
+	// LogicalOwnerSessionID is the session whose activity rows scope this
+	// delegate: the nearest ancestor session (AncestorSessionIDs[0]) when there
+	// is one, else OwnerSessionID. OwnerSessionID is always the physical root, so
+	// a session-scoped client buckets its own children from a descendant's by
+	// this field.
+	LogicalOwnerSessionID string `json:"logicalOwnerSessionId,omitempty"`
+	RootSessionID         string `json:"rootSessionId"`
+	ChildSessionID        string `json:"childSessionId"`
+	TranscriptRef         string `json:"transcriptRef"`
+	ParentDelegateID      string `json:"parentDelegateId,omitempty"`
+	Type                  string `json:"type"`
+	Lifecycle             string `json:"lifecycle"`
+	Phase                 string `json:"phase"`
+	Status                string `json:"status"`
+	Outcome               string `json:"outcome,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	Error                 string `json:"error,omitempty"`
+	Terminal              bool   `json:"terminal,omitempty"`
+	Resumable             bool   `json:"resumable"`
+	NeedsAttention        bool   `json:"needsAttention"`
+	NotResumableReason    string `json:"notResumableReason,omitempty"`
+	ProjectionRevision    uint64 `json:"projectionRevision"`
+	// ReportPreview is the settled current run's reported text, capped at 4096
+	// Unicode code points including an ellipsis when truncated. Absent while the
+	// run is open, for an error-only or unreported outcome, and for a prior
+	// generation once a new run has started.
+	ReportPreview          string               `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool                 `json:"reportPreviewTruncated,omitempty"`
+	Task                   string               `json:"task,omitempty"`
+	Description            string               `json:"description,omitempty"`
+	AgentType              string               `json:"agentType,omitempty"`
+	RequestedModel         string               `json:"requestedModel,omitempty"`
+	ResolvedProfileID      string               `json:"resolvedProfileId,omitempty"`
+	ResolvedModel          string               `json:"resolvedModel,omitempty"`
+	Model                  string               `json:"model,omitempty"`
+	ReasoningEffort        string               `json:"reasoningEffort,omitempty"`
+	OriginTurnID           string               `json:"originTurnId,omitempty"`
+	OriginToolCallID       string               `json:"originToolCallId,omitempty"`
+	OriginItemID           string               `json:"originItemId,omitempty"`
+	RunStartedAt           string               `json:"runStartedAt,omitempty"`
+	RunEndedAt             string               `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string               `json:"latestActivityAt,omitempty"`
+	RunningForMS           *int64               `json:"runningForMs,omitempty"`
+	QuietForMS             *int64               `json:"quietForMs,omitempty"`
+	DurationMS             *int64               `json:"durationMs,omitempty"`
+	PacketKind             string               `json:"packetKind,omitempty"`
+	Message                json.RawMessage      `json:"message,omitempty"`
+	StructuredResult       json.RawMessage      `json:"structuredResult,omitempty"`
+	StructuredValid        *bool                `json:"structuredResultValid,omitempty"`
+	StructuredReason       string               `json:"structuredResultReason,omitempty"`
+	Warnings               []string             `json:"warnings,omitempty"`
+	Diagnostics            []string             `json:"diagnostics,omitempty"`
+	ExhaustionBudget       string               `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit        int                  `json:"exhaustionLimit,omitempty"`
+	ExhaustionResumable    *bool                `json:"exhaustionResumable,omitempty"`
+	DelegationAllowance    int                  `json:"delegationAllowance,omitempty"`
+	ParentWatchGranted     bool                 `json:"parentWatchGranted,omitempty"`
+	Usage                  *EvenerUsage         `json:"usage,omitempty"`
+	Worktree               *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type EvenerDelegateParams struct {

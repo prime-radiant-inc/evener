@@ -1,5 +1,6 @@
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
+import { sameJsonValue } from "./plainObject";
 import { isThreadNotFound } from "./sessionErrors";
 import {
   acquireThreadSubscription,
@@ -8,6 +9,7 @@ import {
 } from "./threadSubscription";
 import type {
   AnyNotification,
+  EvenerDelegateInfo,
   JobActivityJob,
   SessionActivityContext,
   SessionActivityIssue,
@@ -63,7 +65,12 @@ interface ActivityPage {
 }
 interface RefreshWalk {
   advance: boolean;
-  rows: Map<string, ActivityRow>;
+  rows: ActivityRow[];
+  /** Identity -> the position of its row in `rows`. A row a *later* page
+   * re-serves replaces that position, preserving first-seen order; the set is
+   * never consulted for a duplicate within one served page, so two rows an
+   * authoritative read returned under the same identity both survive. */
+  index: Map<string, number>;
   issues: readonly SessionActivityIssue[];
 }
 interface ResourceRead {
@@ -76,6 +83,9 @@ interface ResourceRead {
   timer: unknown | null;
   cursor: string | undefined;
   epoch: string | undefined;
+  /** The session this collection's rows belong to. `acceptContext` clears it on
+   * a replacement, so a continuation page whose response names a different
+   * session is recognized as a restart rather than adopted. */
   sessionId: string | undefined;
   incomplete: boolean;
   boundary: string | undefined;
@@ -84,6 +94,9 @@ interface ResourceRead {
   /** Bumped when the last observer leaves; a read begun before it is dropped. */
   releases: number;
 }
+/** Cap on the buffered latest frame per unknown delegate id; the per-ID
+ * seen-unknown set bounds reads, so this only guards an unbounded store. */
+const MAX_BUFFERED_DELEGATE_FRAMES = 128;
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -143,6 +156,25 @@ export class SessionActivityStore {
   private runtimeThreadId: string | null = null;
   private statusRevision = 0;
   private statusUpdate: { revision: number; threadId: string; status: ThreadStatus } | null = null;
+  /** The applied merge order per loaded delegate row: a frame is admitted over
+   * it only by a strictly greater revision (the row itself carries the
+   * independent latestActivityAt maximum). Keyed by the row's identity, because
+   * a read can hold two rows under one delegate id. Cleared on a source epoch
+   * change, a session replacement and dispose. */
+  private readonly appliedDelegates = new Map<string, { epoch: string | undefined; revision: number }>();
+  /** Delegate ids that triggered a root read for membership; at most once per
+   * id. Cleared with the applied map. */
+  private readonly seenUnknownDelegates = new Set<string>();
+  /** Latest pushed frame per unknown delegate id, applied once a read admits
+   * the row so a settle during a later-page read is not dropped. */
+  private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  /** The last accepted context's no-read-merge eligibility. */
+  private pushEligible = false;
+  /** The replacement epoch whose delegate state has already been retired: a
+   * sibling resource can report the same new epoch on every response while the
+   * delegates read is still in flight, and retiring once per epoch keeps that
+   * from clearing a buffered frame that arrived after the first report. */
+  private retirementEpoch: string | undefined;
 
   constructor(
     private readonly client: SessionActivityClient,
@@ -253,6 +285,13 @@ export class SessionActivityStore {
         }
         this.runtimeThreadId = null;
         this.statusUpdate = null;
+        // The connection may come back to a producer without the push
+        // capability, and an invalidation that arrives before the first
+        // refreshed response would trust the old one: the merge is re-enabled
+        // only by a fresh live capability context.
+        this.pushEligible = false;
+        this.clearDelegates();
+        this.retirementEpoch = undefined;
         this.publish({ runtime: null });
       }),
       this.client.onReady(() => {
@@ -283,6 +322,11 @@ export class SessionActivityStore {
     // cursors retire together; opaque cache epochs alone do not imply this.
     this.generation += 1;
     const generation = this.generation;
+    this.clearDelegates();
+    // The replacement context has not been seen by noteContext yet; a fresh
+    // session resets eligibility rather than reporting a live->retained flip.
+    this.pushEligible = false;
+    this.retirementEpoch = undefined;
     const metadata = this.lease?.metadata();
     if (metadata?.sessionId !== context.sessionId || this.statusUpdate?.threadId !== metadata?.threadId)
       this.statusUpdate = null;
@@ -376,7 +420,7 @@ export class SessionActivityStore {
         // A stale cursor/reconnect restarts the fresh walk, not its original
         // displayed boundary: provisional rows must not extend that boundary.
         read.boundary ??= last ? rowIdentity(resource, last) : undefined;
-        read.refresh = read.boundary ? { advance: false, rows: new Map(), issues: [] } : null;
+        read.refresh = read.boundary ? { advance: false, rows: [], index: new Map(), issues: [] } : null;
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
@@ -402,6 +446,35 @@ export class SessionActivityStore {
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
         if (stale()) continue;
+        // A source replacement is visible only in a response: the invalidation
+        // carries no epoch.
+        const epoch = result.context.epoch;
+        const session = result.context.sessionId;
+        const replacedSession = read.sessionId !== session;
+        const previous = read.epoch;
+        const crossing = previous !== undefined && previous !== epoch;
+        // The delegate merge ordering is epoch-scoped, so the delegates
+        // collection's own replacement retires it here.
+        // A summary-triggered retire already cleared this epoch's state and
+        // forced the read, so clearing again here would wipe a frame that
+        // arrived between the two and leave it undiscovered until another.
+        if (crossing && resource === "delegates" && this.retirementEpoch !== epoch) {
+          this.clearDelegates();
+          this.retirementEpoch = undefined;
+        }
+        read.epoch = epoch;
+        // A page cannot cross epochs: its rows extend a retired walk. A root read
+        // is the fresh read for the new epoch. A page that first observes a
+        // replacement session restarts too, so its rows are never adopted as the
+        // new session's own.
+        if (!root && (crossing || replacedSession)) {
+          read.sessionId = session;
+          read.cursor = undefined;
+          read.refresh = null;
+          read.rootQueued = true;
+          continue;
+        }
+        read.sessionId = session;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -419,18 +492,13 @@ export class SessionActivityStore {
             },
           });
           if (stale()) continue;
+          this.noteContext(summary.context);
           if (unavailable) {
             read.failures += 1;
             this.retry(resource);
           } else if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
-          if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {
-            read.cursor = undefined;
-            read.refresh = null;
-            read.rootQueued = true;
-            continue;
-          }
           const current = this.state[resource];
           const walk = read.refresh;
           const last = page.rows[page.rows.length - 1];
@@ -440,9 +508,21 @@ export class SessionActivityStore {
           let reachedBoundary = false;
           if (walk) {
             reachedBoundary = page.page.complete;
+            // A served page is authoritative: keep every row it returned,
+            // including two rows that share a delegate id. Only a row a later
+            // page re-serves replaces its earlier occurrence, in first-seen
+            // order; `pageSeen` keeps an intra-page duplicate from aliasing.
+            const pageSeen = new Set<string>();
             for (const row of page.rows) {
               const identity = rowIdentity(resource, row);
-              walk.rows.set(identity, row);
+              const at = pageSeen.has(identity) ? undefined : walk.index.get(identity);
+              if (at !== undefined) {
+                walk.rows[at] = row;
+              } else {
+                if (!walk.index.has(identity)) walk.index.set(identity, walk.rows.length);
+                walk.rows.push(row);
+              }
+              pageSeen.add(identity);
               if (identity === read.boundary) reachedBoundary = true;
             }
             walk.issues = mergeIssues(walk.issues, page.page.issues);
@@ -454,13 +534,23 @@ export class SessionActivityStore {
           let rows: readonly ActivityRow[];
           let reconciled = false;
           if (walk && reachedBoundary && freshIssues.length === 0) {
-            rows = [...walk.rows.values()];
+            rows = [...walk.rows];
             reconciled = true;
           } else if (!walk && root && freshIssues.length === 0) {
             rows = page.rows;
             reconciled = true;
           } else {
             rows = mergeRows(resource, current.rows, page.rows);
+          }
+          if (resource === "delegates") {
+            // A read joins each row the same way a frame does, so it cannot
+            // clobber a newer frame nor skip one applied in the gap, and it
+            // admits any buffered frame for a row it serves.
+            rows = this.joinDelegateRows(
+              rows as readonly SessionDelegate[],
+              current.rows as readonly SessionDelegate[],
+              page.page.complete,
+            );
           }
           // A clean continuation cannot acknowledge an unresolved root scan.
           // Retain its issues and root recovery demand until fresh reconciliation.
@@ -470,8 +560,6 @@ export class SessionActivityStore {
             if (reconciled) read.boundary = undefined;
           }
           read.cursor = page.page.nextCursor;
-          read.epoch = page.context.epoch;
-          read.sessionId = page.context.sessionId;
           read.incomplete = !page.page.complete || issues.length > 0 || read.refresh !== null;
           this.publishCollection(resource, {
             ...current,
@@ -488,6 +576,7 @@ export class SessionActivityStore {
           if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           if (dropped()) continue;
+          this.noteContext(page.context);
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -574,6 +663,229 @@ export class SessionActivityStore {
     state: SessionActivityCollectionState<ActivityRow>,
   ): void {
     this.publish({ [resource]: state });
+  }
+  /** The no-read merge is eligible only when the producing source advertises
+   * the bounded preview and is live -- the combination in which delegate
+   * frames reliably follow an invalidation. A live context that turns retained
+   * (an ancestor released its runtime) can receive post-release invalidations
+   * with no frame, so the flip reconciles the observed delegates with a read. */
+  private noteContext(context: SessionActivityContext): void {
+    const next = context.reportPreview === true && context.availability === "live";
+    const wasEligible = this.pushEligible;
+    if (wasEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
+      this.reconcileDelegates();
+    }
+    // A gate that turns on recovers a read a refusal parked while the source was
+    // retained: without this the resource stays refused and later unknown-id
+    // frames are buffered for a read that will never run.
+    if (next && !wasEligible && this.readState("delegates").permanent) this.reconcileDelegates();
+    this.pushEligible = next;
+    // A source replacement is visible only in a response, and the delegate
+    // merge ordering is epoch-scoped. When another collection is the first to
+    // see the replacement the loaded delegates rows are a retired generation's,
+    // so retire the ordering and re-read them: an eligible context suppresses
+    // the invalidation-driven delegate read, so nothing else would.
+    // Only the no-read merge depends on the loaded ordering: with the gate off
+    // the activity invalidation already re-reads the observed delegates, and a
+    // gate that turns on re-reads them too. Retiring on every other collection's
+    // context would spend a read on state this store is not merging into.
+    const loaded = this.reads.delegates.epoch;
+    if (
+      (wasEligible || next) &&
+      loaded !== undefined &&
+      loaded !== context.epoch &&
+      this.retirementEpoch !== context.epoch
+    ) {
+      this.retirementEpoch = context.epoch;
+      this.retireDelegates();
+    }
+  }
+  /** The delegate merge ordering is invalid across a source replacement: a
+   * replacement journal rebuilds projectionRevision from 1, so an older epoch's
+   * higher revision would otherwise win forever. */
+  private clearDelegates(): void {
+    this.appliedDelegates.clear();
+    this.seenUnknownDelegates.clear();
+    this.bufferedUnknownDelegates.clear();
+  }
+  private retireDelegates(): void {
+    this.clearDelegates();
+    this.reconcileDelegates();
+  }
+  /** Reconcile the observed delegates after a source or gate change. A
+   * permanent read refusal stops the ordinary automatic reads, but a changed
+   * condition is a new one: clear it so this recovery attempt is really made
+   * (and, refused again, it is recorded again instead of retried in a loop). */
+  private reconcileDelegates(): void {
+    const delegates = this.reads.delegates;
+    if (delegates.observers === 0 && !delegates.oneShot) return;
+    this.change("delegates", { permanent: false });
+    void this.request("delegates", "root");
+  }
+  /** Record the merge order a loaded delegate row has reached. */
+  private recordAppliedDelegate(row: SessionDelegate): void {
+    this.appliedDelegates.set(rowIdentity("delegates", row), {
+      epoch: this.reads.delegates.epoch,
+      revision: revisionOf(row.projectionRevision),
+    });
+  }
+  /** The recorded revision for a row, or undefined when the record belongs to a
+   * retired epoch: a source replacement rebuilds revisions from 1, so an
+   * old-epoch record must not judge a new-epoch row or frame. */
+  private appliedRevision(identity: string): number | undefined {
+    const applied = this.appliedDelegates.get(identity);
+    return applied && applied.epoch === this.reads.delegates.epoch ? applied.revision : undefined;
+  }
+  /** The frame's logical owner scopes it: `ownerSessionId` is always the
+   * physical root, so a session store keys on `logicalOwnerSessionId` (the
+   * nearest ancestor session) instead. A subtree store's ref-matched frames
+   * already belong to the observed subtree. */
+  private delegateFrameInScope(frame: EvenerDelegateInfo): boolean {
+    const context = this.state.context;
+    if (!context) return false;
+    if (this.scope !== "session") return true;
+    return (frame.logicalOwnerSessionId ?? frame.ownerSessionId) === context.sessionId;
+  }
+  /** A pushed frame patches a loaded row in place and never invents one: an
+   * unknown delegate asks for one root read (bounded per id) and its latest
+   * frame waits for a read to admit the row. */
+  private applyDelegateFrame(frame: EvenerDelegateInfo): void {
+    if (!this.delegateFrameInScope(frame)) return;
+    const rows = this.state.delegates.rows;
+    // The id may name no loaded row or more than one: a read preserves a child
+    // it served twice under one delegate id, and a frame carries no child
+    // identity to tell those rows apart, so patching the first would write one
+    // row's update into another.
+    let index = -1;
+    let ambiguous = false;
+    for (let at = 0; at < rows.length; at += 1) {
+      if (rows[at]?.delegateId !== frame.delegateId) continue;
+      if (index !== -1) {
+        ambiguous = true;
+        break;
+      }
+      index = at;
+    }
+    if (ambiguous) {
+      this.noteAmbiguousDelegate(frame);
+      return;
+    }
+    if (index === -1) {
+      this.noteUnknownDelegate(frame);
+      return;
+    }
+    const current = rows[index];
+    if (!current) return;
+    const merged = this.mergeDelegateFrame(current, frame);
+    if (merged === current) return;
+    const next = rows.slice();
+    next[index] = merged;
+    this.recordAppliedDelegate(merged);
+    this.publish({ delegates: { ...this.state.delegates, rows: next } });
+  }
+  private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
+    const read = this.reads.delegates;
+    if (read.observers === 0 && !read.oneShot) return;
+    // Frames can arrive out of order, so a later arrival must not replace a
+    // newer settlement: keep the projector's join, exactly as a loaded row does.
+    const buffered = this.bufferedUnknownDelegates.get(frame.delegateId);
+    // Re-inserting moves the id to the end, so eviction drops the coldest id
+    // rather than one a frame just refreshed.
+    if (buffered) this.bufferedUnknownDelegates.delete(frame.delegateId);
+    this.bufferedUnknownDelegates.set(
+      frame.delegateId,
+      boundedDelegateFrame(buffered ? mergeDelegateFrames(buffered, frame) : frame),
+    );
+    if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
+      const oldest = this.bufferedUnknownDelegates.keys().next();
+      if (!oldest.done) {
+        this.bufferedUnknownDelegates.delete(oldest.value);
+        // The evicted id must be readable again: leaving it in the seen set
+        // would let a delegate whose read never admitted it stay undiscovered
+        // forever, with later frames updating a buffer that no read will use.
+        this.seenUnknownDelegates.delete(oldest.value);
+      }
+    }
+    if (this.seenUnknownDelegates.has(frame.delegateId)) return;
+    this.seenUnknownDelegates.add(frame.delegateId);
+    void this.request("delegates", "root");
+  }
+  /** A frame whose delegate id names more than one loaded row cannot be
+   * attributed to one of them, so it patches none: read once for the id and let
+   * the read settle every row it serves. */
+  private noteAmbiguousDelegate(frame: EvenerDelegateInfo): void {
+    const read = this.reads.delegates;
+    if (read.observers === 0 && !read.oneShot) return;
+    if (this.seenUnknownDelegates.has(frame.delegateId)) return;
+    this.seenUnknownDelegates.add(frame.delegateId);
+    void this.request("delegates", "root");
+  }
+  /** The projector's join: the strictly greater revision supplies the snapshot
+   * fields, while latestActivityAt is the independent maximum -- a lower
+   * revision may advance it, a higher one never moves it backward. */
+  private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+    const incoming = delegateRowFromFrame(current, frame);
+    const applied = this.appliedRevision(rowIdentity("delegates", current));
+    // No record for the current epoch means the map was retired (or this row was
+    // never recorded): the loaded row's revision belongs to a retired journal, so
+    // comparing against it would reject the replacement's frames, which rebuild
+    // from 1. The frame is first sight for this epoch, as a read's row is.
+    if (applied === undefined) {
+      const merged = joinDelegateState(incoming, current, true);
+      return delegateRowsEqual(merged, current) ? current : merged;
+    }
+    const merged = joinDelegateState(incoming, current, revisionOf(incoming.projectionRevision) > applied);
+    return delegateRowsEqual(merged, current) ? current : merged;
+  }
+  private joinDelegateRows(
+    incoming: readonly SessionDelegate[],
+    previous: readonly SessionDelegate[],
+    complete: boolean,
+  ): SessionDelegate[] {
+    const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
+    // A page can serve one delegate id twice, and nothing downstream can tell
+    // which of those rows an id-only frame belongs to, so a buffered frame is
+    // settled by the read unless the id came back as a single row.
+    const served = new Map<string, number>();
+    for (const row of incoming) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
+    // The loaded rows count too: a later page of the same read can already have
+    // served a second row under the id.
+    for (const row of previous) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
+    return incoming.map((row) => {
+      const identity = rowIdentity("delegates", row);
+      // Only a read that carries the whole collection sees every row under the
+      // id, so only then is a buffered frame's single row really single.
+      const soleRow = complete && served.get(row.delegateId) === 1;
+      const existing = previousById.get(identity);
+      const applied = this.appliedRevision(identity);
+      let merged: SessionDelegate;
+      if (applied === undefined) {
+        // First sight in this epoch -- or the first read after a replacement
+        // cleared the map: the served row seeds the order and wins, so an old
+        // epoch's higher revision cannot regress it.
+        merged = row;
+      } else {
+        // A served row is an authoritative snapshot: it wins at equal revision
+        // (parity with a same-revision frame) and only loses to a strictly
+        // newer applied frame, which it must not clobber.
+        const candidate = joinDelegateState(row, existing ?? row, revisionOf(row.projectionRevision) >= applied);
+        merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
+      }
+      // Record the served row's order before folding a buffered frame in, so the
+      // frame is joined against the row it lands in rather than the ordering
+      // that row had before this read answered.
+      this.recordAppliedDelegate(merged);
+      const buffered = soleRow ? this.bufferedUnknownDelegates.get(row.delegateId) : undefined;
+      if (buffered) {
+        this.bufferedUnknownDelegates.delete(row.delegateId);
+        merged = this.mergeDelegateFrame(merged, buffered);
+      }
+      // An ambiguous id keeps its seen entry, or every later frame would start
+      // another root read instead of staying bounded to one per id.
+      if (soleRow) this.seenUnknownDelegates.delete(row.delegateId);
+      this.recordAppliedDelegate(merged);
+      return merged;
+    });
   }
   private async fetch(
     resource: SessionActivityResource,
@@ -680,6 +992,13 @@ export class SessionActivityStore {
           this.publish({ runtime: { ...metadata, status: this.statusUpdate.status } });
         return;
       }
+      case "evener/delegate/updated":
+        // Only an eligible context enables the no-read merge. An older or
+        // retained source keeps today's behavior: the activity-changed
+        // invalidation re-reads the collection, so reports still land.
+        if (!this.pushEligible) return;
+        this.applyDelegateFrame(notification.params.delegate);
+        return;
       case "evener/thread/activity/changed":
         if (
           this.scope === "session" &&
@@ -705,7 +1024,12 @@ export class SessionActivityStore {
       default:
         return;
     }
+    // The no-read merge covers delegate field changes; summary, jobs and
+    // watches refresh as today. A resync still refreshes every observed
+    // resource, delegates included.
+    const skipDelegates = notification.method === "evener/thread/activity/changed" && this.pushEligible;
     for (const resource of changed) {
+      if (resource === "delegates" && skipDelegates) continue;
       if (this.reads[resource].observers > 0 || this.reads[resource].oneShot) {
         void this.request(resource, "root", notification.method === "evener/thread/resync");
       }
@@ -745,6 +1069,8 @@ export class SessionActivityStore {
     this.lease = null;
     this.runtimeThreadId = null;
     this.statusUpdate = null;
+    this.clearDelegates();
+    this.pushEligible = false;
     this.state = { ...this.state, runtime: null };
     for (const stop of this.stopListening) stop();
     this.stopListening = [];
@@ -752,8 +1078,174 @@ export class SessionActivityStore {
   }
 }
 
+/** A winning frame supplies every mutating field, absent optionals included,
+ * so it clears what it omits; only the loaded row's identity survives: a frame
+ * carries no refs and `name` is immutable per delegate. */
+function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+  return {
+    delegateId: row.delegateId,
+    name: row.name,
+    ownerRef: row.ownerRef,
+    rootRef: row.rootRef,
+    childRef: row.childRef,
+    runGeneration: frame.runGeneration,
+    projectionRevision: frame.projectionRevision,
+    reportPreview: frame.reportPreview,
+    reportPreviewTruncated: frame.reportPreviewTruncated,
+    parentDelegateId: frame.parentDelegateId,
+    description: frame.description ?? "",
+    task: frame.task ?? "",
+    type: frame.type,
+    lifecycle: frame.lifecycle,
+    phase: frame.phase,
+    status: frame.status,
+    outcome: frame.outcome,
+    reason: frame.reason,
+    error: frame.error,
+    terminal: frame.terminal ?? false,
+    resumable: frame.resumable,
+    notResumableReason: frame.notResumableReason,
+    model: frame.model,
+    reasoningEffort: frame.reasoningEffort,
+    runStartedAt: frame.runStartedAt,
+    runEndedAt: frame.runEndedAt,
+    latestActivityAt: frame.latestActivityAt,
+    usage: frame.usage,
+    worktree: frame.worktree,
+  };
+}
+/** time.RFC3339Nano, the layout internal/appprojector parses activity
+ * timestamps with. Date.parse is looser and keeps only milliseconds, so the
+ * comparison tests this shape and reads the fraction itself. */
+const activityTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:[.,](\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
+/** The whole seconds since the epoch (offset applied) and the fractional
+ * nanoseconds of an RFC3339Nano activity timestamp, or null when the value is
+ * not one -- so a value only Date.parse accepts never orders against a real
+ * one, and two values that differ below a millisecond order exactly as the
+ * projector's time.Time does. */
+function activityInstant(value: string): { seconds: number; nanos: number } | null {
+  const match = activityTimestamp.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction, , sign, offsetHour, offsetMinute] = match;
+  const monthValue = Number(month);
+  const dayValue = Number(day);
+  if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) return null;
+  // Go's time.RFC3339Nano rejects a leap second ("second out of range"), so
+  // accepting one would order a value the projector refuses.
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
+  if (sign !== undefined && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) return null;
+  const yearValue = Number(year);
+  const utc = Date.UTC(yearValue, monthValue - 1, dayValue, Number(hour), Number(minute), Number(second));
+  const at = new Date(utc);
+  // Date.UTC rolls a calendar-invalid day (31 February) into the next month,
+  // which the projector's parser rejects outright.
+  if (at.getUTCFullYear() !== yearValue || at.getUTCMonth() !== monthValue - 1 || at.getUTCDate() !== dayValue) {
+    return null;
+  }
+  const offsetSeconds =
+    sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(offsetHour) * 3600 + Number(offsetMinute) * 60);
+  return { seconds: utc / 1000 - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
+}
+/** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
+ * wins, a blank current loses to any non-blank candidate, and otherwise the
+ * candidate wins only when both values parse and it is strictly later. */
+function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
+  if (!candidate || candidate.trim() === "") return false;
+  if (!current || current.trim() === "") return true;
+  const candidateAt = activityInstant(candidate);
+  const currentAt = activityInstant(current);
+  if (!candidateAt || !currentAt) return false;
+  if (candidateAt.seconds !== currentAt.seconds) return candidateAt.seconds > currentAt.seconds;
+  return candidateAt.nanos > currentAt.nanos;
+}
+/** The projector's join for one delegate: `incomingWins` picks the snapshot
+ * fields, while latestActivityAt is the independent maximum of the two -- a
+ * lower revision may advance it, a higher one never moves it backward. The
+ * other side's activity is taken only when it is strictly later, exactly as
+ * internal/appprojector.mergeAppwireDelegateInfo moves it, so a pushed row and
+ * the same row read back agree. */
+function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
+  incoming: T,
+  current: T,
+  incomingWins: boolean,
+): T {
+  const winner = incomingWins ? incoming : current;
+  const other = incomingWins ? current : incoming;
+  const activity = activityAfter(other.latestActivityAt, winner.latestActivityAt)
+    ? other.latestActivityAt
+    : winner.latestActivityAt;
+  return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+}
+/** A missing/NaN revision is the zero value; an unset read row must not beat a
+ * real frame, and two unset rows compare equal. */
+function revisionOf(value: number | undefined): number {
+  return typeof value === "number" && !Number.isNaN(value) ? value : 0;
+}
+/** The frame fields a row merge can apply. The raw report payload and its
+ * companions are not part of the row, and a buffered frame waits for a read to
+ * admit the row, so keeping them would let 128 buffered entries hold unbounded
+ * bytes -- the entry cap bounds ids, not memory. */
+function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
+  const {
+    message: _message,
+    structuredResult: _structuredResult,
+    warnings: _warnings,
+    diagnostics: _diagnostics,
+    ...bounded
+  } = frame;
+  return bounded;
+}
+/** The projector's join for two frame snapshots of one delegate: the strictly
+ * greater revision supplies the fields, latestActivityAt is the independent
+ * maximum. Mirrors `mergeDelegateFrame` for a row not yet loaded. */
+function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateInfo): EvenerDelegateInfo {
+  return joinDelegateState(
+    frame,
+    current,
+    revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision),
+  );
+}
+function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
+  return (
+    a.delegateId === b.delegateId &&
+    a.name === b.name &&
+    a.ownerRef === b.ownerRef &&
+    a.rootRef === b.rootRef &&
+    a.childRef === b.childRef &&
+    a.runGeneration === b.runGeneration &&
+    a.projectionRevision === b.projectionRevision &&
+    a.reportPreview === b.reportPreview &&
+    a.reportPreviewTruncated === b.reportPreviewTruncated &&
+    a.parentDelegateId === b.parentDelegateId &&
+    a.description === b.description &&
+    a.task === b.task &&
+    a.type === b.type &&
+    a.lifecycle === b.lifecycle &&
+    a.phase === b.phase &&
+    a.status === b.status &&
+    a.outcome === b.outcome &&
+    a.reason === b.reason &&
+    a.error === b.error &&
+    a.terminal === b.terminal &&
+    a.resumable === b.resumable &&
+    a.notResumableReason === b.notResumableReason &&
+    a.model === b.model &&
+    a.reasoningEffort === b.reasoningEffort &&
+    a.runStartedAt === b.runStartedAt &&
+    a.runEndedAt === b.runEndedAt &&
+    a.latestActivityAt === b.latestActivityAt &&
+    sameJsonValue(a.usage, b.usage) &&
+    sameJsonValue(a.worktree, b.worktree)
+  );
+}
 function rowIdentity(resource: SessionActivityCollection, row: ActivityRow): string {
-  if (resource === "delegates") return (row as SessionDelegate).delegateId;
+  if (resource === "delegates") {
+    // A read can serve one delegate id twice (a child it served again), and the
+    // walk, the boundary and the merge order must key on the same pair the read
+    // preserves or one served row replaces the other.
+    const delegate = row as SessionDelegate;
+    return `${delegate.delegateId}\u0000${delegate.childRef}`;
+  }
   if (resource === "jobs") {
     const job = row as JobActivityJob;
     return JSON.stringify([job.ownerRef, job.jobId]);

@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -81,8 +82,8 @@ const (
 	// reason; the delegate cap is far above any ordinary brief yet bounds a
 	// max-length (activityMaxNewDepth+1) ancestor chain's Task+Description to
 	// a small fraction of the envelope.
-	activityMaxLabelRunes         = 200
-	activityMaxDelegateProseRunes = 4096
+	activityMaxLabelRunes         = activitybound.MaxLabelRunes
+	activityMaxDelegateProseRunes = activitybound.MaxDelegateProseRunes
 	// activityMaxDelegatePayloadBytes, activityMaxDelegateWarnings and
 	// activityMaxDelegateWarningRunes bound the remaining free-form delegate
 	// fields the projection copies verbatim: the raw terminal-packet payloads
@@ -102,39 +103,11 @@ const (
 	activityAncestorTextFloorRunes = 64
 )
 
-// truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
-// truncates so a reader can tell a capped value from a genuinely short one.
-// Rune-safe: never splits a multi-byte character.
-//
-// It walks runes only as far as the cap. Converting the whole string to a
-// []rune first — as an earlier version did — allocates proportional to the
-// INPUT (a 4 MiB label becoming a ~16 MiB slice) for a result that keeps at
-// most maxRunes runes, which defeats the memory bound the cap exists to
-// enforce.
+// truncateActivityText is the activity projection's trim, stated once in
+// agent/activitybound so internal/appprojector bounds the pushed delegate frame
+// with the same rule.
 func truncateActivityText(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	// Runes never outnumber bytes, so a string this short cannot need cutting
-	// and does not have to be decoded.
-	if len(s) <= maxRunes {
-		return s
-	}
-	runeIndex := 0
-	cutAt := -1
-	for byteIndex := range s {
-		if runeIndex == maxRunes-1 {
-			cutAt = byteIndex
-		}
-		if runeIndex == maxRunes {
-			// s[:cutAt] is the whole string short of maxRunes-1 runes.
-			return s[:cutAt] + "…"
-		}
-		runeIndex++
-	}
-	// Multi-byte runes made the byte fast path conservative: the whole string
-	// fits after all.
-	return s
+	return activitybound.Truncate(s, maxRunes)
 }
 
 // boundActivityDelegatePayload clones a terminal-packet payload, or drops it
@@ -1257,7 +1230,10 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 			valid := *packet.StructuredResultValid
 			delegate.StructuredValid = &valid
 		}
-		if len(packet.Metadata) != 0 {
+		// The delegates list read parses metadata only when it fits this cap,
+		// so an ancestor row of the same packet omits the usage and worktree
+		// too -- and, like the read, never parses an oversized document.
+		if len(packet.Metadata) != 0 && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
 			var metadata delegateTerminalPacketMetadata
 			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
 				appendActivityBranchError(&delegate.Branch, "delegate terminal metadata is invalid")

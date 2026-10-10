@@ -46,6 +46,7 @@ type UncopiedDelegateField = Exclude<
 	| (typeof DELEGATE_FIELDS)[number]
 	| "delegateId"
 	| "runGeneration"
+	| "projectionRevision"
 	| "ownerRef"
 	| "rootRef"
 	| "childRef"
@@ -68,7 +69,16 @@ function definedFields<T extends object, K extends keyof T>(source: T, keys: rea
 	return picked as Pick<T, K>;
 }
 
-export function activityFixture(raw: unknown, params: SessionActivityReadParams) {
+/** A fixture's context overrides: the push capability rides on the context the
+ * producer builds, so a test opts in to the no-read merge by advertising it
+ * here. The default omits the capability and stays on the retained read path. */
+type ActivityFixtureCapability = Partial<Pick<SessionActivityContext, "availability" | "reportPreview">>;
+
+export function activityFixture(
+	raw: unknown,
+	params: SessionActivityReadParams,
+	capability: ActivityFixtureCapability = {},
+) {
 	const parsed = parseActivityTree(raw);
 	if (!parsed) throw new Error("invalid activity test fixture");
 	const tree = parsed;
@@ -80,6 +90,7 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		ancestryKnown: true,
 		epoch: "fixture",
 		availability: "retained",
+		...capability,
 	};
 	const delegates: SessionDelegate[] = [];
 	const jobs: SessionJobsResponse["jobs"] = [];
@@ -103,6 +114,7 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 				delegates.push({
 					delegateId: d.delegateId,
 					runGeneration: d.runGeneration ?? 0,
+					projectionRevision: d.projectionRevision ?? 0,
 					ownerRef: node.ref,
 					rootRef: tree.root.ref,
 					childRef: d.childRef,
@@ -171,6 +183,7 @@ export function threadActivityFixture(thread: Thread, params: SessionActivityRea
 export function installActivityFixture(
 	client: FakeClient,
 	read: (cursor?: string) => unknown | Promise<unknown>,
+	capability: ActivityFixtureCapability = {},
 ): void {
 	const pending = new Map<string | undefined, Promise<unknown>>();
 	const load = (cursor?: string) => {
@@ -186,9 +199,9 @@ export function installActivityFixture(
 		}
 		return result;
 	};
-	client.on("evener/thread/activity/read", async (params) => activityFixture(await load(), params).summary);
+	client.on("evener/thread/activity/read", async (params) => activityFixture(await load(), params, capability).summary);
 	client.on("evener/thread/delegates/list", async (params) => {
-		const f = activityFixture(await load(params.cursor), params);
+		const f = activityFixture(await load(params.cursor), params, capability);
 		return {
 			context: f.context,
 			scope: f.scope,
@@ -197,7 +210,7 @@ export function installActivityFixture(
 		};
 	});
 	client.on("evener/thread/jobs/list", async (params) => {
-		const f = activityFixture(await load(params.cursor), params);
+		const f = activityFixture(await load(params.cursor), params, capability);
 		return {
 			context: f.context,
 			scope: f.scope,
@@ -206,7 +219,7 @@ export function installActivityFixture(
 		};
 	});
 	client.on("evener/thread/watches/list", async (params) => ({
-		context: activityFixture(await load(), params).context,
+		context: activityFixture(await load(), params, capability).context,
 		scope: params.scope ?? "session",
 		watches: [],
 		page: { complete: true, issues: [] },

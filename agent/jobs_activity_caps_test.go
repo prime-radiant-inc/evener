@@ -12,8 +12,53 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
+
+// TestDelegateStatusInfo_PayloadCapMatchesTheRead pins that the pushed
+// delegate status drops the usage and worktree the activity read omits when the
+// terminal packet's metadata runs past the payload cap. Without the same gate a
+// pushed row carries fields a reconciliation read at the same revision removes,
+// so the row flickers.
+func TestDelegateStatusInfo_PayloadCapMatchesTheRead(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	metadata, err := json.Marshal(delegateTerminalPacketMetadata{
+		Task:            strings.Repeat("t", activityMaxDelegatePayloadBytes),
+		CumulativeUsage: &schema.CumulativeUsage{InputTokens: 7, OutputTokens: 9, CacheReadTokens: 1, TotalTokens: 17},
+		Worktree:        &delegateTerminalWorktreeReport{Path: "/tmp/wt", Branch: "b", HeadSHA: "abc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata) <= activityMaxDelegatePayloadBytes {
+		t.Fatalf("fixture metadata is %d bytes, want it over the %d-byte cap", len(metadata), activityMaxDelegatePayloadBytes)
+	}
+	row := stableActivitySnapshot("dlg_1", "root", "child", "brief")
+	row.latestPacket = &delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Metadata: metadata}
+	info := delegateFrameStatusInfo(at, "root", row)
+	if info.Usage != nil {
+		t.Fatalf("pushed Usage = %+v, want it omitted over the %d-byte metadata cap", info.Usage, activityMaxDelegatePayloadBytes)
+	}
+	if info.Worktree != nil {
+		t.Fatalf("pushed Worktree = %+v, want it omitted over the %d-byte metadata cap", info.Worktree, activityMaxDelegatePayloadBytes)
+	}
+	// A diagnostics status is not the frame, so it keeps them: the cap governs
+	// push/read parity, not the detailed-status contract.
+	diagnostics := delegateStatusInfoFromSnapshot(at, "root", row)
+	if diagnostics.Usage == nil || diagnostics.Worktree == nil {
+		t.Fatalf("diagnostics status dropped usage/worktree over the metadata cap")
+	}
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+	}
+	delegate := projectActivitySession(snap, newActivityBudget()).Entries[0].Delegate
+	if delegate.Usage != nil || delegate.Worktree != nil {
+		t.Fatalf("read row carried usage/worktree the push omitted: %+v/%+v", delegate.Usage, delegate.Worktree)
+	}
+}
 
 // TestTruncateActivityText_DoesNotMaterializeTheInput pins that capping the
 // output also bounds the work. Truncating must not allocate proportional to the

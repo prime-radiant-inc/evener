@@ -706,6 +706,7 @@ _(no fields)_
 | `runGeneration` | `uint64` |  |  |
 | `delegateId` | `string` |  |  |
 | `ownerSessionId` | `string` |  |  |
+| `logicalOwnerSessionId` | `string` | yes |  |
 | `rootSessionId` | `string` |  |  |
 | `childSessionId` | `string` |  |  |
 | `transcriptRef` | `string` |  |  |
@@ -722,6 +723,8 @@ _(no fields)_
 | `needsAttention` | `bool` |  |  |
 | `notResumableReason` | `string` | yes |  |
 | `projectionRevision` | `uint64` |  |  |
+| `reportPreview` | `string` | yes |  |
+| `reportPreviewTruncated` | `bool` | yes |  |
 | `task` | `string` | yes |  |
 | `description` | `string` | yes |  |
 | `agentType` | `string` | yes |  |
@@ -2321,6 +2324,7 @@ _(no fields)_
 | `ancestryKnown` | `bool` |  |  |
 | `epoch` | `string` |  |  |
 | `availability` | `string` |  |  |
+| `reportPreview` | `bool` | yes |  |
 
 
 ### `SessionActivityCounts`
@@ -2388,6 +2392,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` | yes |  |
 | `runGeneration` | `uint64` |  |  |
+| `projectionRevision` | `uint64` |  |  |
 | `reportPreview` | `string` | yes |  |
 | `reportPreviewTruncated` | `bool` | yes |  |
 | `delegateId` | `string` |  |  |
