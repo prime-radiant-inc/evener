@@ -2130,3 +2130,69 @@ it("does not start a repair loop for repeated opens, unchanged deltas or a re-ov
   reader.dispose();
   owner.dispose();
 });
+
+// Task 3f follow-up: a position identifies a slot, not a version. An older
+// snapshot committed at the same position must not clear a newer abandoned
+// version's disposition, and the durable row must stay the newer version absent.
+it("does not clear a failed disposition when an older version commits at the same position", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  const v1 = { ...item("beta", 1, 1), text: "beta-v1" } as ThreadItem;
+  const v3 = { ...item("beta", 1, 3), text: "beta-v3" } as ThreadItem;
+  const v2 = { ...item("beta", 1, 2), text: "beta-v2" } as ThreadItem;
+
+  // Version 1 is durably committed at position P.
+  owner.acceptRead(readItems("beta", 1, [v1]), { lifetime: 1, readId: "read-v1", boundary: "boundary-v1" });
+  await owner.settled();
+  expect(
+    (await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-beta")?.version,
+  ).toBe(1);
+
+  // A recorded snapshot-3 version-3 update at the same position fails with no
+  // reader demand, so it is abandoned.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 3 },
+        items: [v3],
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  failure.mockRestore();
+  expect(
+    owner
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .find((entry) => entry.transcriptKey === "item-beta")?.version,
+  ).toBe(3);
+
+  // An ordinary snapshot-2 read writes version 2 at the same position and
+  // commits extended. It is older than the abandoned version at the same slot.
+  const older = readItems("beta", 2, [v2]);
+  older.authoritative = true;
+  expect(owner.acceptRead(older, { lifetime: 1, readId: "read-v2", boundary: "boundary-v2" })).toBe(true);
+  await vi.waitFor(async () =>
+    expect((await fixture.cache.getLatest(historyKey, 40)).some((row) => row.transcriptKey === "item-beta")).toBe(true),
+  );
+
+  // The newer version's disposition stands: the older commit did not repair it,
+  // and the durable observation is the row's version and payload, not key presence.
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  const durable = (await fixture.cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-beta");
+  expect(durable?.version).toBe(2);
+  expect(JSON.stringify(durable?.item)).toContain("beta-v2");
+  expect(JSON.stringify(durable?.item)).not.toContain("beta-v3");
+  owner.dispose();
+});

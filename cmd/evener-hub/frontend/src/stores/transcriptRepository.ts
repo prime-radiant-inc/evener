@@ -80,14 +80,19 @@ function widerReach(left: AbandonedCoverage, right: AbandonedCoverage): Abandone
 /**
  * Whether a commit's own certificate covers the abandoned reach. With a
  * positional extent, the abandoned range must lie within the commit's covered
- * range (positions identify the work, so any read/suffix/page certificate that
- * spans it proves the rows are durable). A certificate with no positional
- * extent can only be compared by snapshot length.
+ * range AND the commit must reach at least the abandoned snapshot: a position
+ * identifies a slot, not a version, so an older version committed at the same
+ * position does not carry a newer abandoned version forward. A certificate with
+ * no positional extent can only be compared by snapshot length.
  */
 function commitCarriesCoverage(coverage: EntryCoverageInput, reach: AbandonedCoverage): boolean {
   if (reach.start !== null && reach.end !== null) {
     if (coverage.start === null || coverage.end === null) return false;
-    return comparePosition(coverage.start, reach.start) <= 0 && comparePosition(coverage.end, reach.end) >= 0;
+    return (
+      comparePosition(coverage.start, reach.start) <= 0 &&
+      comparePosition(coverage.end, reach.end) >= 0 &&
+      coverage.representedSnapshot >= reach.snapshot
+    );
   }
   return coverage.representedSnapshot >= reach.snapshot;
 }
