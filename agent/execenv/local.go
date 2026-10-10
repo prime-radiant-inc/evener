@@ -2104,6 +2104,11 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// ending), so ripgrepOutputLines can find the whole path even when the
 	// name holds a newline.
 	args = append(args, "--null")
+	// rg searches files in parallel, so its cross-file order varies from run
+	// to run, and with it which lines the cap keeps. --sort path makes it
+	// lexical, as the native walk is, at the cost of a single-threaded search
+	// (#3284).
+	args = append(args, "--sort", "path")
 	if caseInsensitive {
 		args = append(args, "-i")
 	}

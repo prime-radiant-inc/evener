@@ -29,6 +29,8 @@ func writeGrepShapeTree(t *testing.T) string {
 		"ctx/touching": "hit 1\nx\ny\nhit 2\nz\n",
 		"ctx/apart":    "hit 1\nx\ny\nz\nhit 2\n",
 		"ctx/eof":      "before\nhit one\nafter\nhit two\n",
+		"ctx/empty":    "",
+		"ctx/blank":    "\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -47,9 +49,9 @@ func writeGrepShapeTree(t *testing.T) string {
 // relative to the searched directory, and no trailing newline (#3259); context
 // windows that overlap or touch joined into one group, and a "--" only between
 // groups apart; and in content mode a cap on output lines, separators and
-// context included (#3284). rg searches files in parallel, so across several
-// files only the set of lines is compared; a single file's output is compared
-// exactly. Without ripgrep installed only the fallback is checked.
+// context included (#3284). rg sorts files by path, but the native walk
+// descends into "cmd/" before a sibling "cmd.go", so across several files only
+// the set of lines is compared; a single file's output is compared exactly. Without ripgrep installed only the fallback is checked.
 func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	root := writeGrepShapeTree(t)
 	fallback := NewLocalExecutionEnvironment(root)
@@ -112,6 +114,8 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 			"1-before", "2:hit one", "3-after", "4:hit two",
 		}},
 		{name: "no empty line past the last one", path: "ctx/eof", pattern: "^$", ordered: true, want: []string{""}},
+		{name: "an empty file has no lines", path: "ctx/empty", pattern: "^", context: 1, ordered: true, want: []string{""}},
+		{name: "a lone newline is one empty line", path: "ctx/blank", pattern: "^", context: 1, ordered: true, want: []string{"1:"}},
 		{name: "the cap counts context lines and separators", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 4, ordered: true, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "", grepTruncationNote(4),
 		}},
@@ -178,5 +182,16 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 				t.Fatalf("ripgrepOutputLines = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBuildRipgrepArgsSortsByPath pins rg's deterministic cross-file order
+// (#3284): the argv carries "--sort path", so a parallel search cannot report
+// files, or keep capped lines, in a different order from run to run.
+func TestBuildRipgrepArgsSortsByPath(t *testing.T) {
+	args := buildRipgrepArgs("content", false, "", "foo", "/root", 0)
+	i := slices.Index(args, "--sort")
+	if i < 0 || i+1 >= len(args) || args[i+1] != "path" {
+		t.Fatalf("expected --sort path in args, got: %v", args)
 	}
 }
