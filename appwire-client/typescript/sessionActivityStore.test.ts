@@ -2977,6 +2977,44 @@ test("an epoch change observed only by the summary retires the delegate merge or
   expect(row?.reportPreview).toBe("replacement");
 });
 
+test("an epoch replacement after loading multiple pages never seeds the new order with retained rows", async () => {
+  const client = pushClient();
+  let epoch = "epoch-1";
+  // The replacement journal rebuilds projectionRevision from 1, so a row the
+  // walk has not re-served yet still carries the retired epoch's revision and
+  // its retired report.
+  const rowAtCurrentEpoch = (overrides: Partial<SessionDelegate>): SessionDelegate => ({
+    ...delegateRow(overrides),
+    projectionRevision: epoch === "epoch-1" ? 10 : 1,
+    reportPreview: epoch === "epoch-1" ? "retired" : "replacement",
+  });
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext({ epoch }),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "next" },
+    delegates: cursor
+      ? [rowAtCurrentEpoch({ delegateId: "delegate-2", childRef: "remote:second" })]
+      : [rowAtCurrentEpoch({})],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  await store.loadMore("delegates");
+  expect(store.getSnapshot().delegates.rows.map((row) => row.reportPreview)).toEqual(["retired", "retired"]);
+  epoch = "epoch-2";
+  const refreshed = store.refresh("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.context?.epoch === "epoch-2");
+  // The walk's continuation runs on the paced timer.
+  await vi.advanceTimersByTimeAsync(100);
+  await refreshed;
+  expect(
+    store.getSnapshot().delegates.rows.map((row) => [row.delegateId, row.projectionRevision, row.reportPreview]),
+  ).toEqual([
+    ["delegate-1", 1, "replacement"],
+    ["delegate-2", 1, "replacement"],
+  ]);
+});
+
 test("a sibling collection catching up to the epoch keeps the current delegate ordering", async () => {
   const client = pushClient();
   client.on("evener/thread/jobs/list", ({ scope }) => ({
@@ -3595,6 +3633,49 @@ test("a page that completes the collection places a buffered frame", async () =>
   const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
   expect(row?.status).toBe("completed");
   expect(row?.reportPreview).toBe("settled");
+});
+
+test("a frame waits while a page the collection continues past holds its id only once", async () => {
+  const client = pushClient();
+  let grew = false;
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    // The first page leaves the collection open, so its one row under the id
+    // does not prove the id names one child. A delegate created since moves the
+    // row the frame matched onto the page after this one.
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "next" },
+    delegates: cursor
+      ? [
+          delegateRow({ delegateId: "delegate-2", childRef: "remote:first", status: "running" }),
+          delegateRow({ delegateId: "delegate-2", childRef: "remote:second", status: "running" }),
+        ]
+      : grew
+        ? [delegateRow({ delegateId: "delegate-3", childRef: "remote:inserted", status: "running" })]
+        : [delegateRow({ delegateId: "delegate-2", childRef: "remote:first", status: "running" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const twins = () =>
+    store
+      .getSnapshot()
+      .delegates.rows.filter((row) => row.delegateId === "delegate-2")
+      .map((row) => row.status);
+  grew = true;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  // The one row this page holds is not yet the frame's own: nothing has read the
+  // id twice, so the frame waits for the read that settles the collection.
+  expect(twins()).toEqual(["running"]);
+  await vi.advanceTimersByTimeAsync(100);
+  await activityState(store, () => !store.getSnapshot().delegates.loading && twins().length === 2);
+  // The walk reached the collection's end and served the id twice, so the frame
+  // belongs to neither row and is dropped rather than written into the first.
+  expect(twins()).toEqual(["running", "running"]);
 });
 
 test("a comma fraction does not order against the projector's timestamps", async () => {

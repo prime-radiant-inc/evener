@@ -292,12 +292,20 @@ session/subtree scope. Delegate field changes are instead applied from the
 pushed `evener/delegate/updated` row when the owning source advertises the
 bounded report preview and is live (`SessionActivityContext.reportPreview` and
 `availability`): the store merges the frame into loaded rows by the delegate's
-logical owner, and reads the collection only for a delegate it has not loaded, a
-delegate id that names more than one loaded row (once per id, then once per
-strictly newer revision, because such a frame can never be attributed to one of
-them), on observe/paging/resync/reconnect, and when an epoch change clears its
-push state. A frame for a delegate the loaded rows do not hold waits for the next
-read whose row set is final to place it rather than being dropped. A source that
+logical owner. A frame patches a row only where the loaded row set proves its
+delegate id names one child; otherwise the store reads the collection, which
+bounds those reads to one per id and then one per strictly newer revision,
+because a frame that cannot be attributed may still become addressable. It reads
+for a delegate it has not loaded, for a delegate id that names more than one
+loaded row, and for one no final row set has yet proved unique, since a page the
+collection continues past can still serve that id for another child. It also
+reads on observe/paging/resync/reconnect, and when an epoch change retires its
+push state; a frame that arrives while a sibling announces the replacement merges
+under the announced epoch, and only a row a response served seeds the new epoch's
+ordering. A frame the loaded rows cannot be proved to own waits for the read
+whose row set is final, which places it on the row the id names, drops it when
+the id turns out to name two, and leaves it waiting while that read does not
+serve it. A source that
 does not advertise the capability, or a retained context
 whose released runtime receives invalidations but no frames, keeps the
 invalidation read. Delegate membership is append-only within a source epoch;

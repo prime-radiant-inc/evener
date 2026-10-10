@@ -172,6 +172,12 @@ under-invalidating a count. Revisit only against a measured win.
    page cannot leave a running row behind; an id the read serves twice can never
    be attributed, so its frame is dropped rather than written into the wrong
    child, and an id the read does not serve keeps waiting.
+   The same ground covers a frame that matches **exactly one** loaded row while no
+   final row set has proved that id unique: a page the collection continues past
+   can still serve the id for another child on a later page, so the frame waits for
+   the read that settles the set rather than being patched into the one row at
+   hand. Only a row set the read carried to its collection's end, or to its
+   displayed boundary, makes a loaded row a frame's own.
    A frame whose id names **more than one loaded row** patches none on that same
    ground: read for the id, then once more for each strictly newer revision,
    because the read is the only way rows a frame cannot address can change and
@@ -196,6 +202,11 @@ under-invalidating a count. Revisit only against a measured win.
    the replacement's state: merge and record frames under the announced epoch,
    because recording them under the epoch being replaced would let the arriving
    read judge the record retired and overwrite the frame with its older row.
+   Only a row the response **served** seeds the new epoch's ordering: a row
+   retained from the retired epoch is not re-recorded, or its old-epoch revision
+   would reject the replacement's row for the same id even after the refresh
+   completes, keeping the retired status and report on display. An unrecorded row
+   is first sight for the new epoch, exactly as a replacement's own row is.
 7. When an accepted response changes the gate from eligible to ineligible — a
    `live` context that becomes `retained`, or a lost capability — reconcile the
    observed delegates with one read. Eligibility is cached: an ancestor can
@@ -327,6 +338,13 @@ on `availability`. A negative-path test must pin the fallback.
 - **Ambiguous id.** A frame whose id names two loaded rows patches neither, is
   dropped by the next reconciled read, and asks for a read again only on a
   strictly newer revision.
+- **Unproved id.** A frame matching exactly one loaded row that no final row set
+  has proved unique patches that row in no state: the read it asks for then serves
+  the id twice, drops the frame, and leaves both rows at their served state.
+- **Retained row never seeds the new order.** An epoch replacement observed while a
+  multi-page refresh is in flight leaves a row the walk has not re-served yet
+  unrecorded, so the replacement's row at revision 1 wins on the page that serves
+  it and no retired status or report survives.
 - **Native shrink.** The list-shrink case recovers through resync, reconnect, or
   a re-observe rather than a frame; the native fixture's exhaustiveness guard
   covers the new row field and typechecks.
@@ -375,6 +393,8 @@ on `availability`. A negative-path test must pin the fallback.
 | Old-epoch buffered frame wins | clear the unknown-id buffer with the map on replacement. |
 | Later-page frame dropped after its one read | buffer the latest frame per id and place it from the reconciled row set, never from a single page's `complete` flag. |
 | Frame overwritten by the read that replaces its epoch | merge and record frames under the announced epoch, not the loaded one. |
+| Retained old-epoch row rejects its replacement | record only rows the response served; a row it did not serve is first sight for the new epoch. |
+| Provisional page takes a frame for another child | patch a loaded row only while the row set is final; otherwise buffer the frame and read. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |
 
 ## Open questions for Jesse
