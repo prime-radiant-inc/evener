@@ -111,3 +111,23 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 		}
 	}
 }
+
+// The vision predicates require the model's own row: a model id applied over
+// another row (withModelID, the WithModel fallback for refs that name another
+// provider with no resolver behind them) inherits the source row's facts, and
+// inherited image input is not evidence the named model sees media. An unknown
+// same-provider model synthesizes a row with no modalities of its own, which
+// is conservative without the marker.
+func TestSeesToolResultMediaRequiresTheModelsOwnRow(t *testing.T) {
+	t.Parallel()
+	p := NewOpenAIProfile("gpt-5.2")
+	if !p.SeesToolResultMedia("image/png") {
+		t.Fatal("the row's own image input must still see tool-result media")
+	}
+	if p.WithModel("anthropic/claude-x").SeesToolResultMedia("image/png") {
+		t.Fatal("row facts inherited across a cross-provider ref vouched for the named model")
+	}
+	if p.WithModel("gpt-5.2-not-in-catalog").SeesToolResultMedia("image/png") {
+		t.Fatal("a synthesized no-modality row vouched for tool-result media")
+	}
+}

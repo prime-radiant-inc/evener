@@ -6,18 +6,20 @@ Branch: `main`
 
 ## Summary
 
-Evener describes every image a tool returns through a vision side-channel: a
-separate, tool-free completion that asks the session's own model to describe the
-image, then injects the result as steering. This call fires even when the
-session model is vision-capable and already receives the same bytes inline in
-the tool result.
+Evener describes images a tool returns through a vision side-channel: a
+separate, tool-free completion that asks the session's active model to describe
+the image, then injects the result as steering. The original design fired this
+call unconditionally; the revision below keys that default to catalog
+capability — when the setting is unset and every model that could serve the
+session sees tool-result image bytes natively, the side-channel does not fire
+and the inline bytes are the vision support.
 
 This design makes the side-channel configurable through one per-session
 setting, `vision_model`, with three states:
 
 | Setting | Behavior |
 |---|---|
-| unset (default) | Side-channel on, using the session's active model — today's behavior |
+| unset (default) | Capability-keyed native vision: no describing call when the session's whole serving chain sees tool-result images inline, otherwise the side-channel runs on the session's active model |
 | `off` | Side-channel skipped; the model still receives image bytes inline in the tool result; no vision steering is emitted |
 | `provider/model` or bare `model` | Side-channel on, routed to that model; cross-provider allowed; provider refusal falls back to the session model |
 
@@ -43,8 +45,9 @@ mutation through the appwire method.
 
 ## Non-goals
 
-- An `auto` mode that infers the side-channel from catalog vision capability.
-  The setting is explicit; capability metadata only filters picker entries.
+- An `auto` picker state. The unset default itself is capability-keyed (see
+  the revision below), but the picker keeps three entries; capability metadata
+  filters the picker's model entries and nothing else gains a fourth state.
 - A spawn-pane field in the launch UI. The CLI flag covers launch-time
   selection; the pickers cover running sessions.
 - A `hubapi` Go HTTP client method. The TUI and the web frontend both consume
@@ -67,9 +70,11 @@ description arrives as steering ("Image description (from vision)"); timeouts
 and provider failures arrive as "vision unavailable" steering.
 
 The image bytes also travel inline to the session model: the Anthropic and
-OpenAI Responses adapters embed them in the tool result itself. A
-vision-capable session model therefore sees every image twice today — once
-inline, once through the forced description.
+OpenAI Responses adapters embed them in the tool result itself. With the
+setting unset, a session whose serving chain sees those bytes natively gets no
+describing call — the bytes appear once, inline, and no vision steering is
+emitted for what the model already sees. A session that cannot see them inline
+receives the description alone.
 
 Auxiliary calls that need a different model (naming, summarization, web fetch)
 already route through `agent/internal/cheapmodel.Caller`: the profile carries a

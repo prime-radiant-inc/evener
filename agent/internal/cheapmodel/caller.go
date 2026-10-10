@@ -75,7 +75,8 @@ func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req ll
 // than the profile's cheap-model ref — e.g. the vision side-channel's
 // configured vision model. It shares Complete's refusal learning and
 // session-model fallback; an empty model or a route equal to the session
-// route runs on the session model. It reports whether the request — including
+// route runs on the session model (provider comparison is case-insensitive,
+// matching how the client dispatches). It reports whether the request — including
 // any reroute of an unservable route and any refusal fallback inside — ran on
 // the session model, so a caller layering routes of its own on top does not
 // re-run a route already tried here, the same contract CompleteConfigured
@@ -114,6 +115,15 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		req.AdapterTimeout = c.AdapterTimeout
 	}
 	active := sessionModel(profile)
+	if cheap != active && strings.EqualFold(cheap.provider, active.provider) && cheap.model == active.model {
+		// The client dispatches provider names case-insensitively, so a
+		// route naming the session's own provider and model in different
+		// case is the session route. Left verbatim it would run there
+		// while reporting a separate route — the caller's retry would
+		// duplicate the request, and the refusal cache would split the
+		// entry.
+		cheap = active
+	}
 	if cheap != active && !c.serves(cheap) {
 		if sessionModelCannotTakeMedia(profile, req) {
 			// The chosen route is unservable or refusal-latched and the

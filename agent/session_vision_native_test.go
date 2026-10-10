@@ -366,6 +366,47 @@ func TestDescribeImage_PDFRouteFailureRetriesOnADocumentCapableSessionModel(t *t
 	}
 }
 
+// An unknown same-provider fallback resolves to a synthesized row with no
+// input modalities of its own, so it conservatively keeps the side-channel:
+// the chain check cannot treat the named model as vision-capable when the
+// catalog says nothing about it.
+func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-not-in-catalog"}}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("uncatalogued-fallback result = %+v, want the side-channel description", result)
+	}
+	if len(openai.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
+	}
+}
+
+// The unservable-route reroute never hands media to a session model that
+// cannot see it either: an unroutable configured vision model plus a
+// text-only session row reports vision unavailable with no adapter call.
+func TestDescribeImage_UnroutableRouteBlindSessionModelReportsUnavailable(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai"}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "nosuchprov/vision-missing"}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("unroutable-route blind-session outcome = %v, want provider failure", result.outcome)
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("blind session received %d describe calls", len(openai.Requests()))
+	}
+}
+
 // A document media type reaches the side-channel normalized: case and
 // surrounding whitespace must not reclassify a PDF as a raster image, which
 // would send document bytes in an image part and open the retry gate to

@@ -26,6 +26,11 @@ type Profile struct {
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
 	cheapProvider string
+	// rowFactsInherited marks a profile whose model id was applied without a
+	// catalog row of its own (withModelID): the row facts describe the row the
+	// profile was cloned from, not the named model, so they cannot vouch for
+	// what that model sees.
+	rowFactsInherited bool
 }
 
 // FromResolved wraps a resolved record. r re-resolves for WithModel and
@@ -352,9 +357,12 @@ func (p *Profile) AcceptsDocumentInput() bool {
 // image media qualifies (llm.DeliversToolResultMedia), so a document always
 // takes the side-channel; a chat-protocol row that strips tool-result images,
 // or a Google row without the multimodal-tool-results cap, never sees images
-// natively even though it accepts image input.
+// natively even though it accepts image input. A profile whose model id was
+// applied without a catalog row of its own inherits its source row's facts;
+// inherited image input is not evidence the named model sees media, so the
+// skip requires the model's own row.
 func (p *Profile) SeesToolResultMedia(mediaType string) bool {
-	return p.AcceptsImageInput() && llm.DeliversToolResultMedia(p.res, mediaType)
+	return !p.rowFactsInherited && p.AcceptsImageInput() && llm.DeliversToolResultMedia(p.res, mediaType)
 }
 
 // Warnings are the registry's notices for this reference (an uncatalogued
@@ -505,6 +513,7 @@ func (p *Profile) WithModel(model string) *Profile {
 func (p *Profile) withModelID(model string) *Profile {
 	clone := *p
 	clone.res.ModelID, clone.res.WireID = model, model
+	clone.rowFactsInherited = true
 	return &clone
 }
 

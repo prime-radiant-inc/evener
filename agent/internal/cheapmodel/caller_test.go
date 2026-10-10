@@ -916,3 +916,56 @@ func TestCompleteRoutedDocumentStaysBlockedWhenTheProtocolRejectsUserMessageDocu
 		t.Fatalf("models = %v, want exactly the routed probe and no session call", got)
 	}
 }
+
+// An unservable route with a media-blind session model never reroutes the
+// request there: the early gate reports the session model cannot take the
+// media before any adapter is asked, the branch the refusal-path tests leave
+// unexercised.
+func TestCompleteRoutedUnservableRouteNeverReroutesMediaOntoABlindSessionModel(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "main", refusal(400, "unexpected model"))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("m") // text-only row
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png"), MediaType: "image/png"}},
+	}}}}
+
+	_, ranSessionModel, err := caller.CompleteRouted(context.Background(), profile, "nosuchprov", "vision-missing", req)
+	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
+		t.Fatalf("unservable-route media error = %v, want ErrSessionModelCannotTakeMedia", err)
+	}
+	if ranSessionModel {
+		t.Fatal("unservable-route reroute reported a session-model run")
+	}
+	if got := len(adapter.Requests()); got != 0 {
+		t.Fatalf("adapter calls = %d, want none", got)
+	}
+}
+
+// The client dispatches provider names case-insensitively, so a route naming
+// the session's own provider and model in different case is the session route:
+// it must be reported as the session model, not probed as a separate route
+// that would duplicate the caller's retry and split the refusal cache.
+func TestCompleteRoutedCaseVariantOfTheSessionRouteIsTheSessionRoute(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "gpt-5.2", refusal(400, "unexpected model"))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+
+	resp, ranSessionModel, err := caller.CompleteRouted(context.Background(), profile, "OPENAI", "gpt-5.2", llm.Request{
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("case-variant route error = %v, want success", err)
+	}
+	if !ranSessionModel {
+		t.Fatal("case-variant session route was not reported as the session model")
+	}
+	if got := resp.Text(); got != "answered" {
+		t.Fatalf("case-variant route response = %q, want the session model's answer", got)
+	}
+	if got, want := adapter.Models(), []string{"gpt-5.2"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want exactly the session call", got)
+	}
+}
