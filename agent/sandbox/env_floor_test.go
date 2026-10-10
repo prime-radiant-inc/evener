@@ -78,6 +78,22 @@ func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 	}
 }
 
+// Go keeps the checksum database's tree heads in $GOPATH/pkg/sumdb, a path
+// GOMODCACHE does not move. Under the session-private strategy the real GOPATH is
+// read-only, so a cold download (a module, or the toolchain go.mod asks for)
+// failed verifying with "read-only file system" (#4177). GOPATH must move into
+// the session scratch with the other caches, whatever the ambient value was.
+func TestEnvFloorRedirectsGoPathWhenSessionPrivate(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	in := []string{"GOPATH=/home/u/go"}
+	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
+
+	// envValue reads the first GOPATH, so a kept ambient value fails here too.
+	if v, ok := envValue(out, "GOPATH"); !ok || !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("GOPATH must redirect into the session scratch, got %q (ok=%v)", v, ok)
+	}
+}
+
 func TestEnvFloorKeepsRealCacheUnderOverlay(t *testing.T) {
 	// With an overlay cache strategy the real cache paths stay (bwrap overlays
 	// them read-real/write-private); the floor must not redirect the env.

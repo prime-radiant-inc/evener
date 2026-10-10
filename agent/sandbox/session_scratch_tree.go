@@ -21,13 +21,14 @@ const sessionScratchTreePrefix = "evener-scratch-"
 const (
 	goCacheDirName    = "gocache"
 	goModCacheDirName = "gomodcache"
+	goPathDirName     = "gopath"
 	npmCacheDirName   = "npm"
 	cargoHomeDirName  = "cargo"
 )
 
 // SessionCacheDirNames are those cache directories. They are regenerable, so a
 // session end prunes them while the rest of the scratch stays.
-var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, npmCacheDirName, cargoHomeDirName}
+var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, goPathDirName, npmCacheDirName, cargoHomeDirName}
 
 // OpenSessionScratch creates, or reopens, sessionID's scratch in rootID's tree
 // in the first usable scratch base, and holds its lease until Retain or

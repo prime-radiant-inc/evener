@@ -390,7 +390,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
   redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
   granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH.
+  default location, so the redirect applies regardless of GOPATH. `GOPATH` moves
+  too: Go records the checksum database's tree heads under `$GOPATH/pkg/sumdb`
+  whatever `GOMODCACHE` says, so a cold module or toolchain download needs a
+  writable GOPATH to verify against.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -409,8 +412,8 @@ spawned process:
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
 - Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`CARGO_HOME`
-  there.
+  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
+  `CARGO_HOME` there.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every
