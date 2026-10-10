@@ -762,7 +762,10 @@ func (s *Session) resetMemoryProjectionAfterCompaction() {
 // Restored and forked history only seeds which scopes were observed, never
 // historical bytes as a current read. Missing or revoked storage must supersede
 // old observations. Only an index section counts as an observation: change
-// and page sections say nothing about the index's state.
+// and page sections say nothing about the index's state. Memory-context turns
+// recorded in an earlier format seed nothing: that format is deliberately not
+// decoded (no backward compatibility), so after an upgrade a scope's first
+// missing or revoked state can go unannounced until its index next projects.
 func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
 		return
