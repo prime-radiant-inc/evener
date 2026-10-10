@@ -13,8 +13,9 @@ import (
 // seam (yaml.Unmarshal of the fenced block). Input is an arbitrary Markdown
 // document. Beyond no-panic it asserts the documented contract: a document with
 // no frontmatter framing (no leading delimiter, or a leading delimiter with no
-// closing one) is returned verbatim as Body with nil Meta; a framed document
-// splits Body exactly at the inner boundary the framing defines. Parsing is
+// closing one) is returned as Body, line endings normalized, with nil Meta; a
+// framed document splits Body exactly at the inner boundary the framing
+// defines, in the normalized text. Parsing is
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body

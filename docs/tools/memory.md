@@ -11,8 +11,11 @@ trusted session binding, not a root supplied by the model. Read/write/edit/delet
 require `file_path`; search takes optional `path`, with blank meaning the scope
 root. Paths are relative to that scope and may include subdirectories. Absolute
 paths, escapes and symlink indirection are rejected by shared confinement.
-Results and errors name paths the same way, relative to the scope root, never
-by the scope's host path. There is no `root` or `project_id` argument.
+Write, edit and delete results and every memory tool error name paths the same
+way, relative to the scope root, never by the scope's host path; an error
+message is rewritten whole, including any page text it quotes. Read and search
+results return page text as stored, and search names files relative to the
+searched path. There is no `root` or `project_id` argument.
 
 Disabled or unbound sessions expose none of these tools. An unavailable project
 binding does not authorize another project's storage. Stored text cannot grant

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -26,6 +28,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
 	}
 	for _, registered := range tools {
+		registered.Exec = s.scopeRelativeMemoryErrors(registered.Exec)
 		if err := reg.Register(registered); err != nil {
 			return err
 		}
@@ -59,28 +62,75 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	return env, forwarded, release, nil
 }
 
-// scopeRelativeMemoryText is text with each host path in env's scope named
-// relative to the scope root, the way the memory tools take paths. The shared
-// executors run on host paths (memoryFileArgs), so their summaries and errors
-// name them, and a model that copied one back would be refused.
-func scopeRelativeMemoryText(env *execenv.LocalExecutionEnvironment, text string) string {
-	return strings.ReplaceAll(text, env.WorkingDirectory()+string(filepath.Separator), "")
+// scopeRelativeText is text with root, a scope's host directory, named "."
+// and each path under it named relative to it, the way the memory tools take
+// paths. The shared executors run on host paths (memoryFileArgs), so their
+// summaries and errors name them, and a model that copied one back would be
+// refused. A longer name that only starts with root, such as a sibling
+// "<root>-2", is left alone.
+func scopeRelativeText(root, text string) string {
+	if root == "" || !strings.Contains(text, root) {
+		return text
+	}
+	var b strings.Builder
+	for {
+		before, rest, found := strings.Cut(text, root)
+		b.WriteString(before)
+		if !found {
+			return b.String()
+		}
+		switch {
+		case strings.HasPrefix(rest, string(filepath.Separator)):
+			rest = rest[1:]
+		case rest == "" || !isPathNameByte(rest[0]):
+			b.WriteString(".")
+		default:
+			b.WriteString(root)
+		}
+		text = rest
+	}
 }
 
-// scopeRelativeMemoryError is err with its message rewritten by
-// scopeRelativeMemoryText; errors.Is and errors.As still see err.
-func scopeRelativeMemoryError(env *execenv.LocalExecutionEnvironment, err error) error {
-	if err == nil {
-		return nil
+// isPathNameByte reports whether c can continue a file name, so a root
+// followed by it names a longer sibling, not the root.
+func isPathNameByte(c byte) bool {
+	return c == '-' || c == '_' || c == '.' || c >= utf8.RuneSelf || unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
+}
+
+// memoryScopeRoot is the host directory of scope, the working directory of
+// its memory environment, or "" when the scope is not bound.
+func (s *Session) memoryScopeRoot(scope string) string {
+	relative, err := s.memoryScopeBinding(scope)
+	if err != nil {
+		return ""
 	}
-	if message := scopeRelativeMemoryText(env, err.Error()); message != err.Error() {
-		return memoryPathError{err: err, message: message}
+	return filepath.Join(s.cfg.MemoryStateRoot, relative)
+}
+
+// scopeRelativeMemoryErrors wraps a memory tool's executor so that, when it
+// fails, the error and any output returned with it name paths relative to the
+// scope root (scopeRelativeText), whichever step failed. An error message is
+// rewritten whole, including any page text it quotes; a successful result is
+// left to the tool, since a read or search returns page text as stored.
+func (s *Session) scopeRelativeMemoryErrors(exec func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error)) func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+	return func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		out, err := exec(ctx, env, args)
+		if err == nil {
+			return out, nil
+		}
+		root := s.memoryScopeRoot(stringArg(args, "scope"))
+		if text, ok := out.(string); ok {
+			out = scopeRelativeText(root, text)
+		}
+		if message := scopeRelativeText(root, err.Error()); message != err.Error() {
+			err = memoryPathError{err: err, message: message}
+		}
+		return out, err
 	}
-	return err
 }
 
 // memoryPathError is a memory tool's error with scope-relative paths in its
-// message.
+// message; errors.Is and errors.As still see the original.
 type memoryPathError struct {
 	err     error
 	message string
@@ -172,11 +222,11 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	// Only the executor's own summary is rewritten; a page's bytes never pass
 	// through here.
 	out, err := write(env, forwarded, stamp)
-	if text, ok := out.(string); ok {
-		out = scopeRelativeMemoryText(env, text)
-	}
 	if err != nil {
-		return out, scopeRelativeMemoryError(env, err)
+		return out, err
+	}
+	if text, ok := out.(string); ok {
+		out = scopeRelativeText(env.WorkingDirectory(), text)
 	}
 	if operation == "write" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
@@ -269,8 +319,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
 		}
 	}
-	// A read returns the page itself, so only its error is rewritten.
-	return out, scopeRelativeMemoryError(env, err)
+	return out, err
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
@@ -301,10 +350,7 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	if target == "." {
 		skip = isMemoryIndexPath
 	}
-	// Results already name scope-relative paths and quote page text, so only
-	// an error is rewritten.
-	out, err := env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
-	return out, scopeRelativeMemoryError(env, err)
+	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {

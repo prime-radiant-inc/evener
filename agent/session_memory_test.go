@@ -1842,6 +1842,45 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 	}
 }
 
+// scopeRelativeText names the scope root "." and a path under it by its
+// relative path, wherever they appear, and leaves a sibling that merely
+// shares the root's prefix alone.
+func TestScopeRelativeText(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
+	sep := string(filepath.Separator)
+	for in, want := range map[string]string{
+		"wrote 3 bytes to " + root + sep + "dir" + sep + "a.md": "wrote 3 bytes to dir" + sep + "a.md",
+		"is outside working directory \"" + root + "\"":         "is outside working directory \".\"",
+		"scope " + root: "scope .",
+		root + sep + "a.md and " + root + sep + "b.md": "a.md and b.md",
+		root + "-2" + sep + "a.md":                     root + "-2" + sep + "a.md",
+		root + "s":                                     root + "s",
+		"no host path here":                            "no host path here",
+	} {
+		if got := scopeRelativeText(root, in); got != want {
+			t.Errorf("scopeRelativeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A memory tool's error, and any output returned with it, name the scope
+// root's paths relative to it, whichever step produced them.
+func TestMemoryToolErrorsAndTheirOutputAreScopeRelative(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+	root := filepath.Join(stateRoot, "memory", "projects", "fixture-project")
+	cause := errors.New("opaque cause")
+	exec := s.scopeRelativeMemoryErrors(func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		return "rg: " + filepath.Join(root, "missing") + ": No such file", fmt.Errorf("searching %q: %w", root, cause)
+	})
+	out, err := exec(context.Background(), nil, map[string]any{"scope": "project"})
+	if out != "rg: missing: No such file" || err == nil || err.Error() != `searching ".": opaque cause` || !errors.Is(err, cause) {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
 func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 	t.Parallel()
 	for _, scope := range []string{"personal", "project"} {
