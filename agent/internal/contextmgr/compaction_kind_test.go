@@ -164,19 +164,24 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 // crowd out the conversation folded after it.
 func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary(t *testing.T) {
 	for _, tc := range []struct {
-		name, previous, want string
+		name, previous string
+		want           []string
 	}{
 		// A quote past the old 1000-character cut still reaches the summarizer.
 		{"quote past the opening", "[CONTEXT SUMMARY]\n## Conversation Timeline\n" + strings.Repeat("timeline ", 400) +
-			"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]", "PREVIOUS_SUMMARY_QUOTE_SENTINEL"},
-		// An oversized previous summary still leaves room for the conversation
-		// folded after it.
-		{"oversized summary", "[CONTEXT SUMMARY]\n" + strings.Repeat("timeline ", 20_000) + "\n[END SUMMARY]", "FOLDED_USER_SENTINEL"},
+			"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]", []string{"PREVIOUS_SUMMARY_QUOTE_SENTINEL"}},
+		// An oversized previous summary keeps its head, where the summary
+		// prompts put permissions and holds, and still leaves room for the
+		// conversation folded after it.
+		{"oversized summary", "[CONTEXT SUMMARY]\n## " + summarySections[0] + "\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n## Conversation Timeline\n" +
+			strings.Repeat("timeline ", 20_000) + "\n[END SUMMARY]", []string{"PREVIOUS_SUMMARY_QUOTE_SENTINEL", "FOLDED_USER_SENTINEL"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prompt := resummarizePrompt(t, tc.previous)
-			if !strings.Contains(prompt, tc.want) {
-				t.Fatalf("the summarizer did not see %s (prompt is %d chars)", tc.want, len(prompt))
+			for _, want := range tc.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("the summarizer did not see %s (prompt is %d chars)", want, len(prompt))
+				}
 			}
 		})
 	}

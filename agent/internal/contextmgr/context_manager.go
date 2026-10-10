@@ -1574,15 +1574,20 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 // treats the summary as the record of what it may do, so a paraphrase that
 // hardens into a new hold, or drops a standing permission, changes its
 // behavior (#4173). Both summary prompts carry it, and caller instructions
-// cannot override it.
-const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes.`
+// cannot override it. Both put these quotes first in the summary, so when a
+// re-compaction caps an oversized previous summary to its head, the quotes are
+// what survives.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
 
 // defaultSummaryPrefix is the instruction block used when no caller instructions
-// are provided. It mandates seven specific sections and directs the LLM to
-// err on the side of verbosity.
+// are provided. It mandates eight specific sections, permissions and holds
+// first, and directs the LLM to err on the side of verbosity.
 var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## Permissions and Holds
+` + partnerAuthorityRule + `
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -1599,7 +1604,6 @@ Important decisions made during the session and why. Include:
 - Architecture or design choices
 - Trade-offs considered
 - User preferences or constraints discovered
-- ` + partnerAuthorityRule + `
 
 ## Current State
 Precisely what was being worked on when context ran out:
@@ -1708,7 +1712,7 @@ func summarySectionHeading(line string) (string, bool) {
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
-// mandatory-7-sections block is replaced by the caller's directive.
+// mandatory-sections block is replaced by the caller's directive.
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
@@ -1719,7 +1723,7 @@ func buildSummaryPrompt(historyText, instructions string) string {
 
 Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
 
-` + partnerAuthorityRule + ` The caller instructions do not override this.
+` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
 ` + historyText
 	}
@@ -1904,9 +1908,10 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// A previous compaction is the only record of the conversation it
-			// folded, including the permissions and holds it quotes, so it gets
-			// up to half the history budget; the rest stays for the turns it
-			// precedes, where a newer permission or hold may be.
+			// folded, so it gets up to half the history budget; the rest stays
+			// for the turns it precedes, where a newer permission or hold may
+			// be. The cap keeps its head, where both summary prompts put the
+			// permissions and holds it quotes.
 			b.WriteString("Previous compaction: ")
 			b.WriteString(truncText(t.Message.Text(), maxHistoryChars/2))
 			b.WriteString("\n")

@@ -1,6 +1,9 @@
 You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## Permissions and Holds
+Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -17,7 +20,6 @@ Important decisions made during the session and why. Include:
 - Architecture or design choices
 - Trade-offs considered
 - User preferences or constraints discovered
-- Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes.
 
 ## Current State
 Precisely what was being worked on when context ran out:

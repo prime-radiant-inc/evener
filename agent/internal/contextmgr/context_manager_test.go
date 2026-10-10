@@ -3110,7 +3110,13 @@ var updateSummaryPromptGoldens = flag.Bool("update-prompt", false,
 // The summary prompt is pinned whole, per shape, in testdata/summaryprompt:
 // the default mandatory-sections prompt and the caller-instruction prompt that
 // replaces those sections. Opaque sentinels stand in for the history and the
-// caller's instructions. Regenerate after an intended wording change with
+// caller's instructions. This is the repository's pattern for prompt text
+// (agent/testdata/memoryprompt is the same): the golden pins the whole prompt
+// as reviewed output, so a wording change shows up as a reviewed diff instead
+// of a sentence-level assertion; behavior that depends on the prompt's
+// structure is pinned separately (TestSummaryPromptSectionsComeFromThePrompt,
+// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary). Regenerate after
+// an intended wording change with
 //
 //	go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt
 //
