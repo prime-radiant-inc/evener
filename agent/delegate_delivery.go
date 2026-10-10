@@ -402,10 +402,16 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 	lease := *actor.lease
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning); err != nil {
+	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
 		return "", delegateMutationPlans{}, err
 	}
 	if c.hasSettlementClaimLocked(lease) {
+		return "", delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	// Once the generation's terminal communicate is latched its report is
+	// prepared and nothing may land ahead of a closing turn's last word.
+	if evidence := live.binding.evidence; evidence != nil && evidence.terminalSeen {
 		return "", delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	appended, err := c.appendLocked(delegatestore.Event{
@@ -422,7 +428,7 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 	var plans delegateMutationPlans
 	// Only the head is planned; an update behind an earlier delivery waits for
 	// its turn rather than carrying the earlier one.
-	if pending := c.durable[lease.delegateID].PendingDeliveries; pending[0].DeliveryID == deliveryID {
+	if pending := c.durable[lease.delegateID].PendingDeliveries; len(pending) != 0 && pending[0].DeliveryID == deliveryID {
 		if plan := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); plan != nil {
 			plans.deliveries = append(plans.deliveries, *plan)
 		}

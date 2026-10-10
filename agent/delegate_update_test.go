@@ -66,9 +66,10 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 	}
 }
 
-// An update the journal refuses is never queued: the root has no parent, a
-// stale run cannot speak, a stopping delegate's route is closed, and a blank
-// message says nothing.
+// A refused update is never queued: the root has no parent, a stale run cannot
+// speak, a stopping or settling delegate's route is closed, a generation whose
+// terminal communicate is latched has said its last, and a blank message says
+// nothing.
 func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 	t.Parallel()
 	running := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -87,6 +88,21 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 		{"stopping", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
 			if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 				t.Fatalf("StopSubtree: %v", err)
+			}
+			return delegateActor{lease: &running}
+		}, errDelegateTargetBusy},
+		{"settling", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
+			if _, _, err := c.BeginSettlement(running); err != nil {
+				t.Fatalf("BeginSettlement: %v", err)
+			}
+			return delegateActor{lease: &running}
+		}, errDelegateTargetBusy},
+		{"terminal communicate latched", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
+			c.mu.Lock()
+			c.live["dlg_target"].binding.evidence = &delegateGenerationEvidence{}
+			c.mu.Unlock()
+			if err := c.recordTerminalSeen(running); err != nil {
+				t.Fatalf("recordTerminalSeen: %v", err)
 			}
 			return delegateActor{lease: &running}
 		}, errDelegateTargetBusy},
