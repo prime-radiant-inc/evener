@@ -75,6 +75,12 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			continue
 		}
+		// Resident or cold, a delegate's transcript decides whether attention is
+		// still owed: a closed delegate's wakes no longer say so.
+		fold, err := readExistingDelegateAttentionFold(path, sessionID)
+		if err != nil || len(fold.pendingIDs()) != 0 {
+			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
+		}
 		if exact[id] == nil {
 			meta, err := schema.LoadSessionMeta(c.stateDir, d.ChildSessionID)
 			info, statErr := os.Stat(path)
@@ -84,10 +90,6 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 			}
 			if meta.Goal != nil && meta.Goal.Status == "active" {
 				blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: d.ChildSessionID, DelegateID: id})
-			}
-			fold, err := readExistingDelegateAttentionFold(path, sessionID)
-			if err != nil || len(fold.pendingIDs()) != 0 {
-				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			}
 			local, err := retirementColdEvidence(c.stateDir, d.ChildSessionID, id)
 			blockers = append(blockers, local...)
