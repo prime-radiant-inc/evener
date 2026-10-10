@@ -137,6 +137,13 @@ export interface TranscriptRepositoryBinding {
    * in isolation.
    */
   admission?: EntryWriteAdmission;
+  /**
+   * A paced reconciliation request. When an aggregate overflow drops accepted
+   * cache work, the repository cannot itself issue an authoritative read, so it
+   * asks its owner (the store) to reconcile. Absent, an overflow still breaks
+   * readiness honestly and the breaker waits for changed eligible content.
+   */
+  reconcile?: () => void;
 }
 
 export type TranscriptReaderStatus = "current" | "stale" | "recovery-needed";
@@ -225,6 +232,22 @@ export class TranscriptRepository {
   // reconsidered through the ordinary accept path.
   #reconcileArmed = false;
   #reconcileCancel: (() => void) | undefined;
+  // Accepted writes from a repository with no reader demand wait for the single
+  // shared background slot instead of issuing immediately. Each carries the
+  // bodies it retains and a settlement promise so `settled()` joins it.
+  #backgroundAccepts: Array<{
+    batch: Parameters<SessionEntryCache["commitBatch"]>[0];
+    revision: number;
+    bodies: EntryRetainedBody[];
+  }> = [];
+  // The bodies of commits actually issued and not yet settled. They stay charged
+  // until their real terminal outcome, even across invalidate/dispose, so
+  // retiring publication authority cannot free capacity a worker still holds.
+  readonly #inFlight = new Map<object, EntryRetainedBody[]>();
+  // Completed ended-round overlay bodies preserved for handoff (uncovered by
+  // recorded history). They are display-only but retained in memory, so they
+  // count against the aggregate until pruned, invalidated or disposed.
+  readonly #handoffOverlay = new Map<string, object>();
   // Explicit disposition of recovery work that will never run: a cancelled
   // (invalidate/dispose/last-reader) or unadmitted (no demand) failed batch.
   // Settlement must report it rather than resolving as void success. It records
@@ -317,30 +340,46 @@ export class TranscriptRepository {
 
   /**
    * @internal The aggregate admission scalars this repository sees in the shared
-   * queue, paired with `retainedWorkForTesting` so a test can observe the bound
-   * against real retained references, not only a counter.
+   * queue, paired with `retainedInventoryForTesting` so a test can observe the
+   * bound against real retained references, not only a counter.
    */
   getAdmissionSnapshotForTesting(): {
     retainedBytes: number;
     retainedIdentities: number;
-    exemptIdentities: number;
+    exemptBytes: number;
+    exemptActive: boolean;
     backgroundInFlight: boolean;
   } {
     const snapshot = this.#admission.snapshotForTesting();
     return {
       retainedBytes: snapshot.retainedBytes,
       retainedIdentities: snapshot.retainedIdentities,
-      exemptIdentities: snapshot.exemptIdentities,
+      exemptBytes: snapshot.exemptBytes,
+      exemptActive: snapshot.exemptActive,
       backgroundInFlight: snapshot.backgroundInFlight,
     };
   }
 
   /**
-   * @internal The real retained body references this repository currently holds
-   * in the shared admission, so a test can assert object identity, not a count.
+   * @internal The real retained body references the repository holds across its
+   * own stores (pending rows, in-flight commits, queued retries and ended
+   * handoff overlays), independent of the admission's accounting map, so a test
+   * can inventory what is actually retained and cross-check the counters.
    */
-  retainedWorkForTesting(): object[] {
-    return this.#admission.retainedKeysFor(this);
+  retainedInventoryForTesting(): {
+    pendingRows: readonly object[];
+    inFlightBodies: readonly object[];
+    retryBodies: readonly object[];
+    backgroundAcceptBodies: readonly object[];
+    handoffOverlayBodies: readonly object[];
+  } {
+    return {
+      pendingRows: [...this.#pending.values()],
+      inFlightBodies: [...this.#inFlight.values()].flat().map((body) => body.key),
+      retryBodies: this.#retryQueue.flatMap((entry) => entry.bodies.map((body) => body.key)),
+      backgroundAcceptBodies: this.#backgroundAccepts.flatMap((entry) => entry.bodies.map((body) => body.key)),
+      handoffOverlayBodies: [...this.#handoffOverlay.values()],
+    };
   }
 
   subscribe(listener: () => void): () => void {
@@ -461,12 +500,16 @@ export class TranscriptRepository {
         : applyNotification(this.#model, notification, now);
     if (next === this.#model) {
       if (notification.method !== "overlay/end") return false;
+      this.#admitHandoffRound(next, (notification.params as { roundId?: string }).roundId ?? "");
       this.#recoveryNeeded = true;
       this.#publish();
       return true;
     }
     this.#model = next;
     this.#boundary++;
+    if (notification.method === "overlay/end") {
+      this.#admitHandoffRound(next, (notification.params as { roundId?: string }).roundId ?? "");
+    }
     const authorityBlocked = next.history?.invalidatedAtGeneration !== undefined || next.history?.failed !== undefined;
     if (authorityBlocked) this.#advanceSourceRevision();
     const rows = authorityBlocked ? [] : this.#notificationRows(notification);
@@ -816,7 +859,10 @@ export class TranscriptRepository {
    */
   async settled(): Promise<void> {
     await Promise.all([...this.#writes]);
-    if (!this.#disposed && (this.#retryQueue.length > 0 || this.#retryScheduled || this.#retryInFlight)) {
+    if (
+      !this.#disposed &&
+      (this.#retryQueue.length > 0 || this.#backgroundAccepts.length > 0 || this.#retryScheduled || this.#retryInFlight)
+    ) {
       throw new Error("transcript recovery is outstanding");
     }
     // Recovery work that was cancelled or never admitted is an explicit
@@ -829,14 +875,16 @@ export class TranscriptRepository {
     this.#invalidated = true;
     this.#pending.clear();
     this.#cancelRetry();
-    this.#admission.releaseOwner(this);
+    this.#abandonBackgroundAccepts("cancelled");
+    this.#releaseHandoffOverlay();
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#cancelRetry();
-    this.#admission.releaseOwner(this);
+    this.#abandonBackgroundAccepts("cancelled");
+    this.#releaseHandoffOverlay();
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
@@ -1156,17 +1204,46 @@ export class TranscriptRepository {
     const issuedRevision = retryRevision ?? this.#sourceRevision;
     const bodies = retainedBodies(batch);
     const bodyBytes = bodies.reduce((sum, body) => sum + body.bytes, 0);
-    // A single response larger than the whole queue is the one permitted
-    // exception: the sole immediate bounded batch. Account it separately and
-    // never stage it in the retry list; the cache's own disk policy decides it.
+    const isRetry = retryRevision !== undefined;
+    if (isRetry) {
+      // The background drain already holds the slot and retained these bodies.
+      return this.#issueCommit(batch, bodies, issuedRevision, true, false);
+    }
     const oversize = bodyBytes > this.#admission.limit;
     if (oversize) {
-      this.#admission.retainExempt(bodies, this);
-    } else if (!this.#admission.retain(bodies, this, retryRevision !== undefined ? "retry" : "writing")) {
-      return this.#dropForOverflow(batch, bodies);
+      // The sole immediate bounded batch. Only one may be in flight; a competing
+      // response is refused for caching rather than starting a second unbounded
+      // immediate write.
+      if (!this.#admission.retainExempt(bodies, this)) return this.#dropForOverflow(batch);
+      return this.#issueCommit(batch, bodies, issuedRevision, false, true);
     }
+    if (this.#readerCount > 0) {
+      // Foreground demand: the accepted immediate batch.
+      if (!this.#admission.retain(bodies, this, "writing")) return this.#dropForOverflow(batch);
+      return this.#issueCommit(batch, bodies, issuedRevision, false, false);
+    }
+    // Background accepted work waits for the single shared background slot.
+    if (!this.#admission.retain(bodies, this, "background")) return this.#dropForOverflow(batch);
+    this.#backgroundAccepts.push({ batch, revision: issuedRevision, bodies });
+    this.#drainBackground();
+    return Promise.resolve();
+  }
+
+  /**
+   * Issue one database batch and settle its accounting at the real terminal
+   * outcome. The bodies stay charged (and inventoried as in-flight) until then,
+   * even if the repository is invalidated or disposed meanwhile.
+   */
+  #issueCommit(
+    batch: Parameters<SessionEntryCache["commitBatch"]>[0],
+    bodies: EntryRetainedBody[],
+    issuedRevision: number,
+    isRetry: boolean,
+    isExempt: boolean,
+  ): Promise<void> {
+    this.#inFlight.set(batch, bodies);
     const write = this.#cache.commitBatch(batch).then((outcome) => {
-      const superseded = retryRevision !== undefined && issuedRevision !== this.#sourceRevision;
+      const superseded = isRetry && issuedRevision !== this.#sourceRevision;
       if (outcome.outcome === "committed") {
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered
@@ -1202,7 +1279,7 @@ export class TranscriptRepository {
           this.#committedCoverageContinuityId =
             batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
         }
-        this.#admission.release(bodies);
+        this.#admission.release(bodies, this);
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
@@ -1221,13 +1298,15 @@ export class TranscriptRepository {
         // A retried batch that fails again keeps its place at the front so a
         // dependent suffix never overtakes its predecessor; a first failure
         // queues behind the failures already waiting.
-        if (outcome.outcome === "failed" && !superseded && !oversize) {
-          this.#enqueueRetry(batch, issuedRevision, retryRevision !== undefined, bodies);
+        if (outcome.outcome === "failed" && !superseded && !isExempt) {
+          this.#enqueueRetry(batch, issuedRevision, isRetry, bodies);
         } else {
-          this.#admission.release(bodies);
+          this.#admission.release(bodies, this);
         }
-        if (oversize) this.#recordAbandonment("failed", [batch.coverage]);
+        if (isExempt) this.#recordAbandonment("failed", [batch.coverage]);
       }
+      this.#inFlight.delete(batch);
+      if (isExempt) this.#admission.releaseExempt(this);
       this.#scheduleRetry();
     });
     this.#writes.add(write);
@@ -1239,15 +1318,11 @@ export class TranscriptRepository {
   }
 
   /**
-   * Aggregate overflow: the affected cache work is dropped (its bodies are not
+   * Aggregate overflow: the affected cache work is dropped (its bodies were not
    * retained), durable readiness is honestly broken, one paced reconciliation is
-   * scheduled, and the already-published reader stays usable.
+   * requested, and the already-published reader stays usable.
    */
-  #dropForOverflow(
-    batch: Parameters<SessionEntryCache["commitBatch"]>[0],
-    bodies: readonly EntryRetainedBody[],
-  ): Promise<void> {
-    this.#admission.release(bodies);
+  #dropForOverflow(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): Promise<void> {
     for (const row of batch.items) {
       if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
     }
@@ -1259,15 +1334,17 @@ export class TranscriptRepository {
     return Promise.resolve();
   }
 
-  // Arm one paced reconciliation after an overflow. It re-checks the retry
-  // drain; it never re-arms itself, so an unchanged live delta or a repeated
-  // open cannot become a repair loop.
+  // Arm one paced reconciliation after an overflow. It never re-arms itself, so
+  // an unchanged live delta or a repeated open cannot become a repair loop;
+  // changed eligible content is reconsidered through the ordinary accept path.
   #scheduleReconcile(): void {
     if (this.#reconcileArmed || this.#disposed || this.#invalidated) return;
     this.#reconcileArmed = true;
     const fire = () => {
       this.#reconcileArmed = false;
       this.#reconcileCancel = undefined;
+      // A real request: the repository asks its owner for an authoritative read.
+      this.#binding.reconcile?.();
       this.#scheduleRetry();
     };
     const scheduler = this.#binding.retryScheduler;
@@ -1277,6 +1354,50 @@ export class TranscriptRepository {
     }
     const timer = setTimeout(fire, 250);
     this.#reconcileCancel = () => clearTimeout(timer);
+  }
+
+  /**
+   * Admit the completed ended-round overlay bodies preserved for handoff by
+   * `applyOverlayEndForTranscriptHandoff`. They are display-only, so they are not
+   * persisted, but they are retained in memory and count against the aggregate
+   * until a later history update prunes them.
+   */
+  #admitHandoffRound(model: ThreadModel, roundId: string): void {
+    if (!roundId) return;
+    const overlay = model.overlay ?? {};
+    const candidates: Array<[string, object, number]> = [];
+    for (const [key, item] of Object.entries(overlay)) {
+      if (item.roundId !== roundId) continue;
+      if (this.#handoffOverlay.get(key) === item) continue;
+      candidates.push([key, item, encodedPayloadBytes(item)]);
+    }
+    if (candidates.length === 0) return;
+    const bodies = candidates.map(([, item, bytes]) => ({ key: item, bytes }));
+    if (!this.#admission.retain(bodies, this, "ended")) {
+      // Display keeps the bodies; the aggregate is honestly over budget and the
+      // paced reconciliation owns recovery.
+      this.#recoveryNeeded = true;
+      this.#scheduleReconcile();
+      return;
+    }
+    for (const [key, item] of candidates) this.#handoffOverlay.set(key, item);
+  }
+
+  // Release ended handoff bodies a later model update no longer preserves.
+  #reconcileHandoffOverlay(): void {
+    if (this.#handoffOverlay.size === 0) return;
+    const overlay = this.#model?.overlay ?? {};
+    for (const [key, item] of [...this.#handoffOverlay]) {
+      if (overlay[key] !== item) {
+        this.#handoffOverlay.delete(key);
+        this.#admission.releaseKey(item, this);
+      }
+    }
+  }
+
+  #releaseHandoffOverlay(): void {
+    for (const item of this.#handoffOverlay.values()) this.#admission.releaseKey(item, this);
+    this.#handoffOverlay.clear();
   }
 
   #now(): number {
@@ -1295,12 +1416,12 @@ export class TranscriptRepository {
   ): void {
     if (this.#disposed || this.#invalidated) {
       this.#recordAbandonment("cancelled", [batch.coverage]);
-      this.#admission.release(bodies);
+      this.#admission.release(bodies, this);
       return;
     }
     if (this.#readerCount <= 0) {
       this.#recordAbandonment("failed", [batch.coverage]);
-      this.#admission.release(bodies);
+      this.#admission.release(bodies, this);
       return;
     }
     const entry = { batch, revision, bodies };
@@ -1318,7 +1439,7 @@ export class TranscriptRepository {
       kind,
       this.#retryQueue.map((entry) => entry.batch.coverage),
     );
-    for (const entry of this.#retryQueue) this.#admission.release(entry.bodies);
+    for (const entry of this.#retryQueue) this.#admission.release(entry.bodies, this);
   }
 
   #recordAbandonment(kind: "cancelled" | "failed", coverages: readonly (EntryCoverageInput | undefined)[]): void {
@@ -1333,10 +1454,8 @@ export class TranscriptRepository {
     };
   }
 
-  // One paced timer drains the queue in order, one batch at a time: a retried
-  // write sets `#retryInFlight` until it settles, and `#scheduleRetry` refuses
-  // to arm while it is set, so no two batches (retried or ordinary) can be
-  // driven by the queue concurrently.
+  // One paced timer arms the retry queue. The queue keeps its causal order; the
+  // shared background slot decides which repository runs next.
   #scheduleRetry(): void {
     if (this.#retryScheduled || this.#retryInFlight || this.#disposed || this.#invalidated) return;
     if (this.#readerCount <= 0) return;
@@ -1347,7 +1466,7 @@ export class TranscriptRepository {
     const fire = () => {
       this.#retryScheduled = false;
       this.#retryCancel = undefined;
-      this.#drainRetry();
+      this.#drainBackground();
     };
     const scheduler = this.#binding.retryScheduler;
     if (scheduler) {
@@ -1359,53 +1478,77 @@ export class TranscriptRepository {
     this.#retryCancel = () => clearTimeout(timer);
   }
 
-  #drainRetry(): void {
+  /**
+   * Run at most one background database batch across every entry repository
+   * sharing this admission. A queued retry takes precedence over a queued
+   * no-reader accepted write because its causal coverage is required; foreground
+   * accepted writes never enter here, so a stalled background batch cannot block
+   * them. When the slot is busy this repository waits and is resumed by
+   * `releaseBackground`, which prioritises live reader demand.
+   */
+  #drainBackground(): void {
     if (this.#disposed || this.#invalidated) {
+      this.#abandonBackgroundAccepts("cancelled");
       if (this.#retryQueue.length > 0) this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
       return;
     }
-    if (this.#readerCount <= 0) {
-      if (this.#retryQueue.length > 0) this.#abandonQueue("cancelled");
+    if (this.#readerCount <= 0 && this.#retryQueue.length > 0) {
+      // An issued retry needs live reader demand; without it the queued retries
+      // are an explicit cancelled disposition.
+      this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
-      return;
     }
-    if (this.#retryQueue.length === 0) return;
-    // At most one retried batch is in flight across every entry repository
-    // sharing this admission. A repository whose retry is stalled holds the
-    // slot, but ordinary foreground writes never take it, so healthy work is
-    // not blocked. When the slot is busy this repository waits and is resumed
-    // by `releaseBackground`, prioritising live reader demand.
+    if (this.#retryQueue.length === 0 && this.#backgroundAccepts.length === 0) return;
     if (
       !this.#admission.tryAcquireBackground(
         this,
         () => this.#readerCount > 0,
-        () => this.#drainRetry(),
+        () => this.#drainBackground(),
       )
     ) {
       return;
     }
-    const next = this.#retryQueue.shift();
-    if (!next) {
-      this.#admission.releaseBackground(this);
+    const retry = this.#retryQueue.shift();
+    if (retry) {
+      // A boundary since this batch was issued retires its persistence claim:
+      // re-committing it could only write the old baseline's bookkeeping over
+      // the new one. Drop it and continue with the rest of the queue.
+      if (retry.revision !== this.#sourceRevision) {
+        this.#admission.release(retry.bodies, this);
+        this.#admission.releaseBackground(this);
+        this.#scheduleRetry();
+        return;
+      }
+      this.#retryInFlight = true;
+      const write = this.#issueCommit(retry.batch, retry.bodies, retry.revision, true, false);
+      void write.finally(() => {
+        this.#retryInFlight = false;
+        this.#admission.releaseBackground(this);
+        this.#scheduleRetry();
+      });
       return;
     }
-    // A boundary since this batch was issued retires its persistence claim:
-    // re-committing it could only write the old baseline's bookkeeping over the
-    // new one. Drop it and continue with the rest of the queue.
-    if (next.revision !== this.#sourceRevision) {
-      this.#admission.release(next.bodies);
+    const accept = this.#backgroundAccepts.shift();
+    if (!accept) {
       this.#admission.releaseBackground(this);
-      this.#scheduleRetry();
       return;
     }
     this.#retryInFlight = true;
-    const write = this.#queueWrite(next.batch, next.revision);
+    const write = this.#issueCommit(accept.batch, accept.bodies, accept.revision, false, false);
     void write.finally(() => {
       this.#retryInFlight = false;
       this.#admission.releaseBackground(this);
       this.#scheduleRetry();
     });
+  }
+
+  #abandonBackgroundAccepts(kind: "cancelled" | "failed"): void {
+    for (const entry of this.#backgroundAccepts) {
+      this.#recordAbandonment(kind, [entry.batch.coverage]);
+      this.#admission.release(entry.bodies, this);
+    }
+    this.#backgroundAccepts.length = 0;
   }
 
   #cancelRetry(): void {
@@ -1419,6 +1562,8 @@ export class TranscriptRepository {
     const reconcileCancel = this.#reconcileCancel;
     this.#reconcileCancel = undefined;
     reconcileCancel?.();
+    // Only drop the waiter claim. An issued background batch keeps its slot (and
+    // its charge) until its real terminal outcome releases it.
     this.#admission.cancelBackground(this);
   }
 
@@ -1428,6 +1573,7 @@ export class TranscriptRepository {
   }
 
   #publish(): void {
+    this.#reconcileHandoffOverlay();
     for (const listener of this.#listeners) listener();
   }
 }
