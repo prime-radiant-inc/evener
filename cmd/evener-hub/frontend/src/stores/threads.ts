@@ -4084,12 +4084,28 @@ function handleNotification(n: AnyNotification): void {
     collectPendingRefs(pendingWatchedHydrations, n, refs, acceptedPendingRefs);
     if (refs.size > 0) pendingWatchedRefs = refs;
   }
+  // The selected entry fixture's repository is the single owner of its
+  // recorded ingestion. `history/updated` is the only recorded-history
+  // notification (the repository's own notificationRows/notificationTurns
+  // accept no other method), and the frame has already been offered to that
+  // repository above. Folding it into the store as well would make the store a
+  // second owner able to publish recorded content the repository refused.
+  // Overlay, status and every metadata/session method keep their ordinary fold:
+  // only recorded history is excluded, and only for the fixture ref.
+  const fixtureRecordedRefs: ReadonlySet<string> =
+    route && n.method === "history/updated"
+      ? new Set(
+          ("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])]).filter((ref) =>
+            isEntryTranscriptFixtureRef(ref),
+          ),
+        )
+      : EMPTY_PENDING_REFS;
   const {
     next: reducedThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
-  } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...residencySkipped]));
+  } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...residencySkipped, ...fixtureRecordedRefs]));
   const {
     next: reducedWatchedThreads,
     changedRefs: changedWatchedThreads,

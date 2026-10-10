@@ -3223,6 +3223,141 @@ describe("exclusive entry transcript fixture route", () => {
     }
   });
 
+  it("owns a selected recorded update through the repository and keeps the ordinary recorded reducer from being a second owner", async () => {
+    const selected = "local:entry-exclusive-owner";
+    const entryDatabase = "entry-exclusive-owner-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const fake = connectFakeClient();
+    const baseline = turnFixture("entry-exclusive-baseline", "BASELINE_RECORDED_BODY");
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? selected, {
+        status: { type: "active" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ ...baseline, items: [{ ...baseline.items[0]!, transcriptKey: "exclusive-baseline", version: 1 }] }],
+        requestGeneration: params.requestGeneration,
+      }),
+    );
+    const lease = acquireBackgroundThread(selected);
+    let opened = false;
+    try {
+      await lease.ready;
+      await threadsStore.getState().ensureThread(selected);
+      opened = true;
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      // A real reader holds the ref, so the repository's publication is live.
+      expect(fixture.inspect().readerRetention).toBeDefined();
+      const threadId = `thr_${selected}`;
+
+      // A valid recorded update the repository accepts and publishes; the
+      // store follows that ongoing publication.
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-accepted", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "accepted-item",
+              transcriptKey: "accepted-item",
+              turnId: "entry-accepted",
+              version: 2,
+              text: "REPOSITORY_OWNED_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(fixture.inspect().model ?? null)).toContain("REPOSITORY_OWNED_BODY");
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("REPOSITORY_OWNED_BODY");
+
+      // A recorded frame the repository refuses: its resolved thread id is not
+      // this binding's. The ordinary reducer routes by ref and would fold it
+      // anyway, making the store a second owner of recorded input; the store
+      // must defer to the repository's refusal instead.
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId: "thr-not-this-binding",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 3 },
+          turns: [{ id: "entry-refused", status: "completed", itemsView: "full", version: 3 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "refused-item",
+              transcriptKey: "refused-item",
+              turnId: "entry-refused",
+              version: 3,
+              text: "SECOND_OWNER_BODY",
+              position: { entry: 3, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(fixture.inspect().model ?? null)).not.toContain("SECOND_OWNER_BODY");
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).not.toContain("SECOND_OWNER_BODY");
+
+      // Non-history input keeps its ordinary route: an active overlay and a
+      // live status still reach the selected model while recorded history is
+      // repository-exclusive.
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          ref: selected,
+          threadId,
+          item: {
+            key: "exclusive-overlay-key",
+            kind: "stream",
+            turnId: "entry-accepted",
+            roundId: "exclusive-round",
+            streamId: "exclusive-stream",
+            item: {
+              type: "agentMessage",
+              id: "exclusive-overlay-item",
+              turnId: "entry-accepted",
+              text: "LIVE_OVERLAY_BODY",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { ref: selected, threadId, status: { type: "active" }, activeTurnId: "entry-accepted" },
+      } as AnyNotification);
+      await settleProjectionWorkForTests();
+      const live = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect(live).toContain("LIVE_OVERLAY_BODY");
+      expect(threadsStore.getState().threads.get(selected)?.status.type).toBe("active");
+    } finally {
+      if (opened) threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
   it("replays recorded and overlay updates buffered during the accepted first read before local opening", async () => {
     const selected = "local:entry-hydration-replay";
     const entryDatabase = "entry-hydration-replay-test";
