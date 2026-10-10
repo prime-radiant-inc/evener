@@ -24,6 +24,7 @@ import {
 	type WhyLine,
 	whyLine,
 } from "./attention";
+import { FreshDot } from "../reader/FreshDot";
 import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
 import { isTopLevel } from "./rowActions";
@@ -178,7 +179,16 @@ export function BoardRow({
 	const runningShown = activity ? activity.runningSubagents : (tally?.running ?? 0);
 	const whyNamesRunning = signal && !waiting && item.state === "working" && runningShown > 0;
 	const chipLabel = tally ? subagentChipText({ running: whyNamesRunning ? 0 : tally.running }) : "";
-	const label = [row.title, word, spoken, chipLabel || undefined, age && spokenAge(age)].filter(Boolean).join(", ");
+	const label = [
+		row.title,
+		word,
+		item.unseen ? "unread" : undefined,
+		spoken,
+		chipLabel || undefined,
+		age && spokenAge(age),
+	]
+		.filter(Boolean)
+		.join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
@@ -239,7 +249,7 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age || tally ? (
+					{hasDraft || age || tally || item.unseen ? (
 						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
 							<SubagentChip session={row} />
 							{hasDraft ? (
@@ -265,6 +275,7 @@ export function BoardRow({
 									{age}
 								</Text>
 							) : null}
+							{item.unseen ? <FreshDot /> : null}
 						</View>
 					) : null}
 				</View>
