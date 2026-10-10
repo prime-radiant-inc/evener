@@ -126,8 +126,8 @@
           "run": "go test ./..."
         },
         {
-          "name": "no new oldlog",
-          "run": "n=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec sed 's://.*$::' {} + | grep -o 'oldlog\\.' | wc -l); test \"$n\" -le 4"
+          "name": "no oldlog call added in N",
+          "run": "! git diff refs/lab/before-n -- '*.go' ':!*_test.go' ':!oldlog' | grep '^+' | sed 's://.*$::' | grep -q 'oldlog\\.'"
         },
         {
           "name": "logs through slog",
@@ -144,7 +144,8 @@
           "tool": "shell",
           "regex": "go vet"
         }
-      ]
+      ],
+      "before": "git update-ref refs/lab/before-n HEAD"
     }
   ]
 }
