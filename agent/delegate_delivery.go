@@ -648,7 +648,12 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	}
 	c.nextToken++
 	claimToken := delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: deliveryID}
-	waiter := c.claimDelegateWaiterLocked(delegateID, head.Generation)
+	// An update never answers an inline wait: the waiting caller wants the
+	// generation's report, so the waiter stays registered for it.
+	var waiter *delegateInlineWaiter
+	if head.Packet.Kind != delegatestore.PacketUpdate {
+		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
+	}
 	claim := &delegateDeliveryClaim{
 		token:      claimToken,
 		delegateID: delegateID,

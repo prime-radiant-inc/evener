@@ -190,8 +190,8 @@ func assertDelegateConversationInvariants(t *testing.T, c *delegateTreeControlle
 		t.Fatalf("stop precedence regressed to phase %s", aggregate.Phase)
 	}
 	for _, delivery := range aggregate.PendingDeliveries {
-		if want := delegateDeliveryID(aggregate.DelegateID, delivery.Generation); delivery.DeliveryID != want {
-			t.Fatalf("delivery ID %s, want %s", delivery.DeliveryID, want)
+		if err := pendingDeliveryIDShapeError(aggregate.DelegateID, delivery); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if live := c.live["dlg_fuzz"]; live != nil {

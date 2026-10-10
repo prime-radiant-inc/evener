@@ -93,6 +93,12 @@ type DelegateAttentionChanged struct {
 // communicate(end_turn=false). The fold queues it as a pending delivery
 // behind the delegate's earlier deliveries and ahead of the report the same
 // generation settles.
+//
+// This journal records and orders updates only. The delegate controller that
+// produces the event owns its delivery shape: an update head never claims the
+// generation's inline waiter (newHeadDeliveryPlanLocked in package agent), and
+// the notification frame and the clients that render it own how an update is
+// presented.
 type UpdatePosted struct {
 	Generation uint64 `json:"generation"`
 	Message    string `json:"message"`

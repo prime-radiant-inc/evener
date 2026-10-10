@@ -1194,7 +1194,8 @@ cannot reuse it. It is never a control handle.
   pending delivery `<delegate_id>/update/<event seq>` with packet kind
   `update`. The generation's updates are therefore dispatched in the order
   posted and ahead of the report its finish appends. Only the open, running
-  generation may post one.
+  generation may post one. An update at the head never claims the
+  generation's inline waiter; a `delegate_send` wait stays for the report.
 - Restart begins with the oldest unacknowledged packet and advances through the
   same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
