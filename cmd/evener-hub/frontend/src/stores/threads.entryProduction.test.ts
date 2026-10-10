@@ -10,6 +10,7 @@ import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSche
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
+  clearCachedSessions,
   countCachedSessions,
   installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
@@ -307,4 +308,49 @@ it("ordinary settings count and write notifications describe entries without leg
   } finally {
     unsubscribe();
   }
+});
+
+it("ordinary Clear removes entries once and suppresses the held cache lifetime without losing live display", async () => {
+  const storage = cache();
+  const client = connect();
+  const ref = "local:a";
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  await threadsStore.getState().ensureThread(ref);
+  await settleEntryTranscriptForTests(ref);
+  expect(await countCachedSessions()).toBe(1);
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  expect(await storage.getClearEpoch()).toBe(1);
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  expect(await countCachedSessions()).toBe(0);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.transcriptKey),
+  ).toContain("recorded");
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref,
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("after-clear", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests(ref);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.transcriptKey),
+  ).toContain("after-clear");
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  await threadsStore.getState().releaseThreadAndWait(ref);
+  await threadsStore.getState().ensureThread(ref);
+  await settleEntryTranscriptForTests(ref);
+  expect(await countCachedSessions()).toBe(1);
 });
