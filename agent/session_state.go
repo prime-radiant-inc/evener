@@ -643,6 +643,11 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		s.mu.Unlock()
 		return
 	}
+	// A wake that ran no turn produced no output of its own; the rest it
+	// interrupted had output at its own settle, and everything else is
+	// checked again from here.
+	hadOutput = hadOutput || s.resumeQuietRest
+	s.resumeQuietRest = false
 	s.mu.Unlock()
 	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
 		return
@@ -668,6 +673,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		s.restAwaiting(generation)
 		return
 	}
+	s.mu.Lock()
+	s.quietRestArmed = generation
+	s.mu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		// The cheap check first, so a timer outliving its session or turn
 		// reads no work state. restAwaiting re-reads queued input and
