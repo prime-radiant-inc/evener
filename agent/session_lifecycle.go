@@ -2943,7 +2943,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// a turn that consumes what it presents is admitted for it: a parent's
 	// unleased drive of an idle delegate would present the update and leave it
 	// pending.
-	hasDelegateUpdate := s.hasPendingDelegateUpdateAttention() && s.coversPresentedAttention(ctx)
+	hasDelegateUpdate := s.coversPresentedAttention(ctx) && s.hasPendingDelegateUpdateAttention()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)

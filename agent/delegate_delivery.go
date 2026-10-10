@@ -632,6 +632,13 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
+// isDelegateUpdateAttentionID reports whether attentionID names a delegate
+// update's delivery rather than a generation's report.
+func isDelegateUpdateAttentionID(attentionID string) bool {
+	deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID(""))
+	return ok && delegatestore.IsUpdateDeliveryID(deliveryID)
+}
+
 // completeDelegateDeliveryCommits acknowledges one tool call's delivery
 // commits in order. A reply carrying earlier results acknowledges them, oldest
 // first, ahead of its own (#3906, #3951), and the store takes them only in

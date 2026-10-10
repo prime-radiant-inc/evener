@@ -304,7 +304,7 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 	fold := rootAttentionFold(t, root)
 	var updateID string
 	for _, id := range fold.order {
-		if strings.Contains(id, "/update/") {
+		if isDelegateUpdateAttentionID(id) {
 			updateID = id
 		}
 	}
@@ -396,7 +396,7 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 		t.Fatalf("root attention after the reply = %v, want none", pending)
 	}
 	for _, attentionID := range rootAttentionFold(t, root).order {
-		if strings.Contains(attentionID, "/update/") {
+		if isDelegateUpdateAttentionID(attentionID) {
 			t.Fatalf("the root holds update attention %q, want the update only in the reply", attentionID)
 		}
 	}
@@ -436,7 +436,7 @@ func TestDelegateUpdateWaitsForTheAnswerToAPendingQuestion(t *testing.T) {
 	}
 	close(release)
 	pending := waitForRootAttention(t, root, 2)
-	if !strings.Contains(pending[0], "/update/") || !strings.Contains(rootAttentionFold(t, root).content[pending[1]].Text(), `kind="report"`) {
+	if !isDelegateUpdateAttentionID(pending[0]) || !strings.Contains(rootAttentionFold(t, root).content[pending[1]].Text(), `kind="report"`) {
 		t.Fatalf("root attention = %v, want the update, then the report", pending)
 	}
 	before := len(adapter.requestsFor("root"))
@@ -568,16 +568,7 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	// The coordinator's second request ends its turn; once it is no longer
 	// processing, the worker's update finds it idle.
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	var coordinator *Session
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
-		children := root.subagents.sessions()
-		if len(children) != 1 || children[0].State() != SessionIdle {
-			return false
-		}
-		coordinator = children[0]
-		return true
-	})
+	coordinator := waitForSoleChildIdle(t, root)
 	close(coordinatorIdle)
 	select {
 	case text := <-presented:
@@ -656,11 +647,7 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
-		children := root.subagents.sessions()
-		return len(children) == 1 && children[0].State() == SessionIdle
-	})
+	waitForSoleChildIdle(t, root)
 	close(coordinatorIdle)
 	select {
 	case result := <-relayResult:
@@ -673,8 +660,8 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 	}
 	awaitRootReport(t, root)
 	fold := rootAttentionFold(t, root)
-	updateAt := slices.IndexFunc(fold.order, func(id string) bool { return strings.Contains(id, "/update/") })
-	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !strings.Contains(id, "/update/") })
+	updateAt := slices.IndexFunc(fold.order, isDelegateUpdateAttentionID)
+	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
 	if updateAt < 0 || reportAt < updateAt {
 		t.Fatalf("root attention order = %v, want the coordinator's update before its report", fold.order)
 	}
@@ -762,16 +749,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
-	var coordinator *Session
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
-		children := root.subagents.sessions()
-		if len(children) != 1 || children[0].State() != SessionIdle {
-			return false
-		}
-		coordinator = children[0]
-		return true
-	})
+	coordinator := waitForSoleChildIdle(t, root)
 	close(coordinatorIdle)
 	coordinator.mu.Lock()
 	path, sessionID := transcriptPath(coordinator.stateDir, coordinator.id), coordinator.id
@@ -833,7 +811,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		// The coordinator's run was not failed by the bookkeeping error.
 		fold := rootAttentionFold(t, root)
 		for _, id := range fold.order {
-			if !strings.Contains(id, "/update/") && !strings.Contains(fold.content[id].Text(), `"outcome":"completed"`) {
+			if !isDelegateUpdateAttentionID(id) && !strings.Contains(fold.content[id].Text(), `"outcome":"completed"`) {
 				t.Fatalf("the coordinator's report = %q, want a completed outcome", fold.content[id].Text())
 			}
 		}
@@ -906,15 +884,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
-		children := root.subagents.sessions()
-		if len(children) != 1 || children[0].State() != SessionIdle {
-			return false
-		}
-		coordinator.Store(children[0])
-		return true
-	})
+	coordinator.Store(waitForSoleChildIdle(t, root))
 	failingWrites := installResolutionSyncFailuresWriter(t, coordinator.Load(), 2)
 	close(coordinatorIdle)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -1032,7 +1002,7 @@ func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
 			return false
 		}
 		for attentionID, resolution := range fold.resolutions {
-			if strings.Contains(attentionID, "/update/") && resolution == delegateAttentionConsumed {
+			if isDelegateUpdateAttentionID(attentionID) && resolution == delegateAttentionConsumed {
 				generation = fold.resumeGenerations[attentionID]
 				return true
 			}
@@ -1187,7 +1157,7 @@ func awaitRootReport(t *testing.T, root *Session) {
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	waitForCondition(t, 30*time.Second, "the coordinator's report to reach the root", func() bool {
 		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
-		return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !strings.Contains(id, "/update/") })
+		return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
 	})
 }
 
@@ -1198,7 +1168,7 @@ func TestNotDeliveredUpdateExplainsARetiringController(t *testing.T) {
 	t.Parallel()
 	want := notDeliveredUpdate(errDelegateTargetBusy)
 	got := notDeliveredUpdate(fmt.Errorf("post: %w", ErrRetirementUnavailable))
-	if got != want {
+	if *got != *want {
 		t.Fatalf("retiring controller delivery = %#v, want %#v", got, want)
 	}
 	if got.Status != delegateUpdateNotDelivered || strings.Contains(got.Reason, "could not be recorded") {

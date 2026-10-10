@@ -211,8 +211,26 @@ func jobListResponse(id string) llm.Response {
 	return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 }
 
+// waitForSoleChildIdle waits until root has exactly one child session and it
+// is idle, and returns it.
+func waitForSoleChildIdle(t *testing.T, root *Session) *Session {
+	t.Helper()
+	var child *Session
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the child to go idle", func() bool {
+		children := root.subagents.sessions()
+		if len(children) != 1 || children[0].State() != SessionIdle {
+			return false
+		}
+		child = children[0]
+		return true
+	})
+	return child
+}
+
 // awaitSignal waits for ch to close. Scripted steps call it on provider
-// goroutines, so a hang is reported with Errorf, never Fatalf.
+// goroutines, so a hang is reported with Errorf, never Fatalf; waitForTestSignal
+// is the Fatalf form for the test goroutine.
 func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	select {
 	case <-ch:

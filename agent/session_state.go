@@ -3,11 +3,9 @@ package agent
 import (
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -204,7 +202,7 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	}
 	var updates []string
 	for _, attentionID := range ids {
-		if deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID("")); ok && delegatestore.IsUpdateDeliveryID(deliveryID) {
+		if isDelegateUpdateAttentionID(attentionID) {
 			updates = append(updates, attentionID)
 		}
 	}

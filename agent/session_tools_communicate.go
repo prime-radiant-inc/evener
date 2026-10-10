@@ -98,10 +98,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			// A delegate's end_turn=false message is an update for its parent.
 			// The message is already in this transcript, so delivery never
 			// fails the call; the result says where the update stands.
-			var update delegateUpdateDelivery
-			isUpdate := false
+			var update *delegateUpdateDelivery
 			if !endTurn && deps.postDelegateUpdate != nil {
-				update, isUpdate = deps.postDelegateUpdate(ctx, message)
+				update = deps.postDelegateUpdate(ctx, message)
 			}
 
 			inbox := []string{}
@@ -152,7 +151,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}
-			if isUpdate {
+			if update != nil {
 				resp["delivery"] = update.Status
 				if update.Reason != "" {
 					resp["reason"] = update.Reason
@@ -202,7 +201,7 @@ const (
 )
 
 // postDelegateUpdate hands a delegate's communicate(end_turn=false) message
-// to its parent as an update. ok is false for a root, whose end_turn=false
+// to its parent as an update. It returns nil for a root, whose end_turn=false
 // message is a checkpoint for its human partner and goes nowhere else.
 //
 // An update carries the message and nothing else, the way a report does: it
@@ -211,20 +210,20 @@ const (
 // bounded the same way for updates as for reports: the update is a communicate
 // event, which the watch on the sender counts toward watchDeliveryBudget, and
 // the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
-func (s *Session) postDelegateUpdate(ctx context.Context, message string) (delegateUpdateDelivery, bool) {
+func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
-		return delegateUpdateDelivery{}, false
+		return nil
 	}
 	if s.delegateController == nil || s.owningDelegateID == "" {
-		return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: "this session has no route to a parent agent"}, true
+		return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: "this session has no route to a parent agent"}
 	}
 	actor, err := s.delegateActor(ctx)
 	if err != nil {
-		return notDeliveredUpdate(err), true
+		return notDeliveredUpdate(err)
 	}
 	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
 	if err != nil {
-		return notDeliveredUpdate(err), true
+		return notDeliveredUpdate(err)
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		// The update is durable in the journal. A delivery that failed stays
@@ -235,14 +234,14 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) (deleg
 	// A missing aggregate reads as not pending: it cannot occur while the run
 	// that just posted is open.
 	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
-		return delegateUpdateDelivery{Status: delegateUpdateQueued}, true
+		return &delegateUpdateDelivery{Status: delegateUpdateQueued}
 	}
-	return delegateUpdateDelivery{Status: delegateUpdateDelivered}, true
+	return &delegateUpdateDelivery{Status: delegateUpdateDelivered}
 }
 
 // notDeliveredUpdate says, for the delegate's model, why its update was
 // refused.
-func notDeliveredUpdate(err error) delegateUpdateDelivery {
+func notDeliveredUpdate(err error) *delegateUpdateDelivery {
 	reason := "it could not be recorded: " + err.Error()
 	switch {
 	case errors.Is(err, errDelegateStaleLease):
@@ -250,7 +249,7 @@ func notDeliveredUpdate(err error) delegateUpdateDelivery {
 	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable), errors.Is(err, ErrRetirementUnavailable):
 		reason = "you are stopping or finishing, or this run can no longer report to your parent"
 	}
-	return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
+	return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
