@@ -62,6 +62,10 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 // errMemoryIndexGenerated refuses a write, edit or delete of the index.
 var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 
+// errMemoryPathControlCharacter refuses a write or edit of a path holding a
+// control character (memoryPathHasControl), which no index line can link to.
+var errMemoryPathControlCharacter = errors.New("memory path holds a control character, such as a newline; choose a name without one")
+
 // isMemoryIndexPath reports whether file, cleaned and relative to the scope,
 // names the generated index. Case is ignored: on a case-insensitive
 // filesystem memory.md is the same file.
@@ -108,6 +112,11 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	scope, file := stringArg(args, "scope"), filepath.Clean(stringArg(args, "file_path"))
 	if isMemoryIndexPath(file) {
 		return nil, errMemoryIndexGenerated
+	}
+	// A delete still takes such a path, so a file named that way from
+	// outside the tools can be removed.
+	if operation != "delete" && memoryPathHasControl(file) {
+		return nil, errMemoryPathControlCharacter
 	}
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", operation)
 	if err != nil {
