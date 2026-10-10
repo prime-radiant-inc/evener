@@ -21,7 +21,10 @@ test.each<[ToolWireCall, string]>([
   ["call_read_file", "Read agent/tree.go · lines 1-4"],
   ["call_read_file_range", "Read agent/tree.go · lines 2-3"],
   ["call_grep", 'Searched "func settle" in agent (*.go) · 2 hits'],
+  // A note after the hits, past a blank line, is not one of them.
+  ["call_grep_capped", 'Searched "package|func" in agent/tree.go · 1 hits'],
   ["call_glob", "Matched agent/**/*_test.go · 2 matches"],
+  ["call_glob_excluded", "Matched **/plan.md · 0 matches"],
   // The count list_dir states on its last line, not its line count.
   ["call_list_dir", "Listed agent · 3 entries"],
   ["call_list_dir_empty", "Listed empty · 0 entries"],
