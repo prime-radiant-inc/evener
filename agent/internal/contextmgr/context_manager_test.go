@@ -309,6 +309,17 @@ func TestSummarizeToolResult_SearchNotes(t *testing.T) {
 	}
 }
 
+// memory_search writes grep's output, so it summarizes like grep: entries
+// counted, notes kept.
+func TestSummarizeToolResult_MemorySearch(t *testing.T) {
+	output := "notes.md:1:x\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
+	got := summarizeToolResult("memory_search", output, json.RawMessage(`{"pattern":"x"}`))
+	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestSummarizeToolResult_EditFile(t *testing.T) {
 	got := summarizeToolResult("edit_file", "OK", json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[edit_file: auth.go → OK]"

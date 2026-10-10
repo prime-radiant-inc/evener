@@ -57,18 +57,16 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	fallback := NewLocalExecutionEnvironment(root)
 	defer fallback.Cleanup()
 	fallback.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
-	arms := []struct {
+	type grepArm struct {
 		name string
 		env  *LocalExecutionEnvironment
-	}{{"fallback", fallback}}
+	}
+	arms := []grepArm{{"fallback", fallback}}
 	if rg, err := exec.LookPath("rg"); err == nil {
 		withRg := NewLocalExecutionEnvironment(root)
 		defer withRg.Cleanup()
 		withRg.lookPath = func(string) (string, error) { return rg, nil }
-		arms = append(arms, struct {
-			name string
-			env  *LocalExecutionEnvironment
-		}{"ripgrep", withRg})
+		arms = append(arms, grepArm{"ripgrep", withRg})
 	}
 
 	cases := []struct {
@@ -165,6 +163,15 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 			want:   []string{"a.go:2:foo", "--", "sub" + sep + "b.go-1-before", "sub" + sep + "b.go:2:foo"},
 		},
 		{name: "files with matches", stdout: dir + sep + "a.go\x00" + dir + sep + "b.go\x00", filesOnly: true, want: []string{"a.go", "b.go"}},
+		// rg searches files in parallel and prints them in the order they
+		// finish; the lines come back in path order, so the cap keeps the
+		// same lines on every run (#3284).
+		{name: "files in the order rg finished them", stdout: dir + sep + "b.go\x00" + dir + sep + "a.go\x00", filesOnly: true, want: []string{"a.go", "b.go"}},
+		{
+			name:   "context groups in the order rg finished their files",
+			stdout: dir + sep + "b.go\x001:foo\n" + dir + sep + "b.go\x002-x\n--\n" + dir + sep + "b.go\x009:foo\n--\n" + dir + sep + "a.go\x003:foo\n",
+			want:   []string{"a.go:3:foo", "--", "b.go:1:foo", "b.go-2-x", "--", "b.go:9:foo"},
+		},
 		{name: "count", stdout: dir + sep + "a.go\x0012\n", want: []string{"a.go:12"}},
 		{
 			name:   "a name holding a newline",
@@ -182,16 +189,5 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 				t.Fatalf("ripgrepOutputLines = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestBuildRipgrepArgsSortsByPath pins rg's deterministic cross-file order
-// (#3284): the argv carries "--sort path", so a parallel search cannot report
-// files, or keep capped lines, in a different order from run to run.
-func TestBuildRipgrepArgsSortsByPath(t *testing.T) {
-	args := buildRipgrepArgs("content", false, "", "foo", "/root", 0)
-	i := slices.Index(args, "--sort")
-	if i < 0 || i+1 >= len(args) || args[i+1] != "path" {
-		t.Fatalf("expected --sort path in args, got: %v", args)
 	}
 }

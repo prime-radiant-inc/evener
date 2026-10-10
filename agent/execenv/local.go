@@ -2104,11 +2104,6 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// ending), so ripgrepOutputLines can find the whole path even when the
 	// name holds a newline.
 	args = append(args, "--null")
-	// rg searches files in parallel, so its cross-file order varies from run
-	// to run, and with it which lines the cap keeps. --sort path makes it
-	// lexical, as the native walk is, at the cost of a single-threaded search
-	// (#3284).
-	args = append(args, "--sort", "path")
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -2230,30 +2225,70 @@ func grepTargetsOneFile(dir string) bool {
 // groups) is plain text. A single named file is "." to the fallback, where rg
 // names it in files-with-matches mode; content and count lines for a single
 // file carry no path from either.
+//
+// rg searches files in parallel and prints each file's lines together, in
+// the order the files finish, so the lines come back sorted by path, each
+// file's own lines in order: the cap then keeps the same lines on every run
+// (#3284). Sorting here rather than with rg's --sort path keeps the search
+// parallel. A "--" between two files' lines is set again between them after
+// the sort; one inside a file stays where it is.
 func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 	if oneFile {
 		if filesOnly {
 			return []string{"."}
 		}
-		return strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+		return fileLines(stdout)
 	}
 	prefix := strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)
-	var lines []string
+	type fileBlock struct {
+		rel   string
+		lines []string
+	}
+	var blocks []fileBlock
+	pendingSeparator, separated := false, false
 	for rest := stdout; rest != ""; {
-		var line string
+		var rel, line string
 		path, afterPath, cut := strings.Cut(rest, "\x00")
-		hasPath := cut && strings.HasPrefix(path, prefix)
 		switch {
-		case hasPath && filesOnly:
-			line, rest = OneLinePath(path[len(prefix):]), afterPath
-		case hasPath:
+		case cut && strings.HasPrefix(path, prefix) && filesOnly:
+			rel, rest = path[len(prefix):], afterPath
+			line = OneLinePath(rel)
+		case cut && strings.HasPrefix(path, prefix):
 			var text string
+			rel = path[len(prefix):]
 			text, rest, _ = strings.Cut(afterPath, "\n")
-			line = OneLinePath(path[len(prefix):]) + ripgrepPathSeparator(text) + text
+			line = OneLinePath(rel) + ripgrepPathSeparator(text) + text
 		default:
 			line, rest, _ = strings.Cut(rest, "\n")
+			if line == "--" {
+				// A separator between context groups belongs inside a
+				// block only when the next line is the same file's.
+				pendingSeparator = true
+				continue
+			}
+			// Any other line without a path stays with the lines around it.
+			if n := len(blocks); n > 0 {
+				rel = blocks[n-1].rel
+			}
 		}
-		lines = append(lines, line)
+		if n := len(blocks); n > 0 && blocks[n-1].rel == rel {
+			if pendingSeparator {
+				blocks[n-1].lines = append(blocks[n-1].lines, "--")
+			}
+			blocks[n-1].lines = append(blocks[n-1].lines, line)
+		} else {
+			separated = separated || pendingSeparator
+			blocks = append(blocks, fileBlock{rel: rel, lines: []string{line}})
+		}
+		pendingSeparator = false
+	}
+	slices.SortStableFunc(blocks, func(a, b fileBlock) int { return strings.Compare(a.rel, b.rel) })
+	var lines []string
+	for i, block := range blocks {
+		if i > 0 && separated {
+			lines = append(lines, "--")
+		}
+		lines = append(lines, block.lines...)
 	}
 	return lines
 }

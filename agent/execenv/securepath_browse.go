@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,9 +54,8 @@ type grepAccum struct {
 	contextLines int
 	results      []string
 	fileCounts   map[string]int
-	filesSeen    map[string]struct{}
 	// truncated records that the walk found a result past maxResults, so
-	// finish ends the output with grepTruncationNote.
+	// finish adds grepTruncationNote as a note.
 	truncated bool
 }
 
@@ -106,7 +106,6 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 		maxResults:   maxResults,
 		contextLines: contextLines,
 		fileCounts:   map[string]int{},
-		filesSeen:    map[string]struct{}{},
 	}, nil
 }
 
@@ -127,44 +126,45 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	}
 	singleFile := relPath == "."
 	name := OneLinePath(relPath)
-	lines := fileLines(data)
-	if a.outputMode != "files_with_matches" && a.outputMode != "count" {
-		return a.feedContent(name, singleFile, lines)
-	}
-	for _, line := range lines {
-		if !a.re.MatchString(line) {
-			continue
+	lines := fileLines(string(data))
+	switch a.outputMode {
+	case "files_with_matches":
+		if !slices.ContainsFunc(lines, a.re.MatchString) {
+			return false
 		}
-		if a.outputMode == "files_with_matches" {
-			if _, seen := a.filesSeen[relPath]; !seen {
-				if len(a.results) >= a.maxResults {
-					return a.cutAtCap()
-				}
-				a.filesSeen[relPath] = struct{}{}
-				a.results = append(a.results, name)
+		return a.emit(name)
+	case "count":
+		n := 0
+		for _, line := range lines {
+			if a.re.MatchString(line) {
+				n++
 			}
-			return false // once recorded, move to the next file
+		}
+		if n == 0 {
+			return false
 		}
 		// The cap counts entries like files_with_matches does: once
 		// maxResults files hold a count row, the walk stops, so the
 		// rendered count output has at most maxResults rows — the same
 		// first-N truncation the ripgrep path applies to rg --count.
-		if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
+		if len(a.fileCounts) >= a.maxResults {
 			return a.cutAtCap()
 		}
-		a.fileCounts[relPath]++
+		a.fileCounts[relPath] = n
+		return false
+	default:
+		return a.feedContent(name, singleFile, lines)
 	}
-	return false
 }
 
 // fileLines is a file's lines as rg counts them: none in an empty file, and
 // no empty line after a final newline, which ends the last line rather than
 // starting another.
-func fileLines(data []byte) []string {
-	if len(data) == 0 {
+func fileLines(text string) []string {
+	if text == "" {
 		return nil
 	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 }
 
 // feedContent records a file's matching lines, and with contextLines the
@@ -177,36 +177,33 @@ func (a *grepAccum) feedContent(name string, singleFile bool, lines []string) (s
 	// last is the last line written from this file; afterEnd is the last line
 	// the latest match's after-context reaches.
 	last, afterEnd := -1, -1
-	for i, line := range lines {
-		if !a.re.MatchString(line) {
-			continue
-		}
-		for k := last + 1; k < i && k <= afterEnd; k++ {
+	// context writes lines lo through hi as context, up to the last line.
+	context := func(lo, hi int) (stop bool) {
+		for k := lo; k <= min(hi, len(lines)-1); k++ {
 			if a.emitLine(name, singleFile, k, "-", lines[k]) {
 				return true
 			}
 			last = k
 		}
+		return false
+	}
+	for i, line := range lines {
+		if !a.re.MatchString(line) {
+			continue
+		}
+		if context(last+1, min(i-1, afterEnd)) {
+			return true
+		}
 		start := max(last+1, i-a.contextLines)
 		if a.contextLines > 0 && len(a.results) > 0 && (last < 0 || start > last+1) && a.emit("--") {
 			return true
 		}
-		for k := start; k < i; k++ {
-			if a.emitLine(name, singleFile, k, "-", lines[k]) {
-				return true
-			}
-		}
-		if a.emitLine(name, singleFile, i, ":", line) {
+		if context(start, i-1) || a.emitLine(name, singleFile, i, ":", line) {
 			return true
 		}
 		last, afterEnd = i, i+a.contextLines
 	}
-	for k := last + 1; k < len(lines) && k <= afterEnd; k++ {
-		if a.emitLine(name, singleFile, k, "-", lines[k]) {
-			return true
-		}
-	}
-	return false
+	return context(last+1, afterEnd)
 }
 
 // emitLine writes line index k of a file as a content line: "12:text" for a

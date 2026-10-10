@@ -906,10 +906,10 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		exitCode := parseExitCode(contentStr)
 		return fmt.Sprintf("[shell: %q → exit %s]", cmd, exitCode)
 
-	case "grep":
+	case "grep", "memory_search":
 		pattern := getArg("pattern")
 		matches := searchresult.EntryCount(contentStr)
-		return searchSummary(fmt.Sprintf("grep: %q → %d matches", pattern, matches), contentStr)
+		return searchSummary(fmt.Sprintf("%s: %q → %d matches", toolName, pattern, matches), contentStr)
 
 	case "glob":
 		pattern := getArg("pattern")
@@ -2017,8 +2017,10 @@ func countLines(s string) int {
 // searchSummary is a search result's one-line summary, "[head]", with the
 // notes the tool put after its entries (searchresult.Split) added inside the
 // brackets, each without brackets of its own, so a compacted search still
-// says it was cut short or left paths out. Only the tool's own notes are
-// kept: anything the registry appended after another blank line is left out.
+// says it was cut short or left paths out. Anything the registry appended
+// after another blank line is left out; after a result with no notes of its
+// own, a registry nudge reads as its note (#4223 tracks giving notes a field
+// of their own).
 func searchSummary(head, output string) string {
 	_, notes := searchresult.Split(output)
 	notes, _, _ = strings.Cut(notes, "\n\n")
