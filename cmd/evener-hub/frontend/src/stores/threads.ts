@@ -66,6 +66,7 @@ import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentM
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
+import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
@@ -899,6 +900,15 @@ async function acceptEntryTranscriptHydration(
       clearEpoch,
       historyGeneration,
       lifetime: fixture.lifetime,
+      admission: entryWriteAdmissionFor(fixture.cache),
+      reconcile: () => {
+        const client = wiredClient;
+        if (!client || client.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
+        fixture.repository?.beginFreshBaseline();
+        void refreshTrackedThread(client, readyEpoch, ref, true).catch(() => {
+          // The owned hydration lifecycle schedules transport recovery.
+        });
+      },
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
       suppressed: () => fixture.clearInert === true,
       readHistory: (held, signal) =>
