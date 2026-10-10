@@ -269,10 +269,12 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 	lines := slices.Collect(strings.Lines(block))
 	quoted := false
 	for i, line := range lines {
-		// Keys are matched as text: memoryFrontmatterKeyLines reads keys
-		// through YAML, which can't read this block.
-		key, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
-		if !found || (key != "description" && key != "evidence") {
+		// Each line's key is read on its own: memoryFrontmatterKeyLines
+		// reads the whole block, which doesn't parse. A top-level key starts
+		// its line, and YAML may quote it or leave space before its colon.
+		keyText, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
+		var key string
+		if !found || strings.TrimLeft(keyText, " \t") != keyText || yaml.Unmarshal([]byte(keyText), &key) != nil || (key != "description" && key != "evidence") {
 			continue
 		}
 		if yaml.Unmarshal([]byte(line), new(any)) == nil {

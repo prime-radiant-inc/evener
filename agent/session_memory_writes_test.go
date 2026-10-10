@@ -180,6 +180,8 @@ func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
 		"inner-colon.md": {"description: like `shop: add Count`\n", "description: 'like `shop: add Count`'\n"},
 		"trailing.md":    {"description: Fix:\n", "description: 'Fix:'\n"},
 		"colon-tab.md":   {"description: a:\tb\n", "description: \"a:\\tb\"\n"},
+		"spaced-key.md":  {"description : a: b\n", "description: 'a: b'\n"},
+		"quoted-key.md":  {"description: d\n\"evidence\": a: b\n", "description: d\nevidence: 'a: b'\n"},
 		"indicator.md":   {"description: d\nevidence: `a.go`: line 3\n", "description: d\nevidence: '`a.go`: line 3'\n"},
 		"both.md": {
 			"description: Fix: use cents\ntags: [money]\nevidence: file: price.go\n",
