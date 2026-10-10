@@ -158,6 +158,9 @@ type ResolvedPolicy struct {
 	// shim path still works, just loudly).
 	ToolchainBinDir string
 
+	// GoPath is the host's GOPATH resolved at session start (HostFacts.GoPath).
+	GoPath string
+
 	// resolveInputs and resolveHost are the request this policy was resolved
 	// FROM, retained so ReRoot / ControlPolicy can re-run the root + gitdir
 	// resolution against a DIFFERENT worktree (a child delegate lane, a managed
@@ -400,10 +403,11 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host.Home),
+		CacheRoots:    cacheRootsFor(policy.Mode, host),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
+		GoPath:        host.GoPath,
 		resolveInputs: policy,
 		resolveHost:   host,
 	}
@@ -509,22 +513,35 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME.
-var defaultCacheRoots = []string{".cache", "go/pkg", ".npm", ".cargo"}
+// strategy, expressed relative to $HOME. Go's root is not among them: it follows
+// the host's GOPATH (goPkgRoot).
+var defaultCacheRoots = []string{".cache", ".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
 // serve caches (overlaid or redirected), off/read-only need none.
-func cacheRootsFor(mode Mode, home string) []string {
+func cacheRootsFor(mode Mode, host HostFacts) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots))
+		out := make([]string, 0, len(defaultCacheRoots)+1)
 		for _, rel := range defaultCacheRoots {
-			out = append(out, filepath.Join(home, rel))
+			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return out
+		return append(out, goPkgRoot(host))
 	default:
 		return nil
 	}
+}
+
+// goPkgRoot is the Go cache root: pkg under the first GOPATH entry, which holds
+// the default module cache and the checksum database and is the only entry the
+// go command writes. A GOPATH the go command would refuse (relative) or could
+// not be resolved falls back to Go's $HOME/go default.
+func goPkgRoot(host HostFacts) string {
+	gopath := filepath.Join(host.Home, "go")
+	if first, _, _ := strings.Cut(host.GoPath, string(filepath.ListSeparator)); filepath.IsAbs(first) {
+		gopath = first
+	}
+	return filepath.Join(gopath, "pkg")
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a

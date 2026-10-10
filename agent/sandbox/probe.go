@@ -111,6 +111,12 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
+	// GoPath is the GOPATH a go command would use on this host (an OS path list),
+	// resolved once at session start; see probeGoPath. Empty when it cannot be
+	// resolved. It grants nothing: it places the overlaid Go cache root and the
+	// ambient GOPATH entries the env floor keeps behind the session scratch.
+	GoPath string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -157,6 +163,8 @@ type probeSystem interface {
 	userHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
+	userConfigDir() (string, error)
+	readFile(string) ([]byte, error)
 	run(context.Context, string, ...string) error
 	combinedOutput(context.Context, string, ...string) ([]byte, error)
 	output(context.Context, string, ...string) ([]byte, error)
@@ -178,6 +186,10 @@ func (hostProbeSystem) nonDirectoryFile(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
 }
+
+func (hostProbeSystem) userConfigDir() (string, error) { return os.UserConfigDir() }
+
+func (hostProbeSystem) readFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 func (hostProbeSystem) run(ctx context.Context, name string, args ...string) error {
 	return exec.CommandContext(ctx, name, args...).Run()
@@ -215,6 +227,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.GoPath = probeGoPath(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -274,6 +287,57 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// probeGoPath resolves the GOPATH a go command would use on this host, with the
+// go command's own precedence: $GOPATH, then the GOPATH line of the user's go env
+// file, then $HOME/go. The env file is what `go env -w` writes: $GOENV names it,
+// GOENV=off disables it, and otherwise it is <user config dir>/go/env. Like the
+// go command, a later line overrides an earlier one.
+//
+// It reads the file rather than running `go env GOPATH`: the probe runs at every
+// sandboxed session start, and `go env` would spawn whichever go is first on
+// PATH, which may switch toolchains and download one (GOTOOLCHAIN) before it
+// answers. The file and the precedence above are all `go env` consults for
+// GOPATH.
+func probeGoPath(system probeSystem) string {
+	if gopath := system.getenv(envvars.GoPath.Name); gopath != "" {
+		return gopath
+	}
+	if gopath := goEnvFileValue(system, envvars.GoPath.Name); gopath != "" {
+		return gopath
+	}
+	home, err := system.userHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, "go")
+}
+
+// goEnvFileValue returns name's value from the user's go env file, or "".
+func goEnvFileValue(system probeSystem, name string) string {
+	file := system.getenv(envvars.GoEnv.Name)
+	switch file {
+	case "off":
+		return ""
+	case "":
+		dir, err := system.userConfigDir()
+		if err != nil || dir == "" {
+			return ""
+		}
+		file = filepath.Join(dir, "go", "env")
+	}
+	data, err := system.readFile(file)
+	if err != nil {
+		return ""
+	}
+	value := ""
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if key, val, ok := strings.Cut(line, "="); ok && key == name {
+			value = val
+		}
+	}
+	return value
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

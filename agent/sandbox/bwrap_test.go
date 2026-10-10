@@ -246,6 +246,26 @@ func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 	}
 }
 
+// A custom GOPATH's pkg tree (its module cache and checksum database) gets the
+// read-real/write-private overlay, not the default $HOME/go/pkg (#4188).
+func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
+	home := t.TempDir()
+	goPkg := filepath.Join(t.TempDir(), "pkg")
+	if err := os.MkdirAll(filepath.Join(goPkg, "sumdb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoPath: filepath.Dir(goPkg)}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, "/tmp/s", cwd); !hasSeq(args, "--overlay-src", goPkg, "--tmp-overlay", goPkg) {
+		t.Errorf("expected a read-real/write-private overlay for the GOPATH pkg %q: %v", goPkg, args)
+	}
+}
+
 func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
 	// The default fixture host lacks overlay → session-private cache → no overlay
 	// mounts in the argv (the env floor redirects the cache vars instead).

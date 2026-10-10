@@ -88,34 +88,30 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
 // first, because Go writes the checksum database and `go install` output only to
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
-// (Go's $HOME/go default when unset) follows, so GOPATH-mode builds still find
-// the packages already there, read-only; restricted mode cannot read it, so it
-// gets the scratch alone. Entries inside the scratch are dropped from the ambient
-// value, so flooring an already-floored env does not repeat them.
+// follows, so GOPATH-mode builds still find the packages already there,
+// read-only: the spawn's own GOPATH when it has one, else the GOPATH resolved at
+// session start (ResolvedPolicy.GoPath, which covers one set with `go env -w`).
+// Restricted mode cannot read it, so it gets the scratch alone. Entries inside
+// the scratch are dropped from the ambient value, so flooring an already-floored
+// env does not repeat them.
 func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) string {
 	scratchGoPath := filepath.Join(sessionScratch, goPathDirName)
 	if policy.Spawned.Read != ReadAnywhere {
 		return scratchGoPath
 	}
-	var ambient []string
-	home := ""
+	ambient := policy.GoPath
 	for _, kv := range env {
-		name, val, _ := strings.Cut(kv, "=")
-		switch name {
-		case envvars.GoPath.Name:
-			for _, entry := range filepath.SplitList(val) {
-				if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
-					ambient = append(ambient, entry)
-				}
-			}
-		case "HOME":
-			home = val
+		if name, val, _ := strings.Cut(kv, "="); name == envvars.GoPath.Name && val != "" {
+			ambient = val
 		}
 	}
-	if len(ambient) == 0 && home != "" {
-		ambient = []string{filepath.Join(home, "go")}
+	entries := []string{scratchGoPath}
+	for _, entry := range filepath.SplitList(ambient) {
+		if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
+			entries = append(entries, entry)
+		}
 	}
-	return strings.Join(append([]string{scratchGoPath}, ambient...), string(filepath.ListSeparator))
+	return strings.Join(entries, string(filepath.ListSeparator))
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
@@ -215,11 +211,8 @@ func floorDrops(name string) bool {
 
 // isRedirectedCacheVar reports whether name is a language cache var the floor
 // redirects into the session tmp under a session-private cache strategy.
-// GOMODCACHE is included alongside GOCACHE: it defaults to $GOPATH/pkg/mod, and
-// the granted cache root the resolver computes (cacheRootsFor) is a fixed
-// $HOME/go/pkg — it does not track a custom GOPATH, so an ambient GOMODCACHE
-// computed from a non-default GOPATH would land outside every granted root.
-// Verified 2026-08-06 (see env_floor_test.go).
+// GOMODCACHE is included alongside GOCACHE: an ambient GOMODCACHE can name any
+// directory, and only the session scratch is writable under this strategy.
 //
 // GOPATH is included because Go writes the checksum database's tree heads to
 // $GOPATH/pkg/sumdb whatever GOMODCACHE says, so its first entry must be

@@ -157,6 +157,7 @@ var (
 	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
+	GoEnv          = Var{Name: "GOENV", Summary: "Names the go env file a sandboxed session reads at start to find a GOPATH set with go env -w (off disables it).", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
@@ -293,6 +294,7 @@ var allVars = []Var{
 	XDGStateHome,
 	CargoHome,
 	Display,
+	GoEnv,
 	GoModCache,
 	GoPath,
 	Home,

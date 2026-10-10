@@ -394,23 +394,26 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, `~/go/pkg`,
-  `~/.npm`, `~/.cargo`, plus any you add) as a **read-real, write-private overlay**
-  where the host's bubblewrap supports it: builds read warm from the real cache, but
-  writes land in a per-session tmpfs that is discarded at session end.
+- `workspace-write` serves the language cache roots (`~/.cache`, `~/.npm`,
+  `~/.cargo`, the `pkg` directory of your first GOPATH entry, plus any you add) as
+  a **read-real, write-private overlay** where the host's bubblewrap supports it:
+  builds read warm from the real cache, but writes land in a per-session tmpfs that
+  is discarded at session end. The GOPATH is resolved once at session start the way
+  the go command resolves it: `$GOPATH`, then a GOPATH set with `go env -w` (the go
+  env file `$GOENV` names, `<user config dir>/go/env` by default), then `$HOME/go`.
+  Evener reads that file rather than running `go env`, which could switch and
+  download a Go toolchain at every session start.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
-  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
-  granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
-  session scratch as its first entry too: Go records the checksum database's tree
-  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH (or Go's `$HOME/go` default) stays after it, so GOPATH-mode builds still
-  find the packages already there; `restricted` cannot read it and gets the
-  scratch alone.
+  redirected alongside GOCACHE, because an ambient value can name any directory.
+  `GOPATH` gets the session scratch as its first entry too: Go records the checksum
+  database's tree heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE`
+  says, so a cold module or toolchain download needs it writable. In
+  `workspace-write` the GOPATH resolved at session start (above) stays after it, so
+  GOPATH-mode builds still find the packages already there; `restricted` cannot
+  read it and gets the scratch alone.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
