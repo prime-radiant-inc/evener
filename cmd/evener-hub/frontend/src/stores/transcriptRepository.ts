@@ -436,11 +436,16 @@ export class TranscriptRepository {
    * that crosses a baseline change or loses its lifetime publishes nothing.
    * `superseded` means the caller's `beforePublish` guard rejected the page
    * after the lookup: nothing was merged or published.
+   * `onPublished`, when given, runs synchronously in the same step as the
+   * guarded publication (after `#publish`, before this method resolves), so a
+   * caller's generation accounting and store handoff cannot be split from the
+   * guard by the promise continuation.
    */
   async loadOlderPage(
     limit: number,
     lifetime: number,
     beforePublish?: () => boolean,
+    onPublished?: () => void,
   ): Promise<
     | { kind: "local"; model: ThreadModel }
     | { kind: "exhausted"; model: ThreadModel }
@@ -488,6 +493,7 @@ export class TranscriptRepository {
     if (beforePublish && !beforePublish()) return { kind: "superseded" };
     this.#model = model;
     this.#publish();
+    onPublished?.();
     return { kind: "local", model };
   }
 

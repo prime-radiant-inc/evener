@@ -636,6 +636,80 @@ describe("entry repository: older paging", () => {
     }
   });
 
+  test("a newer accepted update delivered before the store continuation survives the local page", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-race-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      // The repository's FIRST local publication reaches the store through this
+      // subscription. Schedule the accepted update as a microtask from inside
+      // that publication, so it runs before the store caller's await resumes
+      // (the continuation the old code wrote its stale snapshot from).
+      let arm = true;
+      const unsubscribe = fixture.subscribeRepository((snapshot) => {
+        if (!arm || snapshot?.olderCursor !== "cursor_2") return;
+        arm = false;
+        queueMicrotask(() => {
+          fake.emitNotification({
+            method: "history/updated",
+            params: {
+              ref: SELECTED,
+              threadId: THREAD_ID,
+              bootGeneration: "1",
+              epoch: 0,
+              snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+              items: [{ ...pageItem(4, "turn_top"), version: 9, text: "newer" }],
+            },
+          } as AnyNotification);
+        });
+      });
+      try {
+        await threadsStore.getState().loadOlderTurns(SELECTED);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } finally {
+        unsubscribe();
+      }
+
+      // The final store keeps the newer accepted state, not the returned page
+      // snapshot that would have restored item 4 to its page version.
+      const model = threadsStore.getState().threads.get(SELECTED);
+      const item4 = (model?.turns ?? []).flatMap((turn) => turn.items).find((item) => item.position?.entry === 4);
+      expect(item4?.version).toBe(9);
+      expect((model?.turns ?? []).flatMap((turn) => turn.items).map((item) => item.position?.entry)).toEqual(
+        expect.arrayContaining([3, 4, 5, 6, 7, 8]),
+      );
+      expect(fixture.inspect().olderPageGeneration).toBe(1);
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
   test("an already-read local page does not publish across a pending hydration", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-pending-${crypto.randomUUID()}` });
     const fixture = installEntryTranscriptFixtureForTests({

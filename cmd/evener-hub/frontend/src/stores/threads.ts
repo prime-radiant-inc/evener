@@ -583,6 +583,8 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
     olderPageGeneration: number;
     readerRetention?: ReturnType<TranscriptReader["getRetentionSnapshotForTesting"]>;
   };
+  /** @internal Test-only subscription to the fixture repository's publications. */
+  subscribeRepository(listener: (model: ThreadModel | undefined) => void): () => void;
   dispose(): void;
 } {
   if (entryTranscriptFixtureForTests) throw new Error("an entry transcript fixture is already installed");
@@ -600,6 +602,8 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
       olderPageGeneration: olderPageGenerations.get(fixture.ref) ?? 0,
       ...(fixture.reader ? { readerRetention: fixture.reader.getRetentionSnapshotForTesting() } : {}),
     }),
+    subscribeRepository: (listener) =>
+      fixture.repository?.subscribe(() => listener(fixture.repository?.getSnapshot())) ?? (() => {}),
     dispose: () => {
       if (entryTranscriptFixtureForTests !== fixture) return;
       clearEntryTranscriptLocalOpening(fixture.ref);
@@ -5563,6 +5567,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           TRANSCRIPT_ITEM_PAGE_SIZE,
           fixtureState.lifetime,
           stillOwned,
+          () => {
+            // Guarded synchronous commit: the generation advance and the store
+            // handoff run in the same step as loadOlderPage's guarded
+            // publication, before its promise can resolve. A newer accepted
+            // update or hydration delivered in the continuation window
+            // therefore cannot be overwritten by the snapshot this page
+            // returned, and the background-only route (no attached reader
+            // subscription) still receives the model here.
+            olderPageGenerations.set(ref, capturedPageGeneration + 1);
+            publishEntryTranscriptFixtureModel(ref);
+          },
         );
         if (outcome.kind === "reconcile") {
           if (!stillOwned()) return;
@@ -5577,15 +5592,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
           return;
         }
-        if (outcome.kind === "local") {
-          // loadOlderPage evaluated `stillOwned` with no await before its own
-          // publication (it is the publication that changed olderCursor), so
-          // this page is ours; re-testing the cursor here would reject the page
-          // we just accepted and skip the generation advance.
-          olderPageGenerations.set(ref, capturedPageGeneration + 1);
-          putThreadModel(ref, outcome.model);
-          return;
-        }
+        // The local outcome already committed generation and publication
+        // synchronously in onPublished; do not republish the returned model
+        // after the await.
+        if (outcome.kind === "local") return;
         if (outcome.kind === "exhausted") {
           if (!stillOwned()) return;
           olderPageGenerations.set(ref, capturedPageGeneration + 1);
