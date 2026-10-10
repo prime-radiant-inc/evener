@@ -125,6 +125,34 @@ test("reads the earlier results a send's wait carried, oldest first", () => {
   expect(delegateSendEarlierResponses({ output: "no state" })).toEqual([]);
 });
 
+// An update the wait carried ahead of the reply (agent/session_tools_jobs.go's
+// delegateSendResultFrom: action "update", the message as output, no status)
+// reads as an update, never as an earlier reply.
+test("reads an earlier update as an update with its message", () => {
+  const raw = {
+    delegate_id: "dlg_x",
+    type: "delegate",
+    status: "completed",
+    running_in_background: false,
+    action: "completed",
+    output: "done",
+    truncated: false,
+    earlier_results: [
+      {
+        delegate_id: "dlg_x",
+        type: "delegate",
+        running_in_background: false,
+        action: "update",
+        output: "which table?",
+        truncated: false,
+      },
+    ],
+  };
+  const earlier = delegateSendEarlierResponses({ raw, output: "" });
+  expect(earlier).toEqual([{ text: "which table?", update: true }]);
+  expect(delegateSendEarlierLabel(earlier[0] ?? { text: "" }, 0, 1)).toBe("earlier update 1 of 1");
+});
+
 // A reply that carried earlier results and has no text of its own has no
 // reply, whatever it printed: its printed output holds the earlier results,
 // and lines after the footer (a worktree, a warning) would otherwise hide the
