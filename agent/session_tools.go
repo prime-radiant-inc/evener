@@ -1522,6 +1522,9 @@ func (s *Session) rebuildToolDefsCache() {
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
 			}
+			if s.reportsToParent() {
+				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
+			}
 			if s.memorySaveInstructionsEnabled() {
 				defs[i].Description += " " + memoryReportReminder
 			}

@@ -43,6 +43,24 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	rootRequest := adapter.waitForRequests(t, "root", 1)[0]
 	delegateRequest := adapter.waitForRequests(t, "GOLDEN-CHILD", 1)[0]
 
+	// The delegate gets communicate worded for its parent; the root keeps the
+	// wording for its human partner.
+	communicateDescription := func(req llm.Request) string {
+		for _, def := range req.Tools {
+			if def.Name == "communicate" {
+				return def.Description
+			}
+		}
+		t.Fatal("request offers no communicate tool")
+		return ""
+	}
+	if got, want := communicateDescription(delegateRequest), toolpkg.WithCommunicateDelegateUpdates(toolpkg.DefCommunicate()).Description; got != want {
+		t.Fatalf("delegate communicate is not worded for its parent:\n got %s\nwant %s", got, want)
+	}
+	if got, want := communicateDescription(rootRequest), toolpkg.DefCommunicate().Description; got != want {
+		t.Fatalf("root communicate wording changed:\n got %s\nwant %s", got, want)
+	}
+
 	observerTools := []llm.ToolDefinition{
 		toolpkg.DefDelegate(nil),
 		toolpkg.DefJobList(),

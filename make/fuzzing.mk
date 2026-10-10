@@ -125,17 +125,18 @@ fuzz:
 # AppWire package and the phone parse instead of hand-building frames; the
 # fifth records a coordinator's delegate and other tool calls as history
 # carries them, which the phone's subagent rows read. The last pins the agent's
-# memory guidance and memory tool descriptions, per capability shape.
+# memory guidance and memory tool descriptions, per capability shape, and its
+# reporting guidance and messaging tool descriptions, per session kind.
 ## Regenerate the decode SNAPSHOT goldens from the current decoders, the
 ## hub credential-wire, notification-frame and tool-call fixtures its clients
-## decode, and the memory prompt goldens. Run ONLY after an intended change,
+## decode, and the memory and messaging prompt goldens. Run ONLY after an intended change,
 ## then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
 	@sh -c "cd agent && go test -run 'WireFixtures\$$' . -update-wire"
-	@sh -c "cd agent && go test -run 'TestMemoryGuidanceFollowsCapabilities\$$' . -update-prompt"
+	@sh -c "cd agent && go test -run 'TestMemoryGuidanceFollowsCapabilities\$$|TestDelegateMessagingGuidanceGoldens\$$' . -update-prompt"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

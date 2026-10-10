@@ -59,6 +59,13 @@ func (s *Session) hasHumanPartnerToAsk() bool {
 	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
 }
 
+// reportsToParent reports whether this session is a delegate, whose
+// communicate messages go to its parent agent rather than to a human
+// partner. It gates both communicate's wording and update delivery.
+func (s *Session) reportsToParent() bool {
+	return s.owningDelegateID != "" || s.isSubagentSession()
+}
+
 // askPendingCount returns the number of questions currently pending this turn
 // (spec §5.1's per-turn pending set) — a later round-boundary check uses this
 // to decide whether the round just posted question(s).

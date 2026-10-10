@@ -805,7 +805,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	// rather than in the shared install validator.
 	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		if len(a.Events) == 1 && a.Events[0] == "communicate" {
-			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, and report findings with communicate(end_turn=true)`)
+			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with communicate(end_turn=false), and report findings with communicate(end_turn=true)`)
 		}
 		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
 	}
@@ -1006,7 +1006,7 @@ func validateWatchEventArgs(a watchArgs) error {
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
-				return errors.New(`invalid_request: event_filter matches assistant.tool events; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, and report findings with communicate(end_turn=true)`)
+				return errors.New(`invalid_request: event_filter matches assistant.tool events; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with communicate(end_turn=false), and report findings with communicate(end_turn=true)`)
 			}
 			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}`)
 		}

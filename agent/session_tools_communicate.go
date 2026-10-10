@@ -32,6 +32,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
 	}
+	if deps.reportsToParent {
+		resultToolDef = tool.WithCommunicateDelegateUpdates(resultToolDef)
+	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
