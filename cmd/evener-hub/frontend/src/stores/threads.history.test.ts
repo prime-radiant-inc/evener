@@ -185,8 +185,9 @@ describe("versioned history: resync", () => {
       params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch: 1 },
     } as AnyNotification);
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The production entry owner checks durable authorities before publication.
+    // Observe that automatic publication, not a guessed number of event turns.
+    await vi.waitFor(() => expect(modelName()).toBe("after-resync"));
 
     expect(modelName()).toBe("after-resync");
     expect(threadsStore.getState().threads.get(REF)?.history?.epoch).toBe(1);
