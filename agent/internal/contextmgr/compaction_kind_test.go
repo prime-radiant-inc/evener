@@ -156,12 +156,36 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	}
 }
 
-// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole pins that a
-// re-compaction shows the summarizer the whole previous summary. That summary
-// is the only record of the conversation it folded, so a permission or hold it
-// quotes past its opening lines must still reach the summarizer, or the next
-// summary drops it (#4173).
-func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole(t *testing.T) {
+// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary pins that a
+// re-compaction shows the summarizer the previous summary well past its
+// opening. That summary is the only record of the conversation it folded, so a
+// permission or hold it quotes after its timeline must still reach the
+// summarizer, or the next summary drops it (#4173). The summary still cannot
+// crowd out the conversation folded after it.
+func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name, previous, want string
+	}{
+		// A quote past the old 1000-character cut still reaches the summarizer.
+		{"quote past the opening", "[CONTEXT SUMMARY]\n## Conversation Timeline\n" + strings.Repeat("timeline ", 400) +
+			"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]", "PREVIOUS_SUMMARY_QUOTE_SENTINEL"},
+		// An oversized previous summary still leaves room for the conversation
+		// folded after it.
+		{"oversized summary", "[CONTEXT SUMMARY]\n" + strings.Repeat("timeline ", 20_000) + "\n[END SUMMARY]", "FOLDED_USER_SENTINEL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := resummarizePrompt(t, tc.previous)
+			if !strings.Contains(prompt, tc.want) {
+				t.Fatalf("the summarizer did not see %s (prompt is %d chars)", tc.want, len(prompt))
+			}
+		})
+	}
+}
+
+// resummarizePrompt compacts a history that starts with previous and returns
+// the prompt the summarizer received.
+func resummarizePrompt(t *testing.T, previous string) string {
+	t.Helper()
 	var prompt string
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -175,12 +199,9 @@ func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole(t *testing.T
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
-
-	previous := "[CONTEXT SUMMARY]\n## Conversation Timeline\n" + strings.Repeat("timeline ", 400) +
-		"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]"
 	history := []schema.Turn{
 		{Kind: schema.TurnSummary, Message: llm.User(previous)},
-		{Kind: schema.TurnUserInput, Message: llm.User("keep going")},
+		{Kind: schema.TurnUserInput, Message: llm.User("FOLDED_USER_SENTINEL")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
@@ -188,7 +209,5 @@ func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummaryWhole(t *testing.T
 	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
 		t.Fatalf("summarizeWithLLM: %v", err)
 	}
-	if !strings.Contains(prompt, "PREVIOUS_SUMMARY_QUOTE_SENTINEL") {
-		t.Fatalf("the summarizer did not see the end of the previous summary:\n%s", prompt)
-	}
+	return prompt
 }
