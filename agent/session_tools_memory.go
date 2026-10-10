@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -66,9 +64,14 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 // and each path under it named relative to it, the way the memory tools take
 // paths. The shared executors run on host paths (memoryFileArgs), so their
 // summaries and errors name them, and a model that copied one back would be
-// refused. A match that is part of a longer path is left alone: a sibling
-// that only starts with root, such as "<root>-2", or a path that only
-// contains it, such as "x<root>/page.md".
+// refused.
+//
+// Almost any byte can be part of a file name, so a match is rewritten only
+// where the text sets it off as a path: it starts the text or follows one of
+// pathOpeners, and is followed by a separator (a path under root), or ends the
+// text or comes before one of pathClosers (root itself). Anywhere else, such
+// as "<root>~old" or "x<root>/page.md", the text is left as it is: a host
+// path left in a message is better than a wrong relative one.
 func scopeRelativeText(root, text string) string {
 	if root == "" || !strings.Contains(text, root) {
 		return text
@@ -80,24 +83,36 @@ func scopeRelativeText(root, text string) string {
 		if !found {
 			return b.String()
 		}
-		switch {
-		case before != "" && isPathNameByte(before[len(before)-1]):
+		text = rest
+		if before != "" && !strings.ContainsRune(pathOpeners, rune(before[len(before)-1])) {
 			b.WriteString(root)
-		case strings.HasPrefix(rest, string(filepath.Separator)):
-			rest = rest[1:]
-		case rest == "" || !isPathNameByte(rest[0]):
+			continue
+		}
+		under, isUnder := strings.CutPrefix(rest, string(filepath.Separator))
+		switch {
+		case isUnder && !endsPath(under):
+			text = under
+		case endsPath(under):
 			b.WriteString(".")
+			text = under
 		default:
 			b.WriteString(root)
 		}
-		text = rest
 	}
 }
 
-// isPathNameByte reports whether c can be part of a file name, so a root next
-// to it is part of a longer path, not the root.
-func isPathNameByte(c byte) bool {
-	return c == '-' || c == '_' || c == '.' || c >= utf8.RuneSelf || unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
+// pathOpeners and pathClosers are the bytes that set a path off in a tool's
+// summary or error: whitespace, quotes, brackets, and the colon that ends the
+// path in "open <path>: <reason>".
+const (
+	pathOpeners = " \t\n\"'`(["
+	pathClosers = " \t\n\"'`)]:"
+)
+
+// endsPath reports whether rest, the text after a path, starts with what ends
+// one.
+func endsPath(rest string) bool {
+	return rest == "" || strings.ContainsRune(pathClosers, rune(rest[0]))
 }
 
 // memoryScopeRoot is the host directory of scope, the working directory of

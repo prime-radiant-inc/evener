@@ -2120,8 +2120,8 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 }
 
 // scopeRelativeText names the scope root "." and a path under it by its
-// relative path, wherever they appear, and leaves alone a sibling that merely
-// shares the root's prefix and a longer path that only contains it.
+// relative path where the text sets them off as a path, and leaves the text
+// as it is wherever the match could be part of a longer name.
 func TestScopeRelativeText(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
@@ -2130,11 +2130,17 @@ func TestScopeRelativeText(t *testing.T) {
 		"wrote 3 bytes to " + root + sep + "dir" + sep + "a.md": "wrote 3 bytes to dir" + sep + "a.md",
 		"is outside working directory \"" + root + "\"":         "is outside working directory \".\"",
 		"scope " + root: "scope .",
-		root + sep + "a.md and " + root + sep + "b.md": "a.md and b.md",
-		root + "-2" + sep + "a.md":                     root + "-2" + sep + "a.md",
-		root + "s":                                     root + "s",
-		"x" + root + sep + "page.md":                   "x" + root + sep + "page.md",
-		"no host path here":                            "no host path here",
+		root + sep + "a.md and " + root + sep + "b.md":              "a.md and b.md",
+		root + "-2" + sep + "a.md":                                  root + "-2" + sep + "a.md",
+		root + "s":                                                  root + "s",
+		"x" + root + sep + "page.md":                                "x" + root + sep + "page.md",
+		"open " + root + "~archive" + sep + "note.md: no such file": "open " + root + "~archive" + sep + "note.md: no such file",
+		root + "+x":                            root + "+x",
+		root + ",x":                            root + ",x",
+		"open " + root + ": permission denied": "open .: permission denied",
+		"removed " + root + sep:                "removed .",
+		"(" + root + sep + "a.md)":             "(a.md)",
+		"no host path here":                    "no host path here",
 	} {
 		if got := scopeRelativeText(root, in); got != want {
 			t.Errorf("scopeRelativeText(%q) = %q, want %q", in, got, want)
