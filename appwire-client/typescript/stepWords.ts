@@ -52,9 +52,16 @@ export function readLineRange(args: Record<string, unknown>, output: string): st
   return output === "" ? undefined : `lines ${offset}`;
 }
 
-/** Count an output only once there is text to count. */
-export function outputCount(output: string | undefined, noun: string): string | undefined {
-  return output ? `${lineCount(output)} ${noun}` : undefined;
+/** How many entries a search result lists (grep, glob, memory_search), once
+ * there is a result to count. A search lists its entries one per line, then
+ * any notes about the result (cut at the cap, paths left out) after a blank
+ * line, so only the lines before the first blank line count. Go reads results
+ * the same way (agent/searchresult), and agent/testdata/toolwire's recorded
+ * calls pin both to the tools' real output. */
+export function searchResultCount(output: string | undefined, noun: string): string | undefined {
+  if (!output) return undefined;
+  const blank = output.indexOf("\n\n");
+  return `${lineCount(blank < 0 ? output : output.slice(0, blank))} ${noun}`;
 }
 
 /** The quoted, bounded pattern shared by grep-like summaries. */
