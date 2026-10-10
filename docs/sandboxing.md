@@ -76,9 +76,11 @@ Their `personal`/`project` scope and relative paths cannot select arbitrary host
 roots or another project. Shared confinement rejects escapes and symlink
 indirection even when the session's workspace sandbox is off.
 
-A read-only role can write its authorized memory without workspace writes.
-Memory permissions do not grant shell or network access. Fresh and restored
-delegates retain their parent's effective memory tool/scope ceilings. Memory
+A root session's read-only role can write its authorized memory without
+workspace writes. A delegate only reads and searches memory, whatever its role;
+see [memory](product/memory.md). Memory permissions do not grant shell or
+network access. Fresh and restored delegates retain their parent's effective
+memory tool/scope ceilings. Memory
 tool names do not count as workspace-mutation tools for the delegate safety
 floor described above.
 

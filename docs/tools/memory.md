@@ -13,7 +13,9 @@ root. Paths are relative to that scope and may include subdirectories. Absolute
 paths, escapes and symlink indirection are rejected by shared confinement.
 There is no `root` or `project_id` argument.
 
-Disabled or unbound sessions expose none of these tools. An unavailable project
+Disabled or unbound sessions expose none of these tools. A delegate exposes
+only `memory_read` and `memory_search`, whatever its role or parent grants; it
+reports what it learned to its parent, which decides what to save. An unavailable project
 binding does not authorize another project's storage. Stored text cannot grant
 scope or filesystem access. Ordinary tool-call `intent` metadata, where
 advertised, has the same purpose as for other tools.
