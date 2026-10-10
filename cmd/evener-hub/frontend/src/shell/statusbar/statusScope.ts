@@ -1,6 +1,7 @@
 // Activity context and summary are authoritative for the selected session.
 // Navigation supplies a title and embedded Tasks when that exact row exists.
 import type { NavigationSessionSummary, SessionActivitySnapshot, SessionActivitySummary } from "@evener/appwire-client";
+import { taskSettledCount } from "@evener/appwire-client";
 import { type NavigationStoreState, selectSessionSummary } from "../../stores/navigation/selectors";
 
 export type ActivityTab = "agents" | "jobs" | "watches" | "tasks" | "about";
@@ -15,7 +16,7 @@ export interface ScopeCounts {
   jobsTotal: number | null;
   armedWatches: number | null;
   watchesTotal: number | null;
-  tasksDone: number;
+  tasksSettled: number;
   tasksTotal: number;
 }
 export interface ActivityScope {
@@ -41,7 +42,9 @@ export function scopeCounts(
     jobsTotal: summary?.jobs.known ? summary.jobs.total : null,
     armedWatches: summary?.watches.known ? summary.watches.active : null,
     watchesTotal: summary?.watches.known ? summary.watches.total : null,
-    tasksDone: session.tasks?.done ?? 0,
+    // The panel's settled group and the inline card's meter count the same
+    // tasks, so the chip must too.
+    tasksSettled: session.tasks ? taskSettledCount(session.tasks) : 0,
     tasksTotal: session.tasks?.total ?? 0,
   };
 }

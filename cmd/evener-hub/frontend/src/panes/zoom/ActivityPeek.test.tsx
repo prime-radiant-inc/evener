@@ -121,7 +121,7 @@ test.each(["root", "child", "grandchild"])(
     for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
       expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
     }
-    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 done - peek at ${ref}` })).toBeTruthy();
+    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
     expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
     expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
   },

@@ -3,7 +3,7 @@ import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { describe, expect, it } from "vitest";
 import { activityClient, activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
-import { deriveScope } from "./statusScope";
+import { deriveScope, scopeCounts } from "./statusScope";
 
 const navigation = () => createNavigationStore({ persistence: memoryNavigationPersistence() }).getState();
 describe("typed activity scope", () => {
@@ -46,5 +46,16 @@ describe("typed activity scope", () => {
     const counted = deriveScope(navigation(), "remote:deep", store.getSnapshot(), subtree);
     expect(counted.counts).toMatchObject({ activeSubagents: 3, delegatesTotal: 4, runningJobs: 2 });
     store.dispose();
+  });
+});
+
+describe("scopeCounts", () => {
+  it("counts cancelled tasks toward the Tasks chip's settled count", () => {
+    const leaf = {
+      ref: "remote:tasks",
+      title: "Tasks owner",
+      tasks: { total: 5, done: 2, cancelled: 1 },
+    };
+    expect(scopeCounts(leaf, null, null)).toMatchObject({ tasksSettled: 3, tasksTotal: 5 });
   });
 });

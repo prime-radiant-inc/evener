@@ -663,8 +663,10 @@ starts settled done/cancelled task history folded. Current and Remaining task se
 remain visible. Task details
 remain an explicit disclosure choice.
 
-The browser Tasks tab keeps its done/total count in the tab label and starts its
-body with the task groups, without aggregate summary lines above them. The
+The browser Tasks tab keeps its settled/total count in the tab label (done
+plus cancelled tasks; the footer chip and each cascade Tasks chip count the
+same) and starts its body with the task groups, without aggregate summary lines
+above them. The
 standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
 labels. Loading, unavailable and empty states remain visible; a failed refresh
 retains loaded rows and the existing retry control.
