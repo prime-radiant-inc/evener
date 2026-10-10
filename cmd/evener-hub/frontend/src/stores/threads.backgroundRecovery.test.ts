@@ -1954,7 +1954,12 @@ describe("background transcript recovery", () => {
         },
       } as AnyNotification);
       await settleBackgroundTranscriptsForTests();
+      // The notification was genuinely accepted (the held display advanced),
+      // so an empty cache here is a refused persistence attempt, not an
+      // upstream discard.
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("HOLDER_LIVE_BODY");
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+      await expect(entryCache.getByteTotals(historyKey)).resolves.toMatchObject({ historyBytes: 0 });
       expect(threadsStore.getState().threads.get(selected)).toBeDefined();
     } finally {
       threadsStore.getState().releaseThread(selected);

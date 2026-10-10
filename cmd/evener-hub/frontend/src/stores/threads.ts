@@ -578,6 +578,10 @@ interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsFo
   lifetime: number;
   readSequence: number;
   historyKey?: string;
+  // True while an in-flight same-tab Clear has suppressed this route's
+  // publication and persistence claims. An aborted Clear clears it, re-enabling
+  // the same held route without a release/reacquire.
+  clearInert?: boolean;
   // The durable authorities the installed repository captured. A later read
   // that observes a newer Clear epoch or deletion generation retires it, so a
   // fresh explicit foreground acquisition begins caching under the current
@@ -807,6 +811,7 @@ async function acceptEntryTranscriptHydration(
       historyGeneration,
       lifetime: fixture.lifetime,
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
+      suppressed: () => fixture.clearInert === true,
     });
   }
   const repository = fixture.repository;
@@ -6428,7 +6433,11 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const entryFixture = entryTranscriptFixtureForTests;
   if (entryFixture) {
     noteEntryRouteRetirement(entryFixture.ref);
-    retireEntryTranscriptRoute(entryFixture);
+    // Retire the route's publication and persistence claims immediately by
+    // suppressing it, WITHOUT disposing it: an aborted Clear (nothing changed)
+    // re-enables the same held reader/subscription/repository, so a still-held
+    // foreground model resumes ordinary ingestion without a release/reacquire.
+    entryFixture.clearInert = true;
   }
   // Synchronous logical retirement, before the transaction resolves: a
   // pre-Clear hydration must not publish into the same-tab clear window. Issued
@@ -6447,6 +6456,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     // never need reverting: optimistic arming did not change their epoch.
     residencyIfCreated?.releaseClearClaim();
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
+    // Neither database changed, so the suppressed entry route is re-enabled: a
+    // still-held foreground model resumes ordinary recorded ingestion
+    // (publication and persistence) without a release/reacquire.
+    if (entryFixture) entryFixture.clearInert = false;
     return { committed: false };
   }
   // The entry cache is a separate store from the legacy/residency cache; clear
@@ -6457,6 +6470,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   if (entryFixture) {
     const entryResult = await entryFixture.cache.clear();
     if (!entryResult.committed) entryIncomplete = true;
+    // The committed clear retires the route: a fresh explicit acquisition
+    // rebuilds under the new epoch.
+    retireEntryTranscriptRoute(entryFixture);
+    entryFixture.clearInert = false;
   }
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);

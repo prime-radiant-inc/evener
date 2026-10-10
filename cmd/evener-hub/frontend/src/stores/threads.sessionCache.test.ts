@@ -4154,9 +4154,9 @@ describe("exclusive entry transcript fixture route", () => {
       });
       const clearing = clearCachedSessions();
       await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
-      // Immediate retirement: the installed repository is gone while the clear
-      // window is still open.
-      expect(fixture.inspect().model).toBeUndefined();
+      // Immediate claim retirement without disconnection: the route is
+      // suppressed but not disposed, so a still-held model can resume on abort.
+      expect(fixture.inspect().model).toBeDefined();
 
       // A notification delivered in the window neither publishes nor persists.
       requireConnectedClient("entry fixture notification").emitNotification({
@@ -4356,6 +4356,89 @@ describe("exclusive entry transcript fixture route", () => {
       legacy.close();
       setSessionCacheAdapterForTests(undefined);
       vi.useRealTimers();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("an aborted same-tab Clear restores the held entry route so ingestion resumes", async () => {
+    const selected = "local:entry-clear-abort-resume";
+    const entryDatabase = "entry-clear-abort-resume-test";
+    const legacy = new SessionCacheIndexedDB({
+      beforeCommit: (operation) => {
+        if (operation === "clear") throw new Error("legacy clear fault");
+      },
+    });
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-clear-abort-resume", "ABORT_RESUME_SEED");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "abort-resume-seed", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      const epochBefore = await entryCache.getClearEpoch();
+
+      // The legacy Clear aborts before any commit; nothing changed.
+      await expect(clearCachedSessions()).resolves.toEqual({ committed: false });
+      expect(threadsStore.getState().clearInFlight).toBeUndefined();
+
+      // The immediately-retired route was restored: a valid same-binding
+      // notification advances the held display AND persists, without a release
+      // or reacquire.
+      const threadId = threadsStore.getState().threads.get(selected)?.threadId;
+      if (!threadId) throw new Error("expected the restored held model");
+      requireConnectedClient("entry fixture notification").emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "holder-live", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "abort-resume-item",
+              transcriptKey: "abort-resume-item",
+              turnId: "holder-live",
+              version: 2,
+              text: "ABORT_RESUME_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("ABORT_RESUME_BODY");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ transcriptKey: "abort-resume-item" })]),
+      );
+      // Independent suppression is untouched: the durable epoch is unchanged.
+      expect(await entryCache.getClearEpoch()).toBe(epochBefore);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });

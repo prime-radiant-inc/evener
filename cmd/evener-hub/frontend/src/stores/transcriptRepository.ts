@@ -183,6 +183,13 @@ export interface TranscriptRepositoryBinding {
    * eviction victim while it fits.
    */
   isPreferred?: () => boolean;
+  /**
+   * Whether this route's publication and persistence claims are currently
+   * suppressed by an in-flight Clear. A suppressed route accepts nothing (no
+   * publish, no write) but is not disposed, so an aborted Clear can re-enable
+   * the still-held route without a release/reacquire.
+   */
+  suppressed?: () => boolean;
   lifetime: number;
   seedModel?: ThreadModel;
   seedAuthority?: {
@@ -1026,7 +1033,12 @@ export class TranscriptRepository {
   }
 
   #acceptsLifetime(lifetime: number): boolean {
-    return !this.#disposed && !this.#invalidated && lifetime === this.#binding.lifetime;
+    return (
+      !this.#disposed &&
+      !this.#invalidated &&
+      !(this.#binding.suppressed?.() ?? false) &&
+      lifetime === this.#binding.lifetime
+    );
   }
 
   #mintBaseline(): string {
@@ -1041,8 +1053,9 @@ export class TranscriptRepository {
    * Whether the durable Clear epoch this binding captured is still current. An
    * asynchronous lookup that began before a committed Clear must not publish the
    * rows it read under the old epoch, even when the client and source identity
-   * are unchanged. Bounded by the lookup deadline; an unreadable or held-out
-   * epoch is treated as unchanged, and only a proven different epoch refuses.
+   * are unchanged. Bounded by the lookup deadline and fail-closed: an epoch that
+   * cannot be established (timeout or read failure) is NOT treated as unchanged,
+   * so an unverified result never publishes as current.
    */
   async #clearEpochUnchanged(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1053,9 +1066,9 @@ export class TranscriptRepository {
           timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
         }),
       ]);
-      return epoch === undefined || epoch === this.#binding.clearEpoch;
+      return epoch !== undefined && epoch === this.#binding.clearEpoch;
     } catch {
-      return true;
+      return false;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

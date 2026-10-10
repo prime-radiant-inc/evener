@@ -215,7 +215,8 @@ function holdNextEntryWrite(cache: SessionEntryCache, transcriptKey: string) {
 
 // Runs the real cache's older-window query to completion, then holds its
 // RESULT delivery until released: a Clear can land after the query genuinely
-// returned rows but before the repository merges them.
+// returned rows but before the repository merges them. `lastResult` exposes the
+// completed query so a test can prove it really carried rows.
 function holdOlderWindowLookup() {
   const original = SessionEntryCache.prototype.getOlderWindow;
   let releaseGate!: () => void;
@@ -226,7 +227,43 @@ function holdOlderWindowLookup() {
   const ready = new Promise<void>((resolve) => {
     markReady = resolve;
   });
+  let lastResult: Awaited<ReturnType<typeof original>> | undefined;
   const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+    this: SessionEntryCache,
+    ...args: Parameters<typeof original>
+  ) {
+    const resultPromise = original.apply(this, args);
+    return (async () => {
+      const result = await resultPromise;
+      lastResult = result;
+      markReady();
+      await gate;
+      return result;
+    })();
+  } as typeof original);
+  return {
+    whenReady: ready,
+    lastResult: () => lastResult,
+    release() {
+      releaseGate();
+      spy.mockRestore();
+    },
+  };
+}
+
+// Runs the real cache's latest-window query to completion, then holds its RESULT
+// delivery until released.
+function holdLatestWindowLookup() {
+  const original = SessionEntryCache.prototype.getLatestWindow;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  const spy = vi.spyOn(SessionEntryCache.prototype, "getLatestWindow").mockImplementation(function (
     this: SessionEntryCache,
     ...args: Parameters<typeof original>
   ) {
@@ -835,25 +872,28 @@ test("committed rows reopen as a stale seed with no overlay, and a source read r
   reopened.dispose();
 });
 
-test("a write held in flight across a delete is refused and cannot resurrect the deleted rows", async () => {
+test("a delete with queued work cancels the queued ticket and no queued row reaches the cache", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache, { lifetime: 1, historyGeneration: 0 });
   owner.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
   await owner.settled();
+  await expect(fixture.cache.getByteTotals(historyKey)).resolves.toMatchObject({ historyBytes: expect.any(Number) });
 
-  // Hold a real in-flight batch, queue a second behind it, delete the history
-  // under both, then release.
+  // Hold a real in-flight batch, queue a second behind it, delete the history,
+  // then cancel the route (client teardown, the effect store deletion applies).
   const gate = holdNextEntryWrite(fixture.cache, "item-9");
   owner.accept(historyUpdate(9, 9, "in-flight", 9), { lifetime: 1 });
   await gate.reached;
   owner.accept(historyUpdate(10, 10, "queued", 10), { lifetime: 1 });
   expect(await fixture.cache.deleteHistory(historyKey)).toBe(true);
-  gate.release();
-  await owner.settled();
-  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
-  await expect(fixture.cache.getHistoryGeneration(historyKey)).resolves.toBe(1);
   owner.dispose();
+  gate.release();
+  // The queued ticket is an explicit cancelled disposition, not silent success.
+  await expect(owner.settled()).rejects.toThrow(/cancelled|outstanding|failed/);
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(fixture.cache.getByteTotals(historyKey)).resolves.toEqual({ historyBytes: 0, aggregateBytes: 0 });
+  await expect(fixture.cache.getHistoryGeneration(historyKey)).resolves.toBe(1);
 });
 
 test("a write held across a replacement cannot republish into the replacement", async () => {
@@ -902,34 +942,54 @@ test("an older-page lookup held across a real Clear publishes no stale page", as
   const repo = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
   repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
   const authority = repo.getBaselineIdentity();
-  repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
-    lifetime: 1,
-    readId: "r1",
-    boundary: "p1",
-    authority,
-    requestCursor: "C1",
+  // Rows 3-5 exist ONLY in certified cache coverage, not in the displayed model
+  // (whose oldest row is 6), so a served page would be a genuine stale publish.
+  await fixture.cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [3, 4, 5].map((entry) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version: entry,
+      item: { id: `item-${entry}`, turnId: "turn_1", type: "agentMessage", text: `row-${entry}` },
+    })),
+    coverage: {
+      kind: "page",
+      readId: "r1",
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor: "C2",
+      requestCursor: "C1",
+      authority,
+      boundary: "p1",
+    },
   });
   await repo.settled();
+  expect(orderedPositions(repo.getSnapshot())).toEqual([6, 7, 8]);
 
   const gate = holdOlderWindowLookup();
   const publications: number[] = [];
   const unsubscribe = repo.subscribe(() => publications.push(orderedPositions(repo.getSnapshot()).length));
   const lookup = repo.loadOlderPage(40, 1);
   await gate.whenReady;
-  // The real older-window query has returned its rows; Clear lands before the
-  // repository merges them, with unchanged client and source identity.
+  // The completed query really carried the certified rows 3-5.
+  expect(gate.lastResult()?.rows.map((row) => row.transcriptKey)).toEqual(["item-3", "item-4", "item-5"]);
+  // Clear lands before the repository merges the completed result, with
+  // unchanged client and source identity.
   await expect(fixture.cache.clear()).resolves.toEqual({ committed: true, epoch: 1 });
   const publishedBeforeRelease = publications.length;
   const releasedAt = Date.now();
   gate.release();
   const outcome = await lookup;
-  // The held lookup publishes no stale page: the durable Clear epoch it read
-  // under has moved, so it routes to the bounded reconciliation and the already
-  // loaded display rows are untouched.
+  // The stale rows are never published: the moved durable epoch routes the
+  // lookup to the bounded reconciliation.
   expect(outcome.kind).toBe("reconcile");
   expect(Date.now() - releasedAt).toBeLessThan(2_000);
   expect(publications.length).toBe(publishedBeforeRelease);
-  expect(orderedPositions(repo.getSnapshot())).toEqual([3, 4, 5, 6, 7, 8]);
+  expect(orderedPositions(repo.getSnapshot())).toEqual([6, 7, 8]);
   unsubscribe();
   repo.dispose();
 });
@@ -961,4 +1021,84 @@ test("a committed Clear's suppression stands through a real aborted Clear", asyn
   await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "item-1" }]);
   before.dispose();
   after.dispose();
+});
+
+test("an unverifiable Clear epoch routes a held older lookup to reconciliation within the bound", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await fixture.cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [3, 4, 5].map((entry) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version: entry,
+      item: { id: `item-${entry}`, turnId: "turn_1", type: "agentMessage", text: `row-${entry}` },
+    })),
+    coverage: {
+      kind: "page",
+      readId: "r1",
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor: "C2",
+      requestCursor: "C1",
+      authority,
+      boundary: "p1",
+    },
+  });
+  await repo.settled();
+
+  // A rejected epoch read is not treated as unchanged: the lookup cannot be
+  // certified and routes to the bounded reconciliation.
+  const realEpoch = fixture.cache.getClearEpoch.bind(fixture.cache);
+  fixture.cache.getClearEpoch = (() =>
+    Promise.reject(new Error("epoch unreadable"))) as typeof fixture.cache.getClearEpoch;
+  const rejectedAt = Date.now();
+  const rejected = await repo.loadOlderPage(40, 1);
+  expect(rejected.kind).toBe("reconcile");
+  expect(Date.now() - rejectedAt).toBeLessThan(2_000);
+
+  // A held epoch read is bounded too.
+  fixture.cache.getClearEpoch = (() => new Promise<number>(() => {})) as typeof fixture.cache.getClearEpoch;
+  const heldAt = Date.now();
+  const held = await repo.loadOlderPage(40, 1);
+  expect(held.kind).toBe("reconcile");
+  expect(Date.now() - heldAt).toBeLessThan(2_000);
+
+  fixture.cache.getClearEpoch = realEpoch;
+  repo.dispose();
+});
+
+test("a local open held across a real Clear reports recovery-needed without publishing a stale window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
+  repo.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await repo.settled();
+
+  const gate = holdLatestWindowLookup();
+  const publications: number[] = [];
+  const unsubscribe = repo.subscribe(() => publications.push(orderedPositions(repo.getSnapshot()).length));
+  const reader = repo.attachReader();
+  const opening = reader.openLocal(40);
+  await gate.whenReady;
+  await expect(fixture.cache.clear()).resolves.toEqual({ committed: true, epoch: 1 });
+  const publishedBeforeRelease = publications.length;
+  gate.release();
+  const opened = await opening;
+  // The completed window is not certified as current and is not published; the
+  // readable model is retained.
+  expect(opened.status).toBe("recovery-needed");
+  expect(opened.model).toBeDefined();
+  expect(orderedPositions(opened.model)).toEqual([6, 7, 8]);
+  expect(publications.length).toBe(publishedBeforeRelease);
+  unsubscribe();
+  reader.dispose();
+  repo.dispose();
 });
