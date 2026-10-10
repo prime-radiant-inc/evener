@@ -14,6 +14,7 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { connectionStore } from "./connection";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 import {
   holdNextCurrentLookup,
   holdNextCurrentLookupBeforeRead,
@@ -25,7 +26,6 @@ import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
-  installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setSessionCacheAdapterForTests,
@@ -1798,12 +1798,7 @@ describe("background transcript recovery", () => {
     const entryCache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
     const sibling = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
     resetThreadsStoreForTests();
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       // A real recorded item so the entry repository has something to cache.
       const fake = new FakeClient("ready");
@@ -1829,7 +1824,7 @@ describe("background transcript recovery", () => {
             ],
           },
         ];
-        return response;
+        return { ...response, requestGeneration: params.requestGeneration };
       });
       fake.on("thread/unsubscribe", () => ({}));
       connectionStore.getState().connect(fake);
@@ -1876,12 +1871,7 @@ describe("background transcript recovery", () => {
     const entryCache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
     const sibling = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
     resetThreadsStoreForTests();
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     let commitSpy: ReturnType<typeof vi.spyOn> | undefined;
     try {
       const fake = new FakeClient("ready");
@@ -1907,7 +1897,7 @@ describe("background transcript recovery", () => {
             ],
           },
         ];
-        return response;
+        return { ...response, requestGeneration: params.requestGeneration };
       });
       fake.on("thread/unsubscribe", () => ({}));
       connectionStore.getState().connect(fake);

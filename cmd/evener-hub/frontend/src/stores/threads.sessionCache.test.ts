@@ -35,6 +35,7 @@ import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./pro
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, type TranscriptResolvedIdentity, upgradeSessionCache } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 import {
   bumpCacheEpochRow,
   deleteIndexedDatabase,
@@ -45,12 +46,12 @@ import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
-  installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
   isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
+  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setCacheWriteTimersForTests,
@@ -2430,7 +2431,7 @@ describe("cache privacy and history regressions", () => {
   });
 });
 
-describe("exclusive entry transcript fixture route", () => {
+describe("ordinary entry transcript route", () => {
   it("keeps background history in the repository until a local open restores it without read/page activation", async () => {
     const selected = "local:entry-background-only";
     const entryDatabase = "entry-background-only-test";
@@ -2438,12 +2439,7 @@ describe("exclusive entry transcript fixture route", () => {
     const liveRecordedBody = "LIVE_RECORDED_BACKGROUND_BODY";
     const overlayBody = "ACTIVE_BACKGROUND_OVERLAY_BODY";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     const fake = connectFakeClient();
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -2595,12 +2591,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-exclusive-owner";
     const entryDatabase = "entry-exclusive-owner-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     const fake = connectFakeClient();
     const baseline = turnFixture("entry-exclusive-baseline", "BASELINE_RECORDED_BODY");
     fake.on("thread/read", (params) =>
@@ -2730,12 +2721,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-hydration-replay";
     const entryDatabase = "entry-hydration-replay-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     let releaseRead: (() => void) | undefined;
     let heldResponse: ThreadReadResponse | undefined;
     try {
@@ -2838,19 +2824,15 @@ describe("exclusive entry transcript fixture route", () => {
     }
   });
 
-  it("routes only its selected ref around the legacy cache and accepts the current wire baseline", async () => {
+  it("routes every ref around the legacy cache and accepts the current wire baseline", async () => {
     const selected = "local:entry-selected";
     const other = "local:ordinary";
     const entryDatabase = "entry-transcript-fixture-test";
-    const legacy = cacheTestBed();
+    const legacy = { adapter: new SessionCacheIndexedDB() };
+    beds.push(legacy.adapter);
     const legacyGet = vi.spyOn(legacy.adapter, "get");
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) =>
@@ -2901,8 +2883,8 @@ describe("exclusive entry transcript fixture route", () => {
 
       expect(legacyGet).not.toHaveBeenCalledWith(selected, expect.any(Number));
       const identity: TranscriptResolvedIdentity = {
-        clientId: "fixture-client",
-        hostId: "fixture-host",
+        clientId: location.origin,
+        hostId: "local",
         sessionId: `sess_${selected}`,
         incarnation: "inc-1",
       };
@@ -2915,7 +2897,8 @@ describe("exclusive entry transcript fixture route", () => {
       expect(await cacheRecord(selected)).toBeUndefined();
 
       await threadsStore.getState().ensureThread(other);
-      expect(legacyGet).toHaveBeenCalledWith(other, expect.any(Number));
+      expect(legacyGet).not.toHaveBeenCalledWith(other, expect.any(Number));
+      expect(productionEntryTranscriptForTests(other).repository).toBeDefined();
     } finally {
       fixture.dispose();
       entryCache.close();
@@ -2928,12 +2911,7 @@ describe("exclusive entry transcript fixture route", () => {
     const ordinary = "local:entry-opening-ordinary";
     const entryDatabase = "entry-overlap-token-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     // Hold each real opening at its own cache read so the two can be settled
     // in a controlled order.
     const releases: Array<() => void> = [];
@@ -3000,12 +2978,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-opening-settles";
     const entryDatabase = "entry-opening-settles-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     const seen: boolean[] = [];
     const unsubscribe = threadsStore.subscribe((state) => seen.push(state.localOpenings.has(selected)));
     try {
@@ -3042,12 +3015,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-reject-read";
     const entryDatabase = "entry-reject-read-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     const reads: Array<{ reject: (error: Error) => void }> = [];
     entryCache.getLatestWindow = (() =>
       new Promise((_resolve, reject) => {
@@ -3100,12 +3068,7 @@ describe("exclusive entry transcript fixture route", () => {
     const databaseA = "entry-dispose-replace-a";
     const databaseB = "entry-dispose-replace-b";
     const cacheA = new SessionEntryCache({ databaseName: databaseA });
-    const fixtureA = installEntryTranscriptFixtureForTests({
-      ref: predecessor,
-      cache: cacheA,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixtureA = observeProductionEntryForTests(cacheA, predecessor);
     const readsA: Array<() => void> = [];
     const realA = cacheA.getLatestWindow.bind(cacheA);
     cacheA.getLatestWindow = ((historyKey: string, limit: number, boundary?: string) =>
@@ -3120,7 +3083,7 @@ describe("exclusive entry transcript fixture route", () => {
       seen.push({ ref: replacement, present: state.localOpenings.has(replacement) });
     });
     let cacheB: SessionEntryCache | undefined;
-    let fixtureB: ReturnType<typeof installEntryTranscriptFixtureForTests> | undefined;
+    let fixtureB: ReturnType<typeof observeProductionEntryForTests> | undefined;
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) =>
@@ -3150,12 +3113,7 @@ describe("exclusive entry transcript fixture route", () => {
             void realB(historyKey, limit, boundary).then(resolve, reject);
           });
         })) as typeof cacheB.getLatestWindow;
-      const fixtureBCreated = installEntryTranscriptFixtureForTests({
-        ref: replacement,
-        cache: cacheB,
-        clientId: "fixture-client",
-        hostId: "fixture-host",
-      });
+      const fixtureBCreated = observeProductionEntryForTests(cacheB, replacement);
       fixtureB = fixtureBCreated;
       const openingB = threadsStore.getState().ensureThread(replacement);
       await vi.waitFor(() => expect(readsB.length).toBeGreaterThanOrEqual(1));
@@ -3193,12 +3151,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-delete-fixture";
     const entryDatabase = "entry-delete-fixture-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3251,12 +3204,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-delete-held";
     const entryDatabase = "entry-delete-held-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3319,18 +3267,11 @@ describe("exclusive entry transcript fixture route", () => {
     }
   });
 
-  it("a same-tab Clear clears the entry cache and retires its route, and a fresh explicit open re-caches", async () => {
+  it("a same-tab Clear removes entry rows, preserves the held display, and a fresh explicit open re-caches", async () => {
     const selected = "local:entry-same-tab-clear";
     const entryDatabase = "entry-same-tab-clear-test";
-    const legacy = new SessionCacheIndexedDB();
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3346,15 +3287,19 @@ describe("exclusive entry transcript fixture route", () => {
       const historyKey = fixture.inspect().historyKey;
       if (!historyKey) throw new Error("expected the fixture's resolved history key");
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      const displayBeforeClear = fixture.inspect().model;
+      expect(displayBeforeClear).toBeDefined();
 
       await expect(clearCachedSessions()).resolves.toEqual({ committed: true });
       await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
-      // The entry route's reader, subscription and repository are retired.
+      // Clear retires cache authority, not the still-held live display.
       expect(await entryCache.getClearEpoch()).toBe(1);
-      expect(fixture.inspect().model).toBeUndefined();
+      expect(fixture.inspect().model).toBeDefined();
+      expect(fixture.inspect().model?.turns).toEqual(displayBeforeClear?.turns);
+      expect(threadsStore.getState().cacheLifetimes.get(selected)?.suppressed).toBe(true);
 
       // A fresh explicit foreground acquisition re-caches under the new epoch.
-      threadsStore.getState().releaseThread(selected);
+      await threadsStore.getState().releaseThreadAndWait(selected);
       await settleBackgroundTranscriptsForTests();
       await threadsStore.getState().ensureThread(selected);
       await fixture.settled();
@@ -3394,8 +3339,6 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });
@@ -3404,12 +3347,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-authority-reject";
     const entryDatabase = "entry-authority-reject-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3443,12 +3381,7 @@ describe("exclusive entry transcript fixture route", () => {
     const selected = "local:entry-authority-held";
     const entryDatabase = "entry-authority-held-test";
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3478,18 +3411,11 @@ describe("exclusive entry transcript fixture route", () => {
     }
   });
 
-  it("a same-tab Clear retires the entry route immediately, before its transactions resolve", async () => {
+  it("a same-tab Clear retires cache claims immediately, before its transaction resolves", async () => {
     const selected = "local:entry-clear-immediate";
     const entryDatabase = "entry-clear-immediate-test";
-    const legacy = new SessionCacheIndexedDB();
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3507,14 +3433,14 @@ describe("exclusive entry transcript fixture route", () => {
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
       const publishedBefore = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
 
-      // Hold the legacy clear so the entry route's claims must retire BEFORE the
+      // Hold the entry clear so the entry route's claims must retire BEFORE the
       // clear transactions resolve.
       let releaseClear!: () => void;
       const clearGate = new Promise<void>((resolve) => {
         releaseClear = resolve;
       });
-      const realClear = legacy.clear.bind(legacy);
-      const clearSpy = vi.spyOn(legacy, "clear").mockImplementation(async () => {
+      const realClear = entryCache.clear.bind(entryCache);
+      const clearSpy = vi.spyOn(entryCache, "clear").mockImplementation(async () => {
         await clearGate;
         return realClear();
       });
@@ -3556,7 +3482,7 @@ describe("exclusive entry transcript fixture route", () => {
       clearSpy.mockRestore();
 
       // Recovery: a fresh explicit acquisition re-caches.
-      threadsStore.getState().releaseThread(selected);
+      await threadsStore.getState().releaseThreadAndWait(selected);
       await settleBackgroundTranscriptsForTests();
       await threadsStore.getState().ensureThread(selected);
       await fixture.settled();
@@ -3566,24 +3492,15 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });
 
-  it.each([false, true])("a held same-tab Clear pauses queued entry writes, legacy abort=%s", async (abort) => {
+  it.each([false, true])("a held same-tab Clear pauses queued entry writes, entry abort=%s", async (abort) => {
     const selected = `local:entry-clear-queued-${abort}`;
     const entryDatabase = `entry-clear-queued-${abort}-test`;
-    const legacy = new SessionCacheIndexedDB();
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
       const turn = turnFixture("queued-baseline", "QUEUED_BASELINE");
@@ -3616,13 +3533,13 @@ describe("exclusive entry transcript fixture route", () => {
       }
       return realCommit(batch);
     });
-    const realClear = legacy.clear.bind(legacy);
-    const clearSpy = vi.spyOn(legacy, "clear").mockImplementation(async () => {
+    const realClear = entryCache.clear.bind(entryCache);
+    const clearSpy = vi.spyOn(entryCache, "clear").mockImplementation(async () => {
       await clearGate;
       if (!abort) return realClear();
       const original = IDBObjectStore.prototype.clear;
       const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementation(function (this: IDBObjectStore) {
-        if (this.transaction.objectStoreNames.contains("records")) throw new Error("legacy queued clear fault");
+        if (this.transaction.objectStoreNames.contains("transcriptItems")) throw new Error("entry queued clear fault");
         return original.call(this);
       });
       try {
@@ -3668,7 +3585,7 @@ describe("exclusive entry transcript fixture route", () => {
       clearing = clearCachedSessions();
       expect(threadsStore.getState().clearInFlight).toBeDefined();
       releaseWrite();
-      // The legacy Clear is still held and the entry durable epoch is still 0.
+      // The entry Clear is still held and the entry durable epoch is still 0.
       // Wait for the issued predecessor to commit, then its queue continuation.
       await vi.waitFor(async () =>
         expect((await entryCache.getLatest(historyKey, 20)).some((row) => row.transcriptKey === "queued-9")).toBe(true),
@@ -3681,7 +3598,7 @@ describe("exclusive entry transcript fixture route", () => {
       await expect(clearing).resolves.toEqual({ committed: !abort });
       if (abort) {
         // No new notification or acquisition: the same queued item must resume
-        // automatically when the real legacy Clear transaction aborts.
+        // automatically when the real entry Clear transaction aborts.
         // Observe disk before settled(), which can itself drive ready accepts.
         await vi.waitFor(async () =>
           expect((await entryCache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("queued-10"),
@@ -3691,7 +3608,9 @@ describe("exclusive entry transcript fixture route", () => {
         expect((await entryCache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("queued-10");
         expect(await entryCache.getClearEpoch()).toBe(0);
       } else {
-        expect(fixture.inspect().model).toBeUndefined();
+        expect(fixture.inspect().model).toBeDefined();
+        expect(fixture.inspect().readerRetention).toBeUndefined();
+        expect(threadsStore.getState().cacheLifetimes.get(selected)?.suppressed).toBe(true);
         expect(dispatched).not.toContain("queued-10");
         expect(await entryCache.getLatest(historyKey, 20)).toEqual([]);
       }
@@ -3705,8 +3624,6 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });
@@ -3714,15 +3631,8 @@ describe("exclusive entry transcript fixture route", () => {
   it("a same-tab Clear whose entry transaction aborts is reported incomplete and keeps the entry rows", async () => {
     const selected = "local:entry-clear-abort";
     const entryDatabase = "entry-clear-abort-test";
-    const legacy = new SessionCacheIndexedDB();
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3762,8 +3672,6 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });
@@ -3772,15 +3680,8 @@ describe("exclusive entry transcript fixture route", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const selected = "local:entry-rejected-no-dispossess";
     const entryDatabase = "entry-rejected-no-dispossess-test";
-    const legacy = new SessionCacheIndexedDB();
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3858,8 +3759,6 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       vi.useRealTimers();
       await deleteIndexedDatabase(entryDatabase);
     }
@@ -3868,19 +3767,8 @@ describe("exclusive entry transcript fixture route", () => {
   it("an aborted same-tab Clear restores the held entry route so ingestion resumes", async () => {
     const selected = "local:entry-clear-abort-resume";
     const entryDatabase = "entry-clear-abort-resume-test";
-    const legacy = new SessionCacheIndexedDB({
-      beforeCommit: (operation) => {
-        if (operation === "clear") throw new Error("legacy clear fault");
-      },
-    });
-    setSessionCacheAdapterForTests(legacy);
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: selected,
-      cache: entryCache,
-      clientId: "fixture-client",
-      hostId: "fixture-host",
-    });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) => {
@@ -3898,8 +3786,16 @@ describe("exclusive entry transcript fixture route", () => {
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
       const epochBefore = await entryCache.getClearEpoch();
 
-      // The legacy Clear aborts before any commit; nothing changed.
+      // Abort the real entry Clear before any commit; nothing changed.
+      const originalClear = IDBObjectStore.prototype.clear;
+      const clearFault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementation(function (
+        this: IDBObjectStore,
+      ) {
+        if (this.transaction.objectStoreNames.contains("transcriptItems")) throw new Error("entry clear fault");
+        return originalClear.call(this);
+      });
       await expect(clearCachedSessions()).resolves.toEqual({ committed: false });
+      clearFault.mockRestore();
       expect(threadsStore.getState().clearInFlight).toBeUndefined();
 
       // The immediately-retired route was restored: a valid same-binding
@@ -3942,8 +3838,6 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
-      legacy.close();
-      setSessionCacheAdapterForTests(undefined);
       await deleteIndexedDatabase(entryDatabase);
     }
   });
