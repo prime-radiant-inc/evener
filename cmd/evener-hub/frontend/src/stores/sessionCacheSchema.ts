@@ -1,6 +1,7 @@
 import type { ThreadItemPosition, TurnModel } from "@evener/appwire-client";
 
 export const SESSION_CACHE_DATABASE_NAME = "evener-session-cache";
+export const SESSION_CACHE_DATABASE_VERSION = 3;
 export const ENTRY_ITEM_STORE = "transcriptItems";
 export const ENTRY_TURN_STORE = "transcriptTurns";
 export const ENTRY_COVERAGE_STORE = "transcriptCoverage";
