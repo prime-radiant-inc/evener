@@ -275,7 +275,7 @@ func rleRenderContracts(t *testing.T) {
 	}{
 		{"", 0, 2, true}, {"1", 0, 2, false}, {"1-2", 1, 2, true},
 		{"last:2", 1, 2, true}, {"start:2", 0, 1, true}, {"0", 0, 2, false},
-		{"2-1", 2, 1, true}, {"bad", 0, 2, false}, {"1-2-3", 0, 2, false},
+		{"2-1", 0, -1, true}, {"bad", 0, 2, false}, {"1-2-3", 0, 2, false},
 	}
 	for _, tc := range ranges {
 		start, end, err := parseRangeErr(tc.spec, 3)

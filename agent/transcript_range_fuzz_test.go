@@ -24,7 +24,8 @@ import (
 //     and turnwindow's clamp is the only thing standing between the model and that.
 //   - The two entry points agree whenever the strict one accepts. If they
 //     diverge, the tool layer reports one range and renders another.
-//   - An empty entry list is not an error; it is the empty range (0, -1).
+//   - An empty entry list is not an error, and a reversed "N-M" selects
+//     nothing; both are the empty range (0, -1).
 //   - The grammar's anchors hold: "last:N" always ends at the final entry, and
 //     "start:N" always begins at the first.
 func FuzzTranscriptRangeSpec(f *testing.F) {
@@ -62,6 +63,14 @@ func FuzzTranscriptRangeSpec(f *testing.F) {
 		if entryCount <= 0 {
 			if start != 0 || end != -1 {
 				t.Fatalf("parseRange(%q, %d) = (%d, %d), want the empty range (0, -1)", spec, entryCount, start, end)
+			}
+			return
+		}
+
+		// A reversed "N-M" selects nothing: the empty range (0, -1).
+		if lo, hi, ok := turnwindow.ParseDash(spec); ok && lo > hi {
+			if start != 0 || end != -1 {
+				t.Fatalf("reversed %q resolved to (%d, %d), want the empty range (0, -1)", spec, start, end)
 			}
 			return
 		}

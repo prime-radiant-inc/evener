@@ -15,7 +15,8 @@ func TestParseSelectsTurnWindows(t *testing.T) {
 		{"last:3", 10, 7, 9},
 		{"start:2", 10, 0, 1},
 		{"2-5", 10, 2, 5},
-		{"5-2", 10, 5, 2}, // N > M is valid and selects nothing
+		{"5-2", 10, 0, -1},   // N > M is valid and selects nothing
+		{"100-99", 3, 0, -1}, // even when both ends are past the last turn
 		{"2-99", 4, 2, 3},
 		{"last:3", 0, 0, -1}, // an empty transcript is the empty range
 	} {

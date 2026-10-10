@@ -1186,8 +1186,9 @@ func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg 
 		}
 		expansionFirst = first
 		// Without a range, an expansion shows just the expanded turn's span,
-		// not the default window around it.
-		if effectiveRange == "" {
+		// not the default window around it. A malformed range keeps the
+		// default its warning names.
+		if rangeArg == "" {
 			effectiveRange = fmt.Sprintf("%d-%d", first, last)
 		}
 	}

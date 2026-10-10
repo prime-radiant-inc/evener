@@ -45,7 +45,8 @@ func TestTranscriptRange_StartAndSpan(t *testing.T) {
 		{"1-2", 2, 1},
 		{"1-99", 2, 1},
 		{"last:1", 1, 2},
-		{"2-1", 0, -1}, // N > M selects nothing
+		{"2-1", 0, -1},   // N > M selects nothing
+		{"99-98", 0, -1}, // even past the end
 	} {
 		r, err := Transcript(base, sid, TranscriptOpts{Range: tc.spec})
 		if err != nil {
@@ -57,11 +58,20 @@ func TestTranscriptRange_StartAndSpan(t *testing.T) {
 	}
 }
 
-func TestTranscriptRange_RejectsMalformedSpec(t *testing.T) {
+// A malformed range recovers the way read_transcript's does: the whole
+// transcript renders, and the result says why.
+func TestTranscriptRange_MalformedSpecFallsBackWithWarning(t *testing.T) {
 	base, sid := countFixture(t)
-	_, err := Transcript(base, sid, TranscriptOpts{Range: "garbage"})
-	if err == nil || err.Error() != `invalid range "garbage"; accepted: N-M | last:N | start:N` {
-		t.Fatalf("garbage range error = %v", err)
+	r, err := Transcript(base, sid, TranscriptOpts{Range: "garbage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `invalid range "garbage"; rendered the whole transcript instead. Accepted: N-M | last:N | start:N`
+	if r.RangeWarning != want || r.TurnsRendered != 3 || len(r.Turns) != 3 {
+		t.Fatalf("garbage range = warning %q, %d rows; want %q over all 3 turns", r.RangeWarning, len(r.Turns), want)
+	}
+	if out := RenderTranscript(r, "outline"); !strings.Contains(out, "range warning: "+want) {
+		t.Fatalf("rendered transcript does not surface the warning:\n%s", out)
 	}
 }
 

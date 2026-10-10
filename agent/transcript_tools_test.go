@@ -1041,6 +1041,28 @@ func TestRead_ExpandTurnWithoutRangeRendersOnlyThatTurn(t *testing.T) {
 	}
 }
 
+// TestRead_ExpandTurnWithMalformedRangeRendersTheDefault pins the fallback a
+// malformed range gets alongside expand_turn: the default window the warning
+// names, not the expansion-only window an omitted range gets.
+func TestRead_ExpandTurnWithMalformedRangeRendersTheDefault(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "02wMz5Txv733WHFsVy66SU"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "expand malformed", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(2),
+		"range":          "not-a-range",
+	}))
+	meta := readMetaMap(t, env)
+	if meta["range"] != "last:40" || meta["turns_rendered"] != float64(5) || meta["range_warning"] == nil {
+		t.Errorf("meta = %v, want the warned default window last:40 over all 5 turns", meta)
+	}
+}
+
 // --- TestRead_MetaTrimmed ---
 
 // TestRead_MetaTrimmed verifies the marshaled markdown meta has the required

@@ -166,12 +166,15 @@ type TurnSummary struct {
 // turns_rendered + elided == turns_total always holds. The counts are of
 // numbered turns; Turns also holds the unnumbered entries inside the window.
 type TranscriptResult struct {
-	SessionID     string        `json:"session_id"`
-	ResultTool    string        `json:"result_tool"`
-	TurnsTotal    int           `json:"turns_total"`
-	TurnsRendered int           `json:"turns_rendered"`
-	Elided        int           `json:"elided"`
-	Turns         []TurnSummary `json:"turns"`
+	SessionID     string `json:"session_id"`
+	ResultTool    string `json:"result_tool"`
+	TurnsTotal    int    `json:"turns_total"`
+	TurnsRendered int    `json:"turns_rendered"`
+	// RangeWarning says a malformed range was replaced by the whole
+	// transcript, mirroring read_transcript's range_warning.
+	RangeWarning string        `json:"range_warning,omitempty"`
+	Elided       int           `json:"elided"`
+	Turns        []TurnSummary `json:"turns"`
 }
 
 // TranscriptOpts narrows a transcript render.
@@ -226,19 +229,20 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 	}
 	total := len(turnStarts)
 	lo, hi, rendered := 0, len(doc.Entries), total
+	var rangeWarning string
 	if opts.Range != "" {
 		first, last, err := turnwindow.Parse(opts.Range, total)
-		if err != nil {
-			return TranscriptResult{}, fmt.Errorf("invalid range %q; accepted: %s", opts.Range, turnwindow.Grammar)
-		}
-		// The entry window runs from the first selected turn to just before
-		// the turn after the last, so unnumbered entries ride with the turn
-		// they follow. Entries before Turn 0 belong to a window that starts
-		// there.
-		rendered = max(0, last-first+1)
-		if rendered == 0 {
-			hi = 0
-		} else {
+		switch {
+		case err != nil:
+			rangeWarning = fmt.Sprintf("invalid range %q; rendered the whole transcript instead. Accepted: %s", opts.Range, turnwindow.Grammar)
+		case last < first:
+			lo, hi, rendered = 0, 0, 0
+		default:
+			// The entry window runs from the first selected turn to just
+			// before the turn after the last, so unnumbered entries ride with
+			// the turn they follow. Entries before Turn 0 belong to a window
+			// that starts there.
+			rendered = last - first + 1
 			if first > 0 {
 				lo = turnStarts[first]
 			}
@@ -252,6 +256,7 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 		ResultTool:    resultTool,
 		TurnsTotal:    total,
 		TurnsRendered: rendered,
+		RangeWarning:  rangeWarning,
 		Elided:        total - rendered,
 	}
 	textMax := opts.TextMax
@@ -407,6 +412,9 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tr.ContentPreview))
 		}
 		b.WriteString("\n")
+	}
+	if r.RangeWarning != "" {
+		fmt.Fprintf(&b, "range warning: %s\n", r.RangeWarning)
 	}
 	fmt.Fprintf(&b, "— turns_total=%d turns_rendered=%d elided=%d (session %s, result_tool=%s)\n",
 		r.TurnsTotal, r.TurnsRendered, r.Elided, r.SessionID, r.ResultTool)

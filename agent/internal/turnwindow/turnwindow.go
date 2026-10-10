@@ -25,8 +25,8 @@ var ErrMalformed = errors.New("malformed range")
 //   - "start:N"  → the first N turns (N must be a positive integer).
 //   - "N-M"      → turns N..M inclusive (N, M non-negative integers).
 //
-// "N-M" with N > M is syntactically valid; it clamps to an empty range rather
-// than erroring.
+// "N-M" with N > M is syntactically valid; it selects nothing, the empty
+// range (0, -1), rather than erroring.
 func Parse(spec string, count int) (start, end int, err error) {
 	if count <= 0 {
 		return 0, -1, nil
@@ -55,6 +55,9 @@ func Parse(spec string, count int) (start, end int, err error) {
 		if !ok {
 			return 0, 0, fmt.Errorf("%w: %q", ErrMalformed, spec)
 		}
+		if lo > hi {
+			return 0, -1, nil
+		}
 		start, end = clamp(lo, hi, count)
 		return start, end, nil
 
@@ -63,8 +66,7 @@ func Parse(spec string, count int) (start, end int, err error) {
 	}
 }
 
-// clamp clamps [lo, hi] to [0, count-1] and returns it as inclusive bounds. A
-// resulting lo > hi denotes an empty selection.
+// clamp clamps [lo, hi] to [0, count-1] and returns it as inclusive bounds.
 func clamp(lo, hi, count int) (start, end int) {
 	if lo < 0 {
 		lo = 0
