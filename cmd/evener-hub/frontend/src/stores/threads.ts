@@ -3082,20 +3082,26 @@ async function enqueueMutationIntent(
     // dispatch. thread/clear needs its response applied locally
     // (applyClearResponse) and notes/human/set needs its onCommitted to mark
     // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
-    // A storage-unavailable failure on any of those propagates exactly as every
-    // other submission failure: the caller sees the refusal. This click's own
-    // write has settled, so drop the ref's arm if it is now idle - see
+    // A storage failure on any of those propagates exactly as every other
+    // submission failure: the caller sees the refusal. This click's own write
+    // has settled, so drop the ref's arm if it is now idle - see
     // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
     // fallback below, so its fail-closed decision lives with its invariant.)
-    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method)) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
-    // Persistent storage failure on a composer send: the durable write could
-    // not be made, so send it as a plain RPC right now, exactly as the
-    // non-durable operations do (setModel, rename, compact, ...). The outbox
-    // row, the dispatcher, the receipt/settle machinery and the recovery list
-    // are all skipped - there is nothing durable to settle or replay.
+    // The durable write of a composer send could not be made. Whatever the
+    // failure - the watchdog giving up on a wedge, or the browser refusing the
+    // write outright (a full origin's QuotaExceededError, a VersionError, a
+    // retired connection's InvalidStateError) - it comes from local
+    // persistence alone: the send verbs pass no onCommitted, so nothing in the
+    // durable write is a verdict on the mutation, and the daemon's own answer
+    // to the RPC below still is. So send it as a plain RPC right now, exactly
+    // as the non-durable operations do (setModel, rename, compact, ...). The
+    // outbox row, the dispatcher, the receipt/settle machinery and the
+    // recovery list are all skipped - there is nothing durable to settle or
+    // replay.
     //
     // It must still re-earn the admission the dispatcher would grant, because
     // it is NOT the ref's durable FIFO head. currentDispatchClient is that
@@ -3135,7 +3141,10 @@ async function enqueueMutationIntent(
     // meets the pending fence and dies with the wedge's error - the exact
     // window the fallback exists to close. A reconcile that later succeeds
     // clears the record, so a read that was healthy after all self-corrects.
-    if (pendingMutationReconciliations.has(ref)) {
+    // Only a timeout says the reconcile shares the wedge: a write the browser
+    // refused at once (a full origin) leaves reads answering, so that reconcile
+    // keeps its ordinary pending fence.
+    if (isStorageUnavailable(error) && pendingMutationReconciliations.has(ref)) {
       threadsStore.setState((state) => ({
         mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
       }));
@@ -3151,8 +3160,8 @@ async function enqueueMutationIntent(
     disarmQuiescedMutationArm(ref);
     //
     // The forfeited cross-tab Stop fence: this send carries no click-time stop
-    // epoch - whether the capture read timed out, or the capture succeeded and
-    // only the enqueue timed out. The epoch is a commit-order comparison
+    // epoch - whether the capture read failed, or the capture succeeded and only
+    // the enqueue failed. The epoch is a commit-order comparison
     // against the durable row the enqueue would have written, not a wire
     // parameter (the dispatcher sends record.payload alone), so a send with no
     // row carries none either way. A Stop landing in another tab during that
@@ -3196,10 +3205,11 @@ async function enqueueMutationIntent(
 // answer, so try it a second time before giving up. The click-time capture is
 // awaited ONCE here, before the ladder, and every attempt reuses that same
 // observation: re-reading it would let a Stop landing between attempts become
-// the retry's own baseline (the fence the capture exists to hold). A rejecting
-// capture (MutationStorageTimeoutError, VersionError, a retired connection)
-// propagates, and enqueueMutationIntent decides between the fallback and a
-// hard failure.
+// the retry's own baseline (the fence the capture exists to hold). Only a
+// timeout is retried: a write the browser refused outright (QuotaExceededError,
+// VersionError, a retired connection) would be refused again. A rejecting
+// capture, or a write that is not retried, propagates, and
+// enqueueMutationIntent decides between the fallback and a hard failure.
 const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
 const MUTATION_DURABLE_WRITE_RETRY_DELAY_MS = 50;
 
@@ -3225,8 +3235,9 @@ async function enqueueDurableMutation(
 }
 
 // Whether an error is the storage-unavailable signal (the IndexedDB watchdog
-// gave up on an open or a transaction): the one failure the direct fallback
-// answers, because it does not prove the mutation's shape was rejected.
+// gave up on an open or a transaction): storage that may only be slow, so the
+// durable write is worth a second attempt, and a wedge that fails every read
+// beside it, so a reconcile it failed is storage-blocked rather than failed.
 function isStorageUnavailable(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
 }
