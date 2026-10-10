@@ -166,12 +166,12 @@ describe("TasksTab", () => {
 
   test("renders groups and disclosures inline without redundant summaries or opening a pane", async () => {
     const user = userEvent.setup();
-    const counts = { total: 4, done: 1, current: { id: 2, description: "Current work" } };
+    const counts = { total: 4, done: 1, cancelled: 1, current: { id: 2, description: "Current work" } };
     connectTasks(() => TASKS, counts);
     openTasks(counts);
     renderSidebar();
     await screen.findByText("Remaining work");
-    expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" }).textContent).toBe("Tasks\n1/4");
+    expect(screen.getByRole("radio", { name: "Tasks, 2 of 4 settled" }).textContent).toBe("Tasks\n2/4");
     expect(screen.getByRole("heading", { name: "Current 1" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Remaining 1" })).toBeTruthy();
     const settled = screen.getByTestId("task-settled-group");
@@ -212,7 +212,7 @@ describe("TasksTab", () => {
 
   test("live task updates refresh groups and tab counts without restoring summaries", async () => {
     let rows: Task[] = TASKS;
-    const counts = { total: 4, done: 1 };
+    const counts = { total: 4, done: 1, cancelled: 1 };
     const fake = connectTasks(() => rows, counts);
     openTasks(counts);
     renderSidebar();
