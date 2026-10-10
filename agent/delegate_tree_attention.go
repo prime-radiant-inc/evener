@@ -295,7 +295,7 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 }
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
-// projection once its transcript holds no unresolved attention. A resolution
+// projection, and drops its noted wakes, once its transcript holds no unresolved attention. A resolution
 // can outrun the committed attention run that would otherwise emit the clearing
 // event (acceptDelegateAttention makes the marker durable first, and a
 // later-declined CommitStart leaves the journal's last event at true), and the
@@ -332,13 +332,13 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
-	if aggregate == nil || !aggregate.NeedsAttention {
+	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
+	if aggregate == nil || !aggregate.NeedsAttention && len(wakeIDs) == 0 {
 		c.mu.Unlock()
 		return false, nil
 	}
 	transcriptRef := aggregate.Descriptor.TranscriptRef
 	evidenceVersion := c.evidenceVersion
-	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
 	c.mu.Unlock()
 
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
@@ -360,7 +360,7 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef {
+	if aggregate == nil || aggregate.Descriptor.TranscriptRef != transcriptRef {
 		c.mu.Unlock()
 		return false, nil
 	}
@@ -369,15 +369,20 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 		c.mu.Unlock()
 		return retry, nil
 	}
-	if _, err := c.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateAttentionChanged,
-		DelegateID: delegateID,
-		AttentionChanged: &delegatestore.DelegateAttentionChanged{
-			NeedsAttention: false,
-		},
-	}); err != nil {
-		c.mu.Unlock()
-		return false, err
+	// The journal fold lowers the flag itself when a delegate closes, so the
+	// event is appended only while it is still raised; the wakes are dropped
+	// either way, or they would block retirement with nothing pending.
+	if aggregate.NeedsAttention {
+		if _, err := c.appendLocked(delegatestore.Event{
+			Kind:       delegatestore.EventDelegateAttentionChanged,
+			DelegateID: delegateID,
+			AttentionChanged: &delegatestore.DelegateAttentionChanged{
+				NeedsAttention: false,
+			},
+		}); err != nil {
+			c.mu.Unlock()
+			return false, err
+		}
 	}
 	c.replaceDelegateAttentionLocked(delegateID, nil)
 	c.evidenceVersion++
