@@ -7,7 +7,12 @@ import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { installEntryTranscriptFixtureForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
+import {
+  installEntryTranscriptFixtureForTests,
+  resetThreadsStoreForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "./threads";
 
 let factory: IDBFactory;
 const caches: SessionEntryCache[] = [];
@@ -40,6 +45,7 @@ function turn(id: string, entry = 1, text = id): Turn {
   return {
     id,
     status: "completed",
+    itemsView: "full",
     version: 1,
     items: [
       { id, transcriptKey: id, turnId: id, version: 1, type: "agentMessage", text, position: { entry, item: 0 } },
@@ -124,9 +130,9 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
   const client = connect();
   let reads = 0;
   let latest = response();
-  client.on("thread/read", () => {
+  client.on("thread/read", (params) => {
     reads += 1;
-    return latest;
+    return { ...latest, requestGeneration: params.requestGeneration };
   });
   const owner = {};
   const bodies = [{ key: {}, bytes: 1900 }];
@@ -147,14 +153,17 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
         epoch: 1,
         snapshot: latest.snapshot,
         turns: [turn("recovered", 2, "r".repeat(300))],
+        items: turn("recovered", 2, "r".repeat(300)).items,
       },
     });
     expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).toContain("recovered");
+    expect(admission.snapshotForTesting().retainedBytes).toBe(1900);
+    expect(vi.getTimerCount()).toBe(1);
     admission.release(bodies, owner);
     await vi.advanceTimersByTimeAsync(250);
     expect(reads).toBe(before + 1);
     vi.useRealTimers();
-    await fixture.settled();
+    await settleEntryTranscriptForTests("local:a");
     expect((await storage.getLatest(historyKey, 10)).map((row) => row.transcriptKey)).toContain("recovered");
   } finally {
     vi.useRealTimers();

@@ -901,14 +901,6 @@ async function acceptEntryTranscriptHydration(
       historyGeneration,
       lifetime: fixture.lifetime,
       admission: entryWriteAdmissionFor(fixture.cache),
-      reconcile: () => {
-        const client = wiredClient;
-        if (!client || client.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
-        fixture.repository?.beginFreshBaseline();
-        void refreshTrackedThread(client, readyEpoch, ref, true).catch(() => {
-          // The owned hydration lifecycle schedules transport recovery.
-        });
-      },
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
       suppressed: () => fixture.clearInert === true,
       readHistory: (held, signal) =>
@@ -6767,6 +6759,12 @@ function syncTranscriptResidencyOwners(ref: string): void {
 
 export async function settleBackgroundTranscriptsForTests(): Promise<void> {
   await residencyIfCreated?.settled();
+}
+
+/** @internal Observe actual store hydration before the entry commit, without issuing a read. */
+export async function settleEntryTranscriptForTests(ref: string): Promise<void> {
+  await trackedHydrationCompletions.get(ref);
+  if (entryTranscriptFixtureForTests?.ref === ref) await entryTranscriptFixtureForTests.repository?.settled();
 }
 
 export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnapshot {
