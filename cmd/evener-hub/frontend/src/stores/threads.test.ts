@@ -115,15 +115,18 @@ async function flushMicrotasks(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
-// A storage-unavailable wedge on the outbox's read path: while armed, every
-// per-ref listOutbox read rejects with the adapter's watchdog error - the
+// A storage failure on the outbox's read path: while armed, every per-ref
+// listOutbox read rejects - by default with the adapter's watchdog error, the
 // same shape a never-answering IndexedDB open produces. The bound real read
 // is returned so a test can still inspect rows while the fault is armed.
-function wedgeOutboxReads(storage: MutationOutboxIndexedDB) {
+function wedgeOutboxReads(
+  storage: MutationOutboxIndexedDB,
+  storageError: () => unknown = () => new MutationStorageTimeoutError(),
+) {
   let armed = false;
   const readOutbox = storage.listOutbox.bind(storage);
   vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
-    if (armed && ref) throw new MutationStorageTimeoutError();
+    if (armed && ref) throw storageError();
     return readOutbox(ref);
   });
   return {
@@ -10049,8 +10052,13 @@ test("periodic discovery recovers failed compatible reconciliation after storage
 // read. Recording it as a genuine failure would fence the direct-dispatch
 // fallback and strand every send behind a page reload, so a storage-unavailable
 // reconcile records the ref as storage-blocked - the slice the send fallback
-// may admit - while every other failure keeps its old, fencing meaning.
-test("a storage-unavailable reconciliation records the ref as storage-blocked, not failed", async () => {
+// may admit - while every other failure keeps its old, fencing meaning. A
+// retired connection fails the read at once instead of timing out, and is
+// just as much a storage failure.
+test.each([
+  { failure: "a storage timeout", storageError: () => new MutationStorageTimeoutError() },
+  { failure: "a retired connection", storageError: () => new DOMException("closing", "InvalidStateError") },
+])("a reconciliation that $failure fails records the ref as storage-blocked, not failed", async ({ storageError }) => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-reconcile" });
   await storage.enqueueIntent({
     targetRef: "ref_a",
@@ -10059,7 +10067,7 @@ test("a storage-unavailable reconciliation records the ref as storage-blocked, n
     attachments: [],
     optimisticDisplay: { text: "sentinel" },
   });
-  const wedge = wedgeOutboxReads(storage);
+  const wedge = wedgeOutboxReads(storage, storageError);
   setMutationStorageForTests(storage);
   const fake = connectFakeClient("connecting");
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
@@ -14358,6 +14366,50 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
     await send;
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // A retired connection (or a VersionError) refuses the write at once and
+  // fails the reconcile's read the same way, so a reconcile still pending for
+  // the ref sits on the same broken storage: the fallback classifies it and
+  // sends rather than meet the pending fence.
+  test("a send survives a reconciliation still pending when the browser refuses its write", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    const parked = parkRefReconcileRead(storage, "ref_a");
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntilArrived("the reconcile read to park", parked.opened);
+    storage.enqueueIntent = async () => {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    };
+
+    await threadsStore.getState().send("ref_a", "sent while the connection is retired");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  });
+
+  // The fallback answers storage failures only. An error that is not one - the
+  // outbox's own validation, or a payload IndexedDB cannot clone - keeps the
+  // ordinary submission failure, with nothing sent.
+  test.each([
+    { failure: "a validation error", error: () => new Error("targetRef is required") },
+    { failure: "an uncloneable payload", error: () => new DOMException("could not be cloned", "DataCloneError") },
+  ])("a send whose durable write fails with $failure stays fail-closed", async ({ error }) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const thrown = error();
+    storage.enqueueIntent = async () => {
+      throw thrown;
+    };
+    await expect(threadsStore.getState().send("ref_a", "not a storage failure")).rejects.toBe(thrown);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // The classification must not wait for the reconcile's own watchdog. The

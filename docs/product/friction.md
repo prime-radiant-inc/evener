@@ -388,12 +388,14 @@ storage watchdog gave up on (`MutationStorageTimeoutError`) is retried once
 first; a write the browser refuses outright — a full origin's
 `QuotaExceededError`, a `VersionError`, a retired connection — falls back at
 once. So sends keep working in a storage wedge or a full origin, and the
-composer's draft follows the send's own outcome. The same wedge also fails the
-ref's reconciliation (its outbox read), and that failure is classified apart
-from a genuine one: the ref is recorded as storage-blocked - at the reconcile's
-rejection, or earlier when the send fallback's own storage timeout observes the
-wedge while that reconcile is still pending - and the send fallback admits it,
-including the reconcile still pending on the same wedge, while the durable dispatcher, a queued record's Retry press and the recovery
+composer's draft follows the send's own outcome. A failure that judges the
+record rather than the storage (the outbox's own validation, an uncloneable
+payload, a duplicate id) stays an ordinary send failure. The same storage
+failure also fails the ref's reconciliation (its outbox read), and that failure
+is classified apart from a genuine one: the ref is recorded as storage-blocked -
+at the reconcile's rejection, or earlier when the send fallback's own storage
+failure observes it while that reconcile is still pending - and the send
+fallback admits it, including the reconcile still pending on the same failure, while the durable dispatcher, a queued record's Retry press and the recovery
 banner stay fenced until discovery's retry reconciles once storage answers, so
 a storage-blocked ref shows no recovery banner. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered
@@ -414,13 +416,13 @@ lands and its reply is lost the composer reports a failure and keeps the draft,
 and the person's re-send is a new intent with a new id, so the daemon can apply
 the send twice.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2997)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3090);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3270)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2998)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3091);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3289)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3832)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3851)
 splits the storage-caused failure from a genuine one, and
 [currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1149)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.

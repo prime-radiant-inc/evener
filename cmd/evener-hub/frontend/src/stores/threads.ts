@@ -2909,11 +2909,10 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
 
 // The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
 // builder and this set cannot drift. These are the only mutations the direct
-// fallback answers when the durable outbox cannot be written, whatever the
-// write's failure: each has no response-side local commit beyond the wire call
-// itself (and passes no onCommitted), so a plain RPC looks to the rest of the
-// store exactly like the dispatched row would have, and the daemon still
-// judges the mutation itself. Every
+// fallback answers when storage fails their durable write (isStorageFailure):
+// each has no response-side local commit beyond the wire call itself, so a
+// plain RPC looks to the rest of the store exactly like the dispatched row
+// would have. Every
 // other durable write keeps its own contract and stays fail-closed - see the
 // catch in enqueueMutationIntent.
 const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
@@ -3089,12 +3088,12 @@ async function enqueueMutationIntent(
     // has settled, so drop the ref's arm if it is now idle - see
     // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
     // fallback below, so its fail-closed decision lives with its invariant.)
-    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method)) {
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageFailure(error)) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
-    // The durable write of a composer send could not be made - timed out or
-    // refused outright (see DIRECT_FALLBACK_METHODS) - so send it as a plain
+    // Storage failed a composer send's durable write - timed out or refused
+    // outright (see isStorageFailure) - so send it as a plain
     // RPC right now, exactly as the non-durable operations do (setModel,
     // rename, compact, ...). The outbox row, the dispatcher, the
     // receipt/settle machinery and the recovery list are all skipped - there
@@ -3131,15 +3130,15 @@ async function enqueueMutationIntent(
     // lives in storage, which just failed this send; these two are what the
     // in-memory state proves, and the fallback refuses on either rather than
     // reorder.
-    // The fallback's own timeout is the same storage the reconcile reads, so
-    // a reconcile still pending for the ref sits on the same wedge: classify
-    // it now rather than wait for its watchdog. Without this, a send whose
-    // fallback decision lands while the wedged reconcile has not yet rejected
-    // meets the pending fence and dies with the wedge's error - the exact
+    // The storage that failed this write is the storage the reconcile reads,
+    // so a reconcile still pending for the ref sits on the same failure:
+    // classify it now rather than wait for it to reject. Without this, a send
+    // whose fallback decision lands while the reconcile has not yet rejected
+    // meets the pending fence and dies with the storage error - the exact
     // window the fallback exists to close. A reconcile that later succeeds
-    // clears the record, so a read that was healthy after all self-corrects.
-    // A refused write leaves reads answering, so only a timeout says so.
-    if (isStorageTimeout(error) && pendingMutationReconciliations.has(ref)) {
+    // (a full origin's reads still answer) clears the record, so a read that
+    // was healthy after all self-corrects.
+    if (pendingMutationReconciliations.has(ref)) {
       threadsStore.setState((state) => ({
         mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
       }));
@@ -3230,9 +3229,36 @@ async function enqueueDurableMutation(
 }
 
 // Whether the IndexedDB watchdog gave up on an open or a transaction: storage
-// that may only be slow (worth a second write attempt), wedged for reads too.
+// that may only be slow, so a durable write is worth a second attempt.
 function isStorageTimeout(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
+}
+
+// The DOMException names IndexedDB uses when storage itself refuses: a full
+// origin, a schema version another tab moved, a connection closed under the
+// transaction, an internal failure. DataError, DataCloneError and
+// ConstraintError are absent on purpose: they judge the record written (its
+// key, its payload, a duplicate id), not the storage. So is AbortError: the
+// requests of a transaction aborted for any reason - this code's own failure
+// included - report it, while storage's own aborts carry the specific cause.
+const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  "QuotaExceededError",
+  "VersionError",
+  "InvalidStateError",
+  "TransactionInactiveError",
+  "NotFoundError",
+  "UnknownError",
+]);
+
+// Whether an outbox operation failed because storage did, not because of what
+// it was asked to write: the watchdog's timeout or a storage refusal. Only
+// these earn the send fallback and the storage-blocked reconcile record; the
+// outbox's own validation errors keep their ordinary meaning. Matched by name
+// because DOMExceptions from another realm fail instanceof.
+function isStorageFailure(error: unknown): boolean {
+  if (isStorageTimeout(error)) return true;
+  const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
+  return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
 }
 
 // The fallback send's RPC is its only transport, so a failure on the wire is
@@ -3811,18 +3837,18 @@ async function publishAndReconcileThreadHydration(
         pending.epoch === readyEpoch &&
         pending.client === wiredClient
       ) {
-        // A storage-unavailable reconcile is not a mutation-state fact: the
-        // same wedge that fences the durable write failed this read, so record
+        // A storage failure is not a mutation-state fact: the same storage
+        // that fails the durable write failed this read, so record
         // the ref aside as storage-blocked - the slice the send fallback may
         // admit - and let discovery retry the read on every pass. A genuine
         // failure recorded earlier (a real reconcile conflict, a blocked
-        // shared record) must survive the timeout: erasing it would unfence
-        // the fallback through the waivable slice, so the timeout only adds
-        // the storage-blocked record. Any non-timeout failure keeps its old
+        // shared record) must survive it: erasing it would unfence the
+        // fallback through the waivable slice, so a storage failure only adds
+        // the storage-blocked record. Any other failure keeps its old
         // meaning and supersedes the storage-blocked state, being the
         // stricter fence: record it in failures and clear the storage-blocked
         // record. A successful reconcile clears both.
-        const storageBlocked = isStorageTimeout(error);
+        const storageBlocked = isStorageFailure(error);
         threadsStore.setState((state) => {
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
