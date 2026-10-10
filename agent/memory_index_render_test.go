@@ -14,14 +14,18 @@ func TestRenderMemoryIndex(t *testing.T) {
 		{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
 		{Path: "b.md", Title: "b", Description: "unstamped, older mtime", HasDescription: true, ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		{Path: "a.md", Title: "a", Description: "unstamped, same day as loader", HasDescription: true, ModTime: time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)},
-		{Path: "bad.md", Title: "Bad", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-01-01"},
+		{Path: "fresh-bad.md", Title: "fresh-bad", Description: "fresh-bad.md", Unreadable: true, ModTime: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
+		{Path: "bad.md", Title: "Bad", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-12-31"},
 	}
+	// Pages with unreadable frontmatter come last, by path, however fresh
+	// their files are.
 	want := "Tags: formatting (1), money (1), vitest (1)\n" +
 		"- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)\n" +
 		"- [a](a.md) — unstamped, same day as loader\n" +
 		"- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
 		"- [b](b.md) — unstamped, older mtime\n" +
-		"- [Bad](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-01-01)\n"
+		"- [Bad](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-12-31)\n" +
+		"- [fresh-bad](fresh-bad.md) — fresh-bad.md (frontmatter unreadable)\n"
 	if got := renderMemoryIndex(pages); got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}

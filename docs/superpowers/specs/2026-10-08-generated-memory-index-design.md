@@ -38,7 +38,7 @@ Prices are stored and computed as integer cents...
 
 **What counts as a page:** every regular file under the scope root, in subdirectories too, except any path with a segment starting with `.` (the same rule `memory_search` uses) and except a file named `MEMORY.md` at the root. Only `.md` files are parsed for frontmatter; any other file renders with its filename as the description. Symlinks are skipped, as scope confinement already refuses them.
 
-**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`.
+**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`. A carriage return (alone or before a newline) ends a line, and whitespace runs in the heading or line collapse to one space, so neither a stray `\r` nor a tab reaches an index line.
 
 ## The generated index
 
@@ -49,8 +49,8 @@ Tags: formatting (3), money (2), vitest (6)
 ```
 
 - Header: `Tags:` and every tag with its page count, alphabetical. Omitted when no page has tags. A projection the whole index does not fit caps it (see Budget).
-- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date.
-- Title: the first heading if there is one, else the filename without extension.
+- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date. Pages whose frontmatter is unreadable sort after every other page, by path among themselves, so a freshly touched broken page never crowds the newest pages out of the projection.
+- Title: the first heading if there is one (whitespace runs collapsed, as in the fallback description), else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
 - A page whose path holds an ASCII control character other than tab has no link: its line is the path as a JSON string, then a note (see the product guide).
 
@@ -60,7 +60,7 @@ Tags: formatting (3), money (2), vitest (6)
 
 ## Writes
 
-- When `memory_write` or `memory_edit` writes a `.md` page, Evener sets `updated` and `by` in the frontmatter of the bytes the tool writes, creating a frontmatter block if there is none. Every other byte of the page is preserved. The stamps go into the tool's one write: a separate read-modify-write after it could write back content another session had already replaced or deleted. A failed write writes nothing.
+- When `memory_write` or `memory_edit` writes a `.md` page, Evener sets `updated` and `by` in the frontmatter of the bytes the tool writes, creating a frontmatter block if there is none. Every other byte of the page is preserved, except that a top-level `description` or `evidence` line YAML can't read as written (an unquoted scalar holding `: `, ending in `:`, or starting with a YAML indicator) is rewritten as a quoted YAML string when that makes the frontmatter parse; other unparseable frontmatter is left as written. The stamps go into the tool's one write: a separate read-modify-write after it could write back content another session had already replaced or deleted. A failed write writes nothing.
 - If the written page has no `description`, the tool result appends one line: `This page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter.`
 - `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused: `MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead.`
 - `memory_write` and `memory_edit` of a path holding an ASCII control character other than tab are refused; `memory_delete` still takes such a path.
