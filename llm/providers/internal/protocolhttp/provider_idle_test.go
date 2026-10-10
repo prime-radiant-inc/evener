@@ -40,7 +40,7 @@ func TestCompleteProviderIdleIsTimeout(t *testing.T) {
 		sink := &captureSink{}
 		ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("idle")), sink)
 		call := &Call{Operation: "test.complete", EndpointFamily: "test", Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{"input": "hi"}, Req: llm.Request{Model: "m", AdapterTimeout: &llm.AdapterTimeout{StreamRead: time.Minute}}, Res: res, Client: client}
-		_, err := Complete(ctx, call, func(raw map[string]any) (llm.Response, error) { return llm.Response{ID: "r1"}, nil })
+		_, err := Complete(ctx, call, func(r *Result) (llm.Response, error) { return llm.Response{ID: "r1"}, nil })
 		if err == nil {
 			t.Error("stalled response accepted as successful completion")
 		}

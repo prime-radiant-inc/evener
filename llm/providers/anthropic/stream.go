@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
@@ -39,7 +40,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 		toolID      string
 		toolName    string
 		toolStarted bool
-		toolArgs    strings.Builder
+		toolArgs    bytes.Buffer
 
 		// thinking / redacted_thinking
 		thinkingStarted bool
@@ -200,7 +201,21 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 						}
 					case "input_json_delta":
 						if delta, _ := d["partial_json"].(string); delta != "" {
-							st.toolArgs.WriteString(delta)
+							// Capture the partial_json fragment as raw bytes
+							// from ev.Data to preserve bytes that
+							// json.Unmarshal into string would coerce to
+							// U+FFFD. Degrade, never drop: fall back to the
+							// string-form delta.
+							if rawFrag, ok := captureAnthropicPartialJSONRaw(ev.Data); ok && rawFrag != nil {
+								if content, cerr := protocolhttp.RawStringContent(rawFrag); cerr == nil {
+									st.toolArgs.Write(content)
+									delta = string(content)
+								} else {
+									st.toolArgs.WriteString(delta)
+								}
+							} else {
+								st.toolArgs.WriteString(delta)
+							}
 							if !st.toolStarted && strings.TrimSpace(st.toolID) != "" {
 								st.toolStarted = true
 								tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
@@ -253,7 +268,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
+						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: append([]byte(nil), st.toolArgs.Bytes()...), Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 						st.toolStarted = false
 					}
@@ -447,4 +462,21 @@ func intFromAny(v any) int {
 	default:
 		return 0
 	}
+}
+
+// captureAnthropicPartialJSONRaw decodes an SSE event's raw data with a
+// focused struct that captures the "partial_json" field as json.RawMessage
+// (the string token) rather than string, preserving bytes that
+// json.Unmarshal into string would coerce. Returns (nil, false) if the
+// focused decode fails.
+func captureAnthropicPartialJSONRaw(eventData []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Delta struct {
+			PartialJSON json.RawMessage `json:"partial_json"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil, false
+	}
+	return focused.Delta.PartialJSON, true
 }
