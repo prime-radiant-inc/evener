@@ -715,8 +715,23 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, plan.disposition); err != nil {
-		return err
+	// A stop discards only attention the transcript still owes. A noted wake
+	// can outlive its item's resolution: a delegate generation consumes what
+	// its settled requests presented, and its wake stays until a clear
+	// reconciles it. Discarding that item again would be a conflicting
+	// resolution, so the stop only forgets its wake.
+	alreadyResolved := false
+	if plan.disposition == delegateAttentionDiscarded {
+		resolved, err := c.delegateAttentionAlreadyResolved(plan.transcriptRef, plan.attentionID)
+		if err != nil {
+			return err
+		}
+		alreadyResolved = resolved
+	}
+	if !alreadyResolved {
+		if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, plan.disposition); err != nil {
+			return err
+		}
 	}
 	if plan.disposition == delegateAttentionConsumed {
 		_, err := c.ReportAttentionConsumed(plan.lease, plan.attentionID, plan.runtime)
@@ -724,6 +739,22 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 	}
 	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
+}
+
+// delegateAttentionAlreadyResolved reports whether the receiver transcript
+// already holds a resolution for attentionID. Resolution markers are fsynced
+// before they are reported, so the file is current for a resident runtime too.
+func (c *delegateTreeController) delegateAttentionAlreadyResolved(transcriptRef, attentionID string) (bool, error) {
+	path, sessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
+	if err != nil {
+		return false, err
+	}
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return false, err
+	}
+	_, resolved := fold.resolutions[attentionID]
+	return resolved, nil
 }
 
 // resolveDelegateAttentionDurably appends attention resolution markers through
