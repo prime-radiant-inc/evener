@@ -1086,17 +1086,17 @@ type checkpointData struct {
 // checkpoint so it survives repeated compactions. From a checkpoint it carries
 // the conversation, working notes and earlier summaries it holds. From an LLM
 // summary (summary is true) it carries the summary whole as an earlier summary;
-// the model's own text is not mined for working notes.
+// the model's own text is not mined for conversation or working notes.
 //
 // This is the deterministic checkpoint's carry, which the default compaction
 // paths use. Opt-in strategies that write their own checkpoints (session-log,
 // OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
 func (d *checkpointData) collectCompaction(text string, summary bool) {
-	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
 	if summary {
 		d.earlierSummaries = append(d.earlierSummaries, text)
 		return
 	}
+	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
 	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
 	d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
 }

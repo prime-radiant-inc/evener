@@ -116,6 +116,9 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 		return entries
 	}
 
+	// The legacy formats predate fenced sections, so they are read outside
+	// fences: markup quoted inside a fenced earlier summary is its text.
+	text = withoutFencedBlocks(text)
 	openTag := "<conversation>"
 	closeTag := "</conversation>"
 	if _, rest, found := strings.Cut(text, openTag); found {
@@ -172,7 +175,7 @@ func extractCheckpointWorkingNotes(text string) []string {
 		}
 		return notes
 	}
-	return extractCheckpointJSON(text, "working_notes")
+	return extractCheckpointJSON(withoutFencedBlocks(text), "working_notes")
 }
 
 func markdownSection(text, heading string) string {
@@ -225,6 +228,31 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 		return 0, 0, 0, false
 	}
 	return start, body, len(text), true
+}
+
+// withoutFencedBlocks returns text with every fenced code block, fences
+// included, removed. The legacy checkpoint formats are read from what is left.
+func withoutFencedBlocks(text string) string {
+	var b strings.Builder
+	inFence := false
+	fenceMarker := ""
+	for _, line := range strings.SplitAfter(text, "\n") {
+		content := strings.TrimSuffix(line, "\n")
+		if marker := markdownFenceMarker(content); marker != "" {
+			if !inFence {
+				inFence, fenceMarker = true, marker
+				continue
+			}
+			if strings.TrimSpace(content) == fenceMarker {
+				inFence, fenceMarker = false, ""
+				continue
+			}
+		}
+		if !inFence {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
 }
 
 func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {

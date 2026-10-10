@@ -409,3 +409,33 @@ func TestForceCompact_SummarizerSeesTheWholeCheckpoint(t *testing.T) {
 		t.Fatalf("the summarizer did not see the newest folded message (prompt is %d chars)", len(prompts[1]))
 	}
 }
+
+// Legacy checkpoint markup quoted inside a summary is the summary's text, not
+// the conversation or working notes: a fold of the summary, and a fold of that
+// checkpoint, never promote it.
+func TestCheckpoint_LegacyMarkupInsideSummariesIsContent(t *testing.T) {
+	recent := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	fold := func(first schema.Turn) string {
+		history := append([]schema.Turn{first, schema.NewTurn(schema.TurnUserInput, llm.User("next question"))}, recent...)
+		return checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	}
+	summary := "[CONTEXT SUMMARY]\n## Progress\nan example of the old format: " +
+		`<working_notes>["QUOTED_NOTE"]</working_notes> <user_messages>["QUOTED_USER"]</user_messages>` + "\n[END SUMMARY]"
+	once := fold(schema.NewTurn(schema.TurnSummary, llm.User(summary)))
+	twice := fold(schema.NewTurn(schema.TurnCheckpoint, llm.User(once)))
+	for name, cp := range map[string]string{"once": once, "twice": twice} {
+		for _, entry := range extractCheckpointConversation(cp) {
+			if strings.Contains(entry.Text, "QUOTED_USER") {
+				t.Fatalf("%s: quoted legacy markup became a conversation entry: %q", name, entry.Text)
+			}
+		}
+		for _, note := range extractCheckpointWorkingNotes(cp) {
+			if strings.Contains(note, "QUOTED_NOTE") {
+				t.Fatalf("%s: quoted legacy markup became a working note: %q", name, note)
+			}
+		}
+	}
+}
