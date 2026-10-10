@@ -952,7 +952,14 @@ export class SessionEntryCache {
     const coverageKeys = await requestResult(coverageStore.getAllKeys(range) as IDBRequest<IDBValidKey[]>);
     for (const key of coverageKeys) coverageStore.delete(key);
     const meta = await requestResult(metaStore.get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>);
-    metaStore.delete(historyKey);
+    // Preserve a non-zero fence across eviction and TTL: without the generation
+    // row, later work captured before a delete would be re-admitted against the
+    // now-empty identity. A generation-0 history has no fence to keep.
+    if ((meta?.generation ?? 0) > 0) {
+      metaStore.put({ historyKey, encodedBytes: 0, itemCount: 0, generation: meta?.generation });
+    } else {
+      metaStore.delete(historyKey);
+    }
     return meta?.encodedBytes ?? 0;
   }
 

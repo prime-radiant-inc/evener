@@ -1,6 +1,14 @@
 import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { ENTRY_COVERAGE_STORE, ENTRY_ITEM_STORE, ENTRY_META_STORE, ENTRY_TURN_STORE } from "./sessionCacheSchema";
+import {
+  ENTRY_COVERAGE_STORE,
+  ENTRY_ITEM_STORE,
+  ENTRY_META_STORE,
+  ENTRY_TURN_STORE,
+  entryHistoryKey,
+  type TranscriptResolvedIdentity,
+  type TranscriptSessionMetadata,
+} from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { settleRealTasks } from "./testing/stalledIndexedDB";
 
@@ -240,4 +248,119 @@ it("keeps a delete fence through repeat deletes, TTL expiry and unrelated evicti
     cache.commitBatch({ historyKey: deleted, clearEpoch: 0, historyGeneration: 2, items: [row(deleted, 2)] }),
   ).resolves.toEqual({ outcome: "refused", reason: "capacity" });
   await expect(cache.getLatest(deleted, 10)).resolves.toEqual([]);
+});
+
+it("preserves the generation fence through a fresh write, capacity eviction and TTL", async () => {
+  const name = `entry-lifecycle-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const identityFor = (sessionId: string): TranscriptResolvedIdentity => ({
+    clientId: "c",
+    hostId: "h",
+    sessionId,
+    incarnation: "i",
+  });
+  const metadataFor = (sessionId: string, savedAt: number): TranscriptSessionMetadata => {
+    const resolvedIdentity = identityFor(sessionId);
+    return {
+      historyKey: entryHistoryKey(resolvedIdentity),
+      requestedRefs: [{ clientId: "c", ref: `local:${sessionId}` }],
+      resolvedIdentity,
+      savedAt,
+      accessedAt: savedAt,
+      formatVersion: 3,
+    };
+  };
+  const fenced = entryHistoryKey(identityFor("fenced"));
+  const other = entryHistoryKey(identityFor("other"));
+  const third = entryHistoryKey(identityFor("third"));
+  let now = 1_000;
+
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  await measure.commitBatch({
+    historyKey: fenced,
+    clearEpoch: 0,
+    items: [row(fenced, 1)],
+    sessionMetadata: metadataFor("fenced", 1_000),
+  });
+  const fencedBytes = (await measure.getByteTotals(fenced)).historyBytes;
+  await measure.commitBatch({
+    historyKey: other,
+    clearEpoch: 0,
+    items: [row(other, 1)],
+    sessionMetadata: metadataFor("other", 1_000),
+  });
+  const otherBytes = (await measure.getByteTotals(other)).historyBytes;
+
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: Math.max(fencedBytes, otherBytes) + 1,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(cache);
+  await cache.commitBatch({
+    historyKey: fenced,
+    clearEpoch: 0,
+    items: [row(fenced, 1)],
+    sessionMetadata: metadataFor("fenced", 1_000),
+  });
+  await cache.deleteHistory(fenced);
+  expect(await cache.getHistoryGeneration(fenced)).toBe(1);
+
+  // A successful explicit fresh-generation write after the delete.
+  await expect(
+    cache.commitBatch({
+      historyKey: fenced,
+      clearEpoch: 0,
+      historyGeneration: 1,
+      items: [row(fenced, 2)],
+      sessionMetadata: metadataFor("fenced", 1_000),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  // Capacity pressure evicts the fenced identity's live rows; its generation
+  // fence must survive and still refuse captured old work.
+  await expect(
+    cache.commitBatch({
+      historyKey: other,
+      clearEpoch: 0,
+      items: [row(other, 1)],
+      sessionMetadata: metadataFor("other", 1_000),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+  expect(await cache.getHistoryGeneration(fenced)).toBe(1);
+  await expect(
+    cache.commitBatch({ historyKey: fenced, clearEpoch: 0, historyGeneration: 0, items: [row(fenced, 3)] }),
+  ).resolves.toEqual({ outcome: "refused", reason: "history-fence" });
+
+  // A later TTL pass reclaims expired live rows; the fence still survives and a
+  // fresh generation can still cache, so it is neither erased nor stranded.
+  now = 2_000;
+  await cache.commitBatch({
+    historyKey: third,
+    clearEpoch: 0,
+    items: [row(third, 1)],
+    sessionMetadata: metadataFor("third", 2_000),
+  });
+  expect(await cache.getHistoryGeneration(fenced)).toBe(1);
+  await expect(
+    cache.commitBatch({
+      historyKey: fenced,
+      clearEpoch: 0,
+      historyGeneration: 1,
+      items: [row(fenced, 3)],
+      sessionMetadata: metadataFor("fenced", 2_000),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+  await expect(cache.getLatest(fenced, 10)).resolves.toMatchObject([{ transcriptKey: "row-3" }]);
 });

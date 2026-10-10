@@ -662,3 +662,147 @@ it("aborting Clear preserves every history store, the fence and the epoch", asyn
   await expect(cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "entry" }]);
   expect(await cache.getHistoryGeneration(historyKey)).toBe(0);
 });
+
+function currentCheckpoint(savedAt: number): CurrentSessionRecord {
+  const item: ThreadItem = {
+    id: "a1",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "current",
+    transcriptKey: "e1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+  };
+  const base = currentRead("local:cur");
+  const read: ThreadReadResponse = {
+    ...base,
+    thread: { ...base.thread, turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [item] }] },
+  };
+  const state = currentTranscriptState(hydrateThread(read, "local:cur", 10));
+  if (!state) throw new Error("fixture state did not build");
+  return {
+    ownerToken: "tab",
+    ref: "local:cur",
+    connectionGeneration: 1,
+    ownershipGeneration: 1,
+    clearEpoch: 0,
+    appliedSequence: 1,
+    savedAt,
+    state,
+  };
+}
+
+function entryRow(historyKeyValue: string) {
+  return {
+    historyKey: historyKeyValue,
+    transcriptKey: "row-1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+    item: { id: "row-1", turnId: "turn_1", type: "agentMessage", text: "body" },
+  };
+}
+
+it("reclaims expired legacy records and current checkpoints before fresh entries", async () => {
+  const name = `entry-migrate-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    now: () => 1_000,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+  });
+  caches.push(measure);
+  await measure.getByteTotals("warm");
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
+  caches.push(legacy);
+  const entryKey = entryHistoryKey({ clientId: "c", hostId: "h", sessionId: "entry", incarnation: "i" });
+  await measure.commitBatch({ historyKey: entryKey, clearEpoch: 0, items: [entryRow(entryKey)] });
+  const entryBytes = (await measure.getByteTotals(entryKey)).historyBytes;
+
+  await legacy.put({ ...legacyRecord(), savedAt: 1 }, 0, 1);
+  await legacy.putCurrent(currentCheckpoint(1), 1);
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: entryBytes + 5,
+    ttlMs: 100,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({ historyKey: entryKey, clearEpoch: 0, items: [entryRow(entryKey)] }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  await expect(readRaw(factory, name, "records", "local:thr_1")).resolves.toBeUndefined();
+  await expect(readRaw(factory, name, "meta", "local:thr_1")).resolves.toBeUndefined();
+  await expect(readRaw(factory, name, "current", ["tab", "local:cur"])).resolves.toBeUndefined();
+  await expect(readRaw(factory, name, "currentMeta", ["tab", "local:cur"])).resolves.toBeUndefined();
+  await expect(capped.getLatest(entryKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+});
+
+it("refuses an over-cap migration and retains its source and existing backing", async () => {
+  const name = `entry-migrate-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    now: () => 1_000,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+  });
+  caches.push(measure);
+  await measure.getByteTotals("warm");
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
+  caches.push(legacy);
+  const existingKey = entryHistoryKey({ clientId: "c", hostId: "h", sessionId: "existing", incarnation: "i" });
+  await measure.commitBatch({ historyKey: existingKey, clearEpoch: 0, items: [entryRow(existingKey)] });
+  const existingBytes = (await measure.getByteTotals(existingKey)).historyBytes;
+
+  // A large legacy source whose converted history far exceeds the existing one.
+  const big = legacyRecord();
+  const bigItems = Array.from({ length: 5 }, (_, index) => ({
+    id: `e${index}`,
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "x".repeat(500),
+    transcriptKey: `e${index}`,
+    position: { entry: index, item: 0 },
+    version: index + 1,
+  }));
+  await legacy.put(
+    {
+      ...big,
+      history: { ...big.history, turns: [{ id: "turn_1", status: "completed", version: 5, items: bigItems }] },
+    },
+    0,
+    1_000,
+  );
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: existingBytes + 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  await expect(
+    migrateLegacySession(capped, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: "local:thr_1" }],
+      savedAt: 1_000,
+      source: { kind: "records", ref: "local:thr_1" },
+      clearEpoch: 0,
+    }),
+  ).resolves.toEqual({ outcome: "refused", reason: "capacity" });
+
+  await expect(readRaw(factory, name, "records", "local:thr_1")).resolves.toBeDefined();
+  await expect(capped.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(capped.getLatest(existingKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+});

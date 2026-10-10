@@ -2446,3 +2446,56 @@ it("counts a current checkpoint in the combined cap and evicts its body", async 
   expect(currentAfter).toBeUndefined();
   await expect(capped.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
 });
+
+it("evicts a preferred unit only after unpresferred units when pressure persists", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  const live = entryHistoryKey(identityFor("live"));
+  const other = entryHistoryKey(identityFor("other"));
+  const archive = entryHistoryKey(identityFor("archive"));
+  const write = (historyKey: string, sessionId: string, savedAt: number) =>
+    measure.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      sessionMetadata: metadataFor(sessionId, savedAt, savedAt),
+    });
+  await write(live, "live", 2);
+  await write(other, "other", 1);
+  await write(archive, "archive", 3);
+  const archiveBytes = (await measure.getByteTotals(archive)).historyBytes;
+
+  // Room for the archive alone: after evicting the unpresferred `other`, the
+  // preferred `live` is still over the cap and must be the fallback victim.
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: archiveBytes + 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+    isPreferred: (unit) => unit.kind === "entry" && unit.historyKey === live,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey: archive,
+      clearEpoch: 0,
+      items: [itemRow(archive, 1)],
+      sessionMetadata: metadataFor("archive", 3, 3),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  await expect(capped.getLatest(other, 10)).resolves.toEqual([]);
+  await expect(capped.getLatest(live, 10)).resolves.toEqual([]);
+  await expect(capped.getLatest(archive, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+});
