@@ -269,7 +269,7 @@ describe("a search result's mark", () => {
 		expect(mark({ state: "awaiting" })).toBe("needsYou");
 	});
 
-	it("leaves everything else unmarked, never Finished: a result has no seen state", () => {
+	it("leaves everything else unmarked, with no unread dot: a result has no seen state", () => {
 		expect(mark({ state: "idle" })).toBe("idle");
 		expect(mark({ state: "somethingNew" })).toBe("idle");
 	});

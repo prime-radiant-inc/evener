@@ -241,7 +241,7 @@ describe("a Board row (spec 7.2)", () => {
 		"a %s parent with mixed children keeps Working visuals and quiet failure history",
 		(state) => {
 			const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
-			const classified = { row: parent, state: boardState(parent, false, false) };
+			const classified = { row: parent, state: boardState(parent, false) };
 			const live = mount({ item: classified, moving: true });
 			expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
 			expect(pressable(live).props.accessibilityLabel).toContain("Waiting on 1 subagent");
