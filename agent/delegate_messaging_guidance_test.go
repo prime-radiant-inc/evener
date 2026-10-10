@@ -46,7 +46,7 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	)
 	adapter.script("GOLDEN-CHILD", func(llm.Request) llm.Response { return finalResponse("evener") })
 	adapter.script("SCHEMA-CHILD", func(llm.Request) llm.Response { return finalResponse("pass") })
-	root := newMessagingRoot(t, adapter)
+	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

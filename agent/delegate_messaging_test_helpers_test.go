@@ -121,12 +121,17 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	return response, nil
 }
 
-// newMessagingRoot starts a root session answered by adapter.
-func newMessagingRoot(t *testing.T, adapter *messagingAdapter) *Session {
+// newMessagingRoot starts a root session answered by adapter. configure, when
+// set, adjusts the root's config first, for test-only hooks.
+func newMessagingRoot(t *testing.T, adapter *messagingAdapter, configure func(*SessionConfig)) *Session {
 	t.Helper()
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: t.TempDir()})
+	cfg := SessionConfig{StateDir: t.TempDir()}
+	if configure != nil {
+		configure(&cfg)
+	}
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -185,4 +190,47 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 		t.Fatalf("fold root attention: %v", err)
 	}
 	return fold
+}
+
+// updateResponse is a delegate's model turn that sends message to its parent
+// as an update: communicate(end_turn=false).
+func updateResponse(id, message string) llm.Response {
+	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+}
+
+// delegateSendResponse is a model turn that sends message to delegateID and
+// waits up to maxWaitMS for the generation it starts.
+func delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response {
+	args, _ := json.Marshal(map[string]any{"to": delegateID, "message": message, "max_wait_ms": maxWaitMS})
+	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
+}
+
+// jobListResponse is a model turn that calls job_list: a tool round that
+// changes nothing, so the request after it is the turn's next model boundary.
+func jobListResponse(id string) llm.Response {
+	return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+}
+
+// awaitSignal waits for ch to close. Scripted steps call it on provider
+// goroutines, so a hang is reported with Errorf, never Fatalf.
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	select {
+	case <-ch:
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	case <-time.After(30 * time.Second):
+		t.Errorf("timed out waiting for %s", what)
+	}
+}
+
+// waitForRootAttention waits until root holds at least n unresolved
+// attention items and returns them in transcript order.
+func waitForRootAttention(t *testing.T, root *Session, n int) []string {
+	t.Helper()
+	var pending []string
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, fmt.Sprintf("root to hold %d unresolved attention items", n), func() bool {
+		pending = rootPendingAttention(root)
+		return len(pending) >= n
+	})
+	return pending
 }
