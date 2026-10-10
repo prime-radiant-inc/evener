@@ -256,6 +256,34 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
+test("the agent path nav shows resolved thread names, not raw refs", async () => {
+  const { fake, response } = fixture();
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = response(ref);
+    return {
+      ...read,
+      requestGeneration,
+      thread: {
+        ...read.thread,
+        // The wire's ancestor titles are session ids and the leaf scope title
+        // is the requested ref, so only the threads store can supply the
+        // display names the nav must show.
+        name: `Thread name ${ref}`,
+        turns: includeTurns === false ? [] : read.thread.turns,
+      },
+    };
+  });
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  const nav = within(screen.getByRole("navigation", { name: "Agent path" }));
+  expect(nav.getAllByRole("button").map((button) => button.textContent)).toEqual([
+    "Thread name root",
+    "Thread name child",
+  ]);
+});
+
 test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
   const { fake } = fixture();
   const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };

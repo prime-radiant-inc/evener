@@ -4,7 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -36,6 +36,15 @@ const CLASS = {
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
 };
+
+function CascadePathButton({ paneId, scope }: { paneId: string; scope: CascadeScope }) {
+  const title = useScopeTitle(scope.requestedRef, scope.title);
+  return (
+    <Button variant="quiet" size="xs" onClick={() => popAgentCascade(paneId, scope.requestedRef)}>
+      {title}
+    </Button>
+  );
+}
 
 function ScopeConversation({
   pane,
@@ -165,14 +174,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         {mobile && returnAction}
         <nav className={CLASS.path} aria-label="Agent path">
           {path.scopes.map((scope) => (
-            <Button
-              key={scope.requestedRef}
-              variant="quiet"
-              size="xs"
-              onClick={() => popAgentCascade(paneId, scope.requestedRef)}
-            >
-              {scope.title}
-            </Button>
+            <CascadePathButton key={scope.requestedRef} paneId={paneId} scope={scope} />
           ))}
         </nav>
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
