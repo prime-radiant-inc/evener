@@ -39,6 +39,7 @@ import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
   contentGrewBelowViewport,
+  contentIsUnmeasured,
   isAtBottom,
   isEndBelowFold,
   isNearTop,
@@ -1501,7 +1502,13 @@ export function useTranscriptScroll({
       // fixed one; the full-suite exit-code check DOES catch this class of
       // regression - confirmed empirically: a genuinely uncaught rejection
       // exits 1 even though the individual test that triggered it "passes".)
-      if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
+      // The mount/measurement scroll of a transcript that is still painting its
+      // rows sits at scrollTop 0 with nothing measured, which reads as a reader
+      // at the top of a short transcript. That is the same transient empty
+      // render the geometry fill guards against; paging it would issue a network
+      // history request during an opening that must be local-only. The trigger
+      // resumes once any rendered row has a measured height.
+      if (isNearTop(m.scrollTop) && !contentIsUnmeasured(el)) loadOlderRef.current().catch(() => {});
     }
 
     // A geometry change that never produces a scroll event: a webfont swaps in

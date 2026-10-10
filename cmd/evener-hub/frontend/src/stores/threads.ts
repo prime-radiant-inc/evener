@@ -51,6 +51,7 @@ import {
   mergeTailTurns,
   mutationErrorData,
   notificationRoutingKey,
+  pruneBackgroundHistoryBodies,
   readDisposition,
   readWindowBounds,
   resolvePendingEscalation,
@@ -555,6 +556,7 @@ export interface EntryTranscriptFixtureOptionsForTests {
 interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsForTests {
   repository?: TranscriptRepository;
   reader?: TranscriptReader;
+  unsubscribeRepository?: () => void;
   lifetime: number;
   readSequence: number;
   historyKey?: string;
@@ -587,6 +589,8 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
     dispose: () => {
       if (entryTranscriptFixtureForTests !== fixture) return;
       fixture.reader?.dispose();
+      fixture.unsubscribeRepository?.();
+      fixture.unsubscribeRepository = undefined;
       fixture.repository?.dispose();
       entryTranscriptFixtureForTests = undefined;
     },
@@ -597,12 +601,47 @@ function isEntryTranscriptFixtureRef(ref: string): boolean {
   return entryTranscriptFixtureForTests?.ref === ref;
 }
 
+function isEntryTranscriptFixtureBackgroundOnly(ref: string): boolean {
+  return isEntryTranscriptFixtureRef(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
+}
+
+// Publish the repository's own model into the real store. Called while the
+// fixture's reader is attached: the repository is the route's single owner of
+// recorded ingestion, so its accepted updates (not a parallel legacy reduce)
+// are what the renderer follows. The store model stays pruned only while the
+// ref is genuinely background-only; an attached reader means a real holder.
+function publishEntryTranscriptFixtureModel(ref: string): void {
+  const fixture = entryTranscriptFixtureForTests;
+  const snapshot = fixture?.repository?.getSnapshot();
+  if (!snapshot) return;
+  putThreadModel(ref, isEntryTranscriptFixtureBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
+}
+
 async function openEntryTranscriptFixture(ref: string): Promise<void> {
   const fixture = entryTranscriptFixtureForTests;
   if (!fixture || fixture.ref !== ref || !fixture.repository) return;
   fixture.reader ??= fixture.repository.attachReader();
+  // Ongoing repository publication: every accepted recorded update republishes
+  // the repository model, so continued UI changes are repository-owned rather
+  // than supplied by the parallel legacy reducer. The explicit openLocal result
+  // below is one such publication; this is the subscription that outlives it.
+  fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
+  publishEntryTranscriptFixtureModel(ref);
   const result = await fixture.reader.openLocal(200);
   if (result.model) putThreadModel(ref, result.model);
+}
+
+function releaseEntryTranscriptFixtureReader(ref: string): void {
+  const fixture = entryTranscriptFixtureForTests;
+  if (!fixture || fixture.ref !== ref) return;
+  fixture.reader?.dispose();
+  fixture.reader = undefined;
+  fixture.unsubscribeRepository?.();
+  fixture.unsubscribeRepository = undefined;
+  const model = threadsStore.getState().threads.get(ref);
+  if (model && isEntryTranscriptFixtureBackgroundOnly(ref)) {
+    putThreadModel(ref, pruneBackgroundHistoryBodies(model));
+  }
 }
 
 function acceptEntryTranscriptHydration(
@@ -640,7 +679,7 @@ function acceptEntryTranscriptHydration(
     readId: `fixture-read-${++fixture.readSequence}`,
     boundary: `fixture-boundary-${fixture.readSequence}`,
   });
-  for (const update of pending.notifications) {
+  for (const update of hydration.fixtureNotifications) {
     repository.accept(update.notification, { lifetime: fixture.lifetime });
   }
 }
@@ -2210,6 +2249,7 @@ function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err:
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
+  fixtureNotifications: ReceivedTranscriptUpdate[];
 }
 
 async function hydrateAndSubscribe(
@@ -2275,8 +2315,14 @@ async function hydrateAndSubscribe(
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? applyCacheGapRule(ref, pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
+  // The response cut retires buffered input from the legacy hydrator because
+  // its snapshot is authoritative for that route. The selected entry fixture
+  // also needs the accepted input itself: the repository merges it under its
+  // own version and coverage authority, preserving input absent from a stale
+  // response and applying overlays after the recorded baseline.
+  const fixtureNotifications = isEntryTranscriptFixtureRef(ref) ? pending.notifications.slice() : [];
   applyHydrationResponseCut(pending, ref, model);
-  return { model, response };
+  return { model, response, fixtureNotifications };
 }
 
 // The one place a rejection is checked for the hub's durable deletion fence
@@ -3567,7 +3613,7 @@ function beginWatchedHydration(
 function bufferPendingNotification(ref: string, pending: PendingThreadHydration, notification: AnyNotification): void {
   const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
   const update = { sequence, now: Date.now(), notification, bytes: encodedPayloadBytes(notification) };
-  if ((backgroundRefCounts.get(ref) ?? 0) > 0) {
+  if (!isEntryTranscriptFixtureRef(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
       pending.backgroundInvalidated = true;
       transcriptResidency().revoke(ref, "gap");
@@ -3614,6 +3660,9 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     preserveLiveActiveTurn(model, live),
     pending.notifications,
   );
+  const backgroundModel = isEntryTranscriptFixtureBackgroundOnly(ref)
+    ? pruneBackgroundHistoryBodies(hydrated)
+    : hydrated;
   retirePendingHydration(ref, pending, pendingThreadHydrations);
   currentAdmissions.set(ref, {
     capabilities: hydrated.capabilities,
@@ -3623,10 +3672,14 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     resumeOnlyFoldable: hydrated.resumeOnlyFoldable,
   });
   currentAppliedSequences.set(ref, currentAppliedSequences.get(ref) ?? 0);
-  if (residencyIfCreated && !residencyIfCreated.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0, true))
+  if (
+    !isEntryTranscriptFixtureRef(ref) &&
+    residencyIfCreated &&
+    !residencyIfCreated.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0, true)
+  )
     return null;
-  putThreadModel(ref, hydrated);
-  setCurrentThreadId(ref, hydrated.threadId);
+  putThreadModel(ref, backgroundModel);
+  setCurrentThreadId(ref, backgroundModel.threadId);
   // The first authoritative publish ends the cached-shell window: the flag
   // and the gap rule's anchor live only from the shell's arming until this
   // read's publish (spec, "The load seam"); the lease outlives
@@ -3645,8 +3698,8 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     nextFrameTimes.set(ref, times);
     return { frameTimes: nextFrameTimes, hydrations };
   });
-  settleOwnedHydration("thread", ref, hydrated);
-  return hydrated;
+  settleOwnedHydration("thread", ref, backgroundModel);
+  return backgroundModel;
 }
 
 async function publishAndReconcileThreadHydration(
@@ -3996,7 +4049,7 @@ function handleNotification(n: AnyNotification): void {
       if (pending && targetsPendingHydration(n, pending)) continue;
       const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
       const update = { sequence, now, notification: n, bytes: encodedPayloadBytes(n) };
-      if (transcriptResidency().accept(ref, update)) residencySkipped.add(ref);
+      if (!isEntryTranscriptFixtureRef(ref) && transcriptResidency().accept(ref, update)) residencySkipped.add(ref);
       currentAppliedSequences.set(ref, sequence);
     }
   }
@@ -4032,17 +4085,39 @@ function handleNotification(n: AnyNotification): void {
     if (refs.size > 0) pendingWatchedRefs = refs;
   }
   const {
-    next: nextThreads,
+    next: reducedThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...residencySkipped]));
   const {
-    next: nextWatchedThreads,
+    next: reducedWatchedThreads,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
     endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
+  let nextThreads = reducedThreads;
+  if (nextThreads) {
+    let projected: Map<string, ThreadModel> | undefined;
+    for (const ref of changedThreads) {
+      const model = nextThreads.get(ref);
+      if (!model || !isEntryTranscriptFixtureBackgroundOnly(ref)) continue;
+      projected ??= new Map(nextThreads);
+      projected.set(ref, pruneBackgroundHistoryBodies(model));
+    }
+    if (projected) nextThreads = projected;
+  }
+  let nextWatchedThreads = reducedWatchedThreads;
+  if (nextWatchedThreads) {
+    let projected: Map<string, ThreadModel> | undefined;
+    for (const ref of changedWatchedThreads) {
+      const model = nextWatchedThreads.get(ref);
+      if (!model || !isEntryTranscriptFixtureRef(ref)) continue;
+      projected ??= new Map(nextWatchedThreads);
+      projected.set(ref, pruneBackgroundHistoryBodies(model));
+    }
+    if (projected) nextWatchedThreads = projected;
+  }
   let publishableThreads = nextThreads;
   let publishableChangedThreads = changedThreads;
   let publishableEndedResumeOnly = endedThreadsResumeOnly;
@@ -4050,7 +4125,11 @@ function handleNotification(n: AnyNotification): void {
     const refused = new Set<string>();
     for (const ref of acceptedThreads) {
       const model = nextThreads.get(ref);
-      if (model && !residencyIfCreated.published(ref, model, currentAppliedSequences.get(ref) ?? 0)) {
+      if (
+        model &&
+        !isEntryTranscriptFixtureRef(ref) &&
+        !residencyIfCreated.published(ref, model, currentAppliedSequences.get(ref) ?? 0)
+      ) {
         refused.add(ref);
       }
     }
@@ -4165,7 +4244,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
-  putWatchedThreadModel(ref, model);
+  putWatchedThreadModel(ref, isEntryTranscriptFixtureRef(ref) ? pruneBackgroundHistoryBodies(model) : model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -4345,7 +4424,7 @@ async function refreshTrackedThread(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<number | undefined> {
-  if (intent !== "background")
+  if (intent !== "background" || isEntryTranscriptFixtureRef(ref))
     return refreshTrackedThreadNow(
       client,
       epoch,
@@ -4913,7 +4992,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
 
     const claimEpoch = readyEpoch;
-    const promoted = await transcriptResidency().promote(ref);
+    const promoted = isEntryTranscriptFixtureRef(ref) ? false : await transcriptResidency().promote(ref);
     if (promoted) return;
 
     // The claim's hydration epoch, observed when the pane claimed the ref —
@@ -5116,6 +5195,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     syncTranscriptResidencyOwners(ref);
     syncThreadSubscription(ref);
     releaseSubagentRows(ref);
+    releaseEntryTranscriptFixtureReader(ref);
     if (canonicalThreadOwnerActive(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -5891,6 +5971,7 @@ function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
 }
 
 function writeCacheRecord(ref: string, model: ThreadModel): Promise<void> {
+  if (isEntryTranscriptFixtureRef(ref)) return Promise.resolve();
   if (!cacheWriteGatesPass(ref, model)) return Promise.resolve();
   if (oversizeMemo.has(ref)) return Promise.resolve(); // memoized per ref, scoped to the model's lifetime
   const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
@@ -6192,14 +6273,19 @@ function transcriptResidency(): TranscriptResidency {
 }
 
 function syncTranscriptResidencyOwners(ref: string): void {
-  const residency = residencyIfCreated ?? transcriptResidency();
-  residency.connection(readyEpoch, wiredClient?.state === "ready");
-  residency.owners(ref, {
-    foreground: refCounts.get(ref) ?? 0,
-    history: historyHoldCounts.get(ref) ?? 0,
-    mutationPinned: pinnedMutationRefs.has(ref),
-    background: backgroundRefCounts.get(ref) ?? 0,
-  });
+  const fixtureRoute = isEntryTranscriptFixtureRef(ref);
+  if (!fixtureRoute) {
+    const residency = residencyIfCreated ?? transcriptResidency();
+    residency.connection(readyEpoch, wiredClient?.state === "ready");
+    residency.owners(ref, {
+      foreground: refCounts.get(ref) ?? 0,
+      history: historyHoldCounts.get(ref) ?? 0,
+      mutationPinned: pinnedMutationRefs.has(ref),
+      background: backgroundRefCounts.get(ref) ?? 0,
+    });
+  } else {
+    residencyIfCreated?.connection(readyEpoch, wiredClient?.state === "ready");
+  }
   syncCacheLifetimeForeground(ref);
 }
 

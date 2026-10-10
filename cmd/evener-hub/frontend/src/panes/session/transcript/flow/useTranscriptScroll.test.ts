@@ -2676,6 +2676,57 @@ describe("near-top triggers loadOlder", () => {
 
     expect(loadOlder).not.toHaveBeenCalled();
   });
+
+  // The real entry-slice opening: the pane's mount/measurement scroll has the
+  // transcript painting its rows, so scrollTop sits at 0 with the virtualizer's
+  // rendered rows still unmeasured. That reads as "reader at the top of a short
+  // transcript" and would page in history over the network during a local-only
+  // opening. The trigger holds until measurement lands, then resumes - the
+  // existing "a scroll event landing near the top calls loadOlder" test above
+  // proves ordinary near-top paging is unchanged for an already-measured port.
+  test("does not page while the rendered rows are unmeasured, then resumes once they measure", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(SCROLLED_AWAY);
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    const sizer = document.createElement("div");
+    el.appendChild(sizer);
+    const rows = [0, 1, 2].map(() => {
+      const row = document.createElement("div");
+      sizer.appendChild(row);
+      return row;
+    });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+        listRef: ref,
+        loadOlder,
+        measure,
+      }),
+    );
+
+    act(() => {
+      set({ scrollTop: 50 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+
+    // The browser's real partial state: one row measured while the rest are
+    // still zero. A single measured row must not unblock the trigger.
+    Object.defineProperty(rows[0]!, "offsetHeight", { configurable: true, value: 53 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+
+    // Measurement lands for every rendered row: the port's own geometry
+    // genuinely is short, so near-top paging resumes.
+    for (const row of rows) Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("prepend anchoring (loadOlder resolving)", () => {

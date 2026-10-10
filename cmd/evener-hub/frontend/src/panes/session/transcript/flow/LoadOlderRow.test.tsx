@@ -88,6 +88,65 @@ test("loads older turns when the port is not full", () => {
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
+// The real entry-slice opening: the pane paints the background-pruned model
+// first, so the virtualizer renders rows that measure zero height until its
+// measurement lands. The initial geometry check must not read that transient
+// empty render as a short transcript and page in history over the network.
+// Once measurement lands the SAME callback re-decides: the content really is
+// short, so paging resumes - proving the guard suppresses only the transient,
+// not short-page paging itself.
+test("does not load while rendered rows are unmeasured, then loads once they measure short", () => {
+  const port = scrollPort(300, 500);
+  const rows = [0, 1, 2].map(() => {
+    const row = document.createElement("div");
+    port.el.firstElementChild?.appendChild(row);
+    return row;
+  });
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+  expect(onLoad).not.toHaveBeenCalled();
+
+  // The virtualizer's measurement lands: every rendered row now carries height.
+  for (const row of rows) Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+  latestObserver().resize();
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
+// The browser's real transient: one row has measured (53px) while thirteen are
+// still zero, so the sizer totals far less than the transcript really is. A
+// single measured row must not make the port look honestly short.
+test("does not load while only some rendered rows have measured", () => {
+  const port = scrollPort(300, 500);
+  const rows = [0, 1, 2, 3].map(() => {
+    const row = document.createElement("div");
+    port.el.firstElementChild?.appendChild(row);
+    return row;
+  });
+  Object.defineProperty(rows[3]!, "offsetHeight", { configurable: true, value: 53 });
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+
+  expect(onLoad).not.toHaveBeenCalled();
+});
+
+// A transcript with no rendered rows at all (empty, or all rows hidden) is not
+// the transient-measurement state: the short-page check still decides, so a
+// genuinely empty page can still fill itself rather than being stranded.
+test("an empty port with no rendered rows still auto-loads when short", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
 // The reported bug: the row renders into FlowOverlay's non-scrolling top slot,
 // so a sentinel of its own was inside the viewport at every scroll position
 // and loaded a page on every open, however far the reader was from the top of

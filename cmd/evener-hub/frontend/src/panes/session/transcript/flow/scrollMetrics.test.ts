@@ -192,6 +192,49 @@ test("shouldAutoLoadOlder: false once the content exceeds the port by a single p
   expect(shouldAutoLoadOlder(el)).toBe(false);
 });
 
+// The real-browser entry-slice failure: the pane paints the background-pruned
+// model first, so the virtualizer's rows exist but measure zero height until
+// its measurement lands. Reading that unmeasured DOM as "too short" paged in
+// history over the network during a local-only opening. The port's ROWS, not
+// its scrollHeight, are what show the transcript is still painting.
+test("shouldAutoLoadOlder: false while rendered rows are still unmeasured (transient empty render)", () => {
+  const el = document.createElement("div");
+  const sizer = document.createElement("div");
+  el.appendChild(sizer);
+  for (let index = 0; index < 14; index += 1) sizer.appendChild(document.createElement("div"));
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 752 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 752 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+test("shouldAutoLoadOlder: true once a measured row shows the content really is short", () => {
+  const el = document.createElement("div");
+  const sizer = document.createElement("div");
+  el.appendChild(sizer);
+  const row = document.createElement("div");
+  Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+  sizer.appendChild(row);
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+// The browser's real transient: the virtualizer had measured one row (53px)
+// while thirteen were still zero, totalling far less than the transcript
+// really is. One measured row beside unmeasured ones is still mid-paint.
+test("shouldAutoLoadOlder: false while only some rendered rows have measured", () => {
+  const el = document.createElement("div");
+  const sizer = document.createElement("div");
+  el.appendChild(sizer);
+  for (let index = 0; index < 13; index += 1) sizer.appendChild(document.createElement("div"));
+  const measured = document.createElement("div");
+  Object.defineProperty(measured, "offsetHeight", { configurable: true, value: 53 });
+  sizer.appendChild(measured);
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 752 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 752 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
 test("isEndBelowFold: false for content that does not scroll at all", () => {
   expect(isEndBelowFold({ scrollTop: 0, scrollHeight: 100, clientHeight: 200 })).toBe(false);
 });

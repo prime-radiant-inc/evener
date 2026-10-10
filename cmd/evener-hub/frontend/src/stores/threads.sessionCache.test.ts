@@ -33,7 +33,7 @@ import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { entryHistoryKey, type TranscriptResolvedIdentity, upgradeSessionCache } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   bumpCacheEpochRow,
@@ -42,14 +42,19 @@ import {
   neverSettlingFactory,
 } from "./testing/stalledIndexedDB";
 import {
+  acquireBackgroundThread,
+  backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
+  pendingThreadHydrationBaseModelsForTests,
+  pendingThreadHydrationUpdatesForTests,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setCacheWriteTimersForTests,
   setSessionCacheAdapterForTests,
+  settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
 
@@ -268,6 +273,44 @@ async function cacheRecord(ref: string): Promise<CachedSessionRecord | undefined
     return found?.record;
   } finally {
     if (reader !== installedCacheAdapter) reader.close();
+  }
+}
+
+// Count legacy rows by key only. Neither store body is fetched: `records`
+// uses ref as its primary key and `current` has a ref index.
+async function countLegacyCacheRows(ref: string): Promise<{ records: number; current: number }> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open("evener-session-cache", 2);
+    request.addEventListener("upgradeneeded", () => upgradeSessionCache(request.result), { once: true });
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  try {
+    const tx = database.transaction(["records", "current"], "readonly");
+    const completed = new Promise<void>((resolve, reject) => {
+      tx.addEventListener("complete", () => resolve(), { once: true });
+      tx.addEventListener("abort", () => reject(tx.error ?? new Error("legacy count transaction aborted")), {
+        once: true,
+      });
+      tx.addEventListener("error", () => reject(tx.error ?? new Error("legacy count transaction failed")), {
+        once: true,
+      });
+    });
+    const recordKey = new Promise<IDBValidKey | undefined>((resolve, reject) => {
+      const request = tx.objectStore("records").getKey(ref);
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const currentCount = new Promise<number>((resolve, reject) => {
+      const request = tx.objectStore("current").index("ref").count(IDBKeyRange.only(ref));
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const [key, current] = await Promise.all([recordKey, currentCount]);
+    await completed;
+    return { records: key === undefined ? 0 : 1, current };
+  } finally {
+    database.close();
   }
 }
 
@@ -3020,6 +3063,278 @@ describe("cache privacy and history regressions", () => {
 });
 
 describe("exclusive entry transcript fixture route", () => {
+  it("keeps background history in the repository until a local open restores it without read/page activation", async () => {
+    const selected = "local:entry-background-only";
+    const entryDatabase = "entry-background-only-test";
+    const baselineBody = "RECORDED_BACKGROUND_BASELINE_BODY";
+    const liveRecordedBody = "LIVE_RECORDED_BACKGROUND_BODY";
+    const overlayBody = "ACTIVE_BACKGROUND_OVERLAY_BODY";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      const baseline = turnFixture("entry-background-baseline", baselineBody);
+      return readResponse(params.ref ?? selected, {
+        status: { type: "active" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            ...baseline,
+            items: [
+              {
+                ...baseline.items[0]!,
+                transcriptKey: "entry-background-baseline-item",
+                version: 1,
+              },
+            ],
+          },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+    });
+
+    const lease = acquireBackgroundThread(selected);
+    let opened = false;
+    try {
+      await lease.ready;
+      expect(readCount).toBe(1);
+      const backgroundModel = threadsStore.getState().threads.get(selected);
+      if (!backgroundModel) throw new Error("real background demand did not publish the selected thread");
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId: backgroundModel.threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-live-background", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "live-background-item",
+              transcriptKey: "live-background-item",
+              turnId: "entry-live-background",
+              version: 2,
+              text: liveRecordedBody,
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          ref: selected,
+          threadId: backgroundModel.threadId,
+          item: {
+            key: "background-overlay-key",
+            kind: "stream",
+            turnId: "entry-background-baseline",
+            roundId: "background-round",
+            streamId: "background-stream",
+            item: {
+              type: "agentMessage",
+              id: "background-overlay-item",
+              turnId: "entry-background-baseline",
+              text: overlayBody,
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_050));
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      await settleProjectionWorkForTests();
+
+      const selectedStore = threadsStore.getState();
+      const repositoryModel = fixture.inspect().model;
+      const selectedThreadModel = selectedStore.threads.get(selected);
+      const pendingUpdates = pendingThreadHydrationUpdatesForTests();
+      const pendingBaseModels = pendingThreadHydrationBaseModelsForTests();
+      const legacyResidency = backgroundTranscriptSnapshotForTests();
+      const selectedBodyOwners = [
+        ["entry repository", repositoryModel],
+        ["thread store", selectedThreadModel],
+        ["watched thread store", selectedStore.watchedThreads.get(selected)],
+        ["pending notification updates", pendingUpdates],
+        ["pending hydration base models", pendingBaseModels],
+        ["legacy residency pending updates", legacyResidency.refs.get(selected)?.pending],
+        ["legacy residency in-flight updates", legacyResidency.refs.get(selected)?.inFlight],
+      ] as const;
+      const completedBodies = [baselineBody, liveRecordedBody];
+      const completedBodyOwners = selectedBodyOwners
+        .filter(
+          ([, owner]) => owner !== undefined && completedBodies.some((body) => JSON.stringify(owner).includes(body)),
+        )
+        .map(([name]) => name);
+      const legacyRows = await countLegacyCacheRows(selected);
+      const selectedBeforeOpen = JSON.stringify([repositoryModel, selectedThreadModel]);
+      expect({
+        completedBodyOwners,
+        readerAttached: fixture.inspect().readerRetention !== undefined,
+        legacyResidencyOwnsSelectedRef: legacyResidency.refs.has(selected),
+        legacyRows,
+        running: selectedThreadModel?.status.type,
+        overlayPreserved: selectedBeforeOpen.includes(overlayBody),
+      }).toEqual({
+        completedBodyOwners: [],
+        readerAttached: false,
+        legacyResidencyOwnsSelectedRef: false,
+        legacyRows: { records: 0, current: 0 },
+        running: "active",
+        overlayPreserved: true,
+      });
+
+      const traceBoundary = fake.calls.length;
+      await threadsStore.getState().ensureThread(selected);
+      opened = true;
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      const locallyOpened = threadsStore.getState().threads.get(selected);
+      const localSnapshot = JSON.stringify(locallyOpened ?? null);
+      expect(localSnapshot).toContain(baselineBody);
+      expect(localSnapshot).toContain(liveRecordedBody);
+      expect(localSnapshot).toContain(overlayBody);
+      expect(locallyOpened?.status.type).toBe("active");
+      expect(fixture.inspect().readerRetention).toBeDefined();
+      expect(
+        fake.calls
+          .slice(traceBoundary)
+          .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+      ).toEqual([]);
+    } finally {
+      if (opened) threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("replays recorded and overlay updates buffered during the accepted first read before local opening", async () => {
+    const selected = "local:entry-hydration-replay";
+    const entryDatabase = "entry-hydration-replay-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    let releaseRead: (() => void) | undefined;
+    let heldResponse: ThreadReadResponse | undefined;
+    try {
+      const fake = connectFakeClient();
+      fake.on(
+        "thread/read",
+        (params) =>
+          new Promise<ThreadReadResponse>((resolve) => {
+            releaseRead = () => {
+              heldResponse = readResponse(selected, {
+                epoch: 0,
+                snapshot: { incarnation: "inc-1", length: 1 },
+                turns: [
+                  {
+                    ...turnFixture("entry-A", "STALE_A_BODY"),
+                    items: [
+                      {
+                        ...turnFixture("entry-A", "STALE_A_BODY").items[0]!,
+                        transcriptKey: "replay-A",
+                        version: 1,
+                      },
+                    ],
+                  },
+                ],
+                requestGeneration: params.requestGeneration,
+              });
+              resolve(heldResponse);
+            };
+          }),
+      );
+      const hydration = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releaseRead).toBeTypeOf("function"));
+
+      const threadId = `thr_${selected}`;
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-B", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "replay-B",
+              transcriptKey: "replay-B",
+              turnId: "entry-B",
+              version: 2,
+              text: "RECORDED_B_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          ref: selected,
+          threadId,
+          item: {
+            key: "replay-overlay-key",
+            kind: "stream",
+            turnId: "entry-B",
+            roundId: "replay-round",
+            streamId: "replay-stream",
+            item: {
+              type: "agentMessage",
+              id: "replay-overlay",
+              turnId: "entry-B",
+              text: "OVERLAY_LIVE_BODY",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+      await vi.waitFor(() => expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(2));
+      expect(heldResponse).toBeUndefined();
+
+      releaseRead?.();
+      if (!heldResponse) throw new Error("held source response was not captured");
+      await hydration;
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+
+      const repositoryBeforeOpen = JSON.stringify(fixture.inspect().model ?? null);
+      expect(repositoryBeforeOpen).toContain("STALE_A_BODY");
+      expect(repositoryBeforeOpen).toContain("RECORDED_B_BODY");
+      expect(repositoryBeforeOpen).toContain("OVERLAY_LIVE_BODY");
+
+      await threadsStore.getState().ensureThread(selected);
+      const locallyOpened = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect(locallyOpened).toContain("RECORDED_B_BODY");
+      expect(locallyOpened).toContain("OVERLAY_LIVE_BODY");
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
   it("routes only its selected ref around the legacy cache and accepts the current wire baseline", async () => {
     const selected = "local:entry-selected";
     const other = "local:ordinary";
