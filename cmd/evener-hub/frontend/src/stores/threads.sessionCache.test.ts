@@ -1445,9 +1445,10 @@ function olderPageResponse(overrides: { turns?: Turn[]; nextCursor?: string } = 
   };
 }
 
-// The scroll-back volume case now uses real entry paging and currentness.
+// The scroll-back volume case preserves disk-only display before source success.
 // Ruling 33 disposition 13: mapped. Original: renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor
-// Retain older-page volume and causal continuation, block stale paging publication during hydration, the pre-authoritative whole-blob shell and its boolean gate are retired.
+// Ruling 34: start with real committed entries and no retained model or repository, observe all nine turns and the deepest cursor while the source read stays pending, withhold paging, then continue from the settled cursor. No visible-content guarantee is retired.
+// Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary disk-only opening displays the window and both cached pages before source success, withholds paging, then uses the settled cursor".
 // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary overlapping refresh keeps two loaded pages and the deepest usable cursor".
 // Entry protection: src/stores/threads.history.test.ts — "a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor".
 // Entry protection: src/stores/threads.history.test.ts — "an already-read local page does not publish across a pending hydration".
@@ -1619,8 +1620,8 @@ describe("deletion", () => {
   });
 
   // Ruling 33 disposition 15: mapped. Original: the deletion fence removes the record and propagates on a read-proven deletion
-  // Read-proven targetDeleted still fences, heals storage and broadcasts once, painting a legacy shell before that failed cold read is retired.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary read-proven deletion fences the model, heals entry storage and broadcasts once".
+  // Ruling 34: start from disk-only real bodies, observe cached content with the source read pending, then prove it remains visible after targetDeleted removes storage and broadcasts once. No visible-content guarantee is retired.
+  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary disk-only read-proven deletion keeps cached content visible while healing entry storage and broadcasting once".
 
   it("a record delete whose transaction aborted is retried by the fence's next firing", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
