@@ -671,6 +671,10 @@ export class SessionActivityStore {
     if (wasEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
       this.reconcileDelegates();
     }
+    // A gate that turns on recovers a read a refusal parked while the source was
+    // retained: without this the resource stays refused and later unknown-id
+    // frames are buffered for a read that will never run.
+    if (next && !wasEligible && this.readState("delegates").permanent) this.reconcileDelegates();
     this.pushEligible = next;
     // A source replacement is visible only in a response, and the delegate
     // merge ordering is epoch-scoped. When another collection is the first to

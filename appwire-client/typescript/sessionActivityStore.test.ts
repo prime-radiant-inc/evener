@@ -3195,6 +3195,44 @@ test("a frame whose delegate id names two loaded rows patches neither", async ()
   await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
 });
 
+test("a gate that turns on recovers a permanently refused delegates read", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ availability: "retained" }),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  // A permanent refusal parks the resource while the source is retained.
+  client.on("evener/thread/delegates/list", () => {
+    throw new WireError("refused", -32602, { evenerErrorInfo: "actionUnavailable" });
+  });
+  await store.refresh("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.permanent);
+  // The gate turns on, so the parked read must be retried rather than left
+  // refused for the rest of the store's life.
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext(),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  activityChanged(client, ["summary"]);
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.status === "failed");
+});
+
 test("a page that first observes a session replacement restarts instead of adopting its rows", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ cursor, scope }) =>
