@@ -149,6 +149,10 @@ func (s scriptedProbeSystem) nonDirectoryFile(path string) bool {
 	return path == "/usr/bin/sandbox-exec" && s.seatbeltPresent
 }
 
+func (s scriptedProbeSystem) userConfigDir() (string, error) { return "", errors.New("no") }
+
+func (s scriptedProbeSystem) readFile(string) ([]byte, error) { return nil, errors.New("no") }
+
 func (s scriptedProbeSystem) run(_ context.Context, _ string, _ ...string) error {
 	return s.bwrapRunErr
 }

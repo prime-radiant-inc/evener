@@ -60,14 +60,9 @@ func TestEnvFloorRedirectsCacheWhenSessionPrivate(t *testing.T) {
 	}
 }
 
-// TestEnvFloorRedirectsGoModCacheWhenSessionPrivate pins the fix for a verified
-// gap: GOMODCACHE defaults to $GOPATH/pkg/mod, and cacheRootsFor's granted cache
-// root is a fixed $HOME/go/pkg — it does NOT track a custom GOPATH. Under the
-// session-private strategy (restricted mode on every host, and EVERY mode on
-// macOS/Seatbelt, which has no overlay), an ambient GOMODCACHE computed from a
-// non-default GOPATH landed outside every granted write root and the write was
-// denied. GOMODCACHE must redirect into the session tmp exactly like GOCACHE,
-// regardless of GOPATH.
+// Under the session-private strategy only the session scratch is writable, and
+// an ambient GOMODCACHE can name any directory, so it redirects into the scratch
+// exactly like GOCACHE, whatever GOPATH says.
 func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
 	in := []string{"GOPATH=/custom/gopath", "GOMODCACHE=/custom/gopath/pkg/mod"}
@@ -82,25 +77,33 @@ func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 // Go keeps the checksum database's tree heads in $GOPATH/pkg/sumdb, a path
 // GOMODCACHE does not move, and a cold download needs to write there (#4177).
 // Go writes only to the first GOPATH entry, so the session scratch goes first.
-// Where the spawned layer reads anywhere, the ambient GOPATH (Go's $HOME/go
-// default when unset) stays after it for GOPATH-mode source lookups; restricted
-// mode cannot read it, so it gets the scratch alone.
+// Where the spawned layer reads anywhere, the ambient GOPATH follows for
+// GOPATH-mode source lookups: the spawn's own GOPATH when it has one, else the
+// one resolved at session start, which covers a GOPATH set only with
+// `go env -w`. Restricted mode cannot read it, so it gets the scratch alone.
 func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
 	scratchGoPath := tmp + "/gopath"
 	sep := string(filepath.ListSeparator)
-	readAnywhere := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}}
-	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}}
+	readAnywhere := func(host HostFacts) ResolvedPolicy {
+		return ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	}
+	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}, resolveHost: HostFacts{GoPath: "/from/go/env"}}
 	for _, tc := range []struct {
 		name   string
 		policy ResolvedPolicy
 		in     []string
 		want   string
 	}{
-		{"ambient", readAnywhere, []string{"GOPATH=/custom/a" + sep + "/custom/b", "HOME=/home/u"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
-		{"default", readAnywhere, []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
-		{"no home", readAnywhere, nil, scratchGoPath},
-		{"restricted", restricted, []string{"GOPATH=/custom/a", "HOME=/home/u"}, scratchGoPath},
+		{"spawn env", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
+		{"go env -w", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/from/go/env"},
+		{"default", readAnywhere(HostFacts{Home: "/home/u"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
+		{"no home", readAnywhere(HostFacts{}), []string{"HOME=/home/u"}, scratchGoPath},
+		// A clean environment (EnvPolicyNone) carries neither the host's GOPATH
+		// nor anything a go command could find its env file or default with, so
+		// the host's settings stay out of it too.
+		{"clean env", readAnywhere(HostFacts{Home: "/home/u", GoPath: "/from/go/env"}), nil, scratchGoPath},
+		{"restricted", restricted, []string{"GOPATH=/custom/a"}, scratchGoPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := ApplyEnvFloor(tc.in, tc.policy, tmp)

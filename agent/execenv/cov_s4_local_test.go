@@ -345,6 +345,20 @@ func TestFilteredEnvWithPolicy_CoreOnly(t *testing.T) {
 	}
 }
 
+// A spawned go must read the same go env file the sandbox probe read at session
+// start: GOENV names it, and otherwise it sits under the user config directory,
+// which XDG_CONFIG_HOME moves. Core-only environments keep both.
+func TestFilteredEnvWithPolicy_CoreOnlyKeepsGoEnvFileLocation(t *testing.T) {
+	t.Setenv("GOENV", "/custom/go/env")
+	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	m := envToMap(filteredEnvWithPolicy(EnvPolicyCoreOnly, nil))
+	for name, want := range map[string]string{"GOENV": "/custom/go/env", "XDG_CONFIG_HOME": "/custom/config"} {
+		if m[name] != want {
+			t.Errorf("CoreOnly must keep %s=%q, got %q", name, want, m[name])
+		}
+	}
+}
+
 func TestFilteredEnvWithPolicy_Default_FiltersSensitive(t *testing.T) {
 	t.Setenv("DEF_SECRET", "s")
 	t.Setenv("DEF_NORMAL", "ok")
