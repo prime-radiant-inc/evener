@@ -1637,6 +1637,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 			break
 		}
 	}
+	live := p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended"
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -1654,7 +1655,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Branch:            truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
 		Favorite:          !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
 		Rename:            p.projection.renameable(node.ID, ref.String()),
-		Live:              p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		Live:              live,
 		AskPending:        node.AskPending,
 		ApprovalPending:   node.ApprovalPending,
 		ApprovalTool:      truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
@@ -1669,6 +1670,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Subagents:         navigationSubagentTally(node.Subagents),
 		TurnEndedAt:       optionalTime(node.TurnEndedAt),
 		Unseen:            p.projection.unseen(ref, node.TurnEndedAt),
+		SeenThrough:       p.projection.seenThrough(ref, live),
 		RunningJobCount:   len(node.RunningJobs),
 		RunningJobCommand: runningCommand,
 		WatchCount:        len(node.Watches),
@@ -1848,10 +1850,21 @@ func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool
 	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.HostID, ref.SessionID), turnEndedAt)
 }
 
+// seenThrough is a live row's seen-through mark (hubcore
+// SessionSeenSnapshot.SeenThrough), nil for a row that isn't live or with no
+// seen store.
+func (p navigationProjection) seenThrough(ref hubapi.Ref, live bool) *time.Time {
+	if !live {
+		return nil
+	}
+	return optionalTime(p.inputs.SessionSeen.SeenThrough(hubcore.SessionPinKey(ref.HostID, ref.SessionID)))
+}
+
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
 	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
 	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
+	clone.SeenThrough = clonePointer(summary.SeenThrough)
 	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Subagents = clonePointer(summary.Subagents)
 	clone.Failure = clonePointer(summary.Failure)

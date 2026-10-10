@@ -526,17 +526,10 @@ func (r *Registry) Register(t RegisteredTool) error {
 		t.Limit = defaultToolLimit(t.Definition.Name)
 	}
 	if t.Schema == nil {
-		// Reuse already-compiled schema when re-registering a tool (e.g.
-		// registerCoreTools re-registers tools from NewRegistry). This
-		// avoids recompilation and guards against transient jsonschema
-		// library panics from os.Getwd() failures in ephemeral worktrees.
-		r.mu.RLock()
-		if existing, ok := r.tools[t.Definition.Name]; ok && existing.Schema != nil {
-			t.Schema = existing.Schema
-		}
-		r.mu.RUnlock()
-	}
-	if t.Schema == nil {
+		// compileSchema memoizes by parameters, so a re-registration with
+		// unchanged parameters gets the schema already compiled for them and
+		// one that changes them (a root's communicate gains end_reason)
+		// compiles its own.
 		s, err := compileSchema(t.Definition.Parameters)
 		if err != nil {
 			return fmt.Errorf("tool %s schema: %w", t.Definition.Name, err)

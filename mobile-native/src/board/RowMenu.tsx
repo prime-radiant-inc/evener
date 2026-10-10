@@ -14,6 +14,7 @@ import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
+import { FreshDot } from "../reader/FreshDot";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, stateWord, whyLine } from "./attention";
 import { Fact, WhyText } from "./BoardRow";
@@ -22,8 +23,6 @@ import { StateMark } from "./StateMark";
 
 export const ROW_ACTION_SYMBOLS: Record<RowAction, SFSymbol> = {
 	pin: "pin.fill",
-	markRead: "circle",
-	markUnread: "circle.fill",
 	stop: "stop.fill",
 	shutDown: "power",
 	archive: "archivebox",
@@ -66,12 +65,12 @@ export function RowPreviewCard({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
-	// Finished, Idle and Shut down have no reason: the word says it.
+	// Idle and Shut down have no reason: the word says it.
 	const why = whyLine(item) ?? { text: stateWord(state) };
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Open ${row.title}`}
+			accessibilityLabel={`Open ${row.title}${item.unseen ? ", unread" : ""}`}
 			onPress={onPress}
 			style={({ pressed }) => ({
 				marginHorizontal: 16,
@@ -95,6 +94,11 @@ export function RowPreviewCard({
 				>
 					{row.title}
 				</Text>
+				{item.unseen ? (
+					<View style={{ height: 22 * scale, justifyContent: "center" }}>
+						<FreshDot />
+					</View>
+				) : null}
 			</View>
 			<WhyText why={why} />
 			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>

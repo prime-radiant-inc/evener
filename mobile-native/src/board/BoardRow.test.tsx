@@ -9,6 +9,7 @@ import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { boardState } from "./attention";
 import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
+import { FreshDot } from "../reader/FreshDot";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
 
@@ -71,6 +72,23 @@ const symbols = (tree: ReactTestRenderer) =>
 const pressable = (tree: ReactTestRenderer) => tree.root.findByType("Pressable" as never);
 
 describe("a Board row (spec 7.2)", () => {
+	it("shows the blue dot and says unread for a row with updates you haven't opened, in any state", () => {
+		for (const state of ["working", "question", "idle"] as const) {
+			const tree = mount({ item: { ...item(state, { state: "active" }), unseen: true } });
+			expect(tree.root.findAllByType(FreshDot)).toHaveLength(1);
+			expect(pressable(tree).props.accessibilityLabel.split(", ")[2]).toBe("unread");
+		}
+		// A quiet row, and one with no age to sit after, show it too.
+		const quiet = mount({
+			variant: "quiet",
+			item: { ...item("idle", { state: "idle", updated_at: undefined }), unseen: true },
+		});
+		expect(quiet.root.findAllByType(FreshDot)).toHaveLength(1);
+		const seen = mount({ item: item("working", { state: "active" }) });
+		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
+		expect(pressable(seen).props.accessibilityLabel).not.toContain("unread");
+	});
+
 	it("shows a Failed row's title, the word in danger ink, the reason in ink, and its age", () => {
 		const tree = mount();
 		const title = textWith(tree, "Fix Endless Provider Retry Loop")[0];
@@ -223,7 +241,7 @@ describe("a Board row (spec 7.2)", () => {
 		"a %s parent with mixed children keeps Working visuals and quiet failure history",
 		(state) => {
 			const parent = row({ state, subagents: { running: 1, failed: 1, done: 0 } });
-			const classified = { row: parent, state: boardState(parent, false, false) };
+			const classified = { row: parent, state: boardState(parent, false) };
 			const live = mount({ item: classified, moving: true });
 			expect(pressable(live).props.accessibilityLabel).toContain("Fix Endless Provider Retry Loop, Working,");
 			expect(pressable(live).props.accessibilityLabel).toContain("Waiting on 1 subagent");

@@ -12,6 +12,7 @@ import {
 	liveBands,
 	liveSummary,
 	quietOrWorking,
+	rowClassifier,
 	stateWord,
 	subagentChipText,
 	summaryText,
@@ -38,29 +39,33 @@ const never = () => false;
 
 describe("a row's Board state (spec 13.1)", () => {
 	it.each([
-		[{ state: "errored" }, false, false, "failed"],
-		[{ state: "restartRequired" }, false, false, "restartNeeded"],
-		[{ state: "warning" }, false, false, "warning"],
-		[{ state: "awaiting", ask_pending: true }, false, false, "question"],
-		[{ state: "awaiting", ask_pending: true }, true, false, "question"],
-		[{ state: "active" }, true, false, "approval"],
-		[{ state: "active" }, false, false, "working"],
-		[{ state: "awaiting" }, false, false, "finished"],
-		[{ state: "awaiting" }, false, true, "idle"],
-		[{ state: "idle" }, false, false, "finished"],
-		[{ state: "idle", dormant: true }, false, false, "idle"],
-		[{ state: "ended" }, false, false, "shutDown"],
-		[{ state: "notLoaded" }, false, false, "shutDown"],
-		[{ state: "ended", offline: true }, false, false, "shutDown"],
-		[{ state: "active", offline: true }, false, false, "shutDown"],
-		[{ state: "active", offline: true }, true, false, "shutDown"],
-		[{ state: "awaiting", ask_pending: true, offline: true }, false, false, "shutDown"],
-		[{ state: "active", approval_pending: true }, false, false, "approval"],
-		[{ state: "active", offline: true, approval_pending: true }, false, false, "shutDown"],
-		[{ state: "awaiting", ask_pending: true, approval_pending: true }, false, false, "question"],
-		[{ state: "errored", approval_pending: true }, false, false, "failed"],
-	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
-		expect(boardState(row("s", over), approval, seen)).toBe(expected);
+		[{ state: "errored" }, false, "failed"],
+		[{ state: "restartRequired" }, false, "restartNeeded"],
+		[{ state: "warning" }, false, "warning"],
+		[{ state: "awaiting", ask_pending: true }, false, "question"],
+		[{ state: "awaiting", ask_pending: true }, true, "question"],
+		[{ state: "active" }, true, "approval"],
+		[{ state: "active" }, false, "working"],
+		// Awaiting without a question is a turn that ended on needs_response:
+		// it needs you (#4093).
+		[{ state: "awaiting" }, false, "needsYou"],
+		// A turn that ended otherwise rests Idle, seen or not: the row's blue
+		// dot says whether anything is new (#4093).
+		[{ state: "idle" }, false, "idle"],
+		[{ state: "idle", dormant: true }, false, "idle"],
+		[{ state: "ended" }, false, "shutDown"],
+		[{ state: "notLoaded" }, false, "shutDown"],
+		[{ state: "ended", offline: true }, false, "shutDown"],
+		[{ state: "active", offline: true }, false, "shutDown"],
+		[{ state: "active", offline: true }, true, "shutDown"],
+		[{ state: "awaiting", ask_pending: true, offline: true }, false, "shutDown"],
+		[{ state: "active", approval_pending: true }, false, "approval"],
+		[{ state: "active", offline: true, approval_pending: true }, false, "shutDown"],
+		[{ state: "awaiting", ask_pending: true, approval_pending: true }, false, "question"],
+		[{ state: "awaiting", approval_pending: true }, false, "approval"],
+		[{ state: "errored", approval_pending: true }, false, "failed"],
+	] as const)("%o, approval %s → %s", (over, approval, expected) => {
+		expect(boardState(row("s", over), approval)).toBe(expected);
 	});
 
 	it.each([
@@ -70,9 +75,7 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "errored", offline: true, ask_pending: true, approval_pending: true }, "shutDown"],
 		[{ state: "active", ask_pending: true }, "working"],
 	] as const)("keeps own-session attention %o with failed delegates", (over, expected) => {
-		expect(boardState(row("s", { ...over, subagents: { running: 0, failed: 3, done: 0 } }), false, false)).toBe(
-			expected,
-		);
+		expect(boardState(row("s", { ...over, subagents: { running: 0, failed: 3, done: 0 } }), false)).toBe(expected);
 	});
 
 	it("keeps own errors ahead of questions and approvals while delegate failures stay outside Needs you", () => {
@@ -97,51 +100,49 @@ describe("a row's Board state (spec 13.1)", () => {
 	});
 
 	it.each([
-		[{ state: "idle" }, false, false, "working"],
-		[{ state: "awaiting" }, false, true, "working"],
-		[{ state: "idle", dormant: true }, false, false, "working"],
-		[{ state: "warning" }, false, false, "working"],
-		[{ state: "warning", ask_pending: true }, false, false, "warning"],
-		[{ state: "warning", approval_pending: true }, false, false, "warning"],
-		[{ state: "warning" }, true, false, "warning"],
-		[{ state: "awaiting", ask_pending: true }, false, false, "question"],
-		[{ state: "idle", approval_pending: true }, false, false, "approval"],
-		[{ state: "idle" }, true, false, "approval"],
-		[{ state: "errored" }, false, false, "failed"],
-		[{ state: "restartRequired" }, false, false, "restartNeeded"],
-		[{ state: "idle", offline: true }, false, false, "shutDown"],
-		[{ state: "ended" }, false, false, "shutDown"],
-		[{ state: "notLoaded" }, false, false, "shutDown"],
-		[{ state: "idle", live: false }, false, false, "finished"],
-		[{ state: "idle", kind: "subagent" }, false, false, "finished"],
-		[{ state: "idle", kind: "fork" }, false, false, "finished"],
-		[{ state: "idle", kind: "cluster" }, false, false, "finished"],
-		[{ state: "active", kind: "subagent" }, false, true, "working"],
-	] as const)("mixed running/failed children, %o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
+		[{ state: "idle" }, false, "working"],
+		[{ state: "awaiting" }, false, "needsYou"],
+		[{ state: "idle", dormant: true }, false, "working"],
+		[{ state: "warning" }, false, "working"],
+		[{ state: "warning", ask_pending: true }, false, "warning"],
+		[{ state: "warning", approval_pending: true }, false, "warning"],
+		[{ state: "warning" }, true, "warning"],
+		[{ state: "awaiting", ask_pending: true }, false, "question"],
+		[{ state: "idle", approval_pending: true }, false, "approval"],
+		[{ state: "idle" }, true, "approval"],
+		[{ state: "errored" }, false, "failed"],
+		[{ state: "restartRequired" }, false, "restartNeeded"],
+		[{ state: "idle", offline: true }, false, "shutDown"],
+		[{ state: "ended" }, false, "shutDown"],
+		[{ state: "notLoaded" }, false, "shutDown"],
+		[{ state: "idle", live: false }, false, "idle"],
+		[{ state: "idle", kind: "subagent" }, false, "idle"],
+		[{ state: "idle", kind: "fork" }, false, "idle"],
+		[{ state: "idle", kind: "cluster" }, false, "idle"],
+		[{ state: "active", kind: "subagent" }, false, "working"],
+	] as const)("mixed running/failed children, %o, approval %s → %s", (over, approval, expected) => {
 		const parent = row("s", { subagents: { running: 1, failed: 1, done: 0 }, ...over });
-		expect(boardState(parent, approval, seen)).toBe(expected);
+		expect(boardState(parent, approval)).toBe(expected);
 	});
 
 	it.each([
-		[{ subagents: { running: 1, failed: 0, done: 0 } }, false, "working"],
-		[{ subagents: { running: 0, failed: 1, done: 1 } }, false, "finished"],
-		[{ subagents: { running: 0, failed: 1, done: 1 } }, true, "idle"],
-		[{ state: "errored", subagents: { running: 0, failed: 1, done: 1 } }, false, "failed"],
-		[{}, false, "finished"],
-		[{}, true, "idle"],
-		[{ children: Array.of(row("child", { state: "active", kind: "subagent" })) }, false, "finished"],
-	] as const)("only the compact live tally contributes work, %o, seen %s → %s", (over, seen, expected) => {
-		expect(boardState(row("s", over), false, seen)).toBe(expected);
+		[{ subagents: { running: 1, failed: 0, done: 0 } }, "working"],
+		[{ subagents: { running: 0, failed: 1, done: 1 } }, "idle"],
+		[{ state: "errored", subagents: { running: 0, failed: 1, done: 1 } }, "failed"],
+		[{}, "idle"],
+		[{ children: Array.of(row("child", { state: "active", kind: "subagent" })) }, "idle"],
+	] as const)("only the compact live tally contributes work, %o → %s", (over, expected) => {
+		expect(boardState(row("s", over), false)).toBe(expected);
 	});
 
 	it.each([
 		["failed", "Failed"],
 		["question", "Question"],
+		["needsYou", "Needs you"],
 		["approval", "Approval"],
 		["warning", "Warning"],
 		["restartNeeded", "Restart needed"],
 		["working", "Working"],
-		["finished", "Finished"],
 		["idle", "Idle"],
 		["shutDown", "Shut down"],
 	] as const)("names %s as %s", (state, word) => {
@@ -177,18 +178,18 @@ describe("Live bands (spec 7.1)", () => {
 	it.each([
 		["failed", "needsYou"],
 		["question", "needsYou"],
+		["needsYou", "needsYou"],
 		["approval", "needsYou"],
 		["warning", "needsYou"],
 		["restartNeeded", "needsYou"],
 		["working", "working"],
-		["finished", "finished"],
 		["idle", "idle"],
 		["shutDown", null],
 	] as const)("%s → %s", (state, band) => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+	it("sorts Needs you by failed, then question, needs-your-reply or approval, then warning or restart-needed, then oldest first", () => {
 		// Every row is newer than each row in the bands below it, ages interleave
 		// within a band, and the rows arrive newest first: age order, arrival
 		// order and any merged or split band would each give a different sequence.
@@ -198,12 +199,17 @@ describe("Live bands (spec 7.1)", () => {
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
 			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
 			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			// A turn that ended on needs_response ranks with questions (#4093).
+			// It is the one exception to the rule above: the newest row of all,
+			// so only its band can place it ahead of the warnings and behind the
+			// failures.
+			row("n", { state: "awaiting", updated_at: at(9) }),
 			row("w-new", { state: "warning", updated_at: at(3) }),
 			row("r", { state: "restartRequired", updated_at: at(2) }),
 			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
 		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
-		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "n", "w-old", "r", "w-new"]);
 	});
 
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
@@ -251,20 +257,77 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["inferred", "w"]);
 	});
 
-	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
+	it("orders Idle newest first, seen or not, and keeps the hub's order for Working", () => {
 		const live = [
 			row("work-b", { state: "active", updated_at: at(1) }),
-			row("done-old", { state: "awaiting", updated_at: at(2) }),
+			row("done-old", { state: "idle", updated_at: at(2) }),
 			row("work-a", { state: "active", updated_at: at(40) }),
-			row("done-new", { state: "awaiting", updated_at: at(50) }),
+			row("done-new", { state: "idle", updated_at: at(50) }),
 			row("seen-old", { state: "idle", updated_at: at(3) }),
 			row("seen-new", { state: "idle", updated_at: at(4) }),
 		];
 		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
 		const bands = liveBands(live, [], seen);
 		expect(bands.working.map((item) => item.row.ref)).toEqual(["work-b", "work-a"]);
-		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-new", "done-old"]);
-		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
+		expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([
+			["done-new", true],
+			["seen-new", false],
+			["seen-old", false],
+			["done-old", true],
+		]);
+	});
+
+	it("dots a live session with anything new since you last looked, and nothing else (Jesse's ruling)", () => {
+		const live = [
+			row("work-hub-unseen", { state: "active", unseen: true, turn_ended_at: at(1) }),
+			row("work-device-unseen", { state: "active" }),
+			row("work-moved", { state: "active" }),
+			row("ask-unseen", { state: "awaiting", ask_pending: true }),
+			row("done-unseen", { state: "idle" }),
+			row("seen-moved", { state: "idle" }),
+			row("never-ran", { state: "idle", dormant: true }),
+			row("offline-unseen", { state: "idle", offline: true }),
+			row("seen-work", { state: "active" }),
+		];
+		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
+		const moved = (r: NavigationSessionSummary) => r.ref === "work-moved" || r.ref === "seen-moved";
+		const bands = liveBands(live, [], seen, () => false, moved);
+		const dotted = [...bands.needsYou, ...bands.working, ...bands.idle]
+			.filter((item) => item.unseen)
+			.map((item) => item.row.ref)
+			.sort();
+		// A working row reads the hub alone: its own unseen flag or motion after
+		// its seen mark, never this device's fallback.
+		expect(dotted).toEqual(["ask-unseen", "done-unseen", "seen-moved", "work-hub-unseen", "work-moved"]);
+	});
+
+	it("dots no session that isn't live, is offline, or has never run, however new its output", () => {
+		const classify = rowClassifier(
+			[],
+			() => false,
+			() => true,
+		);
+		for (const over of [
+			{ state: "ended", live: false },
+			{ state: "idle", live: false },
+			{ state: "idle", offline: true },
+			{ state: "notLoaded" },
+			{ state: "idle", dormant: true },
+		] as const) {
+			expect(classify(row("r", over)).unseen).toBe(false);
+		}
+	});
+
+	it("reads an active session's turn from the hub alone, with this phone's pending marks", () => {
+		const moved = () => false;
+		// The hub decides a row with a turn end: seen through this phone's mark.
+		const hubSeen = rowClassifier([], () => true, moved);
+		expect(
+			hubSeen(row("asking", { state: "active", ask_pending: true, turn_ended_at: at(1), unseen: true })).unseen,
+		).toBe(false);
+		// Without a turn end the device's markers never dot an active row.
+		const deviceUnseen = rowClassifier([], () => false, moved);
+		expect(deviceUnseen(row("approval", { state: "active", approval_pending: true })).unseen).toBe(false);
 	});
 
 	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {
@@ -289,12 +352,12 @@ describe("Live bands (spec 7.1)", () => {
 		expect(liveBands(live, [], () => false).working.map((item) => item.row.ref)).toEqual(["work-a", "work-b"]);
 	});
 
-	it("orders Finished and Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
+	it("orders Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
 		const live = [
 			// Renamed lately, but its turn ended long ago.
-			row("done-renamed", { state: "awaiting", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
-			row("done-ended", { state: "awaiting", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
-			row("done-older-hub", { state: "awaiting", updated_at: at(20) }),
+			row("done-renamed", { state: "idle", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
+			row("done-ended", { state: "idle", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
+			row("done-older-hub", { state: "idle", updated_at: at(20) }),
 			row("seen-renamed", { state: "idle", updated_at: at(58), turn_ended_at: at(1) }),
 			row("seen-ended", { state: "idle", updated_at: at(2), turn_ended_at: at(40) }),
 			row("seen-garbled", { state: "idle", updated_at: at(5), turn_ended_at: "not a time" }),
@@ -303,21 +366,27 @@ describe("Live bands (spec 7.1)", () => {
 		];
 		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
 		const bands = liveBands(live, [], seen);
-		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-ended", "done-older-hub", "done-renamed"]);
-		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-ended", "seen-garbled", "seen-renamed"]);
+		expect(bands.idle.map((item) => item.row.ref)).toEqual([
+			"seen-ended",
+			"done-ended",
+			"done-older-hub",
+			"done-renamed",
+			"seen-garbled",
+			"seen-renamed",
+		]);
 		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-ended-late", "f-ended-early"]);
 	});
 
 	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
 		const live = [
-			row("done-dated", { state: "awaiting", updated_at: at(10) }),
-			row("done-missing", { state: "awaiting" }),
-			row("done-garbled", { state: "awaiting", updated_at: "not a time" }),
+			row("done-dated", { state: "idle", updated_at: at(10) }),
+			row("done-missing", { state: "idle" }),
+			row("done-garbled", { state: "idle", updated_at: "not a time" }),
 			row("failed-dated", { state: "errored", updated_at: at(10) }),
 			row("failed-missing", { state: "errored" }),
 		];
 		const bands = liveBands(live, [], never);
-		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-dated", "done-garbled", "done-missing"]);
+		expect(bands.idle.map((item) => item.row.ref)).toEqual(["done-dated", "done-garbled", "done-missing"]);
 		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["failed-missing", "failed-dated"]);
 	});
 
@@ -352,7 +421,6 @@ describe("the Live summary line", () => {
 		expect(liveSummary(liveBands([row("a", { state: "active" })], [], never))).toBeNull();
 		expect(liveSummary(liveBands([row("a", { state: "active" }), row("b", { state: "errored" })], [], never))).toEqual({
 			needsYou: 1,
-			finished: 0,
 			working: 1,
 			idle: 0,
 		});
@@ -361,7 +429,6 @@ describe("the Live summary line", () => {
 	it("says each count the spec's way", () => {
 		expect(summaryText("needsYou", 1)).toBe("1 needs you");
 		expect(summaryText("needsYou", 4)).toBe("4 need you");
-		expect(summaryText("finished", 4)).toBe("4 finished");
 		expect(summaryText("working", 9)).toBe("9 working");
 		expect(summaryText("idle", 3)).toBe("3 idle");
 	});
@@ -379,6 +446,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
 		["failed", { word: "Failed", hue: "danger", text: "open the session to see what went wrong" }],
 		["question", { word: "Question", hue: "attention", text: "waiting for your answer" }],
+		["needsYou", { word: "Needs you", hue: "attention", text: "waiting for your reply" }],
 		["approval", { word: "Approval", hue: "attention", text: "waiting for your permission" }],
 		["warning", { word: "Warning", hue: "attention", text: "open the session to see it" }],
 		[
@@ -389,8 +457,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(whyLine({ row: row("s"), state })).toEqual(expected);
 	});
 
-	it("has none for Finished (the excerpt is S1) or Idle", () => {
-		expect(whyLine({ row: row("s"), state: "finished" })).toBeNull();
+	it("has none for Idle", () => {
 		expect(whyLine({ row: row("s"), state: "idle" })).toBeNull();
 	});
 

@@ -1,25 +1,44 @@
 package tool
 
 import (
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
 )
 
-// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope selection.
+// MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
+// at a memory scope's root, which Evener generates from the pages.
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
+// selection. Its path parameter is described as relative to the scope root,
+// since the ordinary tool's description invites a workspace or absolute path.
 func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 	base.Name = name
 	base.Parameters = CloneSchemaMap(base.Parameters)
 	props := base.Parameters["properties"].(map[string]any)
-	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}}
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}, "description": "Which memory to use: personal or project."}
+	if param, ok := props["file_path"].(map[string]any); ok {
+		param["description"] = "Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory."
+	}
+	if param, ok := props["path"].(map[string]any); ok {
+		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
+	}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
 }
 
+func DefMemoryRead() llm.ToolDefinition {
+	read := DefReadFile()
+	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	return MemoryDefinition(read, "memory_read")
+}
+
 func DefMemoryDelete() llm.ToolDefinition {
 	return MemoryDefinition(llm.ToolDefinition{
-		Description: "Remove one memory file, not a directory. Missing files are a no-op. Read first, then repair links separately if needed.",
+		Description: "Remove one memory file, not a directory; directories it leaves empty go too. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
 		Parameters: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
@@ -680,8 +699,41 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
+// Why a root session's communicate call ends its turn: done (nothing waits
+// on the human partner), needs_response (the agent cannot go on until its
+// human partner answers or acts), or waiting_on_work (work the agent started
+// will wake it). Offered only where someone can answer the session; only
+// needs_response rests the session awaiting.
+const (
+	CommunicateEndReasonDone          = "done"
+	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
+)
+
+// CommunicateEndReasons lists the end_reason values in the order the
+// parameter advertises them.
+var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
+
+// WithCommunicateEndReason returns a copy of a communicate definition that
+// also offers end_reason. Only a root someone can answer gets it: nobody
+// responds to a delegate's or a headless root's resting state.
+func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["end_reason"] = map[string]any{
+		"type":        "string",
+		"enum":        slices.Clone(CommunicateEndReasons),
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+	}
+	def.Parameters = params
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,

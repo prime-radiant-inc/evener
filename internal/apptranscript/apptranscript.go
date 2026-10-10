@@ -414,11 +414,16 @@ func communicateRawFallbackText(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }
 
-// ProjectTurnParts is ProjectTurn plus, for each item, the index of the entry
-// content part it came from. Each part projects at most one item, so the index
-// names an item within its entry. A kind that projects the whole entry as one
-// item reports part 0. Hidden parts (an echoed communicate, empty text) still
-// occupy their index, so a part's index never depends on its neighbours.
+// ProjectTurnParts is ProjectTurn plus, for each item, a part index that
+// names the item within its entry; no two items of an entry share one. For
+// most kinds it is the index of the entry content part the item came from,
+// and each content part projects at most one item. A kind that projects the
+// whole entry as one item reports part 0. A memory-context entry is the
+// exception: its one content part splits into a section per item, which
+// report 0..n-1, so only part 0 there names a content part; never index
+// Message.Content with a memory-context part. Hidden parts (an echoed
+// communicate, empty text) still occupy their index, so a part's index never
+// depends on its neighbours.
 func ProjectTurnParts(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector) ([]appwire.ThreadItem, []int) {
 	var parts []int
 	items := projectTurn(turnID, turnIndex, turn, reg, imageProjector, outputImageProjector, &parts)
@@ -576,7 +581,13 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		if text == "" {
 			return nil
 		}
-		return []appwire.ThreadItem{memoryContextItem(turnID, turnIndex, text, turn.Message.Name)}
+		items := memoryContextItems(turnID, turnIndex, text)
+		// The message is one content part split into a section per item;
+		// each section takes its own index so it names one item.
+		for i := range items {
+			recordPart(parts, i)
+		}
+		return items
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:
 		// the whole point of persisting it is that a returning reader can tell

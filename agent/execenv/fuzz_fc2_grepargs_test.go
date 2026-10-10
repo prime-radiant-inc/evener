@@ -13,6 +13,7 @@ import (
 //   - determinism;
 //   - the fixed no-heading / no-color prefix is always the first three args;
 //   - exactly one output-mode flag is present, at index 3, matching outputMode;
+//   - "--null" follows it at index 4, so paths end in a NUL;
 //   - "-i" appears in the option region iff caseInsensitive (at most once);
 //   - "-g" appears iff the glob filter is non-blank, followed immediately by it;
 //   - "-C" appears iff contextLines>0 AND outputMode is content/"", followed by
@@ -40,8 +41,8 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			}
 		}
 
-		// Minimum shape: 3-arg prefix + 1 mode flag + "--" + pattern + dir.
-		if len(args) < 7 {
+		// Minimum shape: 3-arg prefix + 1 mode flag + "--null" + "--" + pattern + dir.
+		if len(args) < 8 {
 			t.Fatalf("too few args: %v", args)
 		}
 		wantPrefix := []string{"--no-heading", "--color", "never"}
@@ -64,6 +65,9 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 		if args[3] != wantMode {
 			t.Fatalf("mode flag=%q, want %q for outputMode=%q", args[3], wantMode, outputMode)
 		}
+		if args[4] != "--null" {
+			t.Fatalf("arg[4]=%q, want --null: %v", args[4], args)
+		}
 
 		// The final three args are always "--", pattern, dir, in that order — the
 		// "--" guarantees a dash-prefixed pattern is never mistaken for a flag.
@@ -79,7 +83,7 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 
 		// The option region between the mode flag and the trailing "--"+pattern+dir
 		// holds only the optional -i, -g<glob>, and -C<n>.
-		mid := args[4 : len(args)-3]
+		mid := args[5 : len(args)-3]
 		wantI := caseInsensitive
 		wantG := strings.TrimSpace(globFilter) != ""
 		wantC := contextLines > 0 && (outputMode == "" || outputMode == "content")

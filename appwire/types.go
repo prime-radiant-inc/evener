@@ -664,9 +664,11 @@ type SessionSeenSetParams struct {
 }
 
 // SessionSeenMark is one session's mark, addressed by the ref its row carries.
-// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
-// turn_ended_at in Unix milliseconds, the turn the client showed, never a
-// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
+// daemon timestamp the client showed, in Unix milliseconds: the row's
+// turn_ended_at, or the session's lastMovedAt from an activity read taken
+// while the session was on screen; never a client clock. The hub keeps the
+// newest it has been sent. Unread is "Mark as
 // unread", which lasts until the next SeenThrough mark.
 type SessionSeenMark struct {
 	Ref         string `json:"ref"`
@@ -846,6 +848,12 @@ type SessionActivity struct {
 	// stated none, which is most of a session's life before its first tool
 	// call, and when the daemon predates the field.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+	// motion (ThreadActivity.LastMovedAt). A client compares it with the
+	// session's seen_through to tell whether anything moved since the person
+	// last looked, mid-turn included. Absent until the tree has moved since
+	// its daemon began serving it, and from an older hub or daemon.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -1190,6 +1198,10 @@ type ThreadActivity struct {
 	// first tool call that stated one, cleared when a turn begins, and absent
 	// from a daemon that predates it.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is LastActivityAt counting only real motion: absent until
+	// the tree has moved since the daemon began serving the session, so a
+	// daemon restart is not news to a client comparing it with a seen mark.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how
@@ -1907,12 +1919,15 @@ const (
 	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
 	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
 	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
-	// ThreadItemEventKindMemoryContext marks the systemMessage item a reloaded
-	// transcript renders for a schema.TurnMemoryContext turn: an automatic
-	// memory index refresh. apptranscript owns extracting the display metadata
-	// into the item's Raw ({"memoryContext": {...}}) and preserving the exact
-	// recorded text; the web renderer owns presenting it as a collapsed
-	// steering-style notification.
+	// ThreadItemEventKindMemoryContext marks each systemMessage item a
+	// schema.TurnMemoryContext turn projects: one per section of the
+	// boundary's memory notification (a scope's index, its index changes, or
+	// a notice of read pages another session changed). apptranscript owns the
+	// split, each item's exact recorded section text, and the Raw
+	// ({"memoryContext": {...}}) that only index sections carry; change and
+	// page sections, and a message that does not decode, carry no Raw and
+	// clients show their text. The web and native renderers own presenting
+	// each as a collapsed steering-style notification.
 	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 

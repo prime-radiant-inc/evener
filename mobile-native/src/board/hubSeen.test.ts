@@ -88,14 +88,14 @@ describe("which path decides a row", () => {
 	it("leaves a row whose turn_ended_at doesn't parse to the device, pending mark or not", () => {
 		const { marks, client } = setup();
 		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: true }))).toBeNull();
-		marks.markUnread(client, ["bad"]);
-		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: false }))).toBeNull();
+		marks.markSeen(client, [{ ref: "bad", seenThrough: T }]);
+		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: true }))).toBeNull();
 	});
 
 	it("ignores the device's markers for a hub row, and uses them for any other", () => {
 		const { markers, seen } = board();
-		markers.markUnread("unseen-here");
-		// The device says unread; the hub says seen, and wins.
+		// The device says unseen (updated after its epoch); the hub says seen, and wins.
+		expect(markers.isSeen(row("unseen-here"))).toBe(false);
 		expect(seen.isSeen(ended("unseen-here", T, false))).toBe(true);
 		// The device's epoch says seen; the hub says unseen, and wins.
 		expect(
@@ -120,11 +120,9 @@ describe("pending marks", () => {
 		expect(marks.isSeenOnHub(ended("b", T, true))).toBe(false);
 	});
 
-	it("shows an unread mark at once", () => {
+	it("never decides a row the hub doesn't, pending mark or not", () => {
 		const { marks, client } = setup();
-		marks.markUnread(client, ["a"]);
-		expect(marks.isSeenOnHub(ended("a", T, false))).toBe(false);
-		// It never decides a row the hub doesn't.
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
 		expect(marks.isSeenOnHub(row("a"))).toBeNull();
 	});
 
@@ -145,24 +143,14 @@ describe("pending marks", () => {
 		expect(marks.isSeenOnHub(ended("waiting", T, true))).toBe(true);
 	});
 
-	it("drops an unread mark once the hub reads unseen, and keeps it otherwise", () => {
-		const { marks, client } = setup();
-		marks.markUnread(client, ["landed", "waiting"]);
-		marks.prune([ended("landed", T, true), ended("waiting", T, false)]);
-		expect(marks.isSeenOnHub(ended("landed", T, false))).toBe(true);
-		expect(marks.isSeenOnHub(ended("waiting", T, false))).toBe(false);
-	});
-
 	it("keeps a pending mark when the only rows for its ref have no readable turn end", () => {
 		const { marks, client } = setup();
 		marks.markSeen(client, [{ ref: "seen", seenThrough: T }]);
-		marks.markUnread(client, ["unread"]);
 		const revision = marks.getRevision();
 		// Such a row is the device's to decide, so it can't show a hub mark landed.
-		marks.prune([row("seen"), row("seen", { turn_ended_at: "not a time" }), row("unread", { unseen: true })]);
+		marks.prune([row("seen"), row("seen", { turn_ended_at: "not a time" })]);
 		expect(marks.getRevision()).toBe(revision);
 		expect(marks.isSeenOnHub(ended("seen", T, true))).toBe(true);
-		expect(marks.isSeenOnHub(ended("unread", T, false))).toBe(false);
 	});
 
 	it("changes nothing, and tells no one, when pruning drops nothing", () => {
@@ -181,7 +169,7 @@ describe("pending marks", () => {
 		let told = 0;
 		const stop = marks.subscribe(() => told++);
 		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
-		marks.markUnread(client, ["a"]);
+		marks.markSeen(client, [{ ref: "a", seenThrough: T + 1 }]);
 		expect(told).toBe(2);
 		stop();
 		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
@@ -214,23 +202,23 @@ describe("sending", () => {
 	it("sends one call at a time, in the order the marks were made", async () => {
 		const { marks, client, calls } = setup();
 		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
-		marks.markUnread(client, ["a"]);
-		marks.markUnread(client, ["b"]);
+		marks.markSeen(client, [{ ref: "a", seenThrough: T + 1 }]);
+		marks.markSeen(client, [{ ref: "b", seenThrough: T }]);
 		expect(calls).toHaveLength(1);
 		calls[0].answer();
 		await settle();
 		expect(calls.map((call) => call.sessions)).toEqual([
 			[{ ref: "a", seenThrough: T }],
 			[
-				{ ref: "a", unread: true },
-				{ ref: "b", unread: true },
+				{ ref: "a", seenThrough: T + 1 },
+				{ ref: "b", seenThrough: T },
 			],
 		]);
 		calls[1].answer();
 		await settle();
 		expect(calls).toHaveLength(2);
 		// The later mark stands.
-		expect(marks.isSeenOnHub(ended("a", T, false))).toBe(false);
+		expect(marks.isSeenOnHub(ended("a", T + 1, true))).toBe(true);
 	});
 
 	it("records and sends nothing for a seen mark that doesn't advance the one it has", async () => {
@@ -246,34 +234,9 @@ describe("sending", () => {
 		await settle();
 		expect(calls).toHaveLength(1);
 		expect(told).toBe(1);
-		// An unread mark that repeats a pending one changes nothing either.
-		marks.markUnread(client, ["b"]);
-		marks.markUnread(client, ["b"]);
-		expect(calls).toHaveLength(2);
-		expect(told).toBe(2);
 		// A later turn does advance it.
-		calls[1].answer();
-		await settle();
 		marks.markSeen(client, [{ ref: "a", seenThrough: T + 1 }]);
 		expect(calls.map((call) => call.sessions).at(-1)).toEqual([{ ref: "a", seenThrough: T + 1 }]);
-	});
-
-	it("lets a seen mark replace an unread one and an unread mark replace a seen one", async () => {
-		const { marks, client, calls } = setup();
-		marks.markUnread(client, ["a"]);
-		calls[0].answer();
-		await settle();
-		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
-		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
-		calls[1].answer();
-		await settle();
-		marks.markUnread(client, ["a"]);
-		expect(marks.isSeenOnHub(ended("a", T, false))).toBe(false);
-		expect(calls.map((call) => call.sessions)).toEqual([
-			[{ ref: "a", unread: true }],
-			[{ ref: "a", seenThrough: T }],
-			[{ ref: "a", unread: true }],
-		]);
 	});
 
 	it("drops a refused call's marks, so the row shows the hub's own state again", async () => {
@@ -396,14 +359,14 @@ describe("sending", () => {
 	it("records marks made with no connection, and sends them once one is ready", () => {
 		const { marks, client, calls } = setup();
 		marks.markSeen(null, [{ ref: "a", seenThrough: T }]);
-		marks.markUnread(null, ["b"]);
+		marks.markSeen(null, [{ ref: "b", seenThrough: T - 1 }]);
 		expect(calls).toHaveLength(0);
 		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
 		marks.flush(client);
 		expect(calls.map((call) => call.sessions)).toEqual([
 			[
 				{ ref: "a", seenThrough: T },
-				{ ref: "b", unread: true },
+				{ ref: "b", seenThrough: T - 1 },
 			],
 		]);
 	});
@@ -461,7 +424,7 @@ describe("the Board's marks", () => {
 		expect(markers.isSeen(row("device"))).toBe(true);
 	});
 
-	it("marks rows read and unread, one call for all the hub rows", async () => {
+	it("marks rows read in one call for all the hub rows", () => {
 		const { markers, calls, client, seen } = board();
 		seen.markRead(client, [ended("h1", T, true), ended("h2", T - 9, true), row("d1")]);
 		expect(calls.map((call) => call.sessions)).toEqual([
@@ -471,33 +434,104 @@ describe("the Board's marks", () => {
 			],
 		]);
 		expect(markers.isSeen(row("d1"))).toBe(true);
-		calls[0].answer();
-		await settle();
-		seen.markUnread(client, [ended("h1", T, false), ended("h2", T - 9, false), row("d1")]);
-		expect(calls.map((call) => call.sessions).at(-1)).toEqual([
-			{ ref: "h1", unread: true },
-			{ ref: "h2", unread: true },
-		]);
-		expect(markers.isSeen(row("d1"))).toBe(false);
-		expect(seen.isSeen(ended("h1", T, false))).toBe(false);
 	});
 
-	it("marks a row whose turn_ended_at doesn't parse with the device's markers, read and unread", () => {
+	it("marks a row whose turn_ended_at doesn't parse with the device's markers", () => {
 		const { markers, calls, client, seen } = board();
 		const bad = row("bad", { turn_ended_at: "not a time", unseen: true });
 		seen.markRead(client, [bad]);
 		expect(markers.isSeen(bad)).toBe(true);
 		expect(seen.isSeen(bad)).toBe(true);
-		seen.markUnread(client, [bad]);
-		expect(markers.isSeen(bad)).toBe(false);
-		expect(seen.isSeen(bad)).toBe(false);
 		expect(calls).toHaveLength(0);
 	});
 
 	it("sends nothing when no row is the hub's", () => {
 		const { calls, client, seen } = board();
 		seen.markRead(client, [row("d1")]);
-		seen.markUnread(client, [row("d1")]);
 		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("motion since the seen mark", () => {
+	it("reads a session moved when its last motion is after the hub's mark and any newer pending one", () => {
+		const { client, seen } = board();
+		const marked = row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) });
+		expect(seen.movedSinceSeen(marked, T + 1)).toBe(true);
+		expect(seen.movedSinceSeen(marked, T)).toBe(false);
+		expect(seen.movedSinceSeen(marked, undefined)).toBe(false);
+		// An older hub sends no seen_through, so nothing reads moved.
+		expect(seen.movedSinceSeen(row("old", { turn_ended_at: iso(T) }), T + 1)).toBe(false);
+		// This phone's pending mark counts until the hub's row catches up.
+		seen.markRead(client, [marked], () => T + 5);
+		expect(seen.movedSinceSeen(marked, T + 5)).toBe(false);
+		expect(seen.movedSinceSeen(marked, T + 6)).toBe(true);
+	});
+
+	it("marks a row seen through the later of its turn end and its last motion", () => {
+		const { calls, client, seen, markers } = board();
+		seen.markRead(
+			client,
+			[
+				row("ended-later", { turn_ended_at: iso(T), seen_through: iso(T - 9) }),
+				row("moved-later", { turn_ended_at: iso(T), seen_through: iso(T - 9) }),
+				row("no-turn-end", { seen_through: iso(T - 9) }),
+				row("old-hub", { turn_ended_at: iso(T) }),
+			],
+			(r) => ({ "ended-later": T - 5, "moved-later": T + 5, "no-turn-end": T + 7, "old-hub": T + 9 })[r.ref],
+		);
+		expect(calls.map((call) => call.sessions)).toEqual([
+			[
+				{ ref: "ended-later", seenThrough: T },
+				{ ref: "moved-later", seenThrough: T + 5 },
+				{ ref: "no-turn-end", seenThrough: T + 7 },
+				{ ref: "old-hub", seenThrough: T },
+			],
+		]);
+		// A row without a turn end still takes the device's own marker too.
+		expect(markers.isSeen(row("no-turn-end"))).toBe(true);
+	});
+});
+
+describe("pruning a motion mark", () => {
+	it("keeps a mark until the hub's seen_through reaches it, though the row already reads seen", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T + 5) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
+	});
+
+	it("keeps a mark while the row still reads unseen, an unread set elsewhere, though seen_through reached it", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBe(T);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
+	it("lets an unread set elsewhere after the hub answered this phone's mark win", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		const unread = row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) });
+		// Before the hub answers, the mark stands and keeps the row seen.
+		expect(marks.isSeenOnHub(unread)).toBe(true);
+		calls[0].answer();
+		await settle();
+		// Answered, the mark reached seen_through, and the row still reads
+		// unseen: an unread came after it.
+		expect(marks.isSeenOnHub(unread)).toBe(false);
+		marks.prune([unread]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
+	it("keeps a motion mark on a row with no turn end until its seen_through lands", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { seen_through: iso(T + 9) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
 	});
 });

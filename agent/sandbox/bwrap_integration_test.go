@@ -341,3 +341,78 @@ func TestBwrapSessionTmpInsideADevShmWorkspaceStaysWritable(t *testing.T) {
 		t.Errorf("the read-only /dev/shm workspace accepted a write:\n%s", out)
 	}
 }
+
+// A delegate is routinely handed files from its parent's session scratch, which
+// lives beside its own in the root's scratch tree (#4170). The shell must see the
+// tree read-only exactly where the file tools may read it, keep its own scratch
+// writable, and still hide the rest of the host /tmp.
+func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
+	facts := requireRealBwrap(t)
+	base, err := os.MkdirTemp("/tmp", "evener-bwrap-scratch-tree-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	base = resolveCleanPath(base)
+	if !pathUnder(base, "/tmp") {
+		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	var scratch [2]string
+	for i, session := range []string{"parent", "child"} {
+		s, err := OpenSessionScratch(base, cwd, "root", session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Cleanup() })
+		scratch[i] = s.Dir
+	}
+	parentScratch, ownScratch := scratch[0], scratch[1]
+	preserved := filepath.Join(parentScratch, "preserved.txt")
+	elsewhere := filepath.Join(base, "elsewhere.txt")
+	for _, f := range []string{preserved, elsewhere} {
+		if err := os.WriteFile(f, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const script = `set -u
+if test "$(cat "$1" 2>/dev/null)" = fixture; then echo PARENT-VISIBLE; fi
+if (printf forbidden > "$2/forbidden") 2>/dev/null; then echo PARENT-WRITABLE; fi
+if printf ok > "$3/written"; then echo OWN-WRITABLE; fi
+if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			f := facts
+			f.Home = t.TempDir()
+			rp, err := Resolve(SandboxPolicy{Mode: mode}, f, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := NewWrapper(rp, facts.BwrapPath, ownScratch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := w.Wrap([]string{"/bin/bash", "-c", script, "scratch-tree-test", preserved, parentScratch, ownScratch, elsewhere}, cwd)
+			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, ownScratch)
+			raw, err := cmd.CombinedOutput()
+			out := string(raw)
+			if err != nil {
+				t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+			}
+			if got, want := strings.Contains(out, "PARENT-VISIBLE"), rp.FileToolCanRead(preserved); got != want {
+				t.Errorf("shell sees the parent's scratch file = %v, file tools may read it = %v; they must agree:\n%s", got, want, out)
+			}
+			if strings.Contains(out, "PARENT-WRITABLE") {
+				t.Errorf("the scratch tree must be read-only outside the session's own scratch:\n%s", out)
+			}
+			if !strings.Contains(out, "OWN-WRITABLE") {
+				t.Errorf("the session's own scratch must stay writable:\n%s", out)
+			}
+			if strings.Contains(out, "ELSEWHERE-VISIBLE") {
+				t.Errorf("host /tmp outside the scratch tree must stay hidden:\n%s", out)
+			}
+		})
+	}
+}

@@ -119,6 +119,13 @@ export interface AttentionChanged {
    * question's equivalent.
    */
   approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
   prevLevel: string;
 }
 
@@ -2558,6 +2565,15 @@ export interface NavigationSessionSummary {
    */
   unseen?: boolean;
   /**
+   * SeenThrough is the hub's seen-through mark for a live row, floored at
+   * the seen store's start, so a client can tell output that moved after it
+   * (an activity read's lastMovedAt) from output already seen, even
+   * mid-turn. It does not reflect an explicit "Mark as unread", so a client
+   * also reads Unseen. Absent on a row that isn't live, and from a hub with
+   * no seen store or an older hub.
+   */
+  seen_through?: string;
+  /**
    * Own-session activity counts are captured before navigation fitting.
    * RunningJobCommand is the first available command, bounded for display.
    */
@@ -3137,6 +3153,14 @@ export interface SessionActivity {
    * call, and when the daemon predates the field.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+   * motion (ThreadActivity.LastMovedAt). A client compares it with the
+   * session's seen_through to tell whether anything moved since the person
+   * last looked, mid-turn included. Absent until the tree has moved since
+   * its daemon began serving it, and from an older hub or daemon.
+   */
+  lastMovedAt?: number;
 }
 
 export interface SessionActivityAncestor {
@@ -3661,6 +3685,12 @@ export interface ThreadActivity {
    * from a daemon that predates it.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is LastActivityAt counting only real motion: absent until
+   * the tree has moved since the daemon began serving the session, so a
+   * daemon restart is not news to a client comparing it with a seen mark.
+   */
+  lastMovedAt?: number;
 }
 
 export interface ThreadCapabilities {

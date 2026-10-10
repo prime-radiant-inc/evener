@@ -1509,9 +1509,14 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 	if bytes.IndexByte(b, 0) >= 0 {
 		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
 	}
-	s := strings.ReplaceAll(string(b), "\r\n", "\n")
-	lines := strings.Split(s, "\n")
+	return NumberLines(string(b), offsetLine, limitLines), b, nil
+}
 
+// NumberLines presents text as ReadFile presents a text file: CRLF
+// normalized to LF, lines numbered from offsetLine (default 1), at most
+// limitLines lines (default 2000), and "" past the end.
+func NumberLines(text string, offsetLine, limitLines *int) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start := 1
 	if offsetLine != nil && *offsetLine > 0 {
 		start = *offsetLine
@@ -1521,14 +1526,14 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		limit = *limitLines
 	}
 	if start > len(lines) {
-		return "", b, nil
+		return ""
 	}
 	end := min(start-1+limit, len(lines))
 	var out strings.Builder
 	for i := start; i <= end; i++ {
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
-	return out.String(), b, nil
+	return out.String()
 }
 
 // readFileNotFoundSuggestion renders a "did you mean" hint for a read_file
@@ -1620,6 +1625,12 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return e.EditFileWith(path, oldString, newString, replaceAll, nil)
+}
+
+// EditFileWith is EditFile, except that finish, when not nil, turns the
+// edited bytes into the bytes written, inside the same read and write.
+func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	var abs string
 	var b []byte
@@ -1673,11 +1684,15 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		s = strings.Replace(s, oldString, newString, 1)
 		n = 1
 	}
+	edited := []byte(s)
+	if finish != nil {
+		edited = finish(edited)
+	}
 	if sfs != nil {
-		if werr := sfs.writeFile("edit_file", abs, []byte(s), 0o644); werr != nil {
+		if werr := sfs.writeFile("edit_file", abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); werr != nil {
+	} else if werr := afero.WriteFile(e.filesystem(), abs, edited, 0o644); werr != nil {
 		return "", werr
 	}
 	plural := "s"
@@ -1846,6 +1861,16 @@ func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 // by name within each directory, nested names are prefixed with their relative
 // path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, false)
+}
+
+// ListVisibleDirectory is ListDirectory without dot entries. It never reads
+// a dot directory, so a large .git beneath path costs it nothing.
+func (e *LocalExecutionEnvironment) ListVisibleDirectory(path string, depth int) ([]DirEntry, error) {
+	return e.listDirectory(path, depth, true)
+}
+
+func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
 	}
@@ -1853,7 +1878,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
-		return sfs.listDir("list_dir", e.resolve(path), depth)
+		return sfs.listDir("list_dir", e.resolve(path), depth, visibleOnly)
 	}
 	root := e.resolve(path)
 
@@ -1867,6 +1892,9 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 		for _, ent := range ents {
 			name := ent.Name()
+			if visibleOnly && IsDotPath(name) {
+				continue
+			}
 			relName := name
 			if relPrefix != "" {
 				relName = filepath.Join(relPrefix, name)
@@ -1878,6 +1906,8 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 			if !ent.IsDir() {
 				if info, err := ent.Info(); err == nil {
 					de.Size = info.Size()
+					de.ModTime = info.ModTime()
+					de.IsRegular = info.Mode().IsRegular()
 					if info.Mode()&0o111 != 0 {
 						de.IsExec = true
 					}
@@ -2069,6 +2099,10 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	default:
 		args = append(args, "--line-number")
 	}
+	// --null ends each path with a NUL in place of its ":" or "-" (or line
+	// ending), so ripgrepOutputLines can find the whole path even when the
+	// name holds a newline.
+	args = append(args, "--null")
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -2094,15 +2128,28 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 // sensitivity, result cap, output mode, and context window the caller asked
 // for.
 func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+	return e.GrepSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil)
+}
+
+// grepContextLines is the context window an optional contextLines argument
+// asks for: its first value when positive, else 0.
+func grepContextLines(contextLines []int) int {
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		return contextLines[0]
+	}
+	return 0
+}
+
+// GrepSkipping is Grep, except that it never searches a file for which skip,
+// when not nil, reports true. skip gets the file's slash path relative to the
+// searched directory. A skipped file is left out before the result cap, so
+// it never uses up a result.
+func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
 	dir := resolveGrepDir(path, e.RootDir)
-	ctxLines := 0
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
-	}
 
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
@@ -2113,13 +2160,17 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
 
+	// Ripgrep takes no predicate, so a search that skips files walks natively.
+	if skip != nil {
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
 	}
 
 	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
@@ -2138,10 +2189,15 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	// escape on any platform.
 	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
-		// Best-effort cap: keep first maxResults lines.
-		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir))
+		// Best-effort cap: keep first maxResults lines. In content mode that
+		// counts context lines and "--" separators too, which is what the grep
+		// tool's max_results promises ("lines, file paths, or count entries by
+		// output mode", tool.DefGrep), so with context_lines a cut can fall
+		// inside a match's context; the note still says the result was cut.
+		// The native walk counts matches instead; that divergence is #3284.
+		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
 		if len(lines) > maxResults {
-			lines = lines[:maxResults]
+			lines = append(lines[:maxResults], grepTruncationNote(maxResults))
 		}
 		return strings.Join(lines, "\n"), nil
 	}
@@ -2159,38 +2215,64 @@ func grepTargetsOneFile(dir string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// ripgrepOutputLines splits ripgrep's output into lines in the shape the
-// native fallback (grepNative) gives, so a search reads the same whether or
-// not ripgrep is installed (#3259): no trailing newline, and each path
-// relative to the searched directory. rg echoes the directory it was given
-// in front of every path, so that prefix comes off each line; a single named
-// file is "." to the fallback, where rg names it in files-with-matches mode.
-// Content and count lines for a single file carry no path from either.
-func ripgrepOutputLines(stdout, dir string, oneFile bool) []string {
-	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+// ripgrepOutputLines splits ripgrep's --null output into lines in the shape
+// the native fallback (grepNative) gives, so a search reads the same whether
+// or not ripgrep is installed (#3259): no trailing newline, and each path
+// relative to the searched directory and written as OneLinePath gives it.
+// rg echoes the directory it was given in front of every path and ends the
+// path with a NUL, so a line starting with that directory holds a path up to
+// its NUL, even one holding a newline; any other line (a "--" between context
+// groups) is plain text. A single named file is "." to the fallback, where rg
+// names it in files-with-matches mode; content and count lines for a single
+// file carry no path from either.
+func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 	if oneFile {
-		for i, line := range lines {
-			if line == dir {
-				lines[i] = "."
-			}
+		if filesOnly {
+			return []string{"."}
 		}
-		return lines
+		return strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	}
 	prefix := strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)
-	for i, line := range lines {
-		lines[i] = strings.TrimPrefix(line, prefix)
+	var lines []string
+	for rest := stdout; rest != ""; {
+		var line string
+		path, afterPath, cut := strings.Cut(rest, "\x00")
+		hasPath := cut && strings.HasPrefix(path, prefix)
+		switch {
+		case hasPath && filesOnly:
+			line, rest = OneLinePath(path[len(prefix):]), afterPath
+		case hasPath:
+			var text string
+			text, rest, _ = strings.Cut(afterPath, "\n")
+			line = OneLinePath(path[len(prefix):]) + ripgrepPathSeparator(text) + text
+		default:
+			line, rest, _ = strings.Cut(rest, "\n")
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }
 
+// ripgrepPathSeparator is the separator --null replaced after a path on a
+// content or count line: "-" before a context line ("12-text"), else ":".
+func ripgrepPathSeparator(text string) string {
+	digits := strings.TrimLeft(text, "0123456789")
+	if len(digits) < len(text) && strings.HasPrefix(digits, "-") {
+		return "-"
+	}
+	return ":"
+}
+
 func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+	return e.grepNativeSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil)
+}
+
+// grepNativeSkipping is grepNative, never searching a file skip names (see
+// GrepSkipping).
+func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
-	}
-	ctxLines := 0
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		ctxLines = contextLines[0]
 	}
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode, ctxLines)
 	if err != nil {
@@ -2294,14 +2376,8 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			excludedByIgnore++
 			return nil
 		}
-		if len(globFilters) > 0 {
-			matched, matchErr := matchesAnyGrepFilter(filepath.Base(p), globFilters)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				return nil
-			}
+		if selected, selErr := grepFileSelected(filepath.Base(p), relSlash, globFilters, skip); !selected {
+			return selErr
 		}
 		data, err := grepReadFile(fsys, p)
 		if err != nil {
@@ -2309,10 +2385,6 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 				return cancelErr
 			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
-		}
-		// Skip binary files
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
 		}
 		if a.feed(relPath, data) {
 			return filepath.SkipAll

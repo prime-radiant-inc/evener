@@ -251,7 +251,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestHubModelAppliesStableDelegateNotificationsToDelegateTool,
 		TestSessionRowAwaitingHasStateColor,
 		TestSessionRowsHaveNoTreeConnectors,
-		TestDashboardRowLess_AskPendingBandsAboveYourMove,
+		TestDashboardRowLess_AskPendingSharesTheNeedsYouBand,
 		TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary,
 		TestRenderHubSessionStatusBandsContextPressure,
 		TestRenderHubSessionStatusRendersDiagnosticsSections,

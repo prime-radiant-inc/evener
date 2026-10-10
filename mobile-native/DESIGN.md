@@ -143,7 +143,7 @@ The Board is one native scrolling list: Live's bands, then pinned categories, Pr
 A row opens the Session, one conversation with its agent, recorded in "The Session" below. The Board's hub button opens the Hub, and its New session button opens New session: two sheets recorded in "The Sheets: New session and the Hub" at the end. The colors, type and shapes that follow serve all three.
 
 **Key Characteristics:**
-- Every live session in one list, ordered by who needs you, then finished, then working, then idle.
+- Every live session in one list, ordered by who needs you, then working, then idle.
 - Calm: a control appears only when it can act, and nothing moves unless its data moved.
 - Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded.
 
@@ -179,14 +179,14 @@ Dimensions below describe React Native logical units (points on iOS). The `px` v
 
 ### Hierarchy
 - **Title** (SF Pro semibold, 17px, 22px line-height): Row title, one line (two for Needs you).
-- **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working: the intent of the newest tool call the session itself made ("Reading the board's row tests."), else the job the session is running, else the bare "Working". Finished rows carry no why line yet: the spec's last-message excerpt (Source Serif 15/21) waits for a server addition (S1).
+- **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working: the intent of the newest tool call the session itself made ("Reading the board's row tests."), else the job the session is running, else the bare "Working".
 - **Last line** (SF Pro, 13px, 18px line-height, ink-low): Task progress (with a checklist glyph) while a task is in progress, then the project (with a folder glyph) and the host (with a server glyph), each only when it differs from the fleet's usual one. With none of these, the row has no last line.
 - **Age** (SF Pro, 13px, tabular figures, ink-low): Trailing on line 1: "2m", "1h", "3d".
-- **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9".
+- **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "WORKING · 9".
 
 ## Layout
 
-The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units; the section chips (32 units) and the summary line's counts (30 units) draw smaller and reach 44 with hit slop.
+The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units; the section chips (32 units) and the summary line's counts (30 units) draw smaller and reach 44 with hit slop.
 
 ## Elevation & Depth
 
@@ -218,21 +218,21 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ### Band headers
 - **Shape:** Open text, no rule or card.
 - **Typography:** 13pt semibold, uppercase, ink-mid, +0.4pt letter-spacing.
-- **Behavior:** "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9". A band with nothing in it has no header.
+- **Behavior:** "NEEDS YOU · 4", "WORKING · 9". A band with nothing in it has no header.
 
 ### Board rows (signal and quiet)
-- **Shape:** Draw no separator of their own; the list draws hairlines inset to the title (54 units: 16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in Live) run 64 to 88 units; quiet rows (Idle's, today) hold to 48 units and show only the title and age.
+- **Shape:** Draw no separator of their own; the list draws hairlines inset to the title (54 units: 16 padding + 28 mark + 10 gap). Signal rows (Needs you and Working, in Live) run 64 to 88 units; quiet rows (Idle's, today) hold to 48 units and show only the title and age.
 - **Typography:** Title semibold 17/22 (two lines for Needs you); why line 15/20, with the state word semibold in its hue when one applies; last line 13/18 in ink-low; age 13pt tabular figures in ink-low.
 - **Behavior:** A small blue "Draft" tag sits before the age when the session has an unsent draft. Tapping a row opens its session.
 
 ### State marks and the pulse meter
 - **Shape:** A 28-unit leading mark column, shared by every row.
-- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention), and a small `circle.fill` dot (Finished, accent, 8pt).
+- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `exclamationmark.bubble.fill` (Needs you, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention). A row with anything new since you last opened it, wherever it sits, carries a small blue dot after its title (accent, 8pt); folded, Idle's header carries it for the rows inside.
 - **Pulse meter:** A 22×15pt, 7-bar activity meter, shown on Working rows in the Live band and, every working session's bars summed minute by minute, as the fleet meter beside the Live summary's counts. One fixed log scale (full at 64 events per minute) so meters compare across sessions; a 1pt baseline always draws, older bars fade, and the meter grays when the connection is down. Each bar is a minute of real transcript and tool-output activity, read every 10 seconds from the hub while the Board is in front (S5, `evener/activity/read`); a read counts only while it's under 20 seconds old (two poll intervals) and the connection is up; a working row with no read yet, a hub that predates S5, a dropped connection, or a connected hub whose reads have silently stopped landing, all show a single bar in its newest minute instead - a stale read would otherwise keep ticking toward a false "stuck" as the gap runs long, whether or not the connection itself ever reported a drop. Quiet for 3 minutes reads "Quiet 4m" in the why line; past 10, "May be stuck · no updates for 12m" in amber, the meter itself goes flat and amber, and the row floats to the top of Working - unless the session is waiting on subagents, which is never quiet or stuck. Every read also carries what the session's own root turn last set out to do: the newest tool-call intent its daemon saw, one bounded line, dropped when a turn begins. That words the why line in place of the job the session is running - the intent says what the job is for - and a session waiting on subagents, quiet or stuck still says so first. The row takes a `moving` flag so a still copy of the same session elsewhere shows a plain dot instead, once a later PR renders sessions inline outside Live.
 
 ### The Idle fold
 - **Shape:** A single 48-unit row: "Idle · 3" in ink-mid at 15px (title case, not the band headers' uppercase), with a chevron that rotates 90° when open.
-- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows.
+- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows. Folded, it shows the blue dot while any session inside has something new; VoiceOver says "unread sessions inside".
 
 ### Section rows
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.
@@ -258,7 +258,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ## Do's and Don'ts
 
 ### Do:
-- **Do** order every live session by who needs you, then finished, then working, then idle.
+- **Do** order every live session by who needs you, then working, then idle.
 - **Do** keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away (see the Session's rules below).
 - **Do** use human readable state words, and copy that says exactly what happened.
 - **Do** persist each section's collapsed state per device.
@@ -282,7 +282,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 
 #### The nav bar
 - **Back:** The chevron, then the amber count (17pt, attention-ink) of the other sessions that need you, so you know before leaving whether anything is waiting.
-- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a still state mark, the state ("Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Asks for approval", "Working · 7m", or "Working" before the turn's start is known, "Finished · 35m ago", or "Finished" when no turn has ended) and a small chevron. The mark never animates; the Session's one meter is the tray's. The whole title is one button that opens the Session sheet.
+- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a still state mark, the state ("Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Needs you", "Asks for approval", "Working · 7m", or "Working" before the turn's start is known, "Idle · 35m ago", or "Idle" when no turn has ended) and a small chevron. The mark never animates; the Session's one meter is the tray's. The whole title is one button that opens the Session sheet.
 - **Title swipe:** A horizontal pan on the title moves to the next session in Live order (to the left, as a page turns) or the previous one (to the right). It starts only once a drag goes 10pt sideways, and it moves after 60pt or a 500pt/s flick; a pan flicked back the other way moves nowhere. The session slides in from the side it came from. VoiceOver gets "Previous session" and "Next session" actions in its place.
 - **⋯ menu:** A native menu: Detail level (with the five levels inline), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
 

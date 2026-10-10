@@ -1770,7 +1770,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				srv.SetCancelFunc(cancelDrain)
 				setMutationRunner(cancelDrain, runnerDone)
 				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
 				return drainCtx, cancelDrain
 			}
 			turnCtx, cancelTurn := context.WithCancel(ctx)
@@ -1790,7 +1789,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
-					srv.SetState(string(agent.SessionProcessing))
 				}
 			}
 			var result string
@@ -1815,7 +1813,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// through SetProcessingTurn (WireTranscriptHistory) before
 					// its first entry is recorded.
 					if phase == agent.ClientMutationStartClaimed {
-						srv.SetState(string(agent.SessionProcessing))
+						srv.SetProcessing(true)
 					}
 				})
 				if !processed {
@@ -1837,7 +1835,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
-					srv.SetState(string(agent.SessionProcessing))
+					srv.SetProcessing(true)
 				})
 				if !processed {
 					// The claim refused: nothing is running, so drop the runner
@@ -1849,9 +1847,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
+			// The stored state changes only through the session's own events
+			// (SESSION_START, SESSION_END, STATUS_SETTLED): ending processing
+			// publishes what they stated.
 			srv.SetProcessing(false)
 			srv.SetCancelFunc(nil)
-			srv.SetState(sess.WireState())
 			currentCancel()
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
@@ -2050,17 +2050,17 @@ func printServeSandboxLine(w io.Writer, line string) {
 }
 
 // holdServeStateForAwaitingWake reports whether the input loop should skip
-// its Processing shadow-write for this message: the session-level entry gate
+// marking processing for this message: the session-level entry gate
 // (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
 // refuses autonomous wakes while a question is pending, before any state
-// transition — so the AppWire status shadow must not flip to active around a wake
+// transition — so the AppWire status must not flip to active around a wake
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
-// predicate exactly — hasPendingAsk, not raw state (attention-status-model
-// v5 reconciliation: SessionAwaiting alone no longer implies a pending
-// question, so a general inbox-semantics re-arm with no ask pending must NOT
-// be held; async wakes re-arm by design there). EntryUserInput is always let
-// through since it is how the reply resolves a pending ask (spec §5.2).
+// predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
+// does not imply a pending question: a needs_response rest with no ask
+// pending must NOT be held; async wakes may move it on). EntryUserInput is
+// always let through since it is how the reply resolves a pending ask (spec
+// §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
 	return kind != agent.EntryUserInput && hasPendingAsk
 }

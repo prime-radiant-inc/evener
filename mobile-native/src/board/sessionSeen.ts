@@ -17,9 +17,8 @@ import { type BoardSeen, hubSeenMarks } from "./hubSeen";
  *   no live push, so this is what catches a turn that ends while you watch.
  *   A row with no hub turn end is the device's SeenMarkers' to mark.
  * A given turn end is marked at most once while the screen stays in front,
- * whichever source sees it first. So a mark the hub refuses is not sent again
- * on every re-render, and a Mark as unread made elsewhere at a turn end
- * already marked here wins; a newer turn end is marked again.
+ * whichever source sees it first, so a mark the hub refuses is not sent
+ * again on every re-render; a newer turn end is marked again.
  * A mark made with no ready client waits in the hub's controller, and goes
  * out when this screen next has one: the Board may not be mounted to flush
  * it. */
@@ -30,6 +29,7 @@ export function useMarkSeenInFront(
 	conversation: { lastTurnEndedAt?: string } | null,
 	fleetRow: NavigationSessionSummary | undefined,
 	seen: BoardSeen,
+	lastMovedAt?: number,
 ): void {
 	const { hubId, ref } = session;
 	// The turn ends marked in this stay in front, shared by the snapshot and
@@ -60,6 +60,35 @@ export function useMarkSeenInFront(
 		marked.current.add(rowKey);
 		if (fleetRow && !seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
 	});
+	// Output streaming while you watch is seen too. The newest last motion is
+	// kept while the screen is in front and marked once, when it leaves the
+	// front: a mark on every activity read would rebuild the hub's navigation
+	// every ten seconds while a session works. Only a hub that tracks
+	// seen-through marks (the row carries seen_through) takes one, and only
+	// motion after its mark is new.
+	const newestMotion = useRef<number | null>(null);
+	// The mark on leaving goes through the newest client, not the one that was
+	// current when the motion was read.
+	const latestClient = useRef(client);
+	useEffect(() => {
+		latestClient.current = client;
+	}, [client]);
+	// A hub that sends lastMovedAt tracks seen-through marks, so a session
+	// opened from outside the fleet's first Live page (search, a project, a
+	// link) is marked too; without its row, every motion counts as new.
+	const seenMark = hubTime(fleetRow?.seen_through) ?? 0;
+	useEffect(() => {
+		if (!inFront || lastMovedAt === undefined) return;
+		if (lastMovedAt > (newestMotion.current ?? seenMark)) newestMotion.current = lastMovedAt;
+	}, [inFront, lastMovedAt, seenMark]);
+	useEffect(() => {
+		if (!inFront) return;
+		return () => {
+			const through = newestMotion.current;
+			newestMotion.current = null;
+			if (through !== null) hubSeenMarks(hubId).markSeen(latestClient.current, [{ ref, seenThrough: through }]);
+		};
+	}, [inFront, hubId, ref]);
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);

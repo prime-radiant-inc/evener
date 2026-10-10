@@ -17,24 +17,29 @@ import { compactDuration } from "../session/format";
 export type BoardState =
 	| "failed"
 	| "question"
+	| "needsYou"
 	| "approval"
 	| "warning"
 	| "restartNeeded"
 	| "working"
-	| "finished"
 	| "idle"
 	| "shutDown";
 
-export type Band = "needsYou" | "finished" | "working" | "idle";
+export type Band = "needsYou" | "working" | "idle";
+
+/** Live's bands in the one attention order every screen reads them in. */
+export const LIVE_BAND_ORDER: readonly Band[] = ["needsYou", "working", "idle"];
 
 export interface ClassifiedRow {
 	row: NavigationSessionSummary;
 	state: BoardState;
+	/** Updates since you last opened it: the row's blue dot, wherever it
+	 * sits. Absent reads as seen. */
+	unseen?: boolean;
 }
 
 export interface LiveBands {
 	needsYou: ClassifiedRow[];
-	finished: ClassifiedRow[];
 	working: ClassifiedRow[];
 	idle: ClassifiedRow[];
 }
@@ -42,11 +47,11 @@ export interface LiveBands {
 const WORDS: Record<BoardState, string> = {
 	failed: "Failed",
 	question: "Question",
+	needsYou: "Needs you",
 	approval: "Approval",
 	warning: "Warning",
 	restartNeeded: "Restart needed",
 	working: "Working",
-	finished: "Finished",
 	idle: "Idle",
 	shutDown: "Shut down",
 };
@@ -89,9 +94,9 @@ export function decisiveState(state: string): BoardState | null {
 	return null;
 }
 
-export function boardState(row: NavigationSessionSummary, approval: boolean, seen: boolean): BoardState {
+export function boardState(row: NavigationSessionSummary, approval: boolean): BoardState {
 	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working, Finished or Needs you.
+	// reported: it is never Working or Needs you.
 	if (row.offline) return "shutDown";
 	const decisive = decisiveState(row.state);
 	// Only a nonblocking warning yields to live child work. Search keeps its
@@ -99,33 +104,55 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
+	// Awaiting without a question is a turn that ended on needs_response: it
+	// waits on a person like a question does, ahead of any running work
+	// (#4093).
+	if (row.state === "awaiting") return "needsYou";
 	if (row.state === "active") return "working";
 	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
 	if (runningSubagents) return "working";
 	if (decisive) return decisive;
-	if (row.dormant || seen) return "idle";
-	return "finished";
+	// A turn that ended rests Idle whether or not you've seen it: the row's
+	// blue dot (rowUnseen) says whether anything is new (#4093).
+	return "idle";
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
- * section marks approvals (approvalRefs), and isSeen splits Finished from
- * Idle. */
+ * section marks approvals (approvalRefs), and isSeen and movedSinceSeen
+ * say whether anything is new since the person last looked. */
 export function rowClassifier(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean,
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
-	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+	return (row) => {
+		const state = boardState(row, approvals.has(row.ref));
+		return { row, state, unseen: rowUnseen(row, state, isSeen(row), movedSinceSeen(row)) };
+	};
+}
+
+/** The blue dot (Jesse's ruling): only a live session that has run, and
+ * whenever anything is new since you last opened it. A session mid-turn
+ * (working, or reporting active) reads the hub alone: a turn end the hub
+ * decides (with this phone's pending marks applied), or motion after its seen
+ * mark, never this device's own markers. A resting one also counts a turn the
+ * device's fallback hasn't seen. */
+function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
+	// An offline row is shutDown (boardState).
+	if (!row.live || row.dormant || state === "shutDown") return false;
+	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
+	return !seen || moved;
 }
 
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
+	needsYou: "needsYou",
 	approval: "needsYou",
 	warning: "needsYou",
 	restartNeeded: "needsYou",
 	working: "working",
-	finished: "finished",
 	idle: "idle",
 	shutDown: null,
 };
@@ -152,7 +179,7 @@ function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(a.row) - time(b.row) || byRef(a, b);
 }
-// Finished and Idle order by when the turn ended (S4): updated_at moves on
+// Idle orders by when the turn ended (S4): updated_at moves on
 // renames and model rounds too, so it stands in only for a row without a
 // readable turn_ended_at.
 function endedTime(row: NavigationSessionSummary): number {
@@ -161,11 +188,12 @@ function endedTime(row: NavigationSessionSummary): number {
 function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
 }
-// Spec 7.1's order: failed leads, then a question or approval, then a
-// warning or restart-needed, regardless of age; age breaks ties within a
-// band. The hub sorts its needs_you section into the same bands
-// (hubapi.NeedsYouBand: failed first, then any row with a pending question or
-// approval whatever its own state, then everything else). boardState's mark
+// Spec 7.1's order: failed leads, then a question, an approval or a turn
+// that ended on needs_response, then a warning or restart-needed, regardless
+// of age; age breaks ties within a band. The hub sorts its needs_you section
+// into the same bands (hubapi.NeedsYouBand: failed first, then any row
+// awaiting you or with a pending question or approval whatever its own
+// state, then everything else). boardState's mark
 // precedence returns "warning"/"restartNeeded" for a row before ever
 // consulting ask_pending/approval_pending, so a warning or restart-needed row
 // that also carries one of those flags must still read it here directly - the
@@ -176,7 +204,8 @@ function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 // signal such a row has.
 function needsYouRank(item: ClassifiedRow): number {
 	if (item.state === "failed") return 0;
-	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval") return 1;
+	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval" || item.state === "needsYou")
+		return 1;
 	return 2;
 }
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
@@ -189,7 +218,7 @@ function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
 	return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
 }
 
-/** Splits Live into the spec's four bands. Rows from the needs_you section
+/** Splits Live into the spec's three bands. Rows from the needs_you section
  * join when Live's loaded pages don't hold them yet, so a session that needs
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
  * which carries the row's children (fork originals and cluster members).
@@ -201,27 +230,31 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
 ): LiveBands {
-	const classify = rowClassifier(needsYouSection, isSeen);
+	const classify = rowClassifier(needsYouSection, isSeen, movedSinceSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
-	const bands: LiveBands = { needsYou: [], finished: [], working: [], idle: [] };
+	const bands: LiveBands = { needsYou: [], working: [], idle: [] };
 	for (const row of rows.values()) {
 		const item = classify(row);
 		const band = bandOf(item.state);
 		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
-	bands.finished.sort(newestEndedFirst);
 	bands.idle.sort(newestEndedFirst);
 	bands.working.sort(workingOrder(isStuck));
 	return bands;
 }
 
+/** Live's rows, band by band in LIVE_BAND_ORDER. */
+export function liveRows(bands: LiveBands): ClassifiedRow[] {
+	return LIVE_BAND_ORDER.flatMap((band) => bands[band]);
+}
+
 export interface LiveSummary {
 	needsYou: number;
-	finished: number;
 	working: number;
 	idle: number;
 }
@@ -231,7 +264,6 @@ export interface LiveSummary {
 export function liveSummary(bands: LiveBands): LiveSummary | null {
 	const counts: LiveSummary = {
 		needsYou: bands.needsYou.length,
-		finished: bands.finished.length,
 		working: bands.working.length,
 		idle: bands.idle.length,
 	};
@@ -267,6 +299,7 @@ export interface WhyLine {
 const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	failed: { hue: "danger", text: "open the session to see what went wrong" },
 	question: { hue: "attention", text: "waiting for your answer" },
+	needsYou: { hue: "attention", text: "waiting for your reply" },
 	approval: { hue: "attention", text: "waiting for your permission" },
 	warning: { hue: "attention", text: "open the session to see it" },
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },

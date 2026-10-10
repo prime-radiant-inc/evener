@@ -255,7 +255,7 @@ func TestRepairArgs_EmptyOptionalEnumIsAbsent(t *testing.T) {
 }
 
 func TestRepairArgs_EmptyEnumKeptWhenRequiredOrAllowedOrNotEnum(t *testing.T) {
-	args := map[string]any{"kind": "", "blankok": "", "nullok": nil, "freeform": nil}
+	args := map[string]any{"kind": "", "blankok": "", "nullok": nil, "freeform": ""}
 	out, changes := RepairArgs(emptyEnumParams(), args)
 	if !reflect.DeepEqual(out, args) {
 		t.Fatalf("got %v, want unchanged %v", out, args)
@@ -318,5 +318,117 @@ func TestRepairArgs_NestedEmptyOptionalEnumIsAbsent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, nestedEnumArgs()) {
 		t.Fatalf("input mutated: %v", args)
+	}
+}
+
+// A lone object sent for an array is wrapped first, then judged as an item, so
+// an empty optional enum inside it is dropped like any other item's.
+func TestRepairArgs_ScalarWrappedArrayItemEmptyEnumIsAbsent(t *testing.T) {
+	params := map[string]any{"properties": map[string]any{"items": map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"mode": map[string]any{"type": "string", "enum": []any{"a", "b"}}},
+			"required":   []any{"x"},
+		},
+	}}}
+	out, _ := RepairArgs(params, map[string]any{"items": map[string]any{"x": "y", "mode": ""}})
+	if want := map[string]any{"items": []any{map[string]any{"x": "y"}}}; !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %v, want %v", out, want)
+	}
+}
+
+// nullOptionalParams declares one optional field of each JSON type a model
+// leaves out by sending null, a nested object with its own required list, a
+// schema-nullable field, and a required field.
+func nullOptionalParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"name":     map[string]any{"type": "string"},
+			"count":    map[string]any{"type": "integer"},
+			"flag":     map[string]any{"type": "boolean"},
+			"tags":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"opts":     map[string]any{"type": "object", "properties": map[string]any{"depth": map[string]any{"type": "integer"}, "label": map[string]any{"type": "string"}}, "required": []any{"label"}},
+			"nullable": map[string]any{"type": []any{"string", "null"}},
+			"id":       map[string]any{"type": "string"},
+		},
+		"required": []any{"id"},
+	}
+}
+
+func TestRepairArgs_NullOptionalIsAbsent(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        map[string]any
+		keep        []string
+		want        map[string]any
+		wantChanged []string
+	}{
+		{name: "string", args: map[string]any{"id": "x", "name": nil}, want: map[string]any{"id": "x"}, wantChanged: []string{"name"}},
+		{name: "integer", args: map[string]any{"id": "x", "count": nil}, want: map[string]any{"id": "x"}, wantChanged: []string{"count"}},
+		{name: "boolean", args: map[string]any{"id": "x", "flag": nil}, want: map[string]any{"id": "x"}, wantChanged: []string{"flag"}},
+		{name: "array", args: map[string]any{"id": "x", "tags": nil}, want: map[string]any{"id": "x"}, wantChanged: []string{"tags"}},
+		{name: "object", args: map[string]any{"id": "x", "opts": nil}, want: map[string]any{"id": "x"}, wantChanged: []string{"opts"}},
+		{name: "nested", args: map[string]any{"id": "x", "opts": map[string]any{"label": "l", "depth": nil}}, want: map[string]any{"id": "x", "opts": map[string]any{"label": "l"}}, wantChanged: []string{"opts.depth"}},
+		{name: "required stays for validation", args: map[string]any{"id": nil}, want: map[string]any{"id": nil}},
+		{name: "nested required stays for validation", args: map[string]any{"id": "x", "opts": map[string]any{"label": nil}}, want: map[string]any{"id": "x", "opts": map[string]any{"label": nil}}},
+		{name: "schema-nullable stays null", args: map[string]any{"id": "x", "nullable": nil}, want: map[string]any{"id": "x", "nullable": nil}},
+		{name: "handler-judged stays", args: map[string]any{"id": "x", "count": nil}, keep: []string{"count"}, want: map[string]any{"id": "x", "count": nil}},
+		{name: "empty plain string stays", args: map[string]any{"id": "x", "name": ""}, want: map[string]any{"id": "x", "name": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, changes := RepairArgs(nullOptionalParams(), tc.args, tc.keep...)
+			if !reflect.DeepEqual(out, tc.want) {
+				t.Fatalf("got %v, want %v", out, tc.want)
+			}
+			var changed []string
+			for _, c := range changes {
+				if c.Kind != ChangeNormalizeDefault {
+					t.Fatalf("unexpected change %+v", c)
+				}
+				changed = append(changed, c.Field)
+			}
+			if !slices.Equal(changed, tc.wantChanged) {
+				t.Fatalf("changed fields = %v, want %v", changed, tc.wantChanged)
+			}
+		})
+	}
+}
+
+// A property defined through a combinator accepts null only as its branches
+// say: anyOf and oneOf when some branch does, allOf when every branch does.
+func TestRepairArgs_NullOnApplicatorPropertyFollowsItsBranches(t *testing.T) {
+	str := map[string]any{"type": "string"}
+	num := map[string]any{"type": "integer"}
+	null := map[string]any{"type": "null"}
+	for _, tc := range []struct {
+		name     string
+		schema   map[string]any
+		wantKept bool
+	}{
+		{name: "anyOf without null", schema: map[string]any{"anyOf": []any{str, num}}},
+		{name: "anyOf optional shape", schema: map[string]any{"anyOf": []any{str, null}}, wantKept: true},
+		{name: "oneOf without null", schema: map[string]any{"oneOf": []any{str, num}}},
+		{name: "oneOf with null", schema: map[string]any{"oneOf": []any{null, str}}, wantKept: true},
+		{name: "allOf with a branch refusing null", schema: map[string]any{"allOf": []any{map[string]any{"type": []any{"string", "null"}}, str}}},
+		{name: "allOf every branch accepting null", schema: map[string]any{"allOf": []any{map[string]any{"type": []any{"string", "null"}}, map[string]any{"maxLength": 3}}}, wantKept: true},
+		{name: "nested anyOf without null", schema: map[string]any{"anyOf": []any{map[string]any{"anyOf": []any{str, num}}, num}}},
+		{name: "unresolved ref", schema: map[string]any{"$ref": "#/$defs/name"}, wantKept: true},
+		{name: "anyOf with a false branch", schema: map[string]any{"anyOf": []any{str, false}}},
+		{name: "anyOf null beside a false branch", schema: map[string]any{"anyOf": []any{null, false}}, wantKept: true},
+		{name: "allOf with a true branch", schema: map[string]any{"allOf": []any{true, str}}},
+		{name: "not null", schema: map[string]any{"not": null}},
+		{name: "not string", schema: map[string]any{"not": str}, wantKept: true},
+		{name: "not an anyOf", schema: map[string]any{"not": map[string]any{"anyOf": []any{null, str}}}, wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{"type": "object", "properties": map[string]any{"v": tc.schema}}
+			out, _ := RepairArgs(params, map[string]any{"v": nil})
+			if _, kept := out["v"]; kept != tc.wantKept {
+				t.Fatalf("null kept = %t, want %t; out=%v", kept, tc.wantKept, out)
+			}
+		})
 	}
 }

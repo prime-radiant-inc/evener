@@ -9,6 +9,7 @@ import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
 import type { RowAction } from "./rowActions";
 import { ROW_ACTION_SYMBOLS, RowMenu, type RowMenuHost, RowMenuSheet, RowPreviewCard, rowMenuHosts } from "./RowMenu";
+import { FreshDot } from "../reader/FreshDot";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
 
@@ -80,6 +81,22 @@ describe("the preview card (spec 7.3)", () => {
 		);
 		expect(flatten(textNode(tree, "Idle").props.style)).toMatchObject({ color: palette.inkMid });
 		expect(renderedText(tree)).not.toContain(" · ");
+	});
+
+	it("shows the blue dot after the title for an unseen session, and none for a seen one", () => {
+		const unseen = render(
+			<RowPreviewCard
+				item={{ ...item("idle", { state: "idle" }), unseen: true }}
+				hostLabel={hostLabel}
+				onPress={() => {}}
+			/>,
+		);
+		expect(unseen.root.findAllByType(FreshDot)).toHaveLength(1);
+		expect(unseen.root.findByType("Pressable" as never).props.accessibilityLabel).toMatch(/, unread$/);
+		const seen = render(
+			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
+		);
+		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
 	});
 
 	it("says what a working session is doing", () => {
@@ -197,11 +214,11 @@ describe("the row menu sheet (ruling 28)", () => {
 describe("the row's long press, with the sheet", () => {
 	it("opens the sheet after a 500ms press", () => {
 		const openSheet = vi.fn();
-		const shown = item("finished", { state: "idle" });
+		const shown = item("idle", { state: "idle" });
 		const tree = render(
 			<RowMenu
 				item={shown}
-				actions={["markRead"]}
+				actions={["pin"]}
 				hostLabel={hostLabel}
 				onOpenSession={() => {}}
 				onAction={() => {}}

@@ -22,8 +22,8 @@ vi.mock("expo-sqlite/kv-store", () => ({
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
 const failing = fleetSession("local:fail", { title: "Fix retry loop", state: "errored", updated_at: at(5) });
-const read = fleetSession("local:read", { title: "Read already", state: "awaiting", updated_at: at(8) });
-const unread = fleetSession("local:unread", { title: "Not read yet", state: "awaiting", updated_at: at(9) });
+const read = fleetSession("local:read", { title: "Read already", state: "idle", updated_at: at(8) });
+const unread = fleetSession("local:unread", { title: "Not read yet", state: "idle", updated_at: at(9) });
 const fleet: FleetShape = {
 	live: [failing, read, unread],
 	needsYou: [failing],
@@ -91,10 +91,11 @@ it("classifies the fleet with the Board's seen function", async () => {
 	await settleMicrotasks();
 	const { bands, sources } = hook.result.current;
 	expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["local:fail"]);
-	// A session already opened is Idle; one not opened since it changed is
-	// Finished.
-	expect(bands.idle.map((item) => item.row.ref)).toEqual(["local:read"]);
-	expect(bands.finished.map((item) => item.row.ref)).toEqual(["local:unread"]);
+	// Both rest Idle; one not opened since it changed carries the blue dot.
+	expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([
+		["local:unread", true],
+		["local:read", false],
+	]);
 	expect(sources?.map((source) => source.label)).toEqual(["Laptop"]);
 	hook.unmount();
 });

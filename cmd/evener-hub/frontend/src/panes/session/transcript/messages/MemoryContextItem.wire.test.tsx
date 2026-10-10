@@ -87,10 +87,10 @@ test.each(PRESETS)("at the %s preset every recorded refresh is a closed compact 
     const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
-    // The collapsed row never shows the model-facing envelope.
+    // The collapsed row never shows the model-facing text.
     const summary = details.querySelector("summary");
-    expect(summary?.textContent ?? "").not.toContain("Quoted index data:");
-    expect(summary?.textContent ?? "").not.toContain("Memory scope");
+    expect(summary?.textContent ?? "").not.toContain('memory index: "');
+    expect(summary?.textContent ?? "").not.toContain("since you last saw it");
   }
 });
 
@@ -105,17 +105,10 @@ test("a current refresh opens to its scope/state and decoded index, with the exa
   expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
 });
 
-test("project and session scopes name themselves truthfully", () => {
-  for (const [name, expected] of [
-    ["current-project", "Project memory · current"],
-    ["current-session", "Session memory · current"],
-  ] as const) {
-    cleanup();
-    resetDisclosureStoreForTests();
-    renderItem(memoryContextWireItem(name), preset("tools"));
-    open();
-    expect(screen.getByTestId("memory-context-meta").textContent).toContain(expected);
-  }
+test("the project scope names itself truthfully", () => {
+  renderItem(memoryContextWireItem("current-project"), preset("tools"));
+  open();
+  expect(screen.getByTestId("memory-context-meta").textContent).toContain("Project memory · current");
 });
 
 test("an empty current index opens to the empty-index marker, not an error", () => {
@@ -144,18 +137,13 @@ test("missing, revoked and unavailable stay distinguishable", () => {
   }
 });
 
-// truncated-project says the index is too long; legacy-truncated-project is an
-// earlier build's explicit "truncated true". Both decode as truncated.
-test.each(["truncated-project", "legacy-truncated-project"] as const)(
-  "a %s refresh says truncated and never implies the missing remainder",
-  (name) => {
-    const item = memoryContextWireItem(name);
-    renderItem(item, preset("tools"));
-    open();
-    expect(screen.getByTestId("memory-context-truncated").textContent).toBe("truncated");
-    expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
-  },
-);
+test("a partial index refresh says truncated and never implies the missing remainder", () => {
+  const item = memoryContextWireItem("truncated-project");
+  renderItem(item, preset("tools"));
+  open();
+  expect(screen.getByTestId("memory-context-truncated").textContent).toBe("truncated");
+  expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
+});
 
 test("quoted Unicode and tab content survives into the formatted body and the literal Source", () => {
   const item = memoryContextWireItem("quoted-project");
@@ -165,15 +153,7 @@ test("quoted Unicode and tab content survives into the formatted body and the li
   expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
 });
 
-test("a delegate's read-only session suffix is preserved in Source", () => {
-  const item = memoryContextWireItem("suffixed-session");
-  renderItem(item, preset("tools"));
-  open();
-  const source = screen.getByTestId("memory-context-source-text").textContent ?? "";
-  expect(source).toContain("Session memory belongs to your root session: you can read it, not write it.");
-});
-
-test("the malformed envelope keeps the exact Text on open, with no manufactured index", () => {
+test("the malformed message keeps the exact Text on open, with no manufactured index", () => {
   const item = memoryContextWireItem(MALFORMED);
   expect(item.raw).toBeFalsy();
   renderItem(item, preset("tools"));
@@ -184,7 +164,7 @@ test("the malformed envelope keeps the exact Text on open, with no manufactured 
   expect(screen.queryByTestId("memory-context-meta")).toBeNull();
 });
 
-test.each(["index-change-project", "page-notice-project"] as const)(
+test.each(["index-change-personal", "index-change-project", "page-notice-project"] as const)(
   "a %s block opens to its exact Text, never a decoded index",
   (name) => {
     const item = memoryContextWireItem(name);

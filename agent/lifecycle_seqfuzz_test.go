@@ -39,7 +39,7 @@ import (
 //	                      from the in-session fake clock) — a hang is a wedge.
 //	Oracle 3 (status):    State() is observed only at op boundaries, where it must be
 //	                      idle, awaiting, or closed, and once closed it stays closed.
-//	                      awaiting (attention-status-model v5) is a clean-turn resting
+//	                      awaiting is a clean-turn resting
 //	                      state, not a mid-turn one, so it is boundary-legal too.
 //	Oracle 4 (counters):  the turns and modelResponses counters never decrease.
 //	Oracle 5 (transcript): history stays well-formed (no orphaned tool call) and
@@ -695,9 +695,9 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 	st := sess.State()
 
 	// Oracle 3: status is observed only at boundaries; must be idle, awaiting,
-	// or closed, and once closed it stays closed. awaiting (attention-status-model
-	// v5) is a clean-turn resting state — a completed turn with output and no
-	// autonomy in flight settles there instead of idle — so it is boundary-legal;
+	// or closed, and once closed it stays closed. awaiting is a resting state —
+	// a pending question, or a turn that ended on needs_response with no
+	// autonomy in flight — so it is boundary-legal;
 	// SessionProcessing ("active") leaking through here is still the bug this
 	// oracle exists to catch.
 	if m.closed && st != SessionClosed {

@@ -57,14 +57,16 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 	it.each([
 		[session("active", { activeTurnStartedAt: ago(38 * 60_000) }), "working", "Working · 38m"],
 		[session("active"), "working", "Working"],
-		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Finished · 1h ago"],
-		[session("awaiting", { turns: [done(ago(120_000))] }), "idle", "Finished · 2m ago"],
-		[session("idle", { turns: [done(ago(10_000))] }), "idle", "Finished · just now"],
+		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Idle · 1h ago"],
+		// Awaiting without a question: the turn ended on needs_response (#4093).
+		[session("awaiting", { turns: [done(ago(120_000))] }), "needsYou", "Needs you"],
+		[session("idle", { turns: [done(ago(10_000))] }), "idle", "Idle · just now"],
 		// A hub clock ahead of the phone's puts the finish in the future.
-		[session("idle", { turns: [done(ago(-5_000))] }), "idle", "Finished · just now"],
-		[session("idle"), "idle", "Finished"],
+		[session("idle", { turns: [done(ago(-5_000))] }), "idle", "Idle · just now"],
+		[session("idle"), "idle", "Idle"],
 		[session("awaiting", { askPending: true }), "question", "Asks a question"],
 		[session("active", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
+		[session("awaiting", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
 		[session("awaiting", { askPending: true, pendingEscalations: [escalation] }), "question", "Asks a question"],
 		[session("systemError"), "failed", "Failed"],
 		[session("systemError", { askPending: true, pendingEscalations: [escalation] }), "failed", "Failed"],

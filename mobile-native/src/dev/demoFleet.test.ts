@@ -62,7 +62,7 @@ it("summarizes the same coordinator running job in navigation and typed activity
 });
 
 describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
-	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
+	it("adds Show Every Tool Family to Live, idle, only when asked for", () => {
 		const row = findRow(liveRows(createDemoFleet({ now: STARTUP, toolFamilies: true })), "s-tools");
 		expect(row).toMatchObject({ title: "Show Every Tool Family" });
 		expect(liveRows(createDemoFleet({ now: STARTUP })).map((row) => row.session_id)).not.toContain(
@@ -142,7 +142,7 @@ describe("demo fleet live and needs-you sections", () => {
 		expect(findRow(rows, "s-audit")).toMatchObject({ state: "awaiting", ask_pending: true });
 		expect(findRow(rows, "s-mirror")).toMatchObject({ state: "active" });
 		expect(findRow(rows, "s-namer")).toMatchObject({ state: "restartRequired" });
-		expect(findRow(rows, "s-hier")).toMatchObject({ state: "awaiting" }); // "your move": turn ended, ask_pending false
+		expect(findRow(rows, "s-hier")).toMatchObject({ state: "idle" }); // a turn that ended without asking rests idle
 		expect(findRow(rows, "s-diff")).toMatchObject({ state: "idle" });
 		expect(findRow(rows, "s-pr2138")).toMatchObject({ state: "active" });
 	});
@@ -793,11 +793,11 @@ describe("demo fleet steps for the alert screenshots (phase 6 Task 17)", () => {
 		expect(liveRows(empty)).toEqual([]);
 	});
 
-	it("finish leaves s-resume awaiting you with no question, outside Needs you", () => {
+	it("finish leaves s-resume idle with no question, outside Needs you", () => {
 		const demo = fleet();
 		demo.step("finish");
 		const row = findRow(liveRows(demo), "s-resume");
-		expect(row.state).toBe("awaiting");
+		expect(row.state).toBe("idle");
 		expect(row.ask_pending).toBeUndefined();
 		expect(needsYouRow(demo, "s-resume")).toBeUndefined();
 	});

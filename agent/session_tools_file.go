@@ -91,13 +91,19 @@ func execFileWrite(ctx context.Context, env execenv.ExecutionEnvironment, args m
 
 func execFileEdit(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
 	_ = ctx
+	return execFileEditWith(args, guard, env.EditFile)
+}
+
+// execFileEditWith is edit_file's semantics over edit, so a caller can supply
+// an editor that also changes the bytes it writes.
+func execFileEditWith(args map[string]any, guard readGuard, edit func(path, oldString, newString string, replaceAll bool) (string, error)) (any, error) {
 	path := fmt.Sprint(args["file_path"])
 	replaceAll := false
 	if v, ok := args["replace_all"].(bool); ok {
 		replaceAll = v
 	}
 	warn := guard.ReadBeforeWriteWarning(path)
-	result, err := env.EditFile(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
+	result, err := edit(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
 	if err == nil && warn != "" {
 		return warn + result, nil
 	}
