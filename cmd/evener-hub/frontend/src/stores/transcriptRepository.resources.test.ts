@@ -591,6 +591,62 @@ it("recovers consecutive chained suffixes in order without permanently blocking 
   owner.dispose();
 });
 
+// Task 3b (R3 remainder): a late predecessor commit must not erase a
+// cancellation recorded for a different, unrelated dropped successor. A's retry
+// is in flight when invalidate() records "cancelled" and drops queued B; A's
+// real completion is an A-only extended suffix, but it repairs only its own
+// chain, so B's abandonment must stand and settled() must still refuse success.
+it("does not clear a cancelled disposition when a late predecessor commit completes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // Two consecutive suffixes A -> B; both initial writes fail and queue for retry.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValue({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+  owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
+  await vi.waitFor(() => expect(failure).toHaveBeenCalledTimes(2));
+  expect(scheduled).toHaveLength(1);
+  failure.mockRestore();
+
+  // Fire A's retry but hold its real commit before it reaches storage. Releasing
+  // the gate runs the real method, an A-only extended suffix over the predecessor.
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const gate = deferred<void>();
+  const heldRetry = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(async (batch) => {
+    await gate.promise;
+    return realCommit(batch);
+  });
+  scheduled[0]!.fire();
+  // A has left the queue with its write in flight; B remains queued.
+  expect(scheduled).toHaveLength(1);
+
+  // Cancel: records "cancelled" and drops the queued B, which never commits.
+  owner.invalidate();
+
+  // Release A. Its real commit extends coverage over A's own suffix only.
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+
+  // B was abandoned and never committed, so the cancellation stands.
+  await expect(owner.settled()).rejects.toThrow(/cancel/);
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  heldRetry.mockRestore();
+  reader.dispose();
+  owner.dispose();
+});
+
 // N2 (P2): the drain is serial. While a retried batch is in flight, a normal
 // settled write must not arm the next retry.
 it("does not issue the next retry while a retried batch is in flight", async () => {

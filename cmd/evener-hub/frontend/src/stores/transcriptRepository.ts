@@ -1036,7 +1036,14 @@ export class TranscriptRepository {
         // certify it). A superseded retry likewise contributes nothing.
         if (!superseded && batch.coverage && outcome.coverage === "extended") {
           this.#cacheContinuityLost = false;
-          this.#recoveryAbandoned = undefined;
+          // Clearing the abandonment disposition is a claim that this commit
+          // repaired the abandoned work. Only a repository that can still accept
+          // input can repair anything: an invalidated or disposed repository
+          // takes no further work, so a late completion of its own commit
+          // cannot repair a *different* batch that was cancelled and dropped.
+          // Leave the disposition so settled() keeps reporting it. Continuity,
+          // by contrast, is a local durability fact about this commit's chain.
+          if (!this.#invalidated && !this.#disposed) this.#recoveryAbandoned = undefined;
         }
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverageBoundary = batch.coverage.boundary;
