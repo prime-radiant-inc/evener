@@ -1733,10 +1733,20 @@ func checkSummaryReply(reply, instructions string) error {
 	// The permissions section restates the human partner's own words, so
 	// content there alone carries none of the folded work: a reply that is
 	// only "## Permissions and Holds\nNone." is no summary.
+	// A heading inside a fenced block is quoted text, not a section.
 	inSection := false
+	inFence, fenceMarker := false, ""
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
-		if section, rest, ok := summarySectionHeading(line); ok {
+		if marker := markdownFenceMarker(line); marker != "" {
+			if !inFence {
+				inFence, fenceMarker = true, marker
+			} else if line == fenceMarker {
+				inFence, fenceMarker = false, ""
+			}
+			continue
+		}
+		if section, rest, ok := summarySectionHeading(line); ok && !inFence {
 			inSection = !strings.EqualFold(section, permissionsSection)
 			if inSection && isSummaryContent(rest) {
 				return nil
