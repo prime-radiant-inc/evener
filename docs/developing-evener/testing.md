@@ -894,20 +894,9 @@ the custom config, test files, cacheDir and dependency symlink in scratch,
 reuse the frontend's resolve aliases and test setup, omit build plugins
 that write checkout files, and keep at least two workers (the vmThreads
 isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`. In a read-only lane
-neither `make test-web` nor `npm test` can start at all: the gate's own
-`vitest run` line uses the default loader and fails with EROFS under
-`node_modules/.vite-temp` before any test runs. A targeted run in the
-checkout itself works as
-`npx vitest run --configLoader runner --cache=false <file>` from
-`cmd/evener-hub/frontend`, though the config's `restore-dist-placeholder`
-plugin still writes `dist/PLACEHOLDER` when the run closes.
-
-The frontend tree has no jest-dom: `src/testSetup.ts` never imports it and
-`package.json` does not depend on it, so matchers such as `toHaveValue`,
-`toBeDisabled` or `toBeInTheDocument` fail `npm run typecheck`. Assert on
-the DOM directly (`input.value`, `el.textContent`, `button.disabled`,
-`document.activeElement`).
+probes; canonical verdicts stay with `make test-web`, which itself cannot
+start in a read-only lane: its `vitest run` uses the default loader and
+fails with EROFS under `node_modules/.vite-temp` before any test runs.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -982,6 +971,12 @@ timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
 crosses the show delay on a fake clock scoped to the hover, so it needs none
 of that wiring, and it must be called on real timers.
 
+The frontend has no jest-dom (it is not in `package.json`), so matchers
+such as `toHaveValue`, `toBeDisabled` or `toBeInTheDocument` fail
+`npm run typecheck` even when vitest, which never typechecks, runs them
+green. Assert on the DOM directly (`input.value`, `el.textContent`,
+`button.disabled`, `document.activeElement`).
+
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await` has to
 be awaited, never asserted right after the click. Work that goes through
@@ -992,12 +987,11 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
 has settled, and the dispatched request has gone out by then. The flush
-sees only work registered with that tracker: when production code adds an
-awaited step outside the storage (a component awaiting a store call before
-it clears its state), wrap the whole operation in `trackProjectionWork`
-(src/stores/projectionWork.ts), or the flush returns before it finishes.
-A `waitFor`
-on the request races that chain against a 1000ms ceiling, which a loaded
+waits only for work registered with that tracker: if production code adds
+an awaited step outside storage (say, a component awaits a store call
+before clearing its state), wrap the whole operation in
+`trackProjectionWork` (src/stores/projectionWork.ts), or the flush returns
+early. A `waitFor` on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
 tracked work open on purpose (a held read or commit) cannot flush until it
@@ -1033,12 +1027,12 @@ from the assertion that fails:
   withholds the completion event; it does not prove an active transaction
   lock blocks other writes, so diagnose a stalled successor from its actual
   pending operation.
-- A boundary before commit, where the write can still abort, needs the
-  request instead: a call-through spy on the object-store method that holds
-  that request's `success` event with `holdIndexedDBEvent`, or aborts with
-  `this.transaction.abort()`. Match the call by `this.name` and the exact key
-  the caller builds, never by call order, because production can add an
-  earlier read; src/stores/humanNoteDrafts.test.ts is the worked example.
+- To test a boundary before commit, while the write can still abort, hook
+  the request itself: wrap the object-store method in a call-through spy
+  that either holds the request's `success` event with `holdIndexedDBEvent`
+  or calls `this.transaction.abort()`. Match the call by `this.name` and the
+  exact key the caller builds, not by call order, since production may add
+  an earlier read. Worked example: src/stores/humanNoteDrafts.test.ts.
 - fake-indexeddb throws a synchronous `DataError` from the store method
   itself for a put/add whose key cannot be derived (`buildRecordAddPut`
   throws before any request is created). Such a test proves method-fault
@@ -1718,17 +1712,15 @@ does slip through shows up on the hub's stderr:
 
 ## Driving Turns from a Go Fixture
 
-A session runs one turn at a time: a `turn/start` while a turn is active is
-refused with `turn is already active`, so a fixture that fires several
-starts at once gets only one turn. Wait for each turn to finish before
-starting the next.
+A session runs one turn at a time. A `turn/start` during an active turn is
+refused with `turn is already active`, so a fixture must wait for each turn
+to finish before starting the next.
 
-On a daemon connection, a `thread/read` without `Subscribe: true` returns a
-snapshot and subscribes to nothing, so `Client.Notifications()` never
-carries that thread's `thread/status/changed` or `history/updated`. A
-fixture that waits on the turn lifecycle reads with
-`ThreadReadParams{Ref: ref, Subscribe: true}` on the same connection before
-it calls `TurnStart`.
+To wait on the turn lifecycle, call `thread/read` with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same daemon connection
+before `TurnStart`. Without `Subscribe: true` the read returns a snapshot
+and subscribes to nothing, so `Client.Notifications()` never carries that
+thread's `thread/status/changed` or `history/updated`.
 
 ## A Disposable Hub Needs Its Own HOME
 
