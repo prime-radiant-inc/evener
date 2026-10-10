@@ -2,10 +2,8 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,10 +128,6 @@ type HostFacts struct {
 	GoPath     string
 	GoModCache string
 	GoCache    string
-
-	// GoEnvUnreadable reports that the go env file exists but was refused (not
-	// a small regular file), so the go command's settings could not be known.
-	GoEnvUnreadable bool
 
 	// XDGCacheHome is $XDG_CACHE_HOME, which moves ~/.cache and with it Go's
 	// default GOCACHE; empty when unset.
@@ -287,7 +281,6 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
-	facts.GoEnvUnreadable = goEnvFileUnreadable(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -416,17 +409,6 @@ func goEnvFile(system probeSystem) string {
 		file = filepath.Join(dir, "go", "env")
 	}
 	return file
-}
-
-// goEnvFileUnreadable reports that the go env file exists but was refused (see
-// hostProbeSystem.readFile), so the go command's settings cannot be known.
-func goEnvFileUnreadable(system probeSystem) bool {
-	file := goEnvFile(system)
-	if file == "" {
-		return false
-	}
-	_, err := system.readFile(file)
-	return err != nil && !errors.Is(err, fs.ErrNotExist)
 }
 
 // goPathEntries returns the GOPATH entries the go command uses on this host: the

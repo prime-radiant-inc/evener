@@ -57,6 +57,7 @@ var floorPrefixDrops = []string{
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
 	redirected := redirectedCacheVars(env, policy)
+	goEnvOff := spawnGoEnvFileRefused(env, policy.resolveHost.OS)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -72,15 +73,16 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if redirected[name] {
 			continue // re-added below, pointing into the session scratch
 		}
-		if name == envvars.GoEnv.Name && policy.resolveHost.GoEnvUnreadable {
+		if name == envvars.GoEnv.Name && goEnvOff {
 			continue // re-added below as off
 		}
 		out = append(out, kv)
 	}
 
-	// The go env file the probe refused (a FIFO, a device) would block or
-	// flood any go the session spawns, so it is turned off for them.
-	if policy.resolveHost.GoEnvUnreadable {
+	// A go env file that cannot be read now (a FIFO, a device) would block or
+	// flood the spawned go, so it is turned off for this spawn; one repaired,
+	// or a healthy one the spawn names instead, is read as usual.
+	if goEnvOff {
 		out = append(out, envvars.GoEnv.Assignment("off"))
 	}
 	out = applyToolchainPath(out, policy.ToolchainBinDir)
@@ -103,11 +105,11 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 
 // redirectedCacheVars names the cache variables the floor points into the
 // session scratch: every one under the session-private strategy. Under the
-// overlay, the Go caches when the go env file was unreadable at session start
-// (the overlay cannot know where go will write), and any Go cache whose
-// directory the overlay does not serve (overlayCacheDirs; its root was
-// dropped, say inside the worktree), which would otherwise stay persistently
-// writable.
+// overlay, any Go cache whose directory the overlay does not serve
+// (overlayGoCacheDirs; its root was dropped, say inside the worktree), which
+// would otherwise stay persistently writable, and all of them when the spawn's
+// go env file cannot be judged (unreadable now, relative, or not the probe's),
+// since the overlay cannot know where go will write.
 //
 // GOMODCACHE goes alongside GOCACHE because an ambient value can name any
 // directory. GOPATH goes because Go writes the checksum database's tree heads to
@@ -125,9 +127,6 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 			out[name] = true
 		}
 	case CacheOverlay:
-		if policy.resolveHost.GoEnvUnreadable {
-			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
-		}
 		dirs, goKnown := overlayGoCacheDirs(env, policy.resolveHost)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
 			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && !overlayServes(policy.CacheRoots, dir)) {
@@ -139,10 +138,16 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 }
 
 // overlayServes reports whether the overlay covers writes to dir: dir lies under
-// a cache root by spelling, can be a directory, and its real destination
+// an existing cache root by spelling, can be a directory, and its real destination
 // (following any symlink on the way, existing or not yet created) still lies
 // under one, so a link from a served root into the worktree does not count.
 func overlayServes(roots []string, dir string) bool {
+	// Only an existing directory is overlaid at spawn (buildBwrapArgv skips
+	// a root removed since the wrapper was built), so only one serves.
+	roots = slices.DeleteFunc(slices.Clone(roots), func(r string) bool {
+		fi, err := os.Stat(r)
+		return err != nil || !fi.IsDir()
+	})
 	if !isUnderAnyRoot(dir, roots) || !canBeDirectory(dir) {
 		return false
 	}
@@ -183,11 +188,7 @@ func canBeDirectory(dir string) bool {
 // another file (an alternate GOENV) may configure its caches anywhere, which it
 // reports as not known.
 func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
-	vars := map[string]string{}
-	for _, kv := range env {
-		name, val, _ := strings.Cut(kv, "=")
-		vars[name] = val
-	}
+	vars := envVars(env)
 	firstOr := func(values ...string) string {
 		for _, v := range values {
 			if v != "" {
@@ -206,7 +207,9 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 	// overrides) as they are now, and only when it is the file the probe read.
 	file := map[string]string{}
 	if spawnFile := goEnvFileFor(vars, host.OS); spawnFile != "" {
-		if spawnFile != host.GoEnvFile {
+		// A relative file resolves against the spawn's own directory, which
+		// the floor does not know, so it may not be the probe's file.
+		if spawnFile != host.GoEnvFile || !filepath.IsAbs(spawnFile) {
 			return out, false
 		}
 		var ok bool
@@ -234,6 +237,28 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
 	return out, true
+}
+
+// envVars maps an environment slice to its values by name.
+func envVars(env []string) map[string]string {
+	vars := map[string]string{}
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		vars[name] = val
+	}
+	return vars
+}
+
+// spawnGoEnvFileRefused reports whether the go env file a spawn's go would read
+// exists now but cannot be read as a small regular file (a FIFO, a device, an
+// oversized file), the way the probe reads it.
+func spawnGoEnvFileRefused(env []string, goos string) bool {
+	file := goEnvFileFor(envVars(env), goos)
+	if !filepath.IsAbs(file) {
+		return false
+	}
+	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
+	return err != nil && !errors.Is(err, fs.ErrNotExist)
 }
 
 // currentGoEnvSettings reads the go env file at path as it is now, since the
