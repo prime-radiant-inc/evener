@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -129,5 +130,64 @@ func TestSeesToolResultMediaRequiresTheModelsOwnRow(t *testing.T) {
 	}
 	if p.WithModel("gpt-5.2-not-in-catalog").SeesToolResultMedia("image/png") {
 		t.Fatal("a synthesized no-modality row vouched for tool-result media")
+	}
+}
+
+// A gateway namespaces the model ids it serves, so a slashed ref may name a
+// row on this instance rather than another instance. Facts resolution must
+// classify refs exactly like WithModel does: a genuine row on this instance
+// wins over the instance the prefix names.
+func TestResolveModelFactsForRefClassifiesLikeWithModel(t *testing.T) {
+	t.Parallel()
+	r := fixtureRegistryWith(t, map[string]registry.Provider{
+		"gw": {
+			Surface:       registry.SurfaceOpenAI,
+			Protocol:      registry.ProtocolOpenAIResponses,
+			APIKey:        "k",
+			DefaultModel:  "vis-1",
+			Transport:     registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+			InheritModels: new(false),
+			Models: map[string]registry.Model{
+				"vis-1":                     {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+				"anthropic/claude-opus-4-5": {Caps: registry.Caps{InputModalities: []string{"text"}}},
+			},
+		},
+	})
+	p := mustResolve(t, r, "gw/vis-1")
+
+	// A namespaced id this gateway serves resolves to the gateway's own
+	// row, not the first-party row the prefix also names.
+	res, err := p.ResolveModelFactsForRef("anthropic/claude-opus-4-5")
+	if err != nil || res.Synthesized {
+		t.Fatalf("namespaced ref: err=%v synthesized=%v", err, res.Synthesized)
+	}
+	if res.Instance != "gw" {
+		t.Fatalf("namespaced ref instance = %q, want gw", res.Instance)
+	}
+	if got := res.Caps.InputModalities; !slices.Equal(got, []string{"text"}) {
+		t.Fatalf("namespaced ref modalities = %v, want the gateway's own text-only row", got)
+	}
+
+	// A slashed ref that is not a row on this instance names the instance its
+	// prefix names, resolved there (a synthesized row when unknown —
+	// conservative either way).
+	res, err = p.ResolveModelFactsForRef("anthropic/claude-opus-5-no-such-row")
+	if err != nil {
+		t.Fatalf("unknown namespaced ref: err=%v", err)
+	}
+	if res.Instance != "anthropic" {
+		t.Fatalf("unknown namespaced ref instance = %q, want anthropic", res.Instance)
+	}
+
+	// Cross-instance, own-prefixed, and bare refs keep their WithModel
+	// meanings.
+	if res, err := p.ResolveModelFactsForRef("openai/gpt-5.2"); err != nil || res.Instance != "openai" {
+		t.Fatalf("cross-instance ref: err=%v instance=%q", err, res.Instance)
+	}
+	if res, err := p.ResolveModelFactsForRef("gw/vis-1"); err != nil || res.Instance != "gw" {
+		t.Fatalf("own-prefixed ref: err=%v instance=%q", err, res.Instance)
+	}
+	if res, err := p.ResolveModelFactsForRef("vis-1"); err != nil || res.Instance != "gw" {
+		t.Fatalf("bare ref: err=%v instance=%q", err, res.Instance)
 	}
 }

@@ -368,19 +368,27 @@ func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 // ResolveModelFactsForRef resolves a model ref's advertised facts at facts
 // depth — every fact, no credential materialized, no credential command
 // executed — the depth a capability question about configuration needs when
-// no decision to serve has been made. The ref decomposition matches
-// WithModel: a bare model, or a ref prefixed with this profile's own
-// instance, names this instance's row; anything else names another
-// instance's.
+// no decision to serve has been made. The ref classification matches WithModel:
+// a bare model, or a ref prefixed with this profile's own instance, names
+// this instance's row; a slashed ref may name another instance, or a
+// namespaced model id this instance serves under (gateways namespace rows
+// like "anthropic/claude-opus-4-5") — a genuine row on this instance wins,
+// exactly CrossProviderRef's rule. The current-instance lookup runs at
+// facts depth too, so classifying never mints.
 func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
-	instance, model := p.ID(), strings.TrimSpace(ref)
-	if prefix, rest, ok := strings.Cut(model, "/"); ok && prefix != "" && rest != "" {
-		instance, model = prefix, rest
-		if strings.EqualFold(prefix, p.ID()) {
-			instance = p.ID()
+	ref = strings.TrimSpace(ref)
+	prefix, rest, ok := strings.Cut(ref, "/")
+	if !ok || prefix == "" || strings.EqualFold(prefix, p.ID()) {
+		model := ref
+		if ok {
+			model = rest
 		}
+		return p.registry.ResolveInstanceModelFacts(p.ID(), model)
 	}
-	return p.registry.ResolveInstanceModelFacts(instance, model)
+	if res, err := p.registry.ResolveInstanceModelFacts(p.ID(), ref); err == nil && !res.Synthesized {
+		return res, nil
+	}
+	return p.registry.ResolveInstanceModelFacts(prefix, rest)
 }
 
 // Warnings are the registry's notices for this reference (an uncatalogued

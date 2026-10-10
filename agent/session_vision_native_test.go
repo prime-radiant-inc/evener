@@ -509,6 +509,56 @@ func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	}
 }
 
+// A gateway namespaces the model ids it serves: a fallback ref like
+// "anthropic/claude-opus-4-5" can be THIS instance's own text-only row, not a
+// switch to the first-party Anthropic row the id also names. The chain check
+// must resolve the ref to the gateway's row — the first-party row's vision
+// capability says nothing about the model that actually serves.
+func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testing.T) {
+	t.Parallel()
+	gw := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"gw": {
+				Surface:       registry.SurfaceOpenAI,
+				Protocol:      registry.ProtocolOpenAIResponses,
+				APIKey:        "k",
+				DefaultModel:  "vis-1",
+				Transport:     registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+				InheritModels: new(false),
+				Models: map[string]registry.Model{
+					"vis-1":                     {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+					"anthropic/claude-opus-4-5": {Caps: registry.Caps{InputModalities: []string{"text"}}},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("fixture registry: %v", err)
+	}
+	sessionProfile, err := provider.Resolve(r, "gw/vis-1")
+	if err != nil {
+		t.Fatalf("resolve session profile: %v", err)
+	}
+	sess := newSession(t, withAdapter(gw), withProfile(sessionProfile),
+		withConfig(SessionConfig{ModelFallbacks: []string{"anthropic/claude-opus-4-5"}}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("namespaced-fallback result = %+v, want the side-channel description", result)
+	}
+	if len(gw.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	}
+}
+
 // A document media type reaches the side-channel normalized: case and
 // surrounding whitespace must not reclassify a PDF as a raster image, which
 // would send document bytes in an image part and open the retry gate to
