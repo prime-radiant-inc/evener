@@ -634,14 +634,13 @@ func (cm *Manager) MaybeCompact(
 	}
 
 	// Layer 1: Deterministic checkpoint at ≥80%.
-	// folded is the history before a checkpoint this pass, which a summary
+	// checkpointed is what this pass's checkpoint folded, which a summary
 	// completing the same fold reads the partner's messages from.
-	var folded []schema.Turn
+	var checkpointed []schema.Turn
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := cm.estimateTokensFor(prof, *history)
-		folded = *history
-		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+		*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 		after := cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
@@ -661,7 +660,7 @@ func (cm *Manager) MaybeCompact(
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
 		before := cm.estimateTokensFor(prof, *history)
-		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, "", folded)
+		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, "", checkpointed)
 		if err != nil {
 			// On error, emit warning but continue with current history.
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
@@ -714,8 +713,8 @@ func (cm *Manager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := cm.estimateTokensFor(prof, *history)
-	folded := *history
-	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+	var checkpointed []schema.Turn
+	*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 	after := cm.estimateTokensFor(prof, *history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
@@ -736,7 +735,7 @@ func (cm *Manager) ForceCompact(
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
 			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
-		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, instructions, folded)
+		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, instructions, checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -1064,13 +1063,21 @@ const maxCheckpointChars = 60_000
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
+	result, _ := checkpointFold(history, preserveRecent, meta, resultToolName)
+	return result
+}
+
+// checkpointFold is checkpoint that also returns the turns the new checkpoint
+// turn stands for (history[:cutoff]), or nil when nothing was folded. A
+// summary completing the same fold reads the partner's messages from them.
+func checkpointFold(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) ([]schema.Turn, []schema.Turn) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
-		return history
+		return history, nil
 	}
 
 	cutoff := foldCutoff(history, preserveRecent)
 	if cutoff < 0 {
-		return history
+		return history, nil
 	}
 
 	data := collectCheckpointData(history, cutoff, resultToolName)
@@ -1079,7 +1086,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
-	return result
+	return result, history[:cutoff:cutoff]
 }
 
 // checkpointData is the raw material distilled from the to-be-compacted history
@@ -1501,8 +1508,7 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
 // recent turns cuts it: history[:cutoff] is folded. It is -1 when no safe cut
-// exists. The checkpoint and the summarizer cut with it, so a summary
-// completing a checkpoint's fold reads the same turns the checkpoint folded.
+// exists. The checkpoint and the summarizer both cut with it.
 func foldCutoff(history []schema.Turn, preserveRecent int) int {
 	return safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 }
@@ -2020,12 +2026,13 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 }
 
 // summarizeFold is summarizeWithLLMSteered for a summary that completes a
-// fold a checkpoint began this pass. folded is the history before that
-// checkpoint: the checkpoint sheds conversation under its own budget, which
-// earlier summaries and agent replies share, so the partner's messages the
-// summary carries are read from the history it folded, under the carry's own
-// cap. With folded nil they are read from history.
-func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, folded []schema.Turn) ([]schema.Turn, error) {
+// fold a checkpoint began this pass. checkpointed is what that checkpoint, at
+// history[0], folded: the checkpoint sheds conversation under its own budget,
+// which earlier summaries and agent replies share, so the partner's messages
+// the summary carries are read from those turns, plus every later turn the
+// summary folds, under the carry's own cap. With checkpointed nil they are
+// read from the turns the summary folds.
+func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn) ([]schema.Turn, error) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
@@ -2142,15 +2149,16 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// recent turns sit outside it. One combined budget would mean truncating
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
-	partnerSource, partnerCutoff := history, cutoff
-	if folded != nil {
-		if foldedCut := foldCutoff(folded, preserveRecent); foldedCut >= 0 {
-			partnerSource, partnerCutoff = folded, foldedCut
-		}
+	// The checkpoint at history[0] stands for checkpointed; the summary also
+	// folds whatever follows it up to cutoff, including turns the pre-compact
+	// hook pushed out of the preserved tail.
+	partnerSource := history[:cutoff]
+	if checkpointed != nil {
+		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
 	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
 		renderCompactionModelText("## Summary", resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, partnerCutoff, cm.resultToolName()) + "[END SUMMARY]"
+		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + "[END SUMMARY]"
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
