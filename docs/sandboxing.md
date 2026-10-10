@@ -154,6 +154,16 @@ layers), git config/hook protection, a fresh PID namespace with its own `/proc`,
 minimal `/dev`, the environment floor, and no inherited evener file descriptors or
 sockets beyond stdio.
 
+On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
+the table below means anywhere except the rest of the host `/tmp`. The private
+`/tmp` exists because bubblewrap cannot stop a process connecting to a Unix socket
+it can see, and the host `/tmp` holds tmux and ssh-agent sockets that would let a
+sandboxed command act outside the box. Inside it the shell sees the cwd, its grants,
+its own scratch (writable), and, in the read-anywhere modes, the root session's
+whole scratch tree read-only. That tree holds the parent's and sibling delegates'
+scratch, which the file tools of those modes already read, so a delegate handed a
+file from its parent's scratch can open it from the shell too.
+
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |

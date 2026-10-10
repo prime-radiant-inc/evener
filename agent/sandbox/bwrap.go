@@ -88,8 +88,20 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// which "writes" succeed and vanish. Only /dev/shm is re-bound — a tmpfs of
 	// ordinary files — never any other /dev path, whose device nodes the minimal
 	// --dev hides on purpose.
+	//
+	// A read-anywhere mode also re-binds the root session's scratch tree holding
+	// the session tmp. Its file tools read that tree, and delegates are routinely
+	// handed files from their parent's scratch beside their own, so a shell that
+	// could not see it failed on paths read_file had just read. The rest of the
+	// host /tmp stays behind the private tmpfs: bwrap cannot stop a process
+	// connecting to a Unix socket it can see, and host /tmp holds tmux and
+	// ssh-agent sockets that would let a sandboxed command act outside the box.
+	candidates := append([]string{cwd}, sp.ReadRoots...)
+	if sp.Read == ReadAnywhere {
+		candidates = append(candidates, scratchTreeOf(sessionTmp))
+	}
 	reboundRO := make(map[string]bool)
-	for _, r := range append([]string{cwd}, sp.ReadRoots...) {
+	for _, r := range candidates {
 		if r == "" || r == "/tmp" || (r != "/dev/shm" && !pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
 			continue
 		}
@@ -102,9 +114,10 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		reboundRO[r] = true
 		add("--ro-bind", r, r)
 	}
-	// A re-bound root can contain the session tmp (a /dev/shm workspace whose
-	// session scratch lives beneath it); its read-only mount would cover the
-	// writable session tmp bound above, so bind the session tmp again on top.
+	// A re-bound root can contain the session tmp (the scratch tree, or a
+	// /dev/shm workspace whose session scratch lives beneath it); its read-only
+	// mount would cover the writable session tmp bound above, so bind the
+	// session tmp again on top.
 	if sessionTmp != "" {
 		for r := range reboundRO {
 			if pathUnder(sessionTmp, r) {
@@ -314,6 +327,20 @@ func maskHandledByNamespace(path string) bool {
 		return false
 	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
+}
+
+// scratchTreeOf returns the root session's scratch tree that holds sessionTmp
+// (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
+// belongs to no tree.
+func scratchTreeOf(sessionTmp string) string {
+	if sessionTmp == "" {
+		return ""
+	}
+	tree := filepath.Dir(sessionTmp)
+	if !strings.HasPrefix(filepath.Base(tree), sessionScratchTreePrefix) {
+		return ""
+	}
+	return tree
 }
 
 // pathExists reports whether path exists on the host (following symlinks).
