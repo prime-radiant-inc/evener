@@ -1,7 +1,8 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { AppShell } from "../../shell/AppShell";
+import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
 import { CHILD, createEditorialClient, PARENT } from "./fixture";
@@ -91,4 +92,11 @@ test("the editorial client answers the spawn pane's slash catalog request", asyn
     skills: [],
   });
   expect(client.rejectedRequests).toEqual([]);
+});
+
+test("the fixture's scripted handshake reaches the connection store", async () => {
+  window.history.replaceState({}, "", "/");
+  render(<AppShell client={createEditorialClient()} />);
+  await waitFor(() => expect(connectionStore.getState().serverInfo?.name).toBe("Editorial fixture \u2014 no live hub"));
+  expect(connectionStore.getState().features?.tasks).toBe(true);
 });

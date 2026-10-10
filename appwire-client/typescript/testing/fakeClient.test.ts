@@ -47,6 +47,24 @@ describe("FakeClient negotiated metadata", () => {
     expect(fake.initializeResult).toBe(reconnected);
   });
 
+  test("a scripted handshake is the metadata a ready fixture already holds and connect() resolves", async () => {
+    const fake = new FakeClient("ready");
+    const scripted = { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "scripted-hub", version: "3.0.0" } };
+    fake.scriptHandshake(scripted);
+
+    expect(fake.initializeResult).toBe(scripted);
+    await expect(fake.connect()).resolves.toBe(scripted);
+  });
+
+  test("a scripted handshake on a fixture that is not ready waits for connect()", async () => {
+    const fake = new FakeClient("idle");
+    fake.scriptHandshake(FAKE_INITIALIZE_RESULT);
+
+    expect(fake.initializeResult).toBeNull();
+    await fake.connect();
+    expect(fake.initializeResult).toBe(FAKE_INITIALIZE_RESULT);
+  });
+
   test("scripted connect caches its result without creating a state transition", async () => {
     const fake = new FakeClient("idle");
     fake.scriptConnect(() => FAKE_INITIALIZE_RESULT);

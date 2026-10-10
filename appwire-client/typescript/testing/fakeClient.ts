@@ -254,6 +254,14 @@ export class FakeClient implements AppwireClientLike {
     this.connectHandler = handler;
   }
 
+  // scriptHandshake scripts connect()'s result like scriptConnect and, on a
+  // fixture that is already ready, also makes it the cached metadata a
+  // consumer adopts when it attaches before any connect() runs.
+  scriptHandshake(initialize: InitializeResponse): void {
+    this.scriptConnect(() => initialize);
+    if (this.state === "ready") this.cacheInitialize(initialize);
+  }
+
   // Deferred through a microtask like a real handshake, and lets a
   // synchronously-thrown handler become a normal rejection - same idiom as
   // request() below. A connect() on an already-closed client rejects

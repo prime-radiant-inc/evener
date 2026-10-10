@@ -458,7 +458,7 @@ async function boot(): Promise<void> {
     originUrl: "https://github.com/prime-radiant-inc/evener.git",
   }));
   shellClient = fake;
-  fake.scriptConnect(() => ({
+  fake.scriptHandshake({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
     protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
@@ -477,7 +477,7 @@ async function boot(): Promise<void> {
       auth: true,
     },
     navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
-  }));
+  });
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />
