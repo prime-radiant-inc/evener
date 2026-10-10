@@ -83,8 +83,8 @@ import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutation
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
-import type { SessionEntryCache } from "./sessionEntryCache";
+import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import { type TranscriptReader, TranscriptRepository, type TranscriptRetirementOutcome } from "./transcriptRepository";
@@ -557,6 +557,12 @@ const sessionCacheAdapter = new SessionCacheIndexedDB();
 let sessionCacheAdapterOverride: SessionCacheIndexedDB | undefined;
 function currentSessionCache(): SessionCacheIndexedDB {
   return sessionCacheAdapterOverride ?? sessionCacheAdapter;
+}
+// Lazy so the ordinary browser captures its actual storage environment on first
+// use. Both adapters open the same schema version and database, never a new tier.
+let productionEntryCache: SessionEntryCache | undefined;
+function currentEntryCache(): SessionEntryCache {
+  return (productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME }));
 }
 // This process-local token scopes current checkpoints to this browser instance.
 // It is deliberately regenerated on reload and never persisted as identity.
@@ -6904,6 +6910,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  productionEntryCache?.close();
+  productionEntryCache = undefined;
   residencyIfCreated?.dispose();
   residencyIfCreated = undefined;
   currentAdmissions.clear();

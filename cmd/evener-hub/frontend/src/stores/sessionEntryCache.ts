@@ -20,7 +20,7 @@ import {
   entryHistoryKey,
   LEGACY_META_STORE,
   LEGACY_RECORDS_STORE,
-  SESSION_CACHE_DATABASE_NAME,
+  SESSION_CACHE_DATABASE_VERSION,
   type TranscriptAggregateMetaRow,
   type TranscriptCoverageRow,
   type TranscriptHistoryMetaRow,
@@ -617,7 +617,7 @@ async function applyEntryRows(
   return { byteDelta, changedItems };
 }
 
-/** Keyed transcript entry storage. Entry stores are enabled only in isolated fixture databases. */
+/** Keyed transcript entry storage on the shared session-cache schema. */
 export class SessionEntryCache {
   readonly #connection: IDBConnection;
   readonly #keyRange: typeof IDBKeyRange;
@@ -632,9 +632,6 @@ export class SessionEntryCache {
   readonly #preferredHistories = new Map<string, () => boolean>();
 
   constructor(options: SessionEntryCacheOptions) {
-    if (options.databaseName === SESSION_CACHE_DATABASE_NAME) {
-      throw new Error("entry storage requires an isolated fixture database");
-    }
     this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
@@ -643,7 +640,7 @@ export class SessionEntryCache {
     this.#connection = new IDBConnection({
       indexedDB: options.indexedDB ?? globalThis.indexedDB,
       databaseName: options.databaseName,
-      databaseVersion: 3,
+      databaseVersion: SESSION_CACHE_DATABASE_VERSION,
       waitMs: 10_000,
       upgrade: (database) => upgradeSessionCache(database, true),
       errors: {
