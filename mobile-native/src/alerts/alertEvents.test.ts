@@ -76,7 +76,6 @@ describe("session alerts (spec 13.3)", () => {
 		const start = detectSessionAlerts(null, bands([row("d", { state: "active" })]), none).states;
 		const twice = {
 			needsYou: [{ row: asking, state: "question" as const }],
-			finished: [],
 			working: [{ row: row("d", { state: "active" }), state: "working" as const }],
 			idle: [],
 		};
@@ -86,18 +85,30 @@ describe("session alerts (spec 13.3)", () => {
 		expect(detectSessionAlerts(later.states, twice, none).alerts).toEqual([]);
 	});
 
-	it("alerts a finished turn only when the session was working", () => {
+	it("says nothing when a working session's turn ends: it rests Idle with the blue dot (#4093)", () => {
 		const start = detectSessionAlerts(
 			null,
 			bands([row("a", { state: "active" }), row("b", { state: "awaiting", ask_pending: true })]),
 			none,
 		).states;
-		const later = detectSessionAlerts(
-			start,
-			bands([row("a", { state: "awaiting" }), row("b", { state: "awaiting" })]),
-			none,
-		);
-		expect(later.alerts).toEqual([{ kind: "finished", ref: "a", title: "Session a", why: null }]);
+		const later = detectSessionAlerts(start, bands([row("a", { state: "idle" }), row("b", { state: "idle" })]), none);
+		expect(later.alerts).toEqual([]);
+		expect(later.states.get("a")).toBe("idle");
+	});
+
+	// A turn that ended on needs_response waits on you like a question does,
+	// so it alerts as one (#4093).
+	it("alerts a session that needs your reply", () => {
+		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
+		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
+	});
+
+	it("alerts again when an answered question's turn ends needing your reply", () => {
+		const asking = row("a", { state: "awaiting", ask_pending: true });
+		const start = detectSessionAlerts(null, bands([asking], [asking]), none).states;
+		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
 	});
 
 	it("stays quiet when a host goes offline and comes back", () => {
@@ -144,11 +155,9 @@ describe("Warning alerts while children run", () => {
 		const cleared = { ...warning, state: "active" };
 		const working = detectSessionAlerts(deferred.states, bands([cleared]), none);
 		expect(working.alerts).toEqual([]);
-		const settledBands = bands([{ ...cleared, state: "awaiting", subagents: { running: 0, failed: 1, done: 1 } }]);
+		const settledBands = bands([{ ...cleared, state: "idle", subagents: { running: 0, failed: 1, done: 1 } }]);
 		const settled = detectSessionAlerts(working.states, settledBands, none);
-		// Clearing the warning keeps the ordinary finished-turn alert.
-		expect(settled.alerts).toEqual([{ kind: "finished", ref: "a", title: "Session a", why: null }]);
-		expect(detectSessionAlerts(settled.states, settledBands, none).alerts).toEqual([]);
+		expect(settled.alerts).toEqual([]);
 	});
 
 	it.each([{ ask_pending: true }, { approval_pending: true }])(

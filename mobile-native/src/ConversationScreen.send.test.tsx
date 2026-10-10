@@ -36,6 +36,7 @@ import {
 	systemGlass,
 	textOf,
 	unmountMountedTrees,
+	until,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
@@ -2807,7 +2808,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	client.request = async (method, params) => {
 		if (method === "notes/human/set") {
 			attempts += 1;
-			if (attempts === 1) throw new Error("offline");
+			if (attempts === 1) {
+				// Fail a timer turn late, as a real dropped request does, so the
+				// test can't count on the failure landing within a fixed turn.
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				throw new Error("offline");
+			}
 		}
 		return request(method, params);
 	};
@@ -2827,11 +2833,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	act(() => editor.props.onChangeText("first try"));
 	act(() => pressable(sheet, "Done")?.props.onPress());
 	act(() => sheet.unmount());
-	await settle();
 	// The session stayed open, connected and in front the whole time: the
 	// screen retries the failed save on its own rather than waiting for an
-	// unrelated reconnect or remount to notice it.
-	expect(attempts).toBe(2);
+	// unrelated reconnect or remount to notice it. The retry runs a timer turn
+	// after the failure lands, and the failure can itself land after any one
+	// timer turn, so wait for the attempt rather than counting turns (#4119).
+	await until(() => expect(attempts).toBe(2));
 	expect(
 		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 	).toEqual(["first try"]);

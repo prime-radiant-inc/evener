@@ -64,7 +64,8 @@ const (
 	// UIs render it as harness chrome, not user speech. The persisted note is
 	// the source of truth; each turn carries a fresh projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
-	// TurnMemoryContext carries a lower-trust, scope-labelled index projection.
+	// TurnMemoryContext carries one boundary's lower-trust memory news for
+	// every scope, as one system notification.
 	TurnMemoryContext TurnKind = "MEMORY_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
@@ -148,6 +149,10 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
+	// EndReason is why a root session's call ended its turn (one of
+	// tool.CommunicateEndReasons); empty on a call that kept the turn going
+	// and wherever end_reason is not offered (delegates, headless roots).
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // NoticeKind names a presentational notice.

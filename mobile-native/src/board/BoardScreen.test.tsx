@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { DocumentMemory } from "../reader/documentMemory";
 // Imported at file scope, so the Reader's graph is transformed at collection
 // time, outside the timeout of the test that opens a real Reader.
+import { FreshDot } from "../reader/FreshDot";
 import { ReaderScreen } from "../reader/ReaderScreen";
 import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
@@ -228,6 +229,11 @@ function hubId() {
 function adoptedAnHourAgo(hub: string) {
 	harness.kv.set(`evener.native.seen.${hub}`, JSON.stringify({ adopted: true, epoch: minutesAgo(60), sessions: {} }));
 }
+/** A device that unfolded Idle before, so the sessions resting there, seen
+ * or not, are on screen from the first read. */
+function idleUnfolded(hub: string) {
+	harness.kv.set(`evener.native.board-sections.${hub}`, JSON.stringify({ idle: false }));
+}
 
 const session = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
 	ref,
@@ -250,7 +256,7 @@ const asking = session("local:ask", {
 	updated_at: minutesAgo(3),
 });
 const working = session("local:work", { title: "Build docs", state: "active", updated_at: minutesAgo(1) });
-const finished = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
+const shipIt = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
 const idleOne = session("local:idle-1", { title: "Old chore", dormant: true, updated_at: minutesAgo(120) });
 const idleTwo = session("local:idle-2", { title: "Older chore", dormant: true, updated_at: minutesAgo(240) });
 
@@ -286,7 +292,7 @@ const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_
 const releaseNotes = session("local:notes", { title: "Release notes", live: false, updated_at: minutesAgo(1200) });
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
-	live: [[failing, working, finished, idleOne, idleTwo]],
+	live: [[failing, working, shipIt, idleOne, idleTwo]],
 	needsYou: [failing, asking],
 	pins: [
 		{ id: "pins-1", name: "Mine", count: 3 },
@@ -623,6 +629,8 @@ const isRowTitled = (title: string) => (node: ReactTestInstance) =>
 function rowTitled(tree: ReactTestRenderer, title: string) {
 	return tree.root.find(isRowTitled(title));
 }
+/** Whether a Board row carries the blue dot. */
+const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 function hasRow(tree: ReactTestRenderer, title: string) {
 	return tree.root.findAll(isRowTitled(title)).length > 0;
 }
@@ -704,23 +712,25 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	// A session whose turn ended rests in Idle, seen or not (#4093).
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	expect(renderedText(tree)).toContain("2 need you");
-	expect(texts(tree)).toEqual(expect.arrayContaining(["1 finished", "1 working", "2 idle"]));
-	for (const title of ["Fix retry loop", "Pick a name", "Ship it", "Build docs"])
-		expect(hasRow(tree, title)).toBe(true);
+	expect(texts(tree)).toEqual(expect.arrayContaining(["1 working", "3 idle"]));
+	expect(texts(tree)).not.toContain("1 finished");
+	for (const title of ["Fix retry loop", "Pick a name", "Build docs"]) expect(hasRow(tree, title)).toBe(true);
+	expect(hasRow(tree, "Ship it")).toBe(false);
 	expect(hasRow(tree, "Old chore")).toBe(false);
-	pressLabel(tree, "Idle, 2 sessions");
-	expect(hasRow(tree, "Old chore")).toBe(true);
-	expect(hasRow(tree, "Older chore")).toBe(true);
+	pressLabel(tree, "Idle, 3 sessions, unread sessions inside");
+	for (const title of ["Ship it", "Old chore", "Older chore"]) expect(hasRow(tree, title)).toBe(true);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toEqual({ idle: false });
 	// Folded again, the summary's idle count unfolds it.
-	pressLabel(tree, "Idle, 2 sessions");
+	pressLabel(tree, "Idle, 3 sessions");
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	const idleCount = tree.root.find(
 		(node) =>
 			node.type === ("Pressable" as never) &&
-			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
+			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "3 idle").length > 0,
 	);
 	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
@@ -1167,7 +1177,7 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	connect(first, hubA.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	pressLabel(tree, "Idle, 2 sessions");
+	pressLabel(tree, "Idle, 3 sessions, unread sessions inside");
 	expect(hasRow(tree, "Old chore")).toBe(true);
 	connect(second, hubB.client, "ready");
 	rerender(tree, nav);
@@ -1279,12 +1289,13 @@ it("scrolls to the top and focuses the field when you tap Search", async () => {
 it("searches the hub as you type, and a result opens the way the Board opens its row, marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const gone = session("local:gone", { title: "Old report" });
 	const fake = hub({ ...fleet, searchOnly: [gone] });
 	connect(id, fake.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	expect(hasRow(tree, "Ship it")).toBe(true);
 	const bar = searchField(tree);
 	bar.focus();
 	// Search takes the Board's place under the field, in the Board's scroller.
@@ -1299,7 +1310,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	expect(resultTitled(tree, "Pick a name").props.accessibilityLabel).toBe("Pick a name, Question, evener, 5 minutes");
 	act(() => resultTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	// A session only in Needs you (past Live's loaded pages) is found too.
 	expect(seenMarkers(id).isSeen(asking)).toBe(false);
 	act(() => resultTitled(tree, "Pick a name").props.onPress());
@@ -1309,7 +1320,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	await bar.type("re");
 	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Old chore", "Older chore", "Old report"]);
 	expect(resultTitled(tree, "Old report").props.accessibilityLabel).toBe("Old report, evener, 5 minutes");
-	// A session the Board doesn't list has no Finished state to clear.
+	// A session the Board doesn't list has no blue dot to clear.
 	act(() => resultTitled(tree, "Old report").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
 	// Cancel empties the field and brings the Board back.
@@ -1344,7 +1355,7 @@ it("lists a live session once when the hub's past results name it too", async ()
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	// The real hub's past index holds live sessions' records too.
-	connect(id, hub({ ...fleet, searchOnly: [finished] }).client, "ready");
+	connect(id, hub({ ...fleet, searchOnly: [shipIt] }).client, "ready");
 	const tree = await mount(navigation());
 	const bar = searchField(tree);
 	bar.focus();
@@ -1586,20 +1597,23 @@ it("remembers the queries you opened a result from, per hub, and clears them", a
 it("opens a session after marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	act(() => rowTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
-	// Seen, the session leaves Finished for the folded Idle band.
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
+	// Seen, the session stays in Idle and loses its blue dot.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(dotted(tree, "Ship it")).toBe(false);
 	act(() => tree.unmount());
 });
 
 // Rows the hub decides (S4): each carries its turn end, and the hub says
 // whether it is unseen. The device's markers say the opposite of the hub for
-// both: its epoch covers the first, and it holds an unread mark for the second.
+// both: its epoch covers the first, and the second updated after it.
 const hubUnseen = session("local:hub-unseen", {
 	title: "Hub unseen",
 	updated_at: minutesAgo(90),
@@ -1619,40 +1633,116 @@ const pinnedUnseen = session("local:pinned-unseen", {
 	turn_ended_at: minutesAgo(80),
 	unseen: true,
 });
+// A device adopted an hour ago (adoptedAnHourAgo) reads Hub seen as unseen.
 const hubFleet: Fleet = {
 	...fleet,
-	live: [[failing, working, hubUnseen, hubSeen, finished]],
+	live: [[failing, working, hubUnseen, hubSeen, shipIt]],
 	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
 };
-/** A device an hour past first run that marked Hub seen unread itself. */
-function deviceDisagrees(hub: string) {
-	adoptedAnHourAgo(hub);
-	seenMarkers(hub).markUnread("local:hub-seen");
-}
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
-it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+// A live session that moved after the person last looked carries the blue
+// dot, resting in Idle included, and folded, Idle's header carries it for the
+// sessions inside (Jesse, #4093). A session that never ran gets none.
+it("dots the folded Idle header while a session inside moved since it was seen, and the row once unfolded", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	const moved = session("local:moved", {
+		title: "Moved since seen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: false,
+		seen_through: minutesAgo(60),
+	});
+	const neverRan = session("local:never-ran", { title: "Never ran", updated_at: minutesAgo(5), dormant: true });
+	const fake = hub({
+		...fleet,
+		live: [[moved, hubSeen, neverRan]],
+		needsYou: [],
+		activity: [
+			{
+				ref: "local:moved",
+				minutes: [0, 0, 0, 0, 0, 0, 0],
+				runningSubagents: 0,
+				lastMovedAt: Date.parse(minutesAgo(30)),
+			},
+		],
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await settleMicrotasks();
+	const fold = () =>
+		tree.root.find(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				node.props.accessibilityState?.expanded !== undefined &&
+				String(node.props.accessibilityLabel).startsWith("Idle"),
+		);
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions, unread sessions inside");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(1);
+	act(() => fold().props.onPress());
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(0);
+	expect(dotted(tree, "Moved since seen")).toBe(true);
+	expect(dotted(tree, "Hub seen")).toBe(false);
+	expect(dotted(tree, "Never ran")).toBe(false);
+	act(() => tree.unmount());
+});
+
+// Opening a row marks it seen through the later of its turn end and its last
+// motion, so output that streamed after the turn's end is seen too.
+it("marks a row it opens seen through its last motion when that is later than its turn end", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const streamed = session("local:streamed", {
+		title: "Streamed",
+		updated_at: minutesAgo(10),
+		turn_ended_at: minutesAgo(10),
+		unseen: true,
+		seen_through: minutesAgo(60),
+	});
+	const lastMovedAt = Date.parse(minutesAgo(2));
+	const fake = hub({
+		...fleet,
+		live: [[streamed]],
+		needsYou: [],
+		activity: [{ ref: "local:streamed", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0, lastMovedAt }],
+	});
+	idleUnfolded(id);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await settleMicrotasks();
+	act(() => rowTitled(tree, "Streamed").props.onPress());
+	await settleMicrotasks();
+	expect(fake.seen).toEqual([[{ ref: "local:streamed", seenThrough: lastMovedAt }]]);
+	act(() => tree.unmount());
+});
+
+it("takes the blue dot from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	pressLabel(tree, "Idle, 1 session");
-	expect(stateOf(tree, "Hub unseen")).toBe("Finished");
-	expect(stateOf(tree, "Hub seen")).toBe("Idle");
+	// Every session whose turn ended rests Idle; the dot says what's new.
+	for (const title of ["Hub unseen", "Hub seen", "Ship it", "Pinned unseen"]) expect(stateOf(tree, title)).toBe("Idle");
+	expect(dotted(tree, "Hub unseen")).toBe(true);
+	expect(dotted(tree, "Hub seen")).toBe(false);
 	// A row without a turn end still follows the device: updated since its epoch.
-	expect(stateOf(tree, "Ship it")).toBe("Finished");
+	expect(dotted(tree, "Ship it")).toBe(true);
 	// The categories classify the same way.
-	expect(stateOf(tree, "Pinned unseen")).toBe("Finished");
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 2", "WORKING · 1", "Idle · 1"]);
+	expect(dotted(tree, "Pinned unseen")).toBe(true);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
 });
 
 it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape = { ...hubFleet };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -1665,27 +1755,24 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 		title: "Hub unseen",
 	});
 	// The hub's rows still say unseen; the pending mark wins until they catch up.
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(dotted(tree, "Hub unseen")).toBe(false);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	// The device's own markers are not touched for a hub row.
-	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
-		"local:hub-seen": { unread: true },
-	});
-	// Opening it again, now from Idle, costs no request.
-	pressLabel(tree, "Idle, 2 sessions");
-	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
+	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({});
+	// Opening it again, now seen, costs no request.
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
 	await settleMicrotasks();
 	expect(fake.seen).toHaveLength(1);
 	// Opening a pinned hub row marks it the same way.
 	act(() => rowTitled(tree, "Pinned unseen").props.onPress());
 	await settleMicrotasks();
-	expect(stateOf(tree, "Pinned unseen")).toBe("Idle");
+	expect(dotted(tree, "Pinned unseen")).toBe(false);
 	expect(fake.seen.at(-1)).toEqual([{ ref: "local:pinned-unseen", seenThrough: Date.parse(minutesAgo(80)) }]);
 	// The hub's rows catch up, and the pending mark goes: a later unseen for
 	// the same turn would show again.
-	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, finished]];
+	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, shipIt]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
 	await settleMicrotasks();
@@ -1696,20 +1783,22 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 
 it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() => rowTitled(tree, "Ship it").props.onPress());
 	await settleMicrotasks();
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
 });
 
 it("sends a mark made while the connection was down once it's ready again", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -1718,7 +1807,7 @@ it("sends a mark made while the connection was down once it's ready again", asyn
 	rerender(tree, nav);
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
 	await settleMicrotasks();
-	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	expect(dotted(tree, "Hub unseen")).toBe(false);
 	expect(fake.seen).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
@@ -1749,7 +1838,7 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 		"pin_section",
 		"pin_section",
 	]);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	act(() => tree.unmount());
 });
 
@@ -1763,7 +1852,7 @@ it("keeps its rows when the connection drops, grays the meters, and says Reconne
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	expect(hasRow(tree, "Build docs")).toBe(true);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	expect(texts(tree)).not.toContain("Reconnecting…");
 	act(() => {
 		vi.advanceTimersByTime(2000);
@@ -1841,6 +1930,7 @@ it("shows three skeleton rows until the first read lands", async () => {
 it("shows the first read's rows at once under a finger that touched the skeleton, never the empty Board", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(fleet, () => true);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1870,7 +1960,7 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	act(() => tree.unmount());
 });
 
-it("on a device's first run, reads every Live page before adopting, so nothing flashes Finished", async () => {
+it("on a device's first run, reads every Live page before adopting, so no row flashes a blue dot", async () => {
 	const id = hubId();
 	// Live is sorted by attention, so the newest session sits on page 2.
 	const newest = session("local:newest", { title: "Newest", updated_at: minutesAgo(1) });
@@ -1879,16 +1969,19 @@ it("on a device's first run, reads every Live page before adopting, so nothing f
 		{ ...fleet, live: [[failing, older], [newest]], needsYou: [failing] },
 		(read) => (read.offset ?? 0) > 0,
 	);
+	idleUnfolded(id);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(fake.requests.filter((read) => read.section === "live").map((read) => read.offset)).toEqual([0, 2]);
 	expect(seenMarkers(id).adopted).toBe(false);
-	expect(bandHeaders(tree)).not.toContain("FINISHED · 1");
+	expect(dotted(tree, "Older")).toBe(false);
 	fake.release();
 	await settleMicrotasks();
 	expect(seenMarkers(id).adopted).toBe(true);
 	expect(seenMarkers(id).isSeen(newest)).toBe(true);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 1", "Idle · 2"]);
+	expect(dotted(tree, "Older")).toBe(false);
+	expect(dotted(tree, "Newest")).toBe(false);
 	act(() => tree.unmount());
 });
 
@@ -1896,7 +1989,7 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 	const id = hubId();
 	let holdLater = true;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished], [idleOne]], needsYou: [failing] },
+		{ ...fleet, live: [[failing, working], [shipIt], [idleOne]], needsYou: [failing] },
 		(read) => holdLater && (read.offset ?? 0) > 0,
 	);
 	connect(id, fake.client, "ready");
@@ -1921,6 +2014,7 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 it("shows the Draft tag on sessions with a saved draft", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	harness.drafts.set(id, new Set(["local:work"]));
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
@@ -2146,9 +2240,12 @@ const writing = session("local:write", { title: "Write tests", state: "active", 
 it("keeps a later-page parent's Working pulse and quiet failure history through questions, refresh and reconnect", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
+	// A parent whose child is still running rests idle (#4093); the child's
+	// work is what the row shows.
 	const parent = session("local:parent", {
 		title: "Coordinate children",
-		state: "awaiting",
+		state: "idle",
 		subagents: { running: 1, failed: 1, done: 0 },
 	});
 	const shape: Fleet = { ...fleet, live: [[working], [parent]], needsYou: [], pins: [], pinned: {} };
@@ -2186,7 +2283,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 		await settleMicrotasks();
 		await layOut(tree);
 	};
-	const question = { ...parent, ask_pending: true };
+	const question = { ...parent, state: "awaiting", ask_pending: true };
 	shape.live = [[working], [question]];
 	shape.needsYou = [question];
 	await refresh(1);
@@ -2220,7 +2317,8 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	).toEqual([0, 1]);
 	shape.live = [[working], [{ ...parent, subagents: { running: 0, failed: 1, done: 1 } }]];
 	await refresh(4);
-	expect(stateOf(tree, parent.title)).toBe("Finished");
+	expect(stateOf(tree, parent.title)).toBe("Idle");
+	expect(dotted(tree, parent.title)).toBe(true);
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
 	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
 	assertQuietFailure();
@@ -2233,8 +2331,8 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	act(() => rowTitled(tree, parent.title).props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: parent.ref, title: parent.title });
 	await settleMicrotasks();
-	pressLabel(tree, "Idle, 1 session");
 	expect(stateOf(tree, parent.title)).toBe("Idle");
+	expect(dotted(tree, parent.title)).toBe(false);
 	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
 	assertQuietFailure();
 	act(() => tree.unmount());
@@ -2243,10 +2341,11 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 it("reads a failed later Live page again after the backoff, keeping the loaded rows on screen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	let lastPageFails = true;
 	let holdLive = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished], [writing]] },
+		{ ...fleet, live: [[failing, working], [shipIt], [writing]] },
 		(read) => holdLive && read.section === "live",
 		(read) => lastPageFails && read.section === "live" && read.offset === 3,
 	);
@@ -2285,10 +2384,11 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 it("lets a slow retry finish instead of starting another over it", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	let lastPageFails = true;
 	let holdLive = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished]] },
+		{ ...fleet, live: [[failing, working], [shipIt]] },
 		(read) => holdLive && read.section === "live",
 		(read) => lastPageFails && read.section === "live" && read.offset === 2,
 	);
@@ -2318,7 +2418,7 @@ it("starts the backoff over once a Live read succeeds", async () => {
 	let firstPageFails = true;
 	let secondPageFails = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished]] },
+		{ ...fleet, live: [[failing, working], [shipIt]] },
 		undefined,
 		(read) => read.section === "live" && ((read.offset ?? 0) === 0 ? firstPageFails : secondPageFails),
 	);
@@ -2384,7 +2484,8 @@ it("shows neither skeleton rows nor the failed-read sentence beside Update neede
 it("keeps reading Live's pages while they don't fill the screen, without any scrolling", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, live: [[failing, working], [finished], [idleOne, idleTwo]] });
+	idleUnfolded(id);
+	const fake = hub({ ...fleet, live: [[failing, working], [shipIt], [idleOne, idleTwo]] });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
@@ -2403,7 +2504,7 @@ it("keeps reading Live's pages while they don't fill the screen, without any scr
 it("reads no more of Live while search results fill the scroller", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, live: [[failing, working], [finished]] });
+	const fake = hub({ ...fleet, live: [[failing, working], [shipIt]] });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() =>
@@ -2504,7 +2605,7 @@ const migrating = session("local:migrate", { title: "Migrate schema", state: "ac
 const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
 const busyFleet: Fleet = {
 	...fleet,
-	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, finished]],
+	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, shipIt]],
 };
 const workingTitles = (tree: ReactTestRenderer) =>
 	tree.root
@@ -3135,18 +3236,17 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	act(() => again.unmount());
 });
 
-it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
+it("dots a project's session rows by the hub's seen marker too (S4)", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub({
 		...hubFleet,
 		catalogs: { projects: [evenerProject()] },
 		projectPages: {
 			"evener:current": [
-				// The device holds an unread mark for this ref; the hub says seen.
+				// The device's first run predates this ref; the hub says seen.
 				session("local:hub-seen", {
 					title: "Project hub seen",
-					live: false,
 					updated_at: minutesAgo(6),
 					turn_ended_at: minutesAgo(6),
 					unseen: false,
@@ -3154,7 +3254,6 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 				// The device's epoch covers this one; the hub says unseen.
 				session("local:project-unseen", {
 					title: "Project hub unseen",
-					live: false,
 					updated_at: minutesAgo(90),
 					turn_ended_at: minutesAgo(90),
 					unseen: true,
@@ -3167,7 +3266,9 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 	pressLabel(tree, "evener");
 	await settleMicrotasks();
 	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
-	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
+	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	expect(dotted(tree, "Project hub seen")).toBe(false);
+	expect(dotted(tree, "Project hub unseen")).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -4009,7 +4110,7 @@ const swipeWorking = session(`local:${SESSION_ID}`, {
 	state: "active",
 	updated_at: minutesAgo(1),
 });
-const swipeFinished = session(`local:${OTHER_SESSION_ID}`, {
+const swipeIdle = session(`local:${OTHER_SESSION_ID}`, {
 	session_id: OTHER_SESSION_ID,
 	title: "Write changelog",
 	updated_at: minutesAgo(4),
@@ -4021,7 +4122,7 @@ const swipePark = session("paradise-park:pp", {
 	updated_at: minutesAgo(6),
 });
 const swipeFleet = (): Fleet => ({
-	live: [[swipeWorking, swipeFinished, swipePark]],
+	live: [[swipeWorking, swipeIdle, swipePark]],
 	needsYou: [],
 	pins: [],
 	pinned: {},
@@ -4053,6 +4154,7 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	connect(id, fake.client, "ready");
 	const tree = await mount(nav);
 	return { id, tree, nav };
@@ -4071,7 +4173,7 @@ function menuItem(host: RowMenuHost, ref: string, archived = false) {
 const rowMenuLabels = (host: RowMenuHost, ref: string, archived = false) =>
 	host.actions(menuItem(host, ref, archived), archived).map((action) => ROW_ACTION_LABELS[action]);
 
-it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, a finished row no Stop, and another host's row Archive too", async () => {
+it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, an idle row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
@@ -4431,6 +4533,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const fake = hub(swipeFleet());
 		const id = hubId();
 		adoptedAnHourAgo(id);
+		idleUnfolded(id);
 		const ref = `local:${OTHER_SESSION_ID}`;
 		harness.kv.set(
 			boardHoldKey(id),
@@ -4545,7 +4648,7 @@ it("puts swipes on pinned categories' rows and project sessions too", async () =
 
 it("ends a row's trailing swipe with More, which opens the row menu sheet, as a long press does", async () => {
 	const shape = swipeFleet();
-	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeIdle, swipePark]];
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
@@ -4610,7 +4713,7 @@ it("keeps the row menu's row while the list is held, even once the read drops it
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
 	// A later read no longer has the row, but the held list keeps showing it,
 	// so the menu that is about it must still resolve one.
-	shape.live = [[swipeFinished, swipePark]];
+	shape.live = [[swipeIdle, swipePark]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
 	await settleMicrotasks();
 	expect(hasRow(tree, "Refactor parser")).toBe(true);
@@ -4620,7 +4723,7 @@ it("keeps the row menu's row while the list is held, even once the read drops it
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const shape = swipeFleet();
-	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeIdle, swipePark]];
 	const { id } = await mountSwipeFleet(hub(shape));
 	Platform.OS = "android";
 	try {
@@ -4703,56 +4806,6 @@ it("says why a rename failed, in the hub's words", async () => {
 	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
 });
 
-it("marks a finished row read from the menu, moving it to Idle, and unread again", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
-	const host = menuHost(id);
-	const ref = `local:${OTHER_SESSION_ID}`;
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settleMicrotasks();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	const read = menuHost(id);
-	expect(menuItem(read, ref).state).toBe("idle");
-	act(() => read.act(menuItem(read, ref), "markUnread"));
-	await settleMicrotasks();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-});
-
-it("sends no read mark through another hub's client when this Board's hub isn't the active one", async () => {
-	const first = hubId();
-	const second = hubId();
-	adoptedAnHourAgo(first);
-	adoptedAnHourAgo(second);
-	// A row the hub decides (it carries a turn end), so marking it read is a
-	// hub write (BoardSeen.markRead), not just the device's own marker.
-	const row = session("local:hub-unseen", {
-		title: "Hub unseen",
-		updated_at: minutesAgo(90),
-		turn_ended_at: minutesAgo(90),
-		unseen: true,
-	});
-	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
-	const fakeA = hub(shape);
-	const fakeB = hub(shape);
-	connect(first, fakeA.client, "ready");
-	const nav = navigation();
-	const tree = await mount(nav);
-	const host = menuHost(first);
-	const ref = "local:hub-unseen";
-	// The active hub changes to a different one, but this Board (mounted for
-	// "first") stays up, as it would underneath a freshly-selected hub's own
-	// screen; its next render reads the new connection.
-	connect(second, fakeB.client, "ready");
-	setFocused(false);
-	setFocused(true);
-	await settleMicrotasks();
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settleMicrotasks();
-	expect(fakeA.seen).toEqual([]);
-	expect(fakeB.seen).toEqual([]);
-	act(() => tree.unmount());
-});
-
 it("flushes a hidden Board's pending read marks through no other hub's client when the connection re-binds", async () => {
 	const first = hubId();
 	const second = hubId();
@@ -4774,9 +4827,9 @@ it("flushes a hidden Board's pending read marks through no other hub's client wh
 	setFocused(false);
 	setFocused(true);
 	await settleMicrotasks();
-	// Marked while another hub is active: the mark waits in this Board's
-	// hub's pending marks.
-	act(() => host.act(menuItem(host, "local:hub-unseen"), "markRead"));
+	// Opened while another hub is active: the read mark waits in this
+	// Board's hub's pending marks.
+	act(() => host.openSession(menuItem(host, "local:hub-unseen")));
 	await settleMicrotasks();
 	// The other hub's connection drops and comes back, handing the Board a
 	// ready client again.
@@ -4819,6 +4872,7 @@ it("opens a session from the menu's card without marking it through another hub'
 	act(() => host.openSession(menuItem(host, ref)));
 	await settleMicrotasks();
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -4937,7 +4991,7 @@ it("drops a row that left the Board from the menu's host", async () => {
 	const fake = hub(shape);
 	const { id } = await mountSwipeFleet(fake);
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeDefined();
-	shape.live = [[swipeWorking, swipeFinished]];
+	shape.live = [[swipeWorking, swipeIdle]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
 	await settleMicrotasks();
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeUndefined();
@@ -4972,21 +5026,24 @@ function listEvent(tree: ReactTestRenderer, handler: string, nativeEvent: Record
 	act(() => boardScroller(tree).props[handler]({ nativeEvent }));
 }
 const liftFinger = (tree: ReactTestRenderer) => listEvent(tree, "onTouchEnd", { touches: [] });
+/** The default fleet's Live with Idle unfolded (idleUnfolded). */
 const workingOrder = [
 	"NEEDS YOU · 2",
 	"Fix retry loop",
 	"Pick a name",
-	"FINISHED · 1",
-	"Ship it",
 	"WORKING · 1",
 	"Build docs",
-	"Idle · 2",
+	"Idle · 3",
+	"Ship it",
+	"Old chore",
+	"Older chore",
 ];
 /** A Board over the default fleet whose rows can turn into questions ("Build
  * docs", the working row, unless the test names another). */
 async function mountAskingFleet(nav = navigation(), withInstances = false) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape: Fleet = { ...fleet, live: [[...fleet.live[0]]], needsYou: [...fleet.needsYou] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -5013,7 +5070,7 @@ const heldInWorking = (tree: ReactTestRenderer) =>
 /** Whether "Build docs" moved into Needs you, and Working is gone. */
 function movedToNeedsYou(tree: ReactTestRenderer) {
 	const order = listOrder(tree);
-	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("FINISHED · 1"));
+	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("Idle · 3"));
 	expect(order).not.toContain("WORKING · 1");
 }
 
@@ -5043,7 +5100,7 @@ it("lets a washed row finish its fade when another row enters Needs you after it
 	const wash = boardRowTitled(tree, "Build docs").props.wash;
 	expect(wash).toBeGreaterThan(0);
 	await advance(300);
-	await ask(finished);
+	await ask(shipIt);
 	expect(boardRowTitled(tree, "Ship it").props.wash).toBeGreaterThan(0);
 	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(wash);
 	await advance(WASH_MS - 300);
@@ -5077,6 +5134,7 @@ it("holds the list while a chip's scroll animates, until the scroll ends", async
 it("holds the list while a search's project reveal scrolls, until the scroll ends", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape: Fleet = {
 		...fleet,
 		live: [[...fleet.live[0]]],
@@ -5202,9 +5260,7 @@ it("leads the toolbar with Select, which puts a checkbox on every session row an
 	expect(pressables(tree, "New session")).toHaveLength(1);
 	pressLabel(tree, "Select");
 	expect(pressables(tree, "New session")).toHaveLength(0);
-	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([
-		1, 1, 1, 1,
-	]);
+	expect(["Done", "Archive", "Pin"].map((label) => pressables(tree, label).length)).toEqual([1, 1, 1]);
 	const rows = tree.root.findAllByType(BoardRow);
 	expect(rows.map((row) => row.props.selected)).toEqual([false, false, false]);
 	// Select mode's rows neither swipe nor open a menu.
@@ -5273,18 +5329,18 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
 	await settleMicrotasks();
-	// In the order the Board shows them: Finished, then Working.
+	// In the order the Board shows them: Working, then Idle.
 	expect(fake.mutations).toEqual([
-		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
 	]);
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree)).toContain("Archived 2 sessions");
 	pressLabel(tree, "Undo");
 	await settleMicrotasks();
 	expect(fake.mutations.slice(2)).toEqual([
-		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: false } },
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
 	]);
 	expect(texts(tree)).toContain("Unarchived 2 sessions");
 });
@@ -5301,8 +5357,8 @@ it("says nothing archived when the hub can't confirm one, and holds the rest for
 	// settled the first.
 	await vi.waitFor(() =>
 		expect(fake.mutations.map((mutation) => mutation.params)).toEqual([
-			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 			{ kind: "session", id: SESSION_ID, archived: true },
+			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 		]),
 	);
 });
@@ -5343,8 +5399,8 @@ it("pins the chosen sessions to a category picked from the sheet", async () => {
 	act(() => choose(0));
 	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
-		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionId: "release" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
 	]);
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree)).toContain("Pinned 2 sessions to Release");
@@ -5385,8 +5441,8 @@ it("pins the chosen sessions to a new category named in the prompt", async () =>
 	act(() => buttons[1]?.onPress?.("  Ideas "));
 	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
-		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionName: "Ideas" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
 	]);
 	expect(texts(tree)).toContain("Pinned 2 sessions to Ideas");
 });
@@ -5406,29 +5462,13 @@ it("pins nothing to a new category whose name is too long, and says why", async 
 	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
 });
 
-it("marks the chosen finished sessions read and leaves select mode", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(selectFleet()));
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	select(tree, "Write changelog", "Refactor parser");
-	expect(pressables(tree, "Archive")[0].props.disabled).toBe(false);
-	pressLabel(tree, "Mark as read");
-	await settleMicrotasks();
-	expect(inSelectMode(tree)).toBe(false);
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
-});
-
 it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
 	const fake = hub(selectFleet());
 	const { id, tree } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, navigation());
 	select(tree, "Write changelog");
-	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
-		false,
-		false,
-		false,
-	]);
+	expect(["Archive", "Pin"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([false, false]);
 	pressLabel(tree, "Archive");
 	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
@@ -5791,7 +5831,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 	it("reads Live's next page by what shows below the glass", async () => {
 		const { tree, fake } = await mountOnGlass({
 			...fleet,
-			live: [[failing, working], [finished]],
+			live: [[failing, working], [shipIt]],
 			catalogs: { projects: [evenerProject()] },
 		});
 		const scroller = boardScroller(tree);
@@ -5869,4 +5909,27 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		layOutAt(projectSection(tree, "projects"), 900, 400);
 		expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 112 - 48) - 112, animated: true });
 	});
+});
+
+// The long-press card reads the shown row, so it follows a blue dot that
+// changed alone.
+it("hands the row menu a row whose blue dot changed though its state didn't", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const turnEnded = minutesAgo(20);
+	const workingUnseen = session("local:working-unseen", {
+		title: "Working unseen",
+		state: "active",
+		updated_at: minutesAgo(1),
+		turn_ended_at: turnEnded,
+		unseen: true,
+	});
+	const fake = hub({ ...fleet, live: [[workingUnseen]], needsYou: [] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const host = menuHost(id);
+	expect(menuItem(host, "local:working-unseen")).toMatchObject({ state: "working", unseen: true });
+	act(() => hubSeenMarks(id).markSeen(null, [{ ref: "local:working-unseen", seenThrough: Date.parse(turnEnded) }]));
+	expect(menuItem(menuHost(id), "local:working-unseen")).toMatchObject({ state: "working", unseen: false });
+	act(() => tree.unmount());
 });

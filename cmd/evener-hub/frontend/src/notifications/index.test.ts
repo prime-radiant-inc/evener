@@ -105,6 +105,9 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
       approvalPending: n.approval_pending === true,
+      // The hub's rule: awaiting with no question is the needs_response rest.
+      // Absent when false, as the hub's omitempty encodes it.
+      ...(n.state === "awaiting" && n.ask_pending !== true ? { needsResponse: true } : {}),
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -477,21 +480,23 @@ describe("edge-fire", () => {
 });
 
 describe("loudScope", () => {
-  test("asks: a plain your-move needs_you is silent; an ask fires", async () => {
+  // A plain reply rests idle and never enters attention; a needs_response
+  // rest asks for a reply and is as loud as a question.
+  test("asks: a warning is silent; a needs_response rest fires", async () => {
     armPrefs("asks");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 0, sound: 0 });
     navigationStore.setState({
-      attention: attentionFromNodes([node("local:a", "awaiting", false), node("local:b", "awaiting", true)]),
+      attention: attentionFromNodes([node("local:w", "warning"), node("local:a", "awaiting", false)]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
-  test("all: a plain your-move needs_you fires", async () => {
+  test("all: a warning fires", async () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 

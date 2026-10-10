@@ -17,8 +17,8 @@ import (
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body
-// parses to a null/empty mapping (e.g. "---\n!---\n"), so the contract keys on
-// framing, not on Meta-nilness.
+// parses to a null/empty mapping (e.g. "---\nnull\n---\nbody"), so the
+// contract keys on framing, not on Meta-nilness.
 func FuzzFrontmatterParse(f *testing.F) {
 	seeds := []string{
 		"---\ntitle: hi\ntags: [a, b]\n---\nbody text\n",
@@ -114,8 +114,9 @@ func yamlValueEqual(a, b any) bool {
 	}
 }
 
-// indexAfter reports whether a closing "---\n" delimiter exists after the
-// opening one, mirroring Parse's own framing check.
+// indexAfter reports where the closing delimiter, a line that is exactly
+// "---", starts after the opening one, or -1, mirroring Parse's own framing
+// check.
 func indexAfter(raw string) int {
 	const delim = "---\n"
 	if len(raw) < len(delim) || raw[:len(delim)] != delim {
@@ -123,7 +124,7 @@ func indexAfter(raw string) int {
 	}
 	rest := raw[len(delim):]
 	for i := 0; i+len(delim) <= len(rest); i++ {
-		if rest[i:i+len(delim)] == delim {
+		if rest[i:i+len(delim)] == delim && (i == 0 || rest[i-1] == '\n') {
 			return i
 		}
 	}

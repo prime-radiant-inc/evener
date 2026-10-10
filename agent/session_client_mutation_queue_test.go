@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -1436,7 +1437,7 @@ func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 	var result struct {
 		Inbox []string `json:"inbox"`
 	}
-	if err := json.Unmarshal([]byte(raw.(string)), &result); err != nil {
+	if err := json.Unmarshal([]byte(raw.(tool.StateResult).Output), &result); err != nil {
 		t.Fatalf("decode communicate result: %v", err)
 	}
 	// The client entry is first, so preserving queue order means the terminal

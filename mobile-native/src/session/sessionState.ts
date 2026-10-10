@@ -1,7 +1,7 @@
 // What the Session's header says: the nav bar's state line with its still
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
-// never unread, so a finished one is Idle, with no dot.
+// never unread, so one whose turn ended is Idle, with no dot.
 import { summaryTally } from "../subagents/subagentModel";
 import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
@@ -38,15 +38,17 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	// A question outranks an approval, as on the Board.
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
+	// Awaiting without a question: the turn ended on needs_response (#4093).
+	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
 	if (type === "active") {
 		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);
 		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}
-	const finished = lastCompletion(session.turns);
+	const ended = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${timeAgo(now - finished)}`,
+		text: ended === null ? "Idle" : `Idle · ${timeAgo(now - ended)}`,
 	};
 }
 

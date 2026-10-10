@@ -63,11 +63,11 @@ const row = (ref: string) => ({
 	live: true,
 	children: [],
 });
-const session = (ref: string, kind: "question" | "failed" | "finished" = "question"): Alert => ({
+const session = (ref: string, kind: "question" | "failed" = "question"): Alert => ({
 	kind,
 	ref,
 	title: `Session ${ref}`,
-	why: kind === "finished" ? null : whyLine({ row: row(ref) as never, state: kind }),
+	why: whyLine({ row: row(ref) as never, state: kind }),
 });
 const notice: Alert = { kind: "notice", key: "host:paradise-park", title: "paradise-park is offline · 3 sessions" };
 const banner = (...alerts: Alert[]): Banner => ({ id: 1, alerts });
@@ -137,14 +137,11 @@ it("coalesces sessions into a count that says a tap goes to the Board", () => {
 	});
 });
 
-it("marks a notice with the triangle and no second line, and edges a finished result in the accent", () => {
+it("marks a notice with the triangle and no second line", () => {
 	const { tree, card } = mount(banner(notice));
 	expect(tree.root.findByType("SymbolView" as never).props.name).toBe("exclamationmark.triangle.fill");
 	expect(renderedText(tree)).toBe("paradise-park is offline · 3 sessions now");
 	expect(card.props.style).toMatchObject({ borderColor: palette.attentionEdge });
-	expect(mount(banner(session("d", "finished"))).card.props.style).toMatchObject({
-		borderColor: palette.accentEdge,
-	});
 });
 
 it("says a session started, marks it working, and edges it in the accent", () => {

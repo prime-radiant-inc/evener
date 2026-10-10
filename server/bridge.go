@@ -96,8 +96,9 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // by construction, and the assert would sit in a branch no test reaches.
 //
 // The other direction — a facet that SAMPLES under a lock an emitter holds —
-// has no self-deadlock to lean on and needed its own mechanism. Four locks are
-// held across live emits TODAY: Session.queueEventsMu
+// has no self-deadlock to lean on and needed its own mechanism. Five locks are
+// held across live emits TODAY: Session.restMu (agent/session_state.go's
+// needs_response quiet-period timer), Session.queueEventsMu
 // (agent/session_client_mutation_queue.go's reflectDurableInputQueue,
 // agent/session_queue.go's popSteeringHead), queuePersistMu
 // (persistQueuesSnapshot), responseSideEffectsMu (agent/session_tools.go's
@@ -172,7 +173,22 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
+	if ev.Kind == events.EventStatusSettled {
+		// Applied, held or dropped together with its projection
+		// (RecordAppEvent), in one lock hold, so the stored state and the
+		// broadcast can't decide differently.
+		return
+	}
 	effect(s)
+}
+
+// settledStatusSupersededLocked reports whether a resting status that settled
+// outside any turn (EventStatusSettled) can't be published now: an input is
+// being taken (it may be held for the end of processing, settledStatusLocked),
+// a turn is reserved and its own end restates the state, or the session
+// already closed, and closed wins. The caller holds s.mu.
+func (s *Server) settledStatusSupersededLocked() bool {
+	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {
@@ -213,15 +229,33 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
+	case events.EventStatusSettled:
+		// Only a resting state settles outside a turn; anything else would
+		// store a state the projector maps differently.
+		d, ok := ev.Data.(events.StatusSettledData)
+		if !ok || (d.State != string(agent.SessionAwaiting) && d.State != string(agent.SessionIdle)) {
+			return nil
+		}
+		return func(s *Server) { s.status.State = d.State }
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
 			// An interrupted end closes nothing: the session stays live and the
-			// cancelled turn is still unwinding. The event is still projected by
-			// the caller — only its status effects are skipped.
-			return nil
+			// cancelled turn is still unwinding, so processing stays set. It
+			// still states the session's resting state, which the end of
+			// processing publishes.
+			if d.State == "" {
+				return nil
+			}
+			return func(s *Server) {
+				s.status.State = d.State
+				s.appTurnEndStated = true
+			}
 		}
 		return func(s *Server) {
+			// The input ended on its own SESSION_END, which states the
+			// session's state; a rest held during it no longer applies.
+			s.appHeldSettledEffect = nil
 			s.endProcessingLocked()
 			s.status.State = string(agent.SessionClosed)
 			if ok && d.State != "" {

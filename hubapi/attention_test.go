@@ -59,7 +59,9 @@ func TestStateWord(t *testing.T) {
 	}{
 		{"active", false, "Working"},
 		{"awaiting", true, "Question waiting"},
-		{"awaiting", false, "Your move"},
+		// Awaiting without a question is a turn that ended on needs_response:
+		// the agent can't go on without its human partner (#4093).
+		{"awaiting", false, "Needs you"},
 		{"warning", false, "Warning"},
 		{"warning", true, "Warning"}, // askPending is meaningless outside "awaiting"
 		{"errored", false, "Error"},
@@ -113,7 +115,9 @@ func TestNeedsYouBand(t *testing.T) {
 		// An approval blocks mid-turn, so its session still reports "active";
 		// it waits on a person the way a question does and shares its band.
 		{"active", false, true, 1},
-		{"awaiting", false, false, 0},
+		// A turn that ended on needs_response waits on a person like a
+		// question does, and shares its band (#4093).
+		{"awaiting", false, false, 1},
 		{"warning", false, false, 0},
 	}
 	for _, c := range cases {
