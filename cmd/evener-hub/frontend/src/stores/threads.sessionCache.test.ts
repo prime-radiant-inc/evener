@@ -226,10 +226,6 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function threadInstanceIDForTest(model: ThreadModel): string {
-  return model.instanceId ?? model.threadId;
-}
-
 async function deleteMutationDatabase(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const request = indexedDB.deleteDatabase("evener-mutation-outbox");
