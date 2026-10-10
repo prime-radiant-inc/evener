@@ -81,7 +81,9 @@ const (
 // stampMemoryPage is raw, the bytes a tool is about to write to the file at
 // rel, the slash path its scope lists it at, with the updated and by stamps
 // set when the file is a Markdown page, and the notes the tool result should
-// end with. The stamps go into the tool's one write, so no second
+// end with. A description or evidence value left unquoted around a colon is
+// quoted first (repairMemoryFrontmatter), so the page parses without a second
+// call. The stamps go into the tool's one write, so no second
 // read-modify-write can undo another session's write or delete. Any other
 // file passes through unchanged.
 func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes string) {
@@ -91,7 +93,7 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 	// updated is written by hand, unquoted, so it reads back as a YAML date.
 	// Valid frontmatter that can't take a key line, such as a flow mapping,
 	// stays unstamped rather than unreadable.
-	stamped = setMemoryFrontmatterField(raw, "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
+	stamped = setMemoryFrontmatterField(repairMemoryFrontmatter(raw), "updated: "+s.sclock().Now().UTC().Format(time.DateOnly)+"\n")
 	stamped = setMemoryFrontmatterField(stamped, memoryYAMLField("by", s.ID()))
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:

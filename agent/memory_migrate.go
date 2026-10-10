@@ -250,6 +250,55 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte(out)
 }
 
+// memoryQuotableKeys are the top-level frontmatter keys whose free-text value
+// repairMemoryFrontmatter may quote.
+var memoryQuotableKeys = []string{"description", "evidence"}
+
+// yamlIndicators are the characters a plain YAML scalar can't start with.
+const yamlIndicators = "-?:,[]{}#&*!|>'\"%@`"
+
+// repairMemoryFrontmatter is raw with each top-level description or evidence
+// line quoted (memoryYAMLField) whose value can't be read as written because
+// it is an unquoted scalar holding ": ", ending in ":", or starting with a
+// YAML indicator, a mistake easy to make in free text ("like `shop: add
+// Count`"). The quoting is kept only when it makes the frontmatter parse; any
+// other page, readable or not, is returned as it is.
+func repairMemoryFrontmatter(raw []byte) []byte {
+	text := string(raw)
+	block, body, ok := splitMemoryFrontmatter(text)
+	if !ok {
+		return raw
+	}
+	if _, err := frontmatter.Parse(text); err == nil {
+		return raw
+	}
+	lines := slices.Collect(strings.Lines(block))
+	quoted := false
+	for i, line := range lines {
+		key, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
+		value = strings.TrimSpace(value)
+		if !found || !slices.Contains(memoryQuotableKeys, key) || value == "" {
+			continue
+		}
+		if !strings.Contains(value, ": ") && !strings.HasSuffix(value, ":") && !strings.ContainsRune(yamlIndicators, rune(value[0])) {
+			continue
+		}
+		if yaml.Unmarshal([]byte(line), new(any)) == nil {
+			continue // the line reads as written, quoted or not
+		}
+		lines[i] = memoryYAMLField(key, value)
+		quoted = true
+	}
+	if !quoted {
+		return raw
+	}
+	out := "---\n" + strings.Join(lines, "") + "---\n" + body
+	if _, err := frontmatter.Parse(out); err != nil {
+		return raw
+	}
+	return []byte(out)
+}
+
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
 // block-style frontmatter mapping to the key as YAML reads it, or is nil when
 // the block is not one.

@@ -148,14 +148,58 @@ func TestMemoryWriteNotesMissingDescription(t *testing.T) {
 	}
 }
 
-// A written page whose frontmatter is not valid YAML gets a note asking to
-// fix it.
+// A written page whose frontmatter is not valid YAML, for a reason the
+// write can't repair, gets a note asking to fix it, and its frontmatter is
+// left as written apart from the stamps.
 func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 	t.Parallel()
-	s, _ := memoryWritesSession(t)
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "bad.md", "content": "---\ndescription: Fix: use cents\n---\n# Cents\n"})
-	if res.IsError || !strings.HasSuffix(res.Output, memoryUnreadableFrontmatterNote) {
-		t.Fatalf("%+v", res)
+	s, scope := memoryWritesSession(t)
+	for name, block := range map[string]string{
+		"flow.md":      "description: Fix: use cents\ntags: [money\n",
+		"other-key.md": "description: Fix: use cents\nsummary: Fix: use cents\n",
+		"indented.md":  "description: Fix: use cents\n  continued: here\n",
+	} {
+		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + block + "---\n# Cents\n"})
+		if res.IsError || !strings.HasSuffix(res.Output, memoryUnreadableFrontmatterNote) {
+			t.Fatalf("%s: %+v", name, res)
+		}
+		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+block+memoryOwnStamps(s)+"---\n# Cents\n" {
+			t.Fatalf("%s: frontmatter changed: %q", name, raw)
+		}
+	}
+}
+
+// memory_write and memory_edit quote a top-level description or evidence
+// value that is invalid YAML only because it is an unquoted scalar holding
+// ": ", ending in ":", or starting with a YAML indicator, so the page parses
+// with no second call. A valid line beside it is left as written.
+func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	for name, tc := range map[string]struct{ block, want string }{
+		"inner-colon.md": {"description: like `shop: add Count`\n", "description: 'like `shop: add Count`'\n"},
+		"trailing.md":    {"description: Fix:\n", "description: 'Fix:'\n"},
+		"indicator.md":   {"description: d\nevidence: `a.go`: line 3\n", "description: d\nevidence: '`a.go`: line 3'\n"},
+		"both.md": {
+			"description: Fix: use cents\ntags: [money]\nevidence: file: price.go\n",
+			"description: 'Fix: use cents'\ntags: [money]\nevidence: 'file: price.go'\n",
+		},
+		"quoted-kept.md": {"evidence: \"file: a.go\"\ndescription: a: b\n", "evidence: \"file: a.go\"\ndescription: 'a: b'\n"},
+	} {
+		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + tc.block + "---\n# Page\n"})
+		if res.IsError || strings.Contains(res.Output, "\n\n") {
+			t.Fatalf("%s: %+v", name, res)
+		}
+		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+tc.want+memoryOwnStamps(s)+"---\n# Page\n" {
+			t.Fatalf("%s: got %q", name, raw)
+		}
+	}
+	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "trailing.md", "old_string": "description: 'Fix:'", "new_string": "description: Use cents: never floats"})
+	if res.IsError || strings.Contains(res.Output, "\n\n") {
+		t.Fatalf("edit: %+v", res)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(scope, "trailing.md")); string(raw) != "---\ndescription: 'Use cents: never floats'\n"+memoryOwnStamps(s)+"---\n# Page\n" {
+		t.Fatalf("edit: got %q", raw)
 	}
 }
 

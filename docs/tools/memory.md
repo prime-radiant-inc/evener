@@ -32,7 +32,9 @@ All rows below also require `scope`. Unknown arguments are rejected.
 
 After a successful `memory_write` or `memory_edit` of a Markdown page, Evener
 sets its `updated` and `by` frontmatter, keeping every other byte, and the
-result notes a missing description or frontmatter that does not parse. See
+result notes a missing description or frontmatter that does not parse. A
+`description` or `evidence` value left unquoted around a colon, the usual
+reason frontmatter does not parse, is quoted in the same write instead. See
 [stamps](../product/memory.md#generated-index) for the pages left unstamped.
 
 The underlying definitions are in
