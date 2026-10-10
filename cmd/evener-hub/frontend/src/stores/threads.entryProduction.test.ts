@@ -120,6 +120,109 @@ function connect(read = response()): FakeClient {
   return client;
 }
 
+async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache> {
+  const storage = cache();
+  const read = response("local:a", [turn("window-1", 30), turn("window-2", 31), turn("window-3", 32)]);
+  read.snapshot = { incarnation: "inc-a", length: 60 };
+  read.olderCursor = "cur-page-1";
+  const client = connect(read);
+  client.on("thread/turns/list", (params) => {
+    const first = params.cursor === "cur-page-1";
+    return {
+      data: [0, 1, 2].map((index) => turn(`${first ? "older" : "oldest"}-${index + 1}`, (first ? 10 : 0) + index)),
+      nextCursor: first ? "cur-page-2" : "cur-page-3",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 60 },
+    };
+  });
+  await threadsStore.getState().ensureThread("local:a");
+  if (withPages) {
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await threadsStore.getState().loadOlderTurns("local:a");
+  }
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 200)).map((row) => row.transcriptKey)).toEqual(
+    withPages
+      ? ["oldest-1", "oldest-2", "oldest-3", "older-1", "older-2", "older-3", "window-1", "window-2", "window-3"]
+      : ["window-1", "window-2", "window-3"],
+  );
+  // A reload drops every store model and repository, not just its reader.
+  resetThreadsStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
+  expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+  return storage;
+}
+
+it("ordinary disk-only opening displays the window and both cached pages before source success, withholds paging, then uses the settled cursor", async () => {
+  await seedDiskOnlyOpening(true);
+  const client = connect();
+  let releaseRead: (() => void) | undefined;
+  let sourcePending = false;
+  client.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        sourcePending = true;
+        releaseRead = () => {
+          sourcePending = false;
+          const read = response("local:a", [turn("settled", 50)]);
+          read.snapshot = { incarnation: "inc-a", length: 70 };
+          read.olderCursor = "cur-settled";
+          read.requestGeneration = params.requestGeneration;
+          resolve(read);
+        };
+      }),
+  );
+  const listCalls: Array<{ cursor?: string }> = [];
+  client.on("thread/turns/list", (params) => {
+    listCalls.push({ cursor: params.cursor });
+    return {
+      data: [turn("next-page", 40)],
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 70 },
+    };
+  });
+  const opening = threadsStore.getState().ensureThread("local:a");
+  try {
+    await vi.waitFor(() => {
+      expect(sourcePending).toBe(true);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:a")
+          ?.history?.turns.map((turn) => turn.id),
+      ).toEqual([
+        "oldest-1",
+        "oldest-2",
+        "oldest-3",
+        "older-1",
+        "older-2",
+        "older-3",
+        "window-1",
+        "window-2",
+        "window-3",
+      ]);
+    });
+    expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("cur-page-3");
+    expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeDefined();
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(listCalls).toEqual([]);
+    expect(sourcePending).toBe(true);
+    if (!releaseRead) throw new Error("reconciliation read was not issued");
+    releaseRead();
+    await opening;
+    expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeUndefined();
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(listCalls).toEqual([{ cursor: "cur-settled" }]);
+  } finally {
+    releaseRead?.();
+    await opening;
+  }
+});
+
 it("production cache writes and reopens keyed entries on the real database", async () => {
   const first = cache();
   const item = turn("disk-row").items?.[0];
@@ -887,24 +990,9 @@ it("ordinary sibling Clear permits a genuinely fresh explicit acquisition to cac
   expect(await storage.getClearEpoch()).toBe(1);
 });
 
-it("ordinary read-proven deletion fences the model, heals entry storage and broadcasts once", async () => {
-  const storage = cache();
+it("ordinary disk-only read-proven deletion keeps cached content visible while healing entry storage and broadcasting once", async () => {
+  const storage = await seedDiskOnlyOpening();
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
-  expect(
-    await storage.commitBatch({
-      historyKey: key,
-      clearEpoch: 0,
-      items: [],
-      sessionMetadata: {
-        historyKey: key,
-        requestedRefs: [{ clientId: location.origin, ref: "local:a" }],
-        resolvedIdentity: { ...identity, clientId: location.origin },
-        savedAt: storage.now(),
-        accessedAt: storage.now(),
-        formatVersion: 3,
-      },
-    }),
-  ).toMatchObject({ outcome: "committed" });
   const posted: unknown[] = [];
   const channel = Object.assign(new EventTarget(), {
     name: "evener.session-cache.v1",
@@ -917,19 +1005,50 @@ it("ordinary read-proven deletion fences the model, heals entry storage and broa
   });
   setCacheChannelFactoryForTests(() => channel);
   const client = connect();
-  client.on("thread/read", () => {
-    throw new WireError("target deleted", -32001, {
-      evenerErrorInfo: "actionUnavailable",
-      mutationOutcome: "targetDeleted",
-      retryDisposition: "none",
+  let rejectRead: (() => void) | undefined;
+  let sourcePending = false;
+  client.on(
+    "thread/read",
+    () =>
+      new Promise((_, reject) => {
+        sourcePending = true;
+        rejectRead = () => {
+          sourcePending = false;
+          reject(
+            new WireError("target deleted", -32001, {
+              evenerErrorInfo: "actionUnavailable",
+              mutationOutcome: "targetDeleted",
+              retryDisposition: "none",
+            }),
+          );
+        };
+      }),
+  );
+  const opening = threadsStore.getState().ensureThread("local:a");
+  const visible = () =>
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.history?.turns.map((turn) => turn.id);
+  try {
+    await vi.waitFor(() => {
+      expect(sourcePending).toBe(true);
+      expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
     });
-  });
-  await threadsStore.getState().ensureThread("local:a");
-  await settleProjectionWorkForTests();
-  expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
-  expect(threadsStore.getState().threads.has("local:a")).toBe(false);
-  expect(await countCachedSessions()).toBe(0);
-  expect(posted).toEqual([{ version: 1, sourceId: expect.any(String), kind: "deletion", refs: ["local:a"] }]);
+    expect(await storage.getLatest(key, 200)).toHaveLength(3);
+    if (!rejectRead) throw new Error("deletion read was not issued");
+    rejectRead();
+    await opening;
+    await settleProjectionWorkForTests();
+    expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
+    expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
+    expect(await storage.getLatest(key, 200)).toEqual([]);
+    expect(await countCachedSessions()).toBe(0);
+    expect(posted).toEqual([{ version: 1, sourceId: expect.any(String), kind: "deletion", refs: ["local:a"] }]);
+  } finally {
+    rejectRead?.();
+    await opening;
+  }
 });
 
 it("ordinary content clear retires the old entry history so a late old push cannot restore it", async () => {
