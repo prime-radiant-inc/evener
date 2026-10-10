@@ -656,7 +656,7 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// flight holds it idle for now: a later wake that runs no turn settles
 	// again and arms it once nothing moves the session.
 	s.mu.Lock()
-	s.restOwed = generation
+	s.restOwedGeneration = generation
 	s.mu.Unlock()
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a

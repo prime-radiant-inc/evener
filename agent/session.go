@@ -650,10 +650,12 @@ type Session struct {
 	// that turns out to have nothing to deliver runs no turn, so it settles
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
-	// restOwed is the restGeneration of the settle that last found a
+	// restOwedGeneration is the restGeneration of the settle that last found a
 	// needs_response turn with output, whether it scheduled the quiet period
-	// or work in flight held the session idle; 0 before any. Guarded by s.mu.
-	restOwed uint64
+	// or work in flight held the session idle; 0 before any. A fresh
+	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
+	// by s.mu.
+	restOwedGeneration uint64
 	// quietRestBeforeInput records that the current input started while that
 	// rest was still owed: no turn or settle since, and the session idle. The
 	// input's turn start cancelled it. Guarded by s.mu.

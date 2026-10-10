@@ -2030,7 +2030,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", false, errors.New("session is closed")
 	}
 	s.restBeforeInput = s.state
-	s.quietRestBeforeInput = s.restOwed != 0 && s.restStillPendingLocked(s.restOwed)
+	s.quietRestBeforeInput = s.restOwedGeneration != 0 && s.restStillPendingLocked(s.restOwedGeneration)
 	s.endReasonBeforeInput = s.comm.endReason
 	// A resume the last settle never consumed (it returned early for a
 	// pending question, or the drain loop returned before settling) must not

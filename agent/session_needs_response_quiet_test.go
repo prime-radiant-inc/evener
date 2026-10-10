@@ -22,6 +22,26 @@ func newQuietPeriodSession(t *testing.T, steps ...func(llm.Request) llm.Response
 	return newSession(t, withSteps(steps...), withClock(fake)), fake
 }
 
+// requireRestsAwaitingAfterFreshQuietPeriod checks that a session whose rest a
+// wake just resumed stays idle for a full quiet period from that wake, then
+// rests awaiting and announces it exactly once.
+func requireRestsAwaitingAfterFreshQuietPeriod(t *testing.T, sess *Session, fake *agenttest.FakeClock, evs *[]events.SessionEvent, mu *sync.Mutex, done <-chan struct{}) {
+	t.Helper()
+	fake.Advance(needsResponseQuietPeriodDefault - time.Millisecond)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state just before the fresh quiet period ends = %q, want idle", got)
+	}
+	fake.Advance(time.Millisecond)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state once the fresh quiet period ends = %q, want awaiting", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
+		t.Fatalf("status settled events = %v, want one awaiting", got)
+	}
+}
+
 // settledStatesAfterClose closes sess, waits for its event stream to end, and
 // lists the states it announced through EventStatusSettled.
 func settledStatesAfterClose(sess *Session, evs *[]events.SessionEvent, mu *sync.Mutex, done <-chan struct{}) []string {
@@ -500,19 +520,7 @@ func TestFilteredWakeInsideTheQuietPeriodStillRestsAwaiting(t *testing.T) {
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("state right after the filtered wake = %q, want idle", got)
 	}
-	fake.Advance(needsResponseQuietPeriodDefault - time.Millisecond)
-	fake.Drain()
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state just before the fresh quiet period ends = %q, want idle", got)
-	}
-	fake.Advance(time.Millisecond)
-	fake.Drain()
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state once the fresh quiet period ends = %q, want awaiting", got)
-	}
-	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
-		t.Fatalf("status settled events = %v, want one awaiting", got)
-	}
+	requireRestsAwaitingAfterFreshQuietPeriod(t, sess, fake, evs, mu, done)
 }
 
 // A real turn inside the quiet period a filtered wake re-armed still cancels
@@ -733,17 +741,5 @@ func TestFilteredWakeAfterWorkInFlightEndsRestsAwaiting(t *testing.T) {
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("filtered wake: %v", err)
 	}
-	fake.Advance(needsResponseQuietPeriodDefault - time.Millisecond)
-	fake.Drain()
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state just before the fresh quiet period ends = %q, want idle", got)
-	}
-	fake.Advance(time.Millisecond)
-	fake.Drain()
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state once the fresh quiet period ends = %q, want awaiting", got)
-	}
-	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
-		t.Fatalf("status settled events = %v, want one awaiting", got)
-	}
+	requireRestsAwaitingAfterFreshQuietPeriod(t, sess, fake, evs, mu, done)
 }
