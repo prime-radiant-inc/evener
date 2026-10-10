@@ -432,7 +432,7 @@ it("titles the header with the session's state, and opens its info on a press", 
 	if (typeof title !== "function") throw new Error("no header title component");
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Finished" } });
+	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Idle" } });
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });

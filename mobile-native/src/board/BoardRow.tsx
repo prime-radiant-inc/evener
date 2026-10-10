@@ -31,7 +31,7 @@ import { isTopLevel } from "./rowActions";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
-	/** Signal rows (Needs you, unseen Finished, Working in Live) have up to
+	/** Signal rows (Needs you and Working in Live) have up to
 	 * three lines; quiet rows (Idle, and rows in pinned categories, Projects
 	 * and Archived) have one. */
 	variant: "signal" | "quiet";

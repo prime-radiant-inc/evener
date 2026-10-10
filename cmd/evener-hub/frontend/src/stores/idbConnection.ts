@@ -9,13 +9,15 @@ interface IDBConnectionOptions {
   // The cache sweeps expired rows before installing a connection. The outbox
   // installs immediately; neither adapter closes a healthy connection per call.
   prepare?: (database: IDBDatabase) => Promise<void>;
+  // Each adapter brands its own failures, so a caller can tell the storage
+  // failing from anything else it might throw.
   errors: {
-    open: string;
-    superseded: string;
+    open: () => Error;
+    superseded: () => Error;
     timeout: () => Error;
     // The outbox rejects blocked opens immediately. The cache only reports
     // them and keeps waiting for success or its open watchdog.
-    blocked?: string;
+    blocked?: () => Error;
   };
   reportDiagnostic: (path: OpenDiagnosticPath, versionchangeTransaction: boolean) => void;
   reportOpenError?: (error: Error) => void;
@@ -132,7 +134,7 @@ export class IDBConnection {
             if (!abandoned && this.#databasePromise === opening) return false;
             clearTimeout(timer);
             database.close();
-            reject(new Error(options.errors.superseded));
+            reject(options.errors.superseded());
             return true;
           };
           if (superseded()) return;
@@ -171,7 +173,7 @@ export class IDBConnection {
         "error",
         () => {
           if (abandoned) return;
-          const error = request.error ?? new Error(options.errors.open);
+          const error = request.error ?? options.errors.open();
           options.reportOpenError?.(error);
           fail(error);
         },
@@ -181,7 +183,7 @@ export class IDBConnection {
         "blocked",
         () => {
           options.reportDiagnostic("open-blocked", Boolean(request.transaction));
-          if (options.errors.blocked !== undefined) fail(new Error(options.errors.blocked));
+          if (options.errors.blocked !== undefined) fail(options.errors.blocked());
         },
         { once: true },
       );

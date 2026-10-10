@@ -13,7 +13,9 @@ root. Paths are relative to that scope and may include subdirectories. Absolute
 paths, escapes and symlink indirection are rejected by shared confinement.
 There is no `root` or `project_id` argument.
 
-Disabled or unbound sessions expose none of these tools. An unavailable project
+Disabled or unbound sessions expose none of these tools. A delegate exposes
+only `memory_read` and `memory_search`, whatever its role or parent grants; it
+reports what it learned to its parent, which decides what to save. An unavailable project
 binding does not authorize another project's storage. Stored text cannot grant
 scope or filesystem access. Ordinary tool-call `intent` metadata, where
 advertised, has the same purpose as for other tools.
@@ -24,7 +26,7 @@ All rows below also require `scope`. Unknown arguments are rejected.
 
 | Tool | Required operation arguments | Optional operation arguments | Effect |
 | --- | --- | --- | --- |
-| `memory_read` | `file_path` | `offset` (1-based start line, default 1), `limit` (line count, default 2000), `vision_prompt` (image/PDF extraction request) | Ordinary `ReadFile` presentation, including line-numbered text and existing image/PDF handling. An explicit missing read fails normally. A text page other than `MEMORY.md` longer than 4096 bytes ends with a note giving its size in KB (rounded up), pointing at the `gardening-memory` skill when the session can load it, otherwise saying a page should hold one fact. `MEMORY.md` at the scope root is not a file: the read renders the generated index in full, with no size cap, paged by `offset`/`limit`, or says the scope has no pages yet. |
+| `memory_read` | `file_path` | `offset` (1-based start line, default 1), `limit` (line count, default 2000), `vision_prompt` (image/PDF extraction request) | Ordinary `ReadFile` presentation, including line-numbered text and existing image/PDF handling. An explicit missing read fails normally. A text page other than `MEMORY.md` longer than 4096 bytes ends with a note giving its size in KB (rounded up), pointing at the `gardening-memory` skill when the session can load it and has the save tools it uses (never in a delegate), otherwise saying a page should hold one fact. `MEMORY.md` at the scope root is not a file: the read renders the generated index in full, with no size cap, paged by `offset`/`limit`, or says the scope has no pages yet. |
 | `memory_write` | `file_path`, `content` | None | Ordinary `WriteFile`: create the file and parent directories if needed, or replace the entire existing file. Content is accepted unchanged. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab (a newline, say), which no index line can link to. |
 | `memory_edit` | `file_path`, `old_string`, `new_string` | `replace_all` (default false) | Ordinary `EditFile`: replace a unique exact match, or deliberately replace every occurrence when `replace_all` is true. Read first and include enough context for a unique match. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab. |
 | `memory_search` | `pattern` (regex) | `path`, `glob_filter`, `case_insensitive`, `max_results` (default 100), `context_lines` (0–10, default 0), `output_mode` (`content`, `files_with_matches`, `count`, default `content`) | Ordinary `Grep`, with matching lines, filenames or per-file counts. `glob_filter` supports `*`, `?`, `[]`, `**` and bounded brace alternatives. Dotfiles/directories and gitignored paths are excluded. It never searches a root `MEMORY.md` (any case). A result names a file whose path holds an ASCII control character other than tab as a JSON string, so every result stays one line. A search that found more results than `max_results` shows the first `max_results` and ends with a line saying it was truncated and how to see the rest. |

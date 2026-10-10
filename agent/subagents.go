@@ -447,7 +447,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
 		if agent.PluginName == "builtin" {
-			allowed = appendUniqueStrings(allowed, nativeMemoryToolNames...)
+			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
 		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
 		// Delegation tools in a typed role's list are allowance-gated: a role
@@ -523,6 +523,10 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 		selected[resultToolName] = true
 	}
 	for _, name := range protectedGrantTools() {
+		delete(selected, name)
+	}
+	// No delegate saves memory (filterUnavailableMemoryTools).
+	for _, name := range memorySaveToolNames {
 		delete(selected, name)
 	}
 	if !canDelegate {

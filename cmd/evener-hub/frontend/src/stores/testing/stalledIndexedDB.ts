@@ -8,6 +8,15 @@ export function neverSettlingRequest(): IDBOpenDBRequest {
   return new EventTarget() as unknown as IDBOpenDBRequest;
 }
 
+// An open request another tab's older-version connection blocks: it fires
+// "blocked" on the next task and nothing else, the shape a tab still holding
+// the previous schema produces for an upgrade.
+export function blockedUpgradeRequest(): IDBOpenDBRequest {
+  const request = Object.assign(new EventTarget(), { transaction: null });
+  setTimeout(() => request.dispatchEvent(new Event("blocked")), 0);
+  return request as unknown as IDBOpenDBRequest;
+}
+
 // A fake-indexeddb factory whose open() returns the never-settling request:
 // neverSettlingRequest() alone IS the dead open request, and a wedged-open
 // adapter needs a factory handing that request out.

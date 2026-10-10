@@ -74,13 +74,24 @@ const STORAGE_WAIT_MS = 10_000;
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
+// The outbox's own storage failures: an open the database refused or that
+// another tab's older schema blocked, or a connection superseded mid-open.
+// Callers tell storage failing from a rejected record by this brand (and by
+// IndexedDB's own DOMException names), never by message.
+export class MutationStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MutationStorageError";
+  }
+}
+
 // The one neutral message for a transaction that timed out. The same error
 // covers reads, Stop, cancel, and enqueue writes, so the sentence must read
 // after any action headline ("Send failed: ...", "Stop failed: ...") and name
 // neither a draft nor a cause. It is a bare retryable detail, never a gate - a
 // stuck open is not remembered, so every later operation still attempts the
 // open and a send after the open recovers succeeds.
-export class MutationStorageTimeoutError extends Error {
+export class MutationStorageTimeoutError extends MutationStorageError {
   constructor() {
     super("It didn't go through. Try again.");
     this.name = "MutationStorageTimeoutError";
@@ -178,10 +189,10 @@ export class MutationOutboxIndexedDB {
       waitMs: STORAGE_WAIT_MS,
       upgrade: (database) => this.#upgrade(database),
       errors: {
-        open: "Unable to open mutation outbox",
-        superseded: "Mutation outbox connection was closed",
+        open: () => new MutationStorageError("Unable to open mutation outbox"),
+        superseded: () => new MutationStorageError("Mutation outbox connection was closed"),
         timeout: () => new MutationStorageTimeoutError(),
-        blocked: "Mutation outbox upgrade is blocked",
+        blocked: () => new MutationStorageError("Mutation outbox upgrade is blocked"),
       },
       reportDiagnostic: (path, active) => this.#reportOpenDiagnostic(path, active),
     });
