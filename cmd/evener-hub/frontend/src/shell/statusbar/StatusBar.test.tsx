@@ -247,9 +247,19 @@ test("embedded Tasks counts still use the exact selected navigation row", async 
   installFocusedScope(ref, summaryOf({ ref, title: "Tasks owner", tasks: { total: 5, done: 2 } }));
   connectionStore.getState().connect(client);
   render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
-  expect(await screen.findByRole("button", { name: /Tasks, 2 of 5 done/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /Tasks, 2 of 5 done/ }));
+  expect(await screen.findByRole("button", { name: /Tasks, 2 of 5 settled/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Tasks, 2 of 5 settled/ }));
   expect(activitySidebarStore.getState().tab).toBe("tasks");
+});
+
+test("the Tasks chip counts cancelled tasks toward its settled count", async () => {
+  const ref = "remote:tasks-cancelled",
+    client = activityClient();
+  installFocusedScope(ref, summaryOf({ ref, title: "Tasks owner", tasks: { total: 5, done: 2, cancelled: 1 } }));
+  connectionStore.getState().connect(client);
+  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
+  const chip = await screen.findByRole("button", { name: /Tasks, 3 of 5 settled/ });
+  expect(chip.textContent).toContain("3/5");
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {
@@ -306,7 +316,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
   expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 done" })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
   expectCounts(2, 6);

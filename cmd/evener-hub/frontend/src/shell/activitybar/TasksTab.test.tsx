@@ -128,7 +128,7 @@ function renderSidebar() {
 
 function expectNoSummaries() {
   const sidebar = within(screen.getByTestId("activity-sidebar"));
-  expect(sidebar.queryByText(/\d+ of \d+ done/)).toBeNull();
+  expect(sidebar.queryByText(/\d+ of \d+ settled/)).toBeNull();
   expect(sidebar.queryByTestId("tasks-body-head")).toBeNull();
 }
 
@@ -166,12 +166,12 @@ describe("TasksTab", () => {
 
   test("renders groups and disclosures inline without redundant summaries or opening a pane", async () => {
     const user = userEvent.setup();
-    const counts = { total: 4, done: 1, current: { id: 2, description: "Current work" } };
+    const counts = { total: 4, done: 1, cancelled: 1, current: { id: 2, description: "Current work" } };
     connectTasks(() => TASKS, counts);
     openTasks(counts);
     renderSidebar();
     await screen.findByText("Remaining work");
-    expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 done" }).textContent).toBe("Tasks\n1/4");
+    expect(screen.getByRole("radio", { name: "Tasks, 2 of 4 settled" }).textContent).toBe("Tasks\n2/4");
     expect(screen.getByRole("heading", { name: "Current 1" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Remaining 1" })).toBeTruthy();
     const settled = screen.getByTestId("task-settled-group");
@@ -190,28 +190,29 @@ describe("TasksTab", () => {
   });
 
   test.each([
-    { state: "empty", rows: [], counts: { total: 0, done: 0 }, label: "No tasks yet" },
-    { state: "completed", rows: [TASKS[0]], counts: { total: 1, done: 1 }, label: "1 completed task" },
+    { state: "empty", rows: [], counts: { total: 0, done: 0 }, label: "No tasks yet", settled: 0 },
+    { state: "completed", rows: [TASKS[0]], counts: { total: 1, done: 1 }, label: "1 completed task", settled: 1 },
     {
       state: "cancelled",
       rows: [TASKS[3]],
       counts: { total: 1, done: 0, cancelled: 1, remaining: 0 },
       label: "1 cancelled task",
+      settled: 1,
     },
-  ])("keeps the $state state and tab count without either summary", async ({ rows, counts, label }) => {
+  ])("keeps the $state state and tab count without either summary", async ({ rows, counts, label, settled }) => {
     connectTasks(() => rows, counts);
     openTasks(counts);
     renderSidebar();
     await screen.findByText(label);
-    expect(screen.getByRole("radio", { name: `Tasks, ${counts.done} of ${counts.total} done` }).textContent).toBe(
-      `Tasks\n${counts.done}/${counts.total}`,
+    expect(screen.getByRole("radio", { name: `Tasks, ${settled} of ${counts.total} settled` }).textContent).toBe(
+      `Tasks\n${settled}/${counts.total}`,
     );
     expectNoSummaries();
   });
 
   test("live task updates refresh groups and tab counts without restoring summaries", async () => {
     let rows: Task[] = TASKS;
-    const counts = { total: 4, done: 1 };
+    const counts = { total: 4, done: 1, cancelled: 1 };
     const fake = connectTasks(() => rows, counts);
     openTasks(counts);
     renderSidebar();
@@ -228,7 +229,7 @@ describe("TasksTab", () => {
     });
     await screen.findByText("4 completed tasks");
     expect(screen.queryByRole("heading", { name: /Current|Remaining/ })).toBeNull();
-    expect(screen.getByRole("radio", { name: "Tasks, 4 of 4 done" }).textContent).toBe("Tasks\n4/4");
+    expect(screen.getByRole("radio", { name: "Tasks, 4 of 4 settled" }).textContent).toBe("Tasks\n4/4");
     expectNoSummaries();
   });
 
