@@ -380,6 +380,15 @@ class TrialStateTest(unittest.TestCase):
         self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))
 
 
+def scenario_dir(test, spec):
+    """A temporary scenario dir holding spec as its scenario.json, removed at test cleanup."""
+    scen = tempfile.TemporaryDirectory()
+    test.addCleanup(scen.cleanup)
+    with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+        json.dump(spec, f)
+    return scen.name
+
+
 def event(kind, session="root", **data):
     return json.dumps({"kind": kind, "session_id": session, "data": data})
 
@@ -494,11 +503,8 @@ class ScenarioValidationTest(unittest.TestCase):
     """load_scenario refuses a scenario that can't run as written."""
 
     def load(self, stage):
-        scen = tempfile.TemporaryDirectory()
-        self.addCleanup(scen.cleanup)
-        with open(os.path.join(scen.name, "scenario.json"), "w") as f:
-            json.dump({"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}, f)
-        return bookkeeping.lab.load_scenario(scen.name)
+        return bookkeeping.lab.load_scenario(
+            scenario_dir(self, {"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}))
 
     def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
         # A fixture stage whose workspace already exists skips its setup and runs there: the trial's
@@ -508,6 +514,14 @@ class ScenarioValidationTest(unittest.TestCase):
                 with self.assertRaises(SystemExit) as refused:
                     self.load({"fixture": "fixture2", "workspace": name})
                 self.assertIn('"workspace" must be work or work followed by digits', str(refused.exception))
+
+    def test_memory_writes_max_must_be_a_non_negative_integer(self):
+        for bad in ({}, {"max": -1}, {"max": "3"}, {"max": True}, {"max": 2.5}):
+            with self.subTest(check=bad):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load({"memory_writes": [{"name": "few", **bad}]})
+                self.assertIn('needs "max"', str(refused.exception))
+        self.assertEqual(self.load({"memory_writes": [{"name": "few", "max": 0}]})["stages"][1]["memory_writes"][0]["max"], 0)
 
     def test_a_work_numbered_workspace_loads(self):
         for name in ("work2", "work10"):
@@ -541,6 +555,82 @@ class ArmDeltasTest(unittest.TestCase):
         grades = [self.grade("on", True), self.grade("on", False)]
         self.assertEqual(bookkeeping.lab.arm_deltas(grades), {})
         self.assertEqual(bookkeeping.lab.arm_costs(grades), {})
+
+
+class SessionMemoryWritesTest(unittest.TestCase):
+    """A multi-turn scenario delivers each partner turn as a stage that resumes one session; memory_writes
+    checks and the report count memory writes and edits per session and per turn."""
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.trial = root.name
+        os.makedirs(os.path.join(self.trial, "work"))
+        os.makedirs(os.path.join(self.trial, "xdg"))
+        os.makedirs(os.path.join(self.trial, "sessions", "A"))
+
+    def grade(self, name, session, tools, max_writes, earlier, refused=()):
+        """Grades stage name, whose root session ran the given tool calls, against a memory_writes check.
+        The calls at the indexes in refused end with an error."""
+        lines = [event("SESSION_START", session=session)]
+        for i, t in enumerate(tools):
+            lines.append(event("TOOL_CALL_START", session=session, tool_name=t, call_id=f"c{i}", arguments_json="{}"))
+            end = {"error": "invalid frontmatter"} if i in refused else {"output": "ok"}
+            lines.append(event("TOOL_CALL_END", session=session, tool_name=t, call_id=f"c{i}", **end))
+        events = events_file(self, lines)
+        session_info = {"work": os.path.join(self.trial, "work"), "xdg": os.path.join(self.trial, "xdg"),
+                        "env": dict(os.environ), "state": os.path.join(self.trial, "sessions", "A"),
+                        "events": events, "started": 0, "exit": 0, "seconds": 1, "timeout": 10}
+        stage = {"name": name, "prompt": "p", "memory_writes": [{"name": "few writes", "max": max_writes}]}
+        return bookkeeping.lab.grade_stage("try", "on", "/s/multi", stage, self.trial, session_info, earlier)
+
+    def test_the_check_counts_writes_and_edits_across_the_turns_of_one_session(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_read", "shell"], 2, [])
+        b = self.grade("B", "s1", ["memory_edit"], 2, [a])
+        c = self.grade("C", "s1", ["memory_write", "memory_delete"], 2, [a, b])
+        self.assertEqual([g["checks"]["few writes"] for g in (a, b, c)], [True, True, False])
+
+    def test_a_refused_write_counts_because_it_is_a_transcript_entry(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 1, [], refused={0})
+        self.assertFalse(a["checks"]["few writes"])
+
+    def test_a_fresh_session_starts_its_own_count(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 2, [])
+        b = self.grade("B", "s2", ["memory_write"], 2, [a])
+        self.assertTrue(b["checks"]["few writes"])
+
+    def test_report_counts_writes_per_session_and_per_turn(self):
+        def g(trial, stage, session, calls, error=None):
+            out = {"scenario": "multi", "version": "try", "arm": "on", "trial": trial, "stage": stage,
+                   "session_id": session, "memory_calls": calls}
+            if error:
+                out["error"] = error
+            return out
+        grades = [g("r1", "A", "s1", {"memory_write": 2, "memory_read": 4}), g("r1", "B", "s1", {"memory_edit": 1}),
+                  g("r1", "C", "s2", {}),
+                  g("r2", "A", "s3", {}), g("r2", "B", "s3", {"memory_write": 1}),
+                  g("r2", "C", "s4", {}, error="session timed out")]
+        sessions, turns = bookkeeping.lab.memory_changes(grades)[("multi", "try", "on")]
+        self.assertEqual(sorted(sessions), [0, 1, 3])
+        self.assertEqual(turns, {"A": [2, 0], "B": [1, 1], "C": [0]})
+
+
+class TrialJobsTest(unittest.TestCase):
+    """run --arm limits a run to one arm of each scenario that declares it."""
+
+    def scenario(self, arms):
+        return scenario_dir(self, {"arms": arms, "stages": [{"name": "A", "prompt": "p"}]})
+
+    def test_every_declared_arm_runs_by_default(self):
+        both = self.scenario(["on", "off"])
+        jobs = bookkeeping.lab.trial_jobs([both], {"base": "/b"}, 2, None)
+        self.assertEqual([(label, arm, rep) for label, _, arm, _, rep in jobs],
+                         [("base", "on", 1), ("base", "on", 2), ("base", "off", 1), ("base", "off", 2)])
+
+    def test_arm_keeps_only_that_arm_where_a_scenario_declares_it(self):
+        both, on_only = self.scenario(["on", "off"]), self.scenario(["on"])
+        jobs = bookkeeping.lab.trial_jobs([both, on_only], {"base": "/b"}, 1, "off")
+        self.assertEqual([(scen, arm) for _, _, arm, scen, _ in jobs], [(both, "off")])
 
 
 if __name__ == "__main__":
