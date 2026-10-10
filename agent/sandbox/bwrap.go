@@ -199,6 +199,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		}
 		maskInvisible(&a, masked, m)
 	}
+	// The roots carved out of the mask (Evener's plugin store and user skills
+	// directory) are re-bound read-only on top of it. Like the masks, they are
+	// bound at their symlink-resolved real path, where the mask landed.
+	for _, r := range rp.UnmaskedRoots {
+		if resolved, err := bwrapEvalSymlinks(r); err == nil {
+			add("--ro-bind", resolved, resolved)
+		}
+	}
 
 	// ModeReadOnly and WriteBlocked allow only session scratch writes. Remount
 	// /tmp after all binds and masks have created their mountpoints: doing it

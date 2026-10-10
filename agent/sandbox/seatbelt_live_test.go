@@ -877,3 +877,58 @@ func TestSeatbeltLiveDenylistBeatsDeveloperToolRoots(t *testing.T) {
 		t.Errorf("the denylist must beat the developer-tools grant, but %q was still readable:\n%s", probeFile, out)
 	}
 }
+
+// TestSeatbeltLiveReadsEvenerContentThroughTheMask: under the real sandbox-exec,
+// every mode reads and runs Evener content carved out of the masked
+// ~/.config/evener, cannot write it, and still cannot read the rest (#4171).
+func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
+	requireLiveSeatbelt(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	skills := filepath.Join(config, "skills")
+	plugin := filepath.Join(store, "cache", "mkt", "plugin", "abc")
+	template := filepath.Join(plugin, "skills", "review", "template.md")
+	hook := filepath.Join(plugin, "hooks", "start.sh")
+	userSkill := filepath.Join(skills, "mine", "SKILL.md")
+	secret := filepath.Join(config, "hub.toml")
+	for path, body := range map[string]string{template: "template\n", hook: "#!/bin/sh\necho HOOK-RAN\n", userSkill: "user skill\n", secret: "token = 'x'\n"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `test "$(cat "$1")" = template && echo SKILL-READ
+test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
+"$3"
+if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
+if cat "$4" >/dev/null 2>&1; then echo SECRET-VISIBLE; fi`
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, cwd := liveResolve(t, mode, true, func(p *SandboxPolicy) { p.InfraReadRoots = []string{plugin} })
+			facts := rp.resolveHost
+			facts.Home = home
+			facts.EvenerContentRoots = []string{store, skills}
+			rp, err := Resolve(rp.resolveInputs, facts, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, _ := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script, "content-test", template, userSkill, hook, secret)
+			for _, want := range []string{"SKILL-READ", "USER-SKILL-READ", "HOOK-RAN"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
+				}
+			}
+			for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE"} {
+				if strings.Contains(out, bad) {
+					t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
+				}
+			}
+		})
+	}
+}

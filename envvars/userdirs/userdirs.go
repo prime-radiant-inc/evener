@@ -34,6 +34,12 @@ func Subdir(root, name string) string {
 	return filepath.Join(root, name)
 }
 
+// PluginStore is Evener's plugin store under a config root.
+func PluginStore(root string) string { return Subdir(root, "plugins") }
+
+// UserSkills is the user's own skills directory under a config root.
+func UserSkills(root string) string { return Subdir(root, "skills") }
+
 // DefaultConfigRoot resolves the user config root from the process environment.
 func DefaultConfigRoot() string {
 	return ConfigRoot(envvars.XDGConfigHome.Getenv(), os.UserHomeDir)

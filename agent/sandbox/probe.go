@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
@@ -110,6 +111,16 @@ type HostFacts struct {
 	// masked. A path that does not exist contributes nothing and never fails
 	// session start.
 	GitGlobalConfigPaths []string
+
+	// EvenerContentRoots are Evener's plugin store and the user's skills
+	// directory, at their configured locations (honouring XDG_CONFIG_HOME). By
+	// default both sit inside ~/.config/evener, which the credential denylist
+	// masks, yet they hold only content the session itself loads: the skills
+	// whose BaseDirectory it hands the model and the plugin hook scripts it
+	// runs. Resolve carves them out of the mask read-only (UnmaskedRoots).
+	// Missing directories are listed anyway, so one created mid-session is
+	// readable at its next spawn.
+	EvenerContentRoots []string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -215,6 +226,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.EvenerContentRoots = probeEvenerContentRoots(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -274,6 +286,16 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// probeEvenerContentRoots returns the plugin store and user skills directory
+// under Evener's config root, or nothing when the root cannot be resolved.
+func probeEvenerContentRoots(system probeSystem) []string {
+	root := userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
+	if root == "" {
+		return nil
+	}
+	return []string{userdirs.PluginStore(root), userdirs.UserSkills(root)}
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

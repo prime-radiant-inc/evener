@@ -175,7 +175,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -185,7 +185,8 @@ unsandboxed root's `TMPDIR` is not in the tree.
   contained caches. This is the natural mode for coding work that must not touch
   anything outside the project.
 - **`restricted`** is the tightest mode: the model's file tools can only browse and
-  write inside the worktree. Spawned processes additionally get read-only access to
+  write inside the worktree, plus read Evener's own content (the plugin store and
+  your skills directory, below). Spawned processes additionally get read-only access to
   the system roots a process needs to run — `/usr`, `/bin`, `/sbin`, `/lib`,
   `/lib64`, `/etc`, `/opt`, `/nix/store`, and on macOS the developer-toolchain
   directories below — but not
@@ -335,6 +336,24 @@ daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot driv
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
 affect `AF_UNIX`).
+
+**One exception to "the mask wins": Evener's own content.** The plugin store
+(`~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
+sit inside the masked `~/.config/evener` by default, but they hold only content
+the session itself loads: the skills whose `base_directory` it hands the model,
+and the hook scripts of installed plugins it runs. Masking them broke both, in
+every mode: a skill's own templates were unreadable, and installed plugins' hooks
+could not run. So every mode reads those two directories, **read-only**, in both
+layers (`restricted` included), carved out of the mask; the rest of
+`~/.config/evener`, where hub configuration and credentials live, stays masked.
+The carve-out never writes, never touches the pseudo-filesystem floor, and is
+refused for a directory that contains a masked path, so adding a path inside the
+store to the denylist keeps the whole store masked. Both locations follow
+`$XDG_CONFIG_HOME` the way Evener does. One thing to know: a marketplace or plugin
+added from a git URL with a token embedded in it (`https://user:token@host/…`) keeps
+that URL in the store's `known_marketplaces.json` and in the clone's `.git/config`,
+so a sandboxed session can read it; use SSH or a git credential helper for private
+marketplaces instead.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:
@@ -551,12 +570,15 @@ The grant is tightly bounded:
   normally; it just cannot hand itself filesystem roots.
 - **Read and exec only.** The write surface is unchanged; a hook's own directory
   stays unwritable in every mode.
-- **Spawned layer only.** File tools do not gain a browse grant over the plugin
-  cache, so `restricted` still holds the model's own reads to the worktree.
+- **Spawned layer only.** This grant gives the file tools no browse access to a hook
+  or MCP path. (Installed plugins live in Evener's plugin store, which every mode
+  reads read-only anyway; see the denylist section.)
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
   granted, and a denylisted subtree inside a granted path stays masked — the
   pseudo-filesystem floor and the credential denylist are authoritative over this
-  grant as over every other.
+  grant as over every other. The one exception is Evener's own content (the plugin
+  store and your skills directory), carved out of the `~/.config/evener` mask for
+  the reasons in the denylist section, so a plugin's hooks run from the store.
 - **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
   or *above* the user's home directory, the session's worktree, or a temp root, or
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,

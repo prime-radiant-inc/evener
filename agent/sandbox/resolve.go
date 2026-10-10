@@ -139,6 +139,13 @@ type ResolvedPolicy struct {
 	// /proc masks /proc/<pid>/environ; masking ~/.ssh masks its whole tree).
 	MaskedPaths []string
 
+	// UnmaskedRoots are read-only roots carved out of MaskedPaths: Evener's
+	// plugin store and user skills directory (HostFacts.EvenerContentRoots),
+	// readable in both layers in every mode. A root is admitted only if it holds
+	// no masked path and lies outside the pseudo-fs floor, so the carve-out
+	// exposes that content and nothing the credential denylist protects.
+	UnmaskedRoots []string
+
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
@@ -207,10 +214,8 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	for _, masked := range rp.MaskedPaths {
-		if filepath.IsAbs(masked) && pathUnder(path, masked) {
-			return false
-		}
+	if rp.Masks(path) {
+		return false
 	}
 	if rp.FileTool.Read == ReadAnywhere {
 		return true
@@ -218,6 +223,19 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	for _, root := range rp.FileTool.ReadRoots {
 		if filepath.IsAbs(root) && pathUnder(path, root) {
 			return true
+		}
+	}
+	return false
+}
+
+// Masks reports whether path is denied by the masked set: at or beneath a
+// masked path and not inside one of the UnmaskedRoots carved out of it. Every
+// layer asks this one question, so the file tools, the policy filters and the
+// backends agree on what a mask hides.
+func (rp ResolvedPolicy) Masks(path string) bool {
+	for _, masked := range rp.MaskedPaths {
+		if filepath.IsAbs(masked) && (path == masked || pathUnder(path, masked)) {
+			return !isUnderAnyRoot(path, rp.UnmaskedRoots)
 		}
 	}
 	return false
@@ -407,13 +425,20 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveInputs: policy,
 		resolveHost:   host,
 	}
+	rp.UnmaskedRoots = unmaskedContentRoots(host.EvenerContentRoots, masked, host.Home, worktree)
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
-	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, masked)
-	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, masked)
-	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, masked)
-	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, masked)
+	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, rp)
+	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
+	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, rp)
+	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+
+	// The carved-out content roots are read roots in both layers in every mode:
+	// the grant restricted mode needs, and an open anchor for the file tools of
+	// the read-anywhere modes.
+	rp.FileTool.ReadRoots = dedupeRoots(slices.Concat(rp.FileTool.ReadRoots, rp.UnmaskedRoots))
+	rp.Spawned.ReadRoots = dedupeRoots(slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots))
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
@@ -439,7 +464,7 @@ func toolchainBinDir(host HostFacts, rp ResolvedPolicy, worktree string) string 
 	if len(guardedHostRoots([]string{bin}, host.Home, worktree)) == 0 {
 		return ""
 	}
-	if len(filterMasked([]string{bin}, rp.MaskedPaths)) == 0 {
+	if len(filterMasked([]string{bin}, rp)) == 0 {
 		return ""
 	}
 	if rp.Spawned.Read == ReadWorktreeOnly && !isUnderAnyRoot(bin, rp.Spawned.ReadRoots) {
@@ -635,22 +660,15 @@ func dedupeRoots(roots []string) []string {
 	return out
 }
 
-// filterMasked drops any root that is at or beneath a masked path, upholding the
-// invariant that a resolved policy never grants a denylisted/pseudo-fs path.
-func filterMasked(roots, masked []string) []string {
+// filterMasked drops any root the policy masks (ResolvedPolicy.Masks), upholding
+// the invariant that a resolved policy never grants a denylisted/pseudo-fs path.
+func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	if len(roots) == 0 {
 		return roots
 	}
 	out := roots[:0:0]
 	for _, r := range roots {
-		blocked := false
-		for _, m := range masked {
-			if r == m || pathUnder(r, m) {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
+		if !rp.Masks(r) {
 			out = append(out, r)
 		}
 	}
@@ -658,4 +676,25 @@ func filterMasked(roots, masked []string) []string {
 		return nil
 	}
 	return out
+}
+
+// unmaskedContentRoots admits the host's Evener content roots as read-only
+// roots carved out of the mask. A candidate is refused when it fails the
+// shared-tree guard (relative, at or above home, the worktree or a temp root),
+// lies at or beneath the non-removable pseudo-fs floor, or holds a masked path:
+// carving out a directory that contains a masked path would expose that path,
+// so a user's own denylist addition inside the store keeps the whole store
+// masked.
+func unmaskedContentRoots(candidates, masked []string, home, worktree string) []string {
+	var out []string
+	for _, root := range guardedHostRoots(candidates, home, worktree) {
+		if isUnderAnyRoot(root, defaultPseudoFSPaths) {
+			continue
+		}
+		if slices.ContainsFunc(masked, func(m string) bool { return m == root || pathUnder(m, root) }) {
+			continue
+		}
+		out = append(out, root)
+	}
+	return dedupeRoots(out)
 }

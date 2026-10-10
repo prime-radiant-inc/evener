@@ -323,7 +323,7 @@ func fuzzSandboxResidualBranches(t *testing.T) {
 	resolveAbs = oldAbs
 	_, _ = ResolveNamed("read-only", nil, HostFacts{OS: "linux", Home: "relative"}, root, nil)
 	_, _ = chooseBackend(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "plan9"}, true)
-	_ = filterMasked([]string{"/secret"}, []string{"/secret"})
+	_ = filterMasked([]string{"/secret"}, ResolvedPolicy{MaskedPaths: []string{"/secret"}})
 	faultPolicy := ResolvedPolicy{resolveInputs: SandboxPolicy{Mode: ModeReadOnly}, resolveHost: HostFacts{OS: "linux"}}
 	_, _ = faultPolicy.ControlPolicy(root)
 	_, _ = (&Wrapper{policy: faultPolicy}).ReRoot(root)

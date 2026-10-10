@@ -446,3 +446,34 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 		})
 	}
 }
+
+// The plugin store is re-bound read-only after the tmpfs that masks
+// ~/.config/evener, so the carve-out wins over the mask (#4171).
+func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			maskIdx := seqIndex(args, "--tmpfs", config)
+			bindIdx := seqIndex(args[maskIdx+1:], "--ro-bind", store, store)
+			if maskIdx < 0 || bindIdx < 0 {
+				t.Fatalf("the store %q must be re-bound read-only after the mask of %q: %v", store, config, args)
+			}
+			if seqIndex(args, "--bind", store, store) >= 0 {
+				t.Errorf("the store must never be bound writable: %v", args)
+			}
+		})
+	}
+}
