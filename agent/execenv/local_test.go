@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // writeExecFixture writes an executable that a parallel test then runs through
@@ -944,11 +945,11 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(result), "\n")
-	if len(lines) > 6 || lines[len(lines)-1] != grepTruncationNote(5) {
+	entries, notes := searchresult.Split(result)
+	lines := strings.Split(entries, "\n")
+	if len(lines) > 5 || notes != grepTruncationNote(5) {
 		t.Fatalf("expected at most 5 results then the truncation note, got %q", result)
 	}
-	lines = lines[:len(lines)-1]
 	// Lower bound: a mutation returning "" would yield len==1 with lines[0]==""
 	// and pass the upper-bound check above; pin that the result is non-empty.
 	if len(lines) < 5 || (len(lines) == 1 && lines[0] == "") {

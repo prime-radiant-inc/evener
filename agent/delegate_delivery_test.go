@@ -731,6 +731,35 @@ func assertDelegateClaimWinsTimeout(t *testing.T, c *delegateTreeController, wai
 	}
 }
 
+// An update at the head never takes the generation's inline waiter. The
+// caller waiting in delegate_send wants the generation's report.
+func TestDelegateControllerUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{
+		Kind:         delegatestore.EventDelegateUpdatePosted,
+		DelegateID:   "dlg_target",
+		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: "which table?"},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append update: %v", err)
+	}
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].packet.Kind != delegatestore.PacketUpdate || plans[0].waiter != nil {
+		t.Fatalf("update plans = %#v, want one update head plan without the waiter", plans)
+	}
+	c.mu.Lock()
+	kept := c.live["dlg_target"].waiters[lease.generation]
+	c.mu.Unlock()
+	if kept != waiter {
+		t.Fatalf("generation waiter = %p, want the registered %p still waiting for the report", kept, waiter)
+	}
+}
+
 func startDelegateDeliveryGeneration(t *testing.T, c *delegateTreeController, delegateID string, withWaiter bool) (delegateLease, *delegateInlineWaiter) {
 	t.Helper()
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), delegateID)

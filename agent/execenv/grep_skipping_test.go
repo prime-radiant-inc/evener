@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // GrepSkipping never searches a file its skip names, with or without the
@@ -36,7 +38,7 @@ func TestGrepSkipping(t *testing.T) {
 			t.Fatalf("%s: got %q, %v; want %q", name, got, err, want)
 		}
 		got, err = env.GrepSkipping(t.Context(), "needle", dir, "", false, 1, "files_with_matches", 0, skip)
-		if want := "A.md-1-x.md\n" + grepTruncationNote(1); err != nil || got != want {
+		if want := searchresult.WithNotes("A.md-1-x.md", grepTruncationNote(1)); err != nil || got != want {
 			t.Fatalf("%s capped: got %q, %v; want %q", name, got, err, want)
 		}
 	}
