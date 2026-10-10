@@ -4250,7 +4250,7 @@ async function publishAndReconcileThreadHydration(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<ThreadModel | null> {
-  const productionEntry = productionEntryRoutes.has(ref);
+  const productionEntry = usesEntryTranscripts(ref) && entryTranscriptFixtureForTests?.ref !== ref;
   if (productionEntry) {
     if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
     await acceptEntryTranscriptHydration(ref, pending, hydration);
