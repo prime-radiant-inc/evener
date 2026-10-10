@@ -576,7 +576,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		if text == "" {
 			return nil
 		}
-		return []appwire.ThreadItem{memoryContextItem(turnID, turnIndex, text, turn.Message.Name)}
+		return memoryContextItems(turnID, turnIndex, text)
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:
 		// the whole point of persisting it is that a returning reader can tell

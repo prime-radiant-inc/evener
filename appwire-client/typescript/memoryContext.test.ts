@@ -63,7 +63,6 @@ describe("labels", () => {
     expect(MEMORY_CONTEXT_LABEL).toBe("Refreshed my memory");
     expect(memoryContextScopeLabel("personal")).toBe("Personal memory");
     expect(memoryContextScopeLabel("project")).toBe("Project memory");
-    expect(memoryContextScopeLabel("session")).toBe("Session memory");
   });
 
   it("reads each state as its own word", () => {

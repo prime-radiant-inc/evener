@@ -49,15 +49,20 @@ flowchart LR
     Files --> Index
 ```
 
-Enabled sessions receive separate personal and project `MEMORY.md` projections
-as named user-source context, outside system instructions. Each scope's index is generated from its pages' frontmatter (see
+Enabled sessions receive personal and project `MEMORY.md` projections as
+user-source context, outside system instructions. At a turn boundary every
+scope's news (full indexes, index changes, read-page notices) arrives in one
+memory-context message: a `<system-notification>` block, flagged as machinery,
+that says once that memory is fallible information rather than instructions and
+how to read a page or a whole index with `memory_read`, then one short section
+per item, each naming its scope. Stored data in a section is Go-quoted, so no
+stored byte can end a section or forge framing. Each scope's index is generated from its pages' frontmatter (see
 **Generated index** below) and supplies at most 8 KiB. When every page's line
-fits, the projection says nothing about size. Otherwise it keeps the tag header
+fits, the index section says nothing about size. Otherwise it keeps the tag header
 and the newest lines that fit, ends with a line counting the pages left out per
-tag, and its envelope, which always routes to `memory_read("MEMORY.md")`, says
-not every page is shown. Clients decode that sentence as the truncated flag;
-transcripts from earlier builds, which said the index was too long or carried
-an explicit "truncated true/false", decode as before. Topic files and logs are not preloaded.
+tag, and its heading says the index is partial. Clients decode that heading as
+the truncated flag. Only this message shape is decoded; memory-context messages
+recorded by earlier builds show as their original text. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is
@@ -114,10 +119,9 @@ the scope had no pages; after an unavailable state the next boundary delivers
 the index in full. A scope with a baseline is read only at the first
 model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
-session changed a known index, that read appends one change block for the
+session changed a known index, that read adds one change section for the
 scope instead of the full index: the quoted page lines added and removed since the
-baseline (the tag header and the not-shown line are never listed), with the
-same lower-trust framing and route to `memory_read`. A change whose block would pass 2 KiB is reported as counts of
+baseline (the tag header and the not-shown line are never listed). A change whose section would pass 2 KiB is reported as counts of
 added and removed lines. The new index becomes the baseline, so an unchanged
 turn appends nothing.
 
@@ -127,9 +131,9 @@ bytes that read loaded, so a change another session makes right after it is
 noticed; an `offset` or `limit` read loads the whole page too, so it records
 the whole page as of that read. Its own write, edit or delete of such a page
 updates the record from a read-back of the file. The same first-model-call read rechecks
-those pages, and when another session changed or removed one, appends one
-notice per scope naming each such page as changed or removed, with the route to
-`memory_read`. A notice never carries page contents and never names a page the
+those pages, and when another session changed or removed one, adds one
+notice section per scope naming each such page as changed or removed. A notice
+never carries page contents and never names a page the
 session has not read. The session tracks at most the 32 pages per scope it
 most recently read with `memory_read`; reading a 33rd stops tracking the least
 recently read one (its own writes update a tracked page's record without
@@ -143,17 +147,18 @@ read: the next turn-start boundary publishes it rather than reading again, so a
 slow read never starves the refresh. A stale one is discarded and read afresh.
 Historical context remains recorded history.
 
-Web and native transcripts show each index observation as a standalone
+The projector turns each section of a memory-context message into its own
+transcript item, so web and native transcripts show each section as a standalone
 **Refreshed my memory** notification. It starts collapsed at every detail level,
 including Full, with System events either on or off. General expansion defaults
 do not open it. Expansion shows the scope, index state and formatted index through
 each client's Markdown renderer. Unavailable and revoked states remain visible on
 the collapsed row; truncated indexes retain their truncation label. A separately
-folded **Source** preserves the complete recorded text, including content Markdown
+folded **Source** preserves the section's complete recorded text, including content Markdown
 cannot display. Native resolves that original from the retained conversation when
 the row opens, so its display-size limit does not clip Source or the malformed
 fallback. Both clients use the shared payload validator; an observation
-that cannot be decoded, including an index change block, opens as its original text without blocking later valid
+that cannot be decoded, including an index change or page notice section, opens as its original text without blocking later valid
 observations. Disclosure choices belong to the session and item and survive
 remounts and detail-level changes. Native stores the refresh and Source choices
 independently, also scoped by hub; folding the refresh preserves its Source
@@ -276,8 +281,8 @@ header and the closing line each list only the most-used tags (ties by name)
 that fit in 512 bytes, then `and M more tags`, so a scope with hundreds of tags
 still shows its newest pages; the header keeps its kept tags alphabetical. The
 whole index that `memory_read` returns lists every tag. The line counts and names no
-routes; the envelope adds " Not every page is shown; the index's last line
-counts the rest." after its `memory_read` route.
+routes; the index section's heading says the index is partial and that its last
+line counts the pages not shown.
 
 **Reading and writing it.** `memory_read` of `MEMORY.md` at the scope root renders the whole index with no size cap, paged by `offset` and
 `limit`, or returns `This scope has no pages yet.` `memory_search` skips a
