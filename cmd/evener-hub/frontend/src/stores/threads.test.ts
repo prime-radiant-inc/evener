@@ -14185,14 +14185,10 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
-  // A throwing schema upgrade is a bug in the outbox, not storage failing. The
-  // engine answers it by aborting the versionchange transaction, and the open
-  // then fails with a bare AbortError that looks like a storage abort; the
-  // send must still fail closed rather than go out without its durable row.
+  // An outbox schema bug fails the send closed: it never goes out without its
+  // durable row (see IDBUpgradeError).
   test("a send whose outbox schema upgrade throws stays fail-closed", async () => {
-    const indexedDB = new IDBFactory();
-    const databaseName = "evener-mutation-outbox-upgrade-bug";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
     await ensureActiveMutationTarget(fake, "ref_a");
@@ -14201,33 +14197,18 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       receipt: mutationReceipt(params.clientMutationId),
     }));
 
-    // The send's open lands on a database that still needs its schema, and
-    // the upgrade's first store creation throws.
+    // The send's open lands on a database that needs its schema again, and the
+    // upgrade's first store creation throws.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        open(name === databaseName ? `${databaseName}-unmigrated` : name, version),
-      );
+    await deleteMutationDatabase();
     const schemaBug = new TypeError("schema bug");
     vi.spyOn(IDBDatabase.prototype, "createObjectStore").mockImplementation(() => {
       throw schemaBug;
     });
-    try {
-      const failure = await threadsStore
-        .getState()
-        .send("ref_a", "not sent past a schema bug")
-        .then(
-          () => undefined,
-          (error: unknown) => error,
-        );
-      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
-      expect(failure).toBeInstanceOf(IDBUpgradeError);
-      expect((failure as Error).cause).toBe(schemaBug);
-    } finally {
-      openSpy.mockRestore();
-    }
+    const send = threadsStore.getState().send("ref_a", "not sent past a schema bug");
+    await expect(send).rejects.toBeInstanceOf(IDBUpgradeError);
+    await expect(send).rejects.toMatchObject({ cause: schemaBug });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // A browser that denies this origin IndexedDB (a privacy mode, blocked site

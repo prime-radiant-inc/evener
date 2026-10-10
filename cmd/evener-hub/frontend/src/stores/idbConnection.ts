@@ -137,8 +137,7 @@ export class IDBConnection {
           try {
             options.upgrade(request.result);
           } catch (error) {
-            // Rethrown so the engine still aborts the half-built schema, as
-            // it would without this catch; the open's error names the cause.
+            // Rethrow so the engine aborts the half-built schema.
             upgradeFailure = new IDBUpgradeError(error);
             throw error;
           }

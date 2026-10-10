@@ -113,10 +113,7 @@ test.each(["complete", "abort"])("cache transaction completion waits past error 
   else expect(await observed).toEqual(new Error("IndexedDB transaction aborted"));
 });
 
-// The engine aborts the versionchange transaction when an upgrade handler
-// throws and fails the open with a bare AbortError, the same error a storage
-// abort produces. The open must name the upgrade's own failure instead, so a
-// caller never mistakes an adapter's schema bug for storage failing.
+// The open names a throwing upgrade's own failure (see IDBUpgradeError).
 test("a throwing schema upgrade rejects the open with its own failure", async () => {
   const schemaBug = new TypeError("schema bug");
   const connection = new IDBConnection({
@@ -134,10 +131,7 @@ test("a throwing schema upgrade rejects the open with its own failure", async ()
     },
     reportDiagnostic: () => undefined,
   });
-  const failure = await connection.open().then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  expect((failure as Error).cause).toBe(schemaBug);
-  expect(failure).toBeInstanceOf(IDBUpgradeError);
+  const open = connection.open();
+  await expect(open).rejects.toBeInstanceOf(IDBUpgradeError);
+  await expect(open).rejects.toMatchObject({ cause: schemaBug });
 });
