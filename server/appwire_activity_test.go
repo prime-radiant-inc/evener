@@ -101,6 +101,9 @@ func TestReplacedIdentityStartsAFreshMeter(t *testing.T) {
 	if activity.LastActivityAt != clock.now.UnixMilli() {
 		t.Fatalf("new identity's quiet clock starts at %d, want its install time %d", activity.LastActivityAt, clock.now.UnixMilli())
 	}
+	if activity.LastMovedAt != 0 {
+		t.Fatalf("new identity's moved time = %d, want none: the old session's motion is not its own", activity.LastMovedAt)
+	}
 }
 
 // A session the daemon just began serving lists no moved time, so a client

@@ -18,9 +18,8 @@ const maxSessionSeenMarks = 500
 // maxSeenThroughLead bounds how far past the hub's clock a seenThrough may be.
 // A correct mark echoes a row's turn_ended_at or a session's lastMovedAt,
 // both daemon-stamped, so it is never far ahead even from a host whose clock
-// drifts. Seen-through only
-// moves forward, so an unbounded future mark would hide the session's turns
-// for good.
+// drifts. Seen-through only moves forward, so an unbounded future mark would
+// hide the session's turns for good.
 const maxSeenThroughLead = 24 * time.Hour
 
 func registerSessionSeenHandler(server *appserver.Server, cfg hubcore.WebConfig, navigation *NavigationService) {

@@ -301,3 +301,30 @@ func TestActivityReadCarriesWhenTheSessionLastMoved(t *testing.T) {
 		t.Fatalf("read = %+v, want %+v", got.Sessions, want)
 	}
 }
+
+// A remote host's moved time is relayed only when a seen mark could echo it:
+// a negative one, or one further ahead of this hub's clock than seen/set
+// accepts, is dropped while the row stays.
+func TestActivityReadBoundsARemoteHostsMovedTime(t *testing.T) {
+	client, _ := newScriptedRemoteHub(t, activityHost(appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{
+		{Ref: "local:r1", Minutes: activityReadMinutes, LastMovedAt: -5},
+		{Ref: "local:r2", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.Add(48 * time.Hour).UnixMilli()},
+		{Ref: "local:r3", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.UnixMilli()},
+	}}))
+	cfg := hubcore.WebConfig{
+		RemoteHosts:                []hostreg.Host{{Name: "h1"}},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) { return client, host == "h1" },
+	}
+	got, err := hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", client, true), appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "h1:r1", Minutes: activityReadMinutes},
+		{Ref: "h1:r2", Minutes: activityReadMinutes},
+		{Ref: "h1:r3", Minutes: activityReadMinutes, LastMovedAt: activityReadNow.UnixMilli()},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
+	}
+}

@@ -666,8 +666,9 @@ type SessionSeenSetParams struct {
 // SessionSeenMark is one session's mark, addressed by the ref its row carries.
 // It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
 // daemon timestamp the client showed, in Unix milliseconds: the row's
-// turn_ended_at, or the session's lastMovedAt from an activity read; never a
-// client clock. The hub keeps the newest it has been sent. Unread is "Mark as
+// turn_ended_at, or the session's lastMovedAt from an activity read taken
+// while the session was on screen; never a client clock. The hub keeps the
+// newest it has been sent. Unread is "Mark as
 // unread", which lasts until the next SeenThrough mark.
 type SessionSeenMark struct {
 	Ref         string `json:"ref"`

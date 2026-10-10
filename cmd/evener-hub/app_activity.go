@@ -62,6 +62,11 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// A host's answer is relayed, not trusted: its rows carry the row text
 		// this controller allows, whatever version of the code that host runs.
 		activity.LatestIntent = appwire.Excerpt(activity.LatestIntent, appwire.MaxIntentRunes)
+		// A moved time no seen mark could echo (negative, or further ahead of
+		// this hub's clock than seen/set accepts) is dropped, not the row.
+		if activity.LastMovedAt < 0 || activity.LastMovedAt > now.Add(maxSeenThroughLead).UnixMilli() {
+			activity.LastMovedAt = 0
+		}
 		sessions = append(sessions, activity)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Ref < sessions[j].Ref })
