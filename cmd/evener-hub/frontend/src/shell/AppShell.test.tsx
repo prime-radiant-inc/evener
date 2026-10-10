@@ -5586,28 +5586,19 @@ test.each([
         expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
       });
       act(() => workspaceStore.getState().focusPane(inspectorId));
-      if (source === "nested") {
-        // The nested origin (local:child) never renders, so its owner crumb
-        // stays a working pop target above it.
-        await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:owner" })));
-        expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
-        expect(sourcePane()).toBe(original);
-        expect(inspectorPane()?.type).toBe("sessionZoom");
-        expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:owner");
-        const ownerColumn = screen.getByTestId("cascade-column");
-        expect(await within(ownerColumn).findByText("report-local:owner")).toBeTruthy();
-      } else {
-        // The origin (local:owner) never renders, so its crumb is not offered
-        // and the cascade cannot pop to it; the child crumb still pops.
-        expect(sidebar.queryByRole("button", { name: "local:owner" })).toBeNull();
-        await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:child" })));
-        expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
-        expect(sourcePane()).toBe(original);
-        expect(inspectorPane()?.type).toBe("sessionZoom");
-        expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:child");
-        const childColumn = screen.getByTestId("cascade-column");
-        expect(await within(childColumn).findByText("report-local:child")).toBeTruthy();
-      }
+      // The origin conversation never renders, so its crumb is not offered
+      // and the cascade cannot pop to it; the nearest rendered ancestor
+      // crumb still pops. Nested: the origin is local:child, so local:owner
+      // is the working pop target above it.
+      if (source !== "nested") expect(sidebar.queryByRole("button", { name: "local:owner" })).toBeNull();
+      const target = source === "nested" ? "local:owner" : "local:child";
+      await act(async () => fireEvent.click(sidebar.getByRole("button", { name: target })));
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect(sourcePane()).toBe(original);
+      expect(inspectorPane()?.type).toBe("sessionZoom");
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe(target);
+      const poppedColumn = screen.getByTestId("cascade-column");
+      expect(await within(poppedColumn).findByText(`report-${target}`)).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));
       // Disclosure persistence belongs to the retention suite; this journey
       // verifies navigation and focus with the core sidebar's local disclosure.

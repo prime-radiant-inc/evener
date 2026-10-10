@@ -1,0 +1,11 @@
+/* A true non-scroller, shared by the pane scaffold's flush body and the
+ * cascade pane's own body wrapper: clip cannot be shifted programmatically
+ * (focus chains, scrollIntoView) the way a merely-hidden box can, so a box
+ * that must never scroll as a unit composes this. hidden stays as the
+ * fallback for engines that predate clip; dropping the invalid value
+ * leaves it. */
+.box {
+  overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
+}

@@ -4,7 +4,6 @@ import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { refParam } from "../../shell/routing";
 import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
@@ -26,7 +25,7 @@ import {
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
-import { cascadeOrigin } from "./inspectionOrigin";
+import { cascadeOriginRef } from "./inspectionOrigin";
 import {
   type CascadeScope,
   deriveCascadePath,
@@ -196,8 +195,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   // The origin conversation never renders in the pane — no column, no spine —
   // while its pane stays live beside the cascade. Closing it retires the
   // association and the full path renders again.
-  const origin = cascadeOrigin(pane);
-  const originRef = origin ? refParam(origin.params) : null;
+  const originRef = cascadeOriginRef(pane);
   const renderedPath = renderedScopes(path.scopes, originRef);
   const scopes = mobile ? renderedPath.slice(-1) : renderedPath;
   // The readable set stays over the full path: the leaf and its immediate

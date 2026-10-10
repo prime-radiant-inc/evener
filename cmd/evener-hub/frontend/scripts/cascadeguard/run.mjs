@@ -14,6 +14,26 @@ const inspectorFooter = `${inspectorRoot} ~ [data-testid="pane-edge-footer"] [da
 const inspectorIdExpr = `document.querySelector(${q(`${inspectorFooter} [data-pane-id]`)})?.dataset.paneId`;
 const sourceFooter = `[data-pane-scaffold=${q(`session:${fixture.rootRef}`)}] ~ [data-testid="pane-edge-footer"] [data-testid="statusbar"]`;
 const sourceAgents = `${sourceFooter} button[aria-label^="Agents,"]`;
+// One probe for the redesign's chrome ruling, shared by the desktop and phone
+// legs: the pane renders no title (a pane title's only DOM is an h2 in the
+// pane header) and no Agent path nav. Null retries until the pane body mounts.
+const cascadeUntitledExpr = `(() => {
+  const body = document.querySelector(${q(inspectorRoot)});
+  if (!body) return null;
+  return body.previousElementSibling?.querySelector("h2") === null
+    && document.querySelector('nav[aria-label="Agent path"]') === null;
+})()`;
+// The rendered track at full depth, mirroring the shipped rule in
+// src/panes/zoom/intent.ts: the live origin conversation (the fixture's
+// rootRef) never renders in the pane.
+const renderedRefs = fixture.refs.filter((ref) => ref !== fixture.rootRef);
+// The drilled track's expected sets: the rendered track truncated to the
+// drilled path — its last two scopes are the readable columns (level 1's
+// lone leaf fills the pane), the rest are spines.
+const drilledTrack = (level) => {
+  const rendered = renderedRefs.slice(0, level);
+  return { columns: rendered.slice(-2), spines: rendered.slice(0, -2) };
+};
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
 const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
@@ -585,20 +605,26 @@ async function holdCanvasCompletion() {
   })()`);
 }
 
-async function openPeek(ref, kind) {
-  // Found and clicked in one page turn, like clickColumnAction: a layout
-  // shift (or the pane content's own transient remount while focus settles)
-  // between measuring and pressing cannot send the press to a neighbour
-  // (#3804, #3819). A chip covered at its center is retried, not clicked.
+// Found and clicked in one page turn, so a layout shift (or the pane content's
+// own transient remount while focus settles) between measuring and pressing
+// cannot send the press to a neighbour (#3804, #3819). A button that is
+// disabled or covered at its center is not clicked; the wait keeps polling.
+// `buttonExpr` is a page expression evaluating to the button (or null);
+// `inline` is the scrollIntoView inline mode the caller's surface needs.
+async function clickWhenReady(buttonExpr, label, inline) {
   await wait(`(() => {
-    const button = document.querySelector(${q(peekChip(ref, kind))});
+    const button = ${buttonExpr};
     if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
-    button.scrollIntoView({ block: "center", inline: "center" });
+    button.scrollIntoView({ block: "center", inline: ${q(inline)} });
     const r = button.getBoundingClientRect();
     if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
     button.click();
     return true;
-  })()`, `${kind} ancestor peek`);
+  })()`, label);
+}
+
+async function openPeek(ref, kind) {
+  await clickWhenReady(`document.querySelector(${q(peekChip(ref, kind))})`, `${kind} ancestor peek`, "center");
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
@@ -753,16 +779,18 @@ const readableGeometrySettled = (expectedColumns) => `(() => {
   if (gridSize.width !== Math.round(shellSize.width) || gridSize.height !== Math.round(shellSize.height)) return false;
   const leaf = columns[columns.length - 1];
   const readableParent = columns.length === 2 ? columns[0] : null;
-  const settled = columns.every(node => getComputedStyle(node).transform === 'none');
+  // Computed styles resolve only after the width checks pass: this wait is
+  // designed to fail cheaply while the geometry settles.
   if (readableParent) {
     return leaf.getBoundingClientRect().width >= 439.5
       && Math.abs(readableParent.getBoundingClientRect().width - 400) < .75
-      && settled;
+      && columns.every(node => getComputedStyle(node).transform === 'none');
   }
   // A lone column fills the track: the first drill reads as the subagent's
   // own conversation pane, not a pinned 440px stripe.
   const track = leaf.parentElement, box = leaf.getBoundingClientRect(), extent = track.getBoundingClientRect();
-  return Math.abs(box.left - extent.left) < .75 && Math.abs(box.right - extent.right) < .75 && box.height > 0 && settled;
+  return Math.abs(box.left - extent.left) < .75 && Math.abs(box.right - extent.right) < .75 && box.height > 0
+    && columns.every(node => getComputedStyle(node).transform === 'none');
 })()`;
 
 async function observeGeometryAndFocus(ref) {
@@ -1014,19 +1042,12 @@ function placement(layout, id) {
   return found;
 }
 
-// Found and clicked in one page turn, so a layout shift between measuring and
-// pressing cannot send the press to a neighbour (#3804, #3819). A button that
-// is disabled or covered at its center is not clicked; the wait keeps polling.
 async function clickColumnAction(ref, text) {
-  await wait(`(() => {
-    const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
-    if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
-    button.scrollIntoView({ block: 'center', inline: 'nearest' });
-    const r = button.getBoundingClientRect();
-    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
-    button.click();
-    return true;
-  })()`, `${text} in actual ${ref} column`);
+  await clickWhenReady(
+    `[...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)})`,
+    `${text} in actual ${ref} column`,
+    "nearest",
+  );
 }
 
 async function activeTabText(scaffold) {
@@ -1167,7 +1188,7 @@ async function reloadAndMobileJourney() {
     const actualContext = await wait(`window.__cascadeLate.replies.find(reply => reply.context?.ancestryKnown && reply.context.ancestors.length === 6)?.context`, "actual known leaf ancestry reply is held at native message delivery");
     assert.deepEqual(actualContext.ancestors.map(ancestor => ancestor.ref), fixture.refs.slice(0, 6));
     await wait("window.__cascadeLate.replies.some(reply => reply.location && reply.response && !reply.error)", "actual successful route location reply is held at native message delivery");
-    assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs.slice(1), "unknown ancestry preserves the six saved edges above the removed origin");
+    assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs, "unknown ancestry preserves the six saved edges above the removed origin");
     assert.equal(await read(inspectorIdExpr), fixture.inspectorPaneId);
     assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
     await pinSourceDom();
@@ -1188,7 +1209,7 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(restored.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(restored.panels[fixture.sourcePaneId], sourcePanel);
   assert.deepEqual(placement(restored, fixture.inspectorPaneId), inspectorPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs.slice(1));
+  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
   assert.deepEqual(restored.panels[unrelatedId], unrelatedPanel);
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
   // Inactive secondary tabs retain their work under normal mounting rules.
@@ -1207,7 +1228,7 @@ async function reloadAndMobileJourney() {
   await assertInspectorFocus(refocused);
   assert.deepEqual(refocused.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(placement(refocused, unrelatedId), unrelatedPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs.slice(1));
+  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
   await assertSourceDom();
   driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
   await capture("unrelated-pane-reload");
@@ -1231,7 +1252,7 @@ async function reloadAndMobileJourney() {
   await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "close desktop sidebar before phone scene");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
-  await wait(`document.querySelector('nav[aria-label="Agent path"]') === null && document.querySelector(${q(inspectorRoot)})?.textContent.includes(${q("Agent cascade")}) === false`, "the phone cascade has no path nav and no pane title");
+  await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
   assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
   driver.milestone("mobile-saved-cascade");
@@ -1342,13 +1363,8 @@ async function drill(edge, level) {
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
-  // The live origin conversation never renders in the pane: its scope is
-  // removed from the track entirely. Level 1 shows only the drilled leaf
-  // filling the pane; deeper levels keep the readable pair above the removed
-  // origin and spine the earlier non-origin ancestors.
-  const expected = level === 1 ? fixture.refs.slice(1, 2) : fixture.refs.slice(level - 1, level + 1);
-  const expectedSpines = level === 1 ? [] : fixture.refs.slice(1, level - 1);
-  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(expected))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(expectedSpines))}`, `exact column and spine sets ${level}`);
+  const track = drilledTrack(level);
+  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);
   await wait(`document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`, `real retained transcript ${level}`);
   const id = await wait(inspectorIdExpr, "secondary inspector has a committed pane ID");
   assert.notEqual(id, fixture.sourcePaneId, "inspection never replaces the source panel");
@@ -1529,11 +1545,7 @@ try {
   await read('window.__cascadeTraceSource("after-sidebar-open")');
   await drill(fixture.edges[0], 1);
   await wait(readableGeometrySettled(1), "first secondary split has settled readable geometry");
-  await wait(`(() => {
-    const body = document.querySelector(${q(inspectorRoot)});
-    const header = body?.previousElementSibling;
-    return body && header && header.querySelector('h2') === null && document.querySelector('nav[aria-label="Agent path"]') === null ? true : null;
-  })()`, "the pane hosts no Agent path nav and no title heading");
+  await wait(cascadeUntitledExpr, "the pane hosts no Agent path nav and no title heading");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
@@ -1546,8 +1558,8 @@ try {
   const boxes = await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
   })`);
-  // The origin root never renders: the settled track is refs[1..6].
-  assert.deepEqual(boxes.map(n => n.ref), fixture.refs.slice(1));
+  // The origin root never renders: the settled track is the rendered set.
+  assert.deepEqual(boxes.map(n => n.ref), renderedRefs);
   await assertSpineStatus(fixture.refs[1], "idle");
   driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, tabs: fixture.sourceTabCount + 1 });
   const paint = await capture("six-edges");

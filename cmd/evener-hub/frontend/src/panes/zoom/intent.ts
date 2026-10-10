@@ -138,6 +138,8 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
  * its spine are removed from the track. Without a live origin every scope
  * renders. */
 export function renderedScopes(scopes: CascadeScope[], originRef: string | null): CascadeScope[] {
+  // The early return is an identity-preserving fast path: with no live origin
+  // the caller keeps the same array reference, not a filtered copy.
   if (originRef === null) return scopes;
   return scopes.filter((scope) => scope.requestedRef !== originRef);
 }

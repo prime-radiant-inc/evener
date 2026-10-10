@@ -39,6 +39,12 @@ const CLASS = {
   edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
 };
 
+// Both className forms of the body, composed once: selected by bodyScroll.
+const BODY_CLASS_NAME = {
+  scrollable: CLASS.body,
+  flush: `${CLASS.body} ${CLASS.bodyNoScroll}`,
+};
+
 /**
  * The standard pane chrome every pane type in the app uses: a header row
  * (truncating title + optional cadence slot + optional actions cluster), a
@@ -128,7 +134,7 @@ export function PaneScaffold({
       </div>
       <div
         ref={bodyRef}
-        className={`${CLASS.body}${bodyScroll ? "" : ` ${CLASS.bodyNoScroll}`}`}
+        className={bodyScroll ? BODY_CLASS_NAME.scrollable : BODY_CLASS_NAME.flush}
         tabIndex={-1}
         data-pane-scaffold={scaffoldMarker}
       >

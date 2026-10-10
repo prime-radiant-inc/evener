@@ -6,6 +6,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import {
@@ -80,31 +81,33 @@ function fixture(ancestryKnown = true) {
     ["sibling", "sibling-id"],
   ]);
   let epoch = "epoch-1";
-  const lineage = (ref: string) =>
-    ref === "grandchild"
-      ? ["root", "child"]
-      : ref === "greatgrandchild"
-        ? ["root", "child", "grandchild"]
-        : ref === "root"
-          ? []
-          : ["root"];
+  const LINEAGE: Record<string, string[]> = {
+    root: [],
+    child: ["root"],
+    sibling: ["root"],
+    grandchild: ["root", "child"],
+    greatgrandchild: ["root", "child", "grandchild"],
+  };
+  const PARENT_REF: Record<string, string> = {
+    child: "root",
+    sibling: "root",
+    grandchild: "child",
+    greatgrandchild: "grandchild",
+  };
+  const DELEGATE_ID: Record<string, string> = { child: "d1", grandchild: "d2", greatgrandchild: "d4", sibling: "d3" };
+  const lineage = (ref: string) => LINEAGE[ref] ?? ["root"];
   const context = (ref: string): SessionActivityContext => ({
     ...activityContext(ref),
     sessionId: identities.get(ref) ?? ref,
     rootRef: "root",
     epoch,
     ancestryKnown,
-    ...(ref === "root"
-      ? {}
-      : {
-          parentRef: ref === "grandchild" ? "child" : ref === "greatgrandchild" ? "grandchild" : "root",
-          delegateId: ref === "grandchild" ? "d2" : ref === "greatgrandchild" ? "d4" : ref === "sibling" ? "d3" : "d1",
-        }),
+    ...(ref === "root" ? {} : { parentRef: PARENT_REF[ref] ?? "root", delegateId: DELEGATE_ID[ref] ?? "d1" }),
     ancestors: lineage(ref).map((ancestor) => ({
       ref: ancestor,
       sessionId: identities.get(ancestor) ?? ancestor,
       title: ancestor,
-      ...(ancestor === "child" ? { delegateId: "d1" } : ancestor === "grandchild" ? { delegateId: "d2" } : {}),
+      ...(ancestor === "root" ? {} : { delegateId: DELEGATE_ID[ancestor] ?? "d1" }),
     })),
   });
   const response = (ref: string): ThreadReadResponse => {
@@ -323,6 +326,10 @@ test("a live origin conversation never renders in the pane, at any depth", async
   // the tab label carries the selected conversation.
   expect(screen.queryByRole("navigation", { name: "Agent path" })).toBeNull();
   expect(screen.queryByText("Agent cascade")).toBeNull();
+  // The deleted path nav carried the pane's positive name resolution; its
+  // replacement surface is the mobile top bar's published title: the
+  // selected conversation's resolved name, never a pane-generic label.
+  expect(chromeStore.getState().paneTitle).toBe("child");
   // The single column fills the pane rather than pinning at 440px, so the
   // first drill reads as the subagent's own conversation pane.
   expect(columnRefs()).toEqual(["child"]);
