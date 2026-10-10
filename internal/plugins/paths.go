@@ -70,8 +70,8 @@ const (
 	// outlives the run: a marketplace's other names can still be recorded in a
 	// later one.
 	migrationRecordFileName = "marketplace-migration.json"
-	bundledDirName          = "bundled"
-	cacheDirName            = "cache"
+	bundledDirName          = userdirs.PluginBundledDirName
+	cacheDirName            = userdirs.PluginCacheDirName
 	marketplacesDirName     = "marketplaces"
 	cloneLocksDirName       = "clone-locks"
 )

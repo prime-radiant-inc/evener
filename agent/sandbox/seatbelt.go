@@ -131,7 +131,7 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	if denials != "" {
 		sections = append(sections, "; authoritative denials (override every allow above)\n"+denials)
 	}
-	// The roots carved out of the mask (Evener's plugin store and user skills
+	// The roots carved out of the mask (installed plugins and the user skills
 	// directory) are re-granted read-only after the denials, for the same
 	// last-match-wins reason, so they override the mask and nothing else.
 	if regrants := unmaskedSection(rp, ps); regrants != "" {

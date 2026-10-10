@@ -185,7 +185,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
   contained caches. This is the natural mode for coding work that must not touch
   anything outside the project.
 - **`restricted`** is the tightest mode: the model's file tools can only browse and
-  write inside the worktree, plus read Evener's own content (the plugin store and
+  write inside the worktree, plus read Evener's own content (installed plugins and
   your skills directory, below). Spawned processes additionally get read-only access to
   the system roots a process needs to run — `/usr`, `/bin`, `/sbin`, `/lib`,
   `/lib64`, `/etc`, `/opt`, `/nix/store`, and on macOS the developer-toolchain
@@ -337,22 +337,23 @@ container daemon straight to host root even with `--sandbox-net off` (a read-onl
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
 affect `AF_UNIX`).
 
-**One exception to "the mask wins": Evener's own content.** The plugin store
-(`~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
+**One exception to "the mask wins": Evener's own content.** Installed plugins
+(the plugin store's `cache` and `bundled` directories under
+`~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
 sit inside the masked `~/.config/evener` by default, but they hold only content
 the session itself loads: the skills whose `base_directory` it hands the model,
-and the hook scripts of installed plugins it runs. So every mode reads those two
-directories, **read-only**, in both
-layers (`restricted` included), carved out of the mask; the rest of
-`~/.config/evener`, where hub configuration and credentials live, stays masked.
-The carve-out never writes, never touches the pseudo-filesystem floor, and is
-refused for a directory that contains a masked path, so adding a path inside the
-store to the denylist keeps the whole store masked. Both locations follow
-`$XDG_CONFIG_HOME` the way Evener does. One thing to know: a marketplace or plugin
-added from a git URL with a token embedded in it (`https://user:token@host/…`) keeps
-that URL in the store's `known_marketplaces.json` and in the clone's `.git/config`,
-so a sandboxed session can read it; use SSH or a git credential helper for private
-marketplaces instead.
+and the hook scripts of installed plugins it runs. So every mode reads those
+directories, **read-only**, in both layers (`restricted` included), carved out of
+the mask. The rest of `~/.config/evener` stays masked: hub configuration,
+credentials, and the plugin store's metadata (`known_marketplaces.json`, the
+registries and the marketplace clones), which records marketplace URLs that may
+carry a token. The carve-out never writes, never touches the pseudo-filesystem
+floor, and is refused for a directory that contains a masked path, so adding a
+path inside it to the denylist keeps it masked. The locations follow
+`$XDG_CONFIG_HOME` the way Evener does. One residual: a plugin installed from a
+git URL with a token embedded in it (`https://user:token@host/…`) keeps that URL
+in its installed copy's `.git/config`, which the carve-out exposes; use SSH or a
+git credential helper for private plugin sources.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:

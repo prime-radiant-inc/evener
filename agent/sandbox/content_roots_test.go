@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// contentHost is a bwrap host whose Evener plugin store and user skills
-// directory sit where they do by default: inside the masked ~/.config/evener.
+// contentHost is a bwrap host whose installed plugins and user skills sit where
+// they do by default: inside the masked ~/.config/evener.
 func contentHost() (HostFacts, string, string) {
 	host := bwrapHost()
 	store := filepath.Join(testHome, ".config", "evener", "plugins")
 	skills := filepath.Join(testHome, ".config", "evener", "skills")
-	host.EvenerContentRoots = []string{store, skills}
+	host.EvenerContentRoots = []string{filepath.Join(store, "cache"), filepath.Join(store, "bundled"), skills}
 	return host, store, skills
 }
 
@@ -28,6 +28,8 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 	skillFile := filepath.Join(store, "cache", "mkt", "plugin", "abc", "skills", "review", "template.md")
 	userSkillFile := filepath.Join(skills, "mine", "SKILL.md")
 	credential := filepath.Join(testHome, ".config", "evener", "hub.toml")
+	// The store's own metadata records marketplace URLs, which may carry tokens.
+	metadata := []string{filepath.Join(store, "known_marketplaces.json"), filepath.Join(store, "marketplaces", "mkt", ".git", "config")}
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, host, root)
@@ -39,10 +41,12 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 					t.Errorf("%q must not be masked", path)
 				}
 			}
-			if rp.FileToolCanRead(credential) || !rp.Masks(credential) {
-				t.Errorf("the rest of ~/.config/evener must stay masked: %q", credential)
+			for _, path := range append([]string{credential}, metadata...) {
+				if rp.FileToolCanRead(path) || !rp.Masks(path) {
+					t.Errorf("the rest of ~/.config/evener, store metadata included, must stay masked: %q", path)
+				}
 			}
-			if rp.Spawned.Read != ReadAnywhere && !slices.Contains(rp.Spawned.ReadRoots, store) {
+			if rp.Spawned.Read != ReadAnywhere && !slices.Contains(rp.Spawned.ReadRoots, filepath.Join(store, "cache")) {
 				t.Errorf("spawned processes must read the plugin store, got roots %v", rp.Spawned.ReadRoots)
 			}
 			for _, w := range slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots) {
@@ -92,8 +96,9 @@ func TestEvenerContentRootsRefuseRootsThatWouldUnmaskSecrets(t *testing.T) {
 	}
 }
 
-// The probe finds the plugin store and user skills directory where Evener puts
-// them: under $XDG_CONFIG_HOME/evener, else ~/.config/evener.
+// The probe names the installed plugins (the store's cache and bundled
+// directories, not its marketplace metadata) and the user skills directory
+// where Evener puts them: under $XDG_CONFIG_HOME/evener, else ~/.config/evener.
 func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -101,8 +106,8 @@ func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{"default", nil, []string{"/Users/tester/.config/evener/plugins", "/Users/tester/.config/evener/skills"}},
-		{"XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "/xdg"}, []string{"/xdg/evener/plugins", "/xdg/evener/skills"}},
+		{"default", nil, []string{"/Users/tester/.config/evener/plugins/cache", "/Users/tester/.config/evener/plugins/bundled", "/Users/tester/.config/evener/skills"}},
+		{"XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "/xdg"}, []string{"/xdg/evener/plugins/cache", "/xdg/evener/plugins/bundled", "/xdg/evener/skills"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -119,6 +124,12 @@ func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
 type evenerContentFixture struct {
 	config, store, skills, plugin     string
 	template, hook, userSkill, secret string
+	metadata                          string
+}
+
+// contentRoots are the roots the probe would report for this home.
+func (f evenerContentFixture) contentRoots() []string {
+	return []string{filepath.Join(f.store, "cache"), filepath.Join(f.store, "bundled"), f.skills}
 }
 
 func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
@@ -131,7 +142,8 @@ func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 	f.hook = filepath.Join(f.plugin, "hooks", "start.sh")
 	f.userSkill = filepath.Join(f.skills, "mine", "SKILL.md")
 	f.secret = filepath.Join(f.config, "hub.toml")
-	for path, body := range map[string]string{f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n"} {
+	f.metadata = filepath.Join(f.store, "known_marketplaces.json")
+	for path, body := range map[string]string{f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n", f.metadata: `{"mkt":{"source":{"url":"https://user:token@example.com/m.git"}}}`} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -143,18 +155,20 @@ func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 }
 
 // evenerContentScript reads both skills, runs the hook, tries to write into the
-// store and to read the credential file (a bwrap mask over a file reads as
-// empty, hence the -s), printing a marker for each outcome.
+// store and to read the credential file and the store's marketplace metadata (a
+// bwrap mask over a file reads as empty, hence the -s), printing a marker for
+// each outcome.
 const evenerContentScript = `set -u
 test "$(cat "$1")" = template && echo SKILL-READ
 test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
 "$3"
 if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
-if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi`
+if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi
+if cat "$5" >/dev/null 2>&1 && test -s "$5"; then echo METADATA-VISIBLE; fi`
 
 // scriptCommand is the confined command running evenerContentScript.
 func (f evenerContentFixture) scriptCommand(shell string) []string {
-	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret}
+	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata}
 }
 
 func assertEvenerContentOutput(t *testing.T, out string) {
@@ -164,7 +178,7 @@ func assertEvenerContentOutput(t *testing.T, out string) {
 			t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
 		}
 	}
-	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE"} {
+	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
 		}

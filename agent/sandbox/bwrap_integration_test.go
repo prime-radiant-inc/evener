@@ -435,7 +435,7 @@ func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
 		t.Run(mode.String(), func(t *testing.T) {
 			f := facts
 			f.Home = home
-			f.EvenerContentRoots = []string{fx.store, fx.skills}
+			f.EvenerContentRoots = fx.contentRoots()
 			rp, err := Resolve(SandboxPolicy{Mode: mode, InfraReadRoots: []string{fx.plugin}}, f, cwd)
 			if err != nil {
 				t.Fatal(err)

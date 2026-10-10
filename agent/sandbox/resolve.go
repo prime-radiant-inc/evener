@@ -139,8 +139,8 @@ type ResolvedPolicy struct {
 	// /proc masks /proc/<pid>/environ; masking ~/.ssh masks its whole tree).
 	MaskedPaths []string
 
-	// UnmaskedRoots are read-only roots carved out of MaskedPaths: Evener's
-	// plugin store and user skills directory (HostFacts.EvenerContentRoots),
+	// UnmaskedRoots are read-only roots carved out of MaskedPaths: the installed
+	// plugin files and user skills directory (HostFacts.EvenerContentRoots),
 	// readable in both layers in every mode. A root is admitted only if it holds
 	// no masked path and lies outside the pseudo-fs floor, so the carve-out
 	// exposes that content and nothing the credential denylist protects.

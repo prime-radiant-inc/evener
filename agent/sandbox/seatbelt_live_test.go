@@ -891,7 +891,7 @@ func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
 	cwd := MaterializeWorkspace(t, MainCheckout)
 	facts := RealProber{}.Probe()
 	facts.Home = home
-	facts.EvenerContentRoots = []string{fx.store, fx.skills}
+	facts.EvenerContentRoots = fx.contentRoots()
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{fx.plugin}}, facts, cwd)

@@ -37,6 +37,19 @@ func Subdir(root, name string) string {
 // PluginStore is Evener's plugin store under a config root.
 func PluginStore(root string) string { return Subdir(root, "plugins") }
 
+// The plugin store's directories of installed plugin files: copies fetched from
+// marketplaces, and the plugins Evener bundles. The rest of the store is
+// metadata (the registries and marketplace clones).
+const (
+	PluginCacheDirName   = "cache"
+	PluginBundledDirName = "bundled"
+)
+
+// PluginContentDirs are the store's directories of installed plugin files.
+func PluginContentDirs(store string) []string {
+	return []string{Subdir(store, PluginCacheDirName), Subdir(store, PluginBundledDirName)}
+}
+
 // UserSkills is the user's own skills directory under a config root.
 func UserSkills(root string) string { return Subdir(root, "skills") }
 

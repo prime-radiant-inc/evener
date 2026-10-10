@@ -112,8 +112,9 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
-	// EvenerContentRoots are Evener's plugin store and the user's skills
-	// directory at their configured locations (see ResolvedPolicy.UnmaskedRoots).
+	// EvenerContentRoots are the installed plugin files in Evener's plugin store
+	// and the user's skills directory at their configured locations (see
+	// ResolvedPolicy.UnmaskedRoots).
 	// Missing directories are listed anyway, so one created mid-session is
 	// readable at its next spawn.
 	EvenerContentRoots []string
@@ -284,14 +285,16 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 	return out
 }
 
-// probeEvenerContentRoots returns the plugin store and user skills directory
-// under Evener's config root, or nothing when the root cannot be resolved.
+// probeEvenerContentRoots returns the plugin store's installed plugin files and
+// the user skills directory under Evener's config root, or nothing when the
+// root cannot be resolved. The store's metadata, which records marketplace URLs
+// that may carry tokens, is left out and stays masked.
 func probeEvenerContentRoots(system probeSystem) []string {
 	root := userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
 	if root == "" {
 		return nil
 	}
-	return []string{userdirs.PluginStore(root), userdirs.UserSkills(root)}
+	return append(userdirs.PluginContentDirs(userdirs.PluginStore(root)), userdirs.UserSkills(root))
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

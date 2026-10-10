@@ -25,7 +25,8 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 			template := filepath.Join(store, "cache", "mkt", "plugin", "abc", "skills", "review", "template.md")
 			userSkill := filepath.Join(skills, "mine", "SKILL.md")
 			secret := filepath.Join(config, "hub.toml")
-			for path, body := range map[string]string{template: "template\n", userSkill: "user skill\n", secret: "token = 'x'\n"} {
+			metadata := filepath.Join(store, "known_marketplaces.json")
+			for path, body := range map[string]string{template: "template\n", userSkill: "user skill\n", secret: "token = 'x'\n", metadata: "{}\n"} {
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -37,7 +38,7 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 				t.Fatal(err)
 			}
 			host := sbTestHost(home)
-			host.EvenerContentRoots = []string{store, skills}
+			host.EvenerContentRoots = []string{filepath.Join(store, "cache"), filepath.Join(store, "bundled"), skills}
 			rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode}, host, worktree)
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", mode, err)
@@ -56,6 +57,8 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 			}
 			_, err = env.ReadFile(secret, nil, nil)
 			mustDenied(t, err, "read_file of the rest of ~/.config/evener")
+			_, err = env.ReadFile(metadata, nil, nil)
+			mustDenied(t, err, "read_file of the plugin store's marketplace metadata")
 			_, err = env.WriteFile(filepath.Join(filepath.Dir(template), "planted.md"), "x")
 			mustDenied(t, err, "write_file into the plugin store")
 		})
