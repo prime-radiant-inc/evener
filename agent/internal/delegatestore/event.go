@@ -89,16 +89,16 @@ type DelegateAttentionChanged struct {
 	NeedsAttention bool `json:"needs_attention"`
 }
 
-// UpdatePosted is a running generation's mid-work message to its owner, its
-// communicate(end_turn=false). The fold queues it as a pending delivery
-// behind the delegate's earlier deliveries and ahead of the report the same
-// generation settles.
+// UpdatePosted is a running generation's mid-work message to its owner. The
+// fold queues it as a pending delivery behind the delegate's earlier
+// deliveries and ahead of the report the same generation settles.
 //
-// This journal records and orders updates only. The delegate controller that
-// produces the event owns its delivery shape: an update head never claims the
-// generation's inline waiter (newHeadDeliveryPlanLocked in package agent), and
-// the notification frame and the clients that render it own how an update is
-// presented.
+// This journal records and orders updates only. Which tool call posts one
+// belongs to the delegate controller that appends the event. The controller
+// also owns its delivery shape: an update head never claims the generation's
+// inline waiter (newHeadDeliveryPlanLocked in package agent). How an update
+// is presented, as a notification frame, as an earlier result carried into a
+// delegate_send reply, or in a client, belongs to those renderers.
 type UpdatePosted struct {
 	Generation uint64 `json:"generation"`
 	Message    string `json:"message"`
