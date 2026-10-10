@@ -12,7 +12,7 @@ export type LiveBand = Exclude<Band, "idle">;
 
 export type BoardItem = { key: string; group: string } & (
 	| { kind: "band"; band: LiveBand; count: number }
-	| { kind: "idleFold"; count: number; folded: boolean }
+	| { kind: "idleFold"; count: number; folded: boolean; unseen: boolean }
 	| {
 			kind: "row";
 			item: ClassifiedRow;
@@ -61,7 +61,14 @@ export function liveItems(bands: LiveBands, idleFolded: boolean): BoardItem[] {
 		items.push({ key: `band:${band}`, group: LIVE, kind: "band", band, count: bands[band].length }, ...rows(band));
 	}
 	if (bands.idle.length) {
-		items.push({ key: "idle-fold", group: LIVE, kind: "idleFold", count: bands.idle.length, folded: idleFolded });
+		items.push({
+			key: "idle-fold",
+			group: LIVE,
+			kind: "idleFold",
+			count: bands.idle.length,
+			folded: idleFolded,
+			unseen: bands.idle.some((item) => item.unseen),
+		});
 		if (!idleFolded) items.push(...rows("idle"));
 	}
 	return items;
@@ -119,7 +126,9 @@ export function projectItems(
 								key: `${group}:${tree.key}`,
 								group,
 								kind: "row",
-								item: classify(tree.row),
+								// An archived session gets no blue dot (Jesse's ruling), though
+								// it may still be running.
+								item: tree.archived ? { ...classify(tree.row), unseen: false } : classify(tree.row),
 								variant: "quiet",
 								moving: false,
 								archived: tree.archived,

@@ -176,11 +176,12 @@ class SeedProblems(Root):
     def test_unreadable_or_unread_frontmatter_is_a_problem(self):
         self.put("seed/a.md", "---\ndescription: Cart rule 7: whole numbers\n---\n")
         self.put("seed/b.md", "# no frontmatter is fine\n")
-        self.put("seed/c.md", "---\r\ndescription: d\r\n---\r\n")
+        self.put("seed/c.md", "--- \ndescription: padded delimiter\n---\n")
         self.put("seed/d.md", "---\ndescription: never closed\n")
         self.put("seed/e.md", "---\ndescription: fine\n---\n")
         self.put("seed/f.md", "---\ntags: [x]\n---\nno description is fine\n")
         self.put("seed/g.txt", "---\nnot markdown, never parsed\n")
+        self.put("seed/h.md", "---\r\ndescription: CRLF line endings read\r\n---\r\n")
         seed = os.path.join(self.root, "evener", "memory", "seed")
         self.assertEqual(memcheck.seed_problems([seed]), {seed: [
             "a.md: frontmatter unreadable",
