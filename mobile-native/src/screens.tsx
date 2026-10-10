@@ -200,6 +200,7 @@ import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./sess
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { SessionTitle } from "./session/SessionTitle";
+import { useActivityPoll } from "./board/useActivityPoll";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
@@ -573,6 +574,11 @@ export function ConversationScreen({
 	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	// This session's own row, which the fleet re-reads when a turn ends.
 	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
+	// This session's activity while it is in front: the status tray's pulse
+	// and quiet time, and the last-moved time the in-front mark follows. The
+	// hub reports activity only for top-level sessions.
+	const { activityOf } = useActivityPoll(subagentOf ? null : client, connected, focused, route.params.ref);
+	const sessionActivity = activityOf(route.params.ref);
 	useMarkSeenInFront(
 		route.params,
 		focused,
@@ -580,6 +586,7 @@ export function ConversationScreen({
 		snapshot.status === "open" ? snapshot.conversation : null,
 		fleetRow,
 		fleet.seen,
+		sessionActivity?.lastMovedAt,
 	);
 	const othersWaiting = useMemo(() => othersNeedingYou(fleet.bands, route.params.ref), [fleet.bands, route.params.ref]);
 	const othersWaitingCount = othersWaiting.length;
@@ -3314,10 +3321,8 @@ export function ConversationScreen({
 								session={conversation}
 								frames={frames}
 								// The hub reports activity only for top-level sessions.
-								client={subagentOf ? null : client}
-								sessionRef={route.params.ref}
+								activity={sessionActivity}
 								row={fleetRow}
-								inFront={focused}
 								connected={connected}
 								canStop={!!permitted?.stop}
 								stopping={stopping || pending}

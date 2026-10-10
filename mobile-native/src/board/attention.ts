@@ -117,17 +117,31 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
- * section marks approvals (approvalRefs), and isSeen splits Finished from
- * Idle. */
+ * section marks approvals (approvalRefs), isSeen splits Finished from Idle,
+ * and movedSinceSeen says whether the session moved after the person last
+ * looked. */
 export function rowClassifier(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
 	return (row) => {
 		const seen = isSeen(row);
-		return { row, state: boardState(row, approvals.has(row.ref), seen), unseen: !seen };
+		const state = boardState(row, approvals.has(row.ref), seen);
+		return { row, state, unseen: rowUnseen(row, state, seen, movedSinceSeen(row)) };
 	};
+}
+
+/** The blue dot (Jesse's ruling): only a live session that has run, and
+ * whenever anything is new since you last opened it. A working row reads the
+ * hub alone (its unseen flag, or motion after its seen mark), never this
+ * device's own markers; a resting one also counts a turn the device's
+ * fallback hasn't seen. */
+export function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
+	if (!row.live || row.offline || row.dormant || state === "shutDown") return false;
+	if (state === "working") return row.unseen === true || moved;
+	return !seen || moved;
 }
 
 const BANDS: Record<BoardState, Band | null> = {
@@ -216,8 +230,9 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
 ): LiveBands {
-	const classify = rowClassifier(needsYouSection, isSeen);
+	const classify = rowClassifier(needsYouSection, isSeen, movedSinceSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);

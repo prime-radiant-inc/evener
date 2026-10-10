@@ -3,11 +3,9 @@
 // is doing now, and Stop. Tapping the line jumps to the live end.
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { PulseMeter } from "../board/PulseMeter";
-import { useActivityPoll } from "../board/useActivityPoll";
 import { allowFontScaling, useColors } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 import { FrameCounter, type TrayLine, type TraySource, trayLine } from "./trayLine";
@@ -80,28 +78,22 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 export function LiveStatusTray({
 	session,
 	frames,
-	client,
-	sessionRef,
+	activity,
 	row,
-	inFront,
 	...tray
 }: Omit<StatusTrayProps, "line" | "perMinute"> & {
 	session: TraySource | null;
 	frames: FrameCounter;
-	/** The client to poll the hub's activity through; null where the hub
-	 * reports none for this session. */
-	client: ConversationClientLike | null;
-	sessionRef: string;
+	/** The hub's activity read for this session, which the session screen
+	 * polls while it is in front; undefined where the hub reports none. */
+	activity: SessionActivity | undefined;
 	/** The session's navigation row, whose subagent tally stands in without a
 	 * fresh activity read, as on the Board. */
 	row?: NavigationSessionSummary;
-	inFront: boolean;
 }) {
 	const [, tick] = useReducer((count: number) => count + 1, 0);
-	const working = session?.status.type === "active";
-	const { activityOf } = useActivityPoll(client, tray.connected, inFront && working, sessionRef);
 	const now = Date.now();
-	const line = session ? trayLine(session, now, activityOf(sessionRef), row) : null;
+	const line = session ? trayLine(session, now, activity, row) : null;
 	const shown = line !== null;
 	useEffect(() => {
 		if (!shown) return;

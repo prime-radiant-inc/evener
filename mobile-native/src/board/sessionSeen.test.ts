@@ -57,6 +57,8 @@ function setup({ refuse = false, fail = false } = {}) {
 		conversation: null as { lastTurnEndedAt?: string } | null,
 		/** The fleet's row for this session, once the fleet has read it. */
 		row: undefined as NavigationSessionSummary | undefined,
+		/** The session's last motion, from the screen's activity read. */
+		lastMovedAt: undefined as number | undefined,
 	};
 	const hook = renderHook(() =>
 		useMarkSeenInFront(
@@ -66,6 +68,7 @@ function setup({ refuse = false, fail = false } = {}) {
 			view.conversation,
 			view.row,
 			useBoardSeen(view.hubId),
+			view.lastMovedAt,
 		),
 	);
 	return { hubId, sent, view, hook, client, markers };
@@ -321,5 +324,33 @@ it("doesn't mark the fleet row again for a turn end the snapshot already marked 
 	hook.rerender();
 	await settleMicrotasks();
 	expect(sent).toHaveLength(1);
+	hook.unmount();
+});
+
+// Output streaming while you watch is seen too: the in-front mark follows the
+// session's last motion as each activity read moves it, sending only marks
+// that advance, and only to a hub that tracks seen-through marks.
+it("marks a session in front seen through its last motion as it moves", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T - 60_000) });
+	view.lastMovedAt = T;
+	hook.rerender();
+	await settleMicrotasks();
+	view.lastMovedAt = T + 10_000;
+	hook.rerender();
+	await settleMicrotasks();
+	hook.rerender();
+	await settleMicrotasks();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 10_000 }]]);
+	hook.unmount();
+});
+
+it("sends no motion mark to a hub without seen-through marks", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active" });
+	view.lastMovedAt = T;
+	hook.rerender();
+	await settleMicrotasks();
+	expect(sent).toEqual([]);
 	hook.unmount();
 });

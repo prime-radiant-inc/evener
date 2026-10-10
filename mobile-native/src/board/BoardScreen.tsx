@@ -256,6 +256,13 @@ function Board({
 	// paused then, and a paused read is cancelled, not answered.
 	useBoardReadRetry(board, connected && focused ? client : null, snapshot);
 
+	// Whether a session moved after the person last looked, from the activity
+	// read's last-moved time against the hub's seen mark (the blue dot).
+	const movedSinceSeen = useCallback(
+		(row: NavigationSessionSummary) => seen.movedSinceSeen(row, activityOf(row.ref)?.lastMovedAt),
+		[seen, activityOf],
+	);
+	const lastMovedAt = useCallback((row: NavigationSessionSummary) => activityOf(row.ref)?.lastMovedAt, [activityOf]);
 	const bands = useMemo(
 		() =>
 			liveBands(
@@ -266,6 +273,7 @@ function Board({
 					const activity = activityOf(row.ref);
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
+				movedSinceSeen,
 			),
 		// seen re-runs isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
@@ -278,7 +286,7 @@ function Board({
 		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
 		// the top within one poll interval of its why-line saying so, instead
 		// of waiting for the next successful read.
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick],
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick, movedSinceSeen],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -286,13 +294,18 @@ function Board({
 	const sources = snapshot.manifest?.sources;
 	const hostLabel = useMemo(() => hostLabeler(sources), [sources]);
 
+	// activityRevision re-classifies after each read, so a row's dot follows
+	// its newest motion.
 	const classify = useMemo(
-		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
-		[snapshot.needsYou.rows, seen],
+		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row), movedSinceSeen),
+		[snapshot.needsYou.rows, seen, movedSinceSeen, activityRevision],
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
-	const projectRow = useMemo(() => rowClassifier([], (row) => seen.isSeen(row)), [seen]);
+	const projectRow = useMemo(
+		() => rowClassifier([], (row) => seen.isSeen(row), movedSinceSeen),
+		[seen, movedSinceSeen, activityRevision],
+	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
 	const toast = useToast();
@@ -413,7 +426,7 @@ function Board({
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsClient, [row]);
+		seen.markRead(actionsClient, [row], lastMovedAt);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's

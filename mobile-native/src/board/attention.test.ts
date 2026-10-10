@@ -12,6 +12,7 @@ import {
 	liveBands,
 	liveSummary,
 	quietOrWorking,
+	rowClassifier,
 	stateWord,
 	subagentChipText,
 	summaryText,
@@ -277,21 +278,37 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
 	});
 
-	it("marks every unseen row, whatever its band, and no seen one", () => {
+	it("dots a live session with anything new since you last looked, and nothing else (Jesse's ruling)", () => {
 		const live = [
-			row("work-unseen", { state: "active" }),
+			row("work-hub-unseen", { state: "active", unseen: true }),
+			row("work-device-unseen", { state: "active" }),
+			row("work-moved", { state: "active" }),
 			row("ask-unseen", { state: "awaiting", ask_pending: true }),
 			row("done-unseen", { state: "idle" }),
-			row("dormant-unseen", { state: "idle", dormant: true }),
+			row("seen-moved", { state: "idle" }),
+			row("never-ran", { state: "idle", dormant: true }),
+			row("offline-unseen", { state: "idle", offline: true }),
 			row("seen-work", { state: "active" }),
 		];
-		const bands = liveBands(live, [], (r) => r.ref.startsWith("seen"));
-		const unseen = [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]
+		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
+		const moved = (r: NavigationSessionSummary) => r.ref === "work-moved" || r.ref === "seen-moved";
+		const bands = liveBands(live, [], seen, () => false, moved);
+		const dotted = [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]
 			.filter((item) => item.unseen)
 			.map((item) => item.row.ref)
 			.sort();
-		expect(unseen).toEqual(["ask-unseen", "done-unseen", "dormant-unseen", "work-unseen"]);
-		expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([["dormant-unseen", true]]);
+		// A working row reads the hub alone: its own unseen flag or motion after
+		// its seen mark, never this device's fallback.
+		expect(dotted).toEqual(["ask-unseen", "done-unseen", "seen-moved", "work-hub-unseen", "work-moved"]);
+	});
+
+	it("dots no session that isn't live", () => {
+		const classify = rowClassifier(
+			[],
+			() => false,
+			() => true,
+		);
+		expect(classify(row("ended", { state: "ended", live: false })).unseen).toBe(false);
 	});
 
 	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {

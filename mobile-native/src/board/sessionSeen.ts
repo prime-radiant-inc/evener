@@ -29,6 +29,7 @@ export function useMarkSeenInFront(
 	conversation: { lastTurnEndedAt?: string } | null,
 	fleetRow: NavigationSessionSummary | undefined,
 	seen: BoardSeen,
+	lastMovedAt?: number,
 ): void {
 	const { hubId, ref } = session;
 	// The turn ends marked in this stay in front, shared by the snapshot and
@@ -59,6 +60,15 @@ export function useMarkSeenInFront(
 		marked.current.add(rowKey);
 		if (fleetRow && !seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
 	});
+	// Output streaming while you watch is seen too: the mark follows the
+	// session's last motion as each activity read moves it, and the hub's
+	// controller sends only a mark that advances. Only a hub that tracks
+	// seen-through marks (the row carries seen_through) takes one.
+	const tracksSeenThrough = fleetRow?.seen_through !== undefined;
+	useEffect(() => {
+		if (!inFront || lastMovedAt === undefined || !tracksSeenThrough) return;
+		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: lastMovedAt }]);
+	}, [inFront, lastMovedAt, tracksSeenThrough, hubId, ref, client]);
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);

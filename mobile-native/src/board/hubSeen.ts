@@ -60,6 +60,11 @@ export class HubSeenMarks {
 		return row.unseen !== true;
 	}
 
+	/** This phone's pending seen-through mark for a ref, if it has one. */
+	pendingSeenThrough(ref: string): number | undefined {
+		return this.pending.get(ref)?.seenThrough;
+	}
+
 	/** Records seen marks and sends them. A mark that doesn't advance a pending
 	 * seen mark for the same ref records and sends nothing, so opening a
 	 * session twice costs one request. */
@@ -187,12 +192,32 @@ export class BoardSeen {
 		return this.hub.isSeenOnHub(row) ?? this.markers.isSeen(row);
 	}
 
-	markRead(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
+	/** Whether the session's tree moved after the hub's seen-through mark for
+	 * it (or this phone's newer pending one): output the person hasn't seen,
+	 * mid-turn included. False without both times: an older hub sends no
+	 * seen_through, and a session that hasn't moved since its daemon began
+	 * serving it reports no last-moved time. */
+	movedSinceSeen(row: NavigationSessionSummary, lastMovedAt: number | undefined): boolean {
+		const mark = hubTime(row.seen_through);
+		if (lastMovedAt === undefined || mark === null) return false;
+		return lastMovedAt > Math.max(mark, this.hub.pendingSeenThrough(row.ref) ?? 0);
+	}
+
+	/** Marks rows seen through the later of their turn end and their last
+	 * motion (lastMovedAt), on the hub when it decides the row or tracks its
+	 * seen-through mark, else with the device's own marker. */
+	markRead(
+		client: ConversationClientLike | null,
+		rows: readonly NavigationSessionSummary[],
+		lastMovedAt: (row: NavigationSessionSummary) => number | undefined = () => undefined,
+	): void {
 		const marks: { ref: string; seenThrough: number }[] = [];
 		for (const row of rows) {
 			const ended = hubTurnEnd(row);
-			if (ended !== null) marks.push({ ref: row.ref, seenThrough: ended });
-			else this.markers.markSeen(row);
+			const moved = row.seen_through === undefined ? undefined : lastMovedAt(row);
+			if (ended === null) this.markers.markSeen(row);
+			const through = Math.max(ended ?? 0, moved ?? 0);
+			if (through > 0) marks.push({ ref: row.ref, seenThrough: through });
 		}
 		this.hub.markSeen(client, marks);
 	}

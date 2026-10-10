@@ -1629,21 +1629,36 @@ const hubFleet: Fleet = {
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
-// A dormant session rests in Idle even with updates you haven't opened, so
-// folded, Idle's header carries the blue dot for it (Jesse, #4093).
-it("dots the folded Idle header while a session inside is unseen, and the row once unfolded", async () => {
+// A live session that moved after the person last looked carries the blue
+// dot, resting in Idle included, and folded, Idle's header carries it for the
+// sessions inside (Jesse, #4093). A session that never ran gets none.
+it("dots the folded Idle header while a session inside moved since it was seen, and the row once unfolded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const dormantUnseen = session("local:dormant-unseen", {
-		title: "Dormant unseen",
+	const moved = session("local:moved", {
+		title: "Moved since seen",
 		updated_at: minutesAgo(90),
 		turn_ended_at: minutesAgo(90),
-		unseen: true,
-		dormant: true,
+		unseen: false,
+		seen_through: minutesAgo(60),
 	});
-	const fake = hub({ ...fleet, live: [[dormantUnseen, hubSeen]], needsYou: [] });
+	const neverRan = session("local:never-ran", { title: "Never ran", updated_at: minutesAgo(5), dormant: true });
+	const fake = hub({
+		...fleet,
+		live: [[moved, hubSeen, neverRan]],
+		needsYou: [],
+		activity: [
+			{
+				ref: "local:moved",
+				minutes: [0, 0, 0, 0, 0, 0, 0],
+				runningSubagents: 0,
+				lastMovedAt: Date.parse(minutesAgo(30)),
+			},
+		],
+	});
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
+	await settleMicrotasks();
 	const fold = () =>
 		tree.root.find(
 			(node) =>
@@ -1651,13 +1666,42 @@ it("dots the folded Idle header while a session inside is unseen, and the row on
 				node.props.accessibilityState?.expanded !== undefined &&
 				String(node.props.accessibilityLabel).startsWith("Idle"),
 		);
-	expect(fold().props.accessibilityLabel).toBe("Idle, 2 sessions, unread sessions inside");
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions, unread sessions inside");
 	expect(fold().findAllByType(FreshDot)).toHaveLength(1);
 	act(() => fold().props.onPress());
-	expect(fold().props.accessibilityLabel).toBe("Idle, 2 sessions");
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions");
 	expect(fold().findAllByType(FreshDot)).toHaveLength(0);
-	expect(rowTitled(tree, "Dormant unseen").findAllByType(FreshDot)).toHaveLength(1);
+	expect(rowTitled(tree, "Moved since seen").findAllByType(FreshDot)).toHaveLength(1);
 	expect(rowTitled(tree, "Hub seen").findAllByType(FreshDot)).toHaveLength(0);
+	expect(rowTitled(tree, "Never ran").findAllByType(FreshDot)).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+// Opening a row marks it seen through the later of its turn end and its last
+// motion, so output that streamed after the turn's end is seen too.
+it("marks a row it opens seen through its last motion when that is later than its turn end", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const streamed = session("local:streamed", {
+		title: "Streamed",
+		updated_at: minutesAgo(10),
+		turn_ended_at: minutesAgo(10),
+		unseen: true,
+		seen_through: minutesAgo(60),
+	});
+	const lastMovedAt = Date.parse(minutesAgo(2));
+	const fake = hub({
+		...fleet,
+		live: [[streamed]],
+		needsYou: [],
+		activity: [{ ref: "local:streamed", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0, lastMovedAt }],
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await settleMicrotasks();
+	act(() => rowTitled(tree, "Streamed").props.onPress());
+	await settleMicrotasks();
+	expect(fake.seen).toEqual([[{ ref: "local:streamed", seenThrough: lastMovedAt }]]);
 	act(() => tree.unmount());
 });
 
