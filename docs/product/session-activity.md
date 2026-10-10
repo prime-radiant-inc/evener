@@ -486,16 +486,20 @@ Cascade and sidebar breadcrumbs use the same reconciled requested path. When
 authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
+The pane has no title and no separate path nav: its tab label carries the
+selected conversation, and the compact spines are the clickable breadcrumb.
 
-The selected session and its immediate parent are readable columns, except
-that a parent equal to the cascade's live origin conversation stays a compact
-spine: that origin pane is already on screen, and the cascade does not repeat
-it. Closing the origin pane retires that association and restores the readable
-parent column. Earlier ancestors are live compact spines. Each readable scope
-has an independent transcript position; collapsed spines retain their reader
-state while pausing older-history demand. Pop, reopen and Jump to live use the
-existing transcript
-and history owners. The ordinary source keeps its own pending demand while
+The origin conversation never renders in the cascade: while a live origin
+association exists, its scope is removed from the pane entirely — no readable
+column and no spine — and no surface in the pane can pop to it. The first
+drill shows only the subagent's conversation, and that lone column fills the
+pane like an ordinary session pane. Deeper drills keep the selected session
+and its immediate parent as readable columns above the removed origin, with
+earlier ancestors as live compact spines. Closing the origin pane retires that
+association and restores the full rendered path. Each readable scope has an
+independent transcript position; collapsed spines retain their reader state
+while pausing older-history demand. Pop, reopen and Jump to live use the
+existing transcript and history owners. The ordinary source keeps its own pending demand while
 inspection is open. A retained source in an existing in-place cascade keeps
 that demand even while collapsed. Another same-ref reader cannot adopt or cancel
 it. Ordinary navigation can adopt a genuinely disposed predecessor's pending
@@ -504,7 +508,10 @@ leaf, including while the reader selects text in a parent. Each ordinary pane's
 footer remains bound to its own conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
-Tasks. About is available in Overview and has no cascade chip.
+Tasks. A column's activity controls render below its transcript content, with
+the column's header and controls fixed while the transcript viewport scrolls
+internally; the pane body hosting the spines and columns never scrolls as a
+unit. About is available in Overview and has no cascade chip.
 
 Ancestor spines reuse the session list's compact indicators: a gray spinner for
 active work, an amber dot for attention and a red diamond for failure. Idle and
