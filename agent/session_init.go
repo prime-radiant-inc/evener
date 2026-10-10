@@ -766,9 +766,10 @@ type RestoreSessionConfig struct {
 	LifetimeContext context.Context
 	MemoryStateRoot string
 	DisableMemory   bool
-	// A nil ceiling preserves root-session identity. A live parent's empty ID
-	// revokes project access, including after the authoritative metadata reload.
-	memoryProjectCeiling    *string
+	// parentMemoryProjectID is a delegate's binding: its live parent's, whatever
+	// the delegate saved, applied after the authoritative metadata reload. Nil
+	// is a root session, which keeps its own.
+	parentMemoryProjectID   *string
 	StateDir                string
 	Project                 identifier.Project
 	ResolveProfile          func(ref string) (*provider.Profile, error)
@@ -906,11 +907,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
-	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil {
-		cfg.MemoryProjectID = delegateMemoryProjectID(cfg.MemoryProjectID, *ceiling)
+	if parentID := restoreCfg.parentMemoryProjectID; parentID != nil {
+		cfg.MemoryProjectID = *parentID
 	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {
 		// A delegate's binding comes from its parent, so only a root session
 		// binds from its home; an unbound delegate resumed on its own stays so.
+		//
+		// This runs before provisionRestoredSandbox below, the same order a
+		// fresh launch uses: cmd/evener's resolveMemoryProjectID binds before
+		// run and serve provision the sandbox. The workspace sandbox confines
+		// the model's tools and has no say in memory binding. Memory files sit
+		// under the host state root behind their own confined roots, and
+		// resolving the project id is host code reading .git metadata.
 		cfg.MemoryProjectID = homeMemoryProjectID(env, meta)
 	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable

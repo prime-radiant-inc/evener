@@ -1257,6 +1257,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			host, history := t.TempDir(), t.TempDir()
 			memorySeedPage(t, host, "personal", "fact.md", "opaque-personal-72")
 			memorySeedPage(t, host, filepath.Join("projects", project.ID), "fact.md", "opaque-project-44")
+			memorySeedPage(t, host, filepath.Join("projects", "different-project"), "fact.md", "opaque-different-53")
 			var accesses, projectAccesses atomic.Int32
 			testCfg := testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(scope, operation string) error {
 				accesses.Add(1)
@@ -1326,8 +1327,8 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			case "project-adopted":
 				meta.Config.MemoryProjectID = ""
 			case "project-unresolved":
-				// An unbound parent whose home cannot bind stays unbound, so the
-				// child's saved binding exceeds the parent's ceiling.
+				// An unbound parent whose home cannot bind stays unbound, so its
+				// child drops the binding it saved.
 				meta.Config.MemoryProjectID = ""
 				meta.EnvInfo.WorkingDir = "."
 			case "project-different":
@@ -1389,8 +1390,16 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				if got := memoryWaitChild(t, r, fresh.ChildSessionID).sess.cfg.MemoryProjectID; got != project.ID {
 					t.Fatalf("fresh child of adopted parent=%q want %q", got, project.ID)
 				}
-			case "project-unresolved", "project-different":
-				if mode == "project-unresolved" && r.cfg.MemoryProjectID != "" {
+			case "project-different":
+				// The child's own saved binding gives way to its parent's.
+				if restored.sess.cfg.MemoryProjectID != "different-project" {
+					t.Fatalf("cold child project=%q want the parent's", restored.sess.cfg.MemoryProjectID)
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "project", "file_path": "fact.md"}); res.IsError || !strings.Contains(res.Output, "opaque-different-53") {
+					t.Fatalf("cold child parent-project read=%+v", res)
+				}
+			case "project-unresolved":
+				if r.cfg.MemoryProjectID != "" {
 					t.Fatalf("parent with an unresolvable home bound %q", r.cfg.MemoryProjectID)
 				}
 				if restored.sess.cfg.MemoryProjectID != "" {
@@ -1509,11 +1518,7 @@ func TestMemoryDelegateFrozenBinding(t *testing.T) {
 	t.Parallel()
 	for _, parent := range []SessionConfig{{MemoryStateRoot: t.TempDir(), MemoryProjectID: "saved", DisableMemory: true}, {MemoryStateRoot: t.TempDir()}, {MemoryStateRoot: t.TempDir(), MemoryProjectID: "different"}} {
 		got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{MemoryProjectID: "saved"}, parent)
-		want := ""
-		if parent.MemoryProjectID == "saved" {
-			want = "saved"
-		}
-		if got.MemoryStateRoot != parent.MemoryStateRoot || got.DisableMemory != parent.DisableMemory || got.MemoryProjectID != want {
+		if got.MemoryStateRoot != parent.MemoryStateRoot || got.DisableMemory != parent.DisableMemory || got.MemoryProjectID != parent.MemoryProjectID {
 			t.Fatalf("frozen root=%q disabled=%t project=%q", got.MemoryStateRoot, got.DisableMemory, got.MemoryProjectID)
 		}
 	}
@@ -1702,7 +1707,7 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 			meta.Config.MemoryProjectID = "caller-stale-project"
 			var personal, project atomic.Int32
 			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
-				StateDir: history, MemoryStateRoot: root, memoryProjectCeiling: &parentID,
+				StateDir: history, MemoryStateRoot: root, parentMemoryProjectID: &parentID,
 				AcquireSessionOwnership: func(string) error { return nil },
 				testOnly: testConfig{memoryBeforeIO: func(scope, operation string) error {
 					if scope == "project" {
@@ -1718,10 +1723,8 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 			}
 			defer r.Close()
 			r.maybeAppendMemoryContext(context.Background(), true)
-			wantID := ""
-			if parentID == "saved-project" {
-				wantID = parentID
-			}
+			// The child always takes its parent's binding, whatever it saved.
+			wantID := parentID
 			if r.cfg.MemoryProjectID != wantID || r.cfg.MemoryStateRoot != root {
 				t.Fatalf("binding project=%q root=%q", r.cfg.MemoryProjectID, r.cfg.MemoryStateRoot)
 			}
