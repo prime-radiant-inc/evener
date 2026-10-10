@@ -93,7 +93,7 @@ import {
   type TranscriptResolvedIdentity,
   upgradeSessionCache,
 } from "./sessionCacheSchema";
-import { SessionEntryCache } from "./sessionEntryCache";
+import { type EntryMigrationSource, SessionEntryCache } from "./sessionEntryCache";
 import { migrateLegacySession } from "./sessionEntryMigration";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
@@ -572,6 +572,9 @@ function currentSessionCache(): SessionCacheIndexedDB {
 // Lazy so the ordinary browser captures its actual storage environment on first
 // use. Both adapters open the same schema version and database, never a new tier.
 let productionEntryCache: SessionEntryCache | undefined;
+// Only scalar source identities wait here. One explicit-open conversion runs
+// at a time across both legacy formats and every production ref in this tab.
+let productionEntryMigrationTail: Promise<void> = Promise.resolve();
 function currentEntryCache(): SessionEntryCache {
   productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME });
   return productionEntryCache;
@@ -806,7 +809,7 @@ async function openEntryTranscript(ref: string): Promise<void> {
 // decoded blob before the accepted transactional converter rereads its source.
 // Keeping the source's incarnation isolates incompatible seeds from the live
 // repository instead of relabelling an old conversation as the current one.
-async function legacyMigrationMetadata(ref: string): Promise<
+async function legacyMigrationMetadata(source: EntryMigrationSource): Promise<
   | {
       incarnation: string;
       savedAt: number;
@@ -829,22 +832,25 @@ async function legacyMigrationMetadata(ref: string): Promise<
   });
   try {
     const database = await connection.open();
-    const transaction = database.transaction(["records", "meta"], "readonly");
+    const transaction = database.transaction(["records", "current", "meta"], "readonly");
     const complete = transactionCompletion(transaction);
     const [record, epoch] = await Promise.all([
-      requestResult<unknown>(transaction.objectStore("records").get(ref)),
+      requestResult<unknown>(
+        source.kind === "records"
+          ? transaction.objectStore("records").get(source.ref)
+          : transaction.objectStore("current").get([...source.key]),
+      ),
       requestResult<{ epoch?: number } | undefined>(transaction.objectStore("meta").get("__clearEpoch")),
     ]);
     await complete;
-    if (
-      record === null ||
-      typeof record !== "object" ||
-      !("history" in record) ||
-      !("savedAt" in record) ||
-      typeof record.savedAt !== "number"
-    )
+    if (record === null || typeof record !== "object" || !("savedAt" in record) || typeof record.savedAt !== "number")
       return undefined;
-    const history = record.history;
+    let history: unknown;
+    if (source.kind === "records" && "history" in record) history = record.history;
+    else if (source.kind === "current" && "state" in record) {
+      const state = record.state;
+      if (state !== null && typeof state === "object" && "history" in state) history = state.history;
+    }
     if (
       history === null ||
       typeof history !== "object" ||
@@ -881,38 +887,50 @@ function startProductionEntryMigration(route: EntryTranscriptRoute): void {
   // Only a foreground open schedules conversion. It is never an automatic
   // background blob read, and the UI does not await it. The converter owns the
   // real transaction's source removal, so failure leaves the blob for retry.
-  route.migration = (async () => {
-    const source = await legacyMigrationMetadata(route.ref);
-    if (!current()) return;
-    if (!source) {
-      route.migrationComplete = true;
-      return;
-    }
-    if (source.epoch !== clearEpoch) return;
-    const sourceIdentity = { ...identity, incarnation: source.incarnation };
-    const sourceKey = entryHistoryKey(sourceIdentity);
-    const historyGeneration =
-      sourceKey === route.historyKey
-        ? (route.historyGeneration ?? 0)
-        : await route.cache.getHistoryGeneration(sourceKey);
-    if (!current()) return;
-    const outcome = await migrateLegacySession(route.cache, {
-      identity: sourceIdentity,
-      requestedRefs: [{ clientId: identity.clientId, ref: route.ref }],
-      savedAt: source.savedAt,
-      accessedAt: route.cache.now(),
-      source: { kind: "records", ref: route.ref },
-      clearEpoch,
-      historyGeneration,
-    });
-    if (outcome.outcome === "converted" || outcome.outcome === "skipped") route.migrationComplete = true;
-  })()
+  route.migration = productionEntryMigrationTail
+    .then(async () => {
+      if (!current()) return;
+      const sources: EntryMigrationSource[] = [
+        { kind: "records", ref: route.ref },
+        ...(await route.cache.currentMigrationSources(route.ref)),
+      ];
+      let complete = true;
+      for (const descriptor of sources) {
+        if (!current()) return;
+        const source = await legacyMigrationMetadata(descriptor);
+        if (!current()) return;
+        if (!source) continue;
+        if (source.epoch !== clearEpoch) {
+          complete = false;
+          continue;
+        }
+        const sourceIdentity = { ...identity, incarnation: source.incarnation };
+        const sourceKey = entryHistoryKey(sourceIdentity);
+        const historyGeneration =
+          sourceKey === route.historyKey
+            ? (route.historyGeneration ?? 0)
+            : await route.cache.getHistoryGeneration(sourceKey);
+        if (!current()) return;
+        const outcome = await migrateLegacySession(route.cache, {
+          identity: sourceIdentity,
+          requestedRefs: [{ clientId: identity.clientId, ref: route.ref }],
+          savedAt: source.savedAt,
+          accessedAt: route.cache.now(),
+          source: descriptor,
+          clearEpoch,
+          historyGeneration,
+        });
+        if (outcome.outcome !== "converted" && outcome.outcome !== "skipped") complete = false;
+      }
+      route.migrationComplete = complete;
+    })
     .catch(() => {
-      // Storage is best-effort. A later explicit open retries this source.
+      // Storage is best-effort. A later explicit open retries failed sources.
     })
     .finally(() => {
       route.migration = undefined;
     });
+  productionEntryMigrationTail = route.migration;
 }
 
 function releaseEntryTranscriptReader(ref: string): void {
@@ -7160,6 +7178,7 @@ export function resetThreadsStoreForTests(): void {
   productionEntryRoutes.clear();
   productionEntryCache?.close();
   productionEntryCache = undefined;
+  productionEntryMigrationTail = Promise.resolve();
   residencyIfCreated?.dispose();
   residencyIfCreated = undefined;
   currentAdmissions.clear();

@@ -1699,4 +1699,20 @@ export class SessionEntryCache {
       .filter((row) => row.requestedRefs?.some((binding) => requested.has(binding.ref)))
       .map((row) => row.historyKey);
   }
+
+  /** Source identities only, not checkpoint bodies, for explicit-open migration. */
+  async currentMigrationSources(ref: string): Promise<EntryMigrationSource[]> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(CURRENT_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    const keys = await requestResult(transaction.objectStore(CURRENT_META_STORE).index("ref").getAllKeys(ref));
+    await complete;
+    const sources: EntryMigrationSource[] = [];
+    for (const key of keys) {
+      if (Array.isArray(key) && typeof key[0] === "string" && typeof key[1] === "string") {
+        sources.push({ kind: "current", key: [key[0], key[1]] });
+      }
+    }
+    return sources;
+  }
 }
