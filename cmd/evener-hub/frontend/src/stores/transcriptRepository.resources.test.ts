@@ -708,15 +708,19 @@ it("does not clear a failed disposition from a live repository when a predecesso
   // remain false).
   reader.dispose();
 
-  // B, chained after A, fails through the ordinary path with no reader demand and
-  // is never admitted to the queue. This records "failed".
+  // B, chained after A, is queued behind A's in-flight retry: one repository must
+  // not overlap its own background batches. It issues once A settles, fails
+  // through the ordinary path with no reader demand, and is never admitted to the
+  // retry queue; that records "failed".
   owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  expect(commits).toHaveBeenCalledTimes(1);
+
+  // Release A. Its real commit extends R through A only (snapshot 2); B then
+  // issues and fails for real.
+  gate.resolve();
   await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
   // Event-loop barrier: B's failed-outcome handler has run by now.
   await new Promise((resolve) => setTimeout(resolve, 0));
-
-  // Release A. Its real commit extends R through A only (snapshot 2).
-  gate.resolve();
   await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
 
   // B was abandoned and never committed, so settled() must still report it.
@@ -1259,4 +1263,692 @@ it("inventories pending, in-flight, retry and ended stores against the counter",
   expect(owner.retainedInventoryForTesting().pendingRows).toHaveLength(0);
   expect(admission.retainedBytes).toBe(0);
   reader.dispose();
+});
+
+// The union of every store the repository really retains, for a whole-object
+// cross-check against the admission's charge ledger.
+function allRetained(owner: TranscriptRepository): object[] {
+  const inventory = owner.retainedInventoryForTesting();
+  return [
+    ...inventory.pendingRows,
+    ...inventory.inFlightBodies,
+    ...inventory.retryBodies,
+    ...inventory.backgroundAcceptBodies,
+    ...inventory.handoffOverlayBodies,
+  ];
+}
+
+// Task 3f N1: a repository must not overlap itself in the background drain. A
+// second no-reader accepted write while this repository's own background batch
+// is in flight must not issue a second concurrent batch.
+it("does not let one repository overlap its own background drain", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(100_000);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const issued: string[] = [];
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    issued.push(batch.items.map((row) => row.transcriptKey).join(","));
+    if (batch.items.some((row) => row.transcriptKey === "item-first")) await gate.promise;
+    return realCommit(batch);
+  });
+
+  // No reader: the first accepted write takes the background slot and stalls.
+  owner.acceptRead(read("first", 2), { lifetime: 1, readId: "read-first", boundary: "boundary-first" });
+  await vi.waitFor(() => expect(issued.some((keys) => keys.includes("item-first"))).toBe(true));
+
+  // A second accepted write on the SAME repository must wait for the first.
+  owner.acceptRead(read("second", 3), { lifetime: 1, readId: "read-second", boundary: "boundary-second" });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(issued.filter((keys) => keys.includes("item-second"))).toHaveLength(0);
+
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-second"));
+  expect(issued.filter((keys) => keys.includes("item-second"))).toHaveLength(1);
+  spy.mockRestore();
+  owner.dispose();
+});
+
+// Task 3f N2: multiple accepted background batches queued behind another
+// repository's held slot must all drain with no new input.
+it("drains every queued accepted background batch without new input", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(100_000);
+  const ownerA = repository(fixture.cache, 1, undefined, undefined, admission);
+  const ownerB = repository(fixture.cache, 2, undefined, undefined, admission);
+  ownerA.acceptRead(read("baseA"), { lifetime: 1, readId: "read-baseA", boundary: "boundary-baseA" });
+  await ownerA.settled();
+  ownerB.acceptRead(read("baseB"), { lifetime: 2, readId: "read-baseB", boundary: "boundary-baseB" });
+  await ownerB.settled();
+
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const issued: string[] = [];
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    issued.push(batch.items.map((row) => row.transcriptKey).join(","));
+    if (batch.items.some((row) => row.transcriptKey === "item-a1")) await gate.promise;
+    return realCommit(batch);
+  });
+
+  // A takes the slot and stalls.
+  ownerA.acceptRead(read("a1", 2), { lifetime: 1, readId: "read-a1", boundary: "boundary-a1" });
+  await vi.waitFor(() => expect(issued.some((keys) => keys.includes("item-a1"))).toBe(true));
+
+  // B queues two accepted writes behind the held slot, with no reader demand.
+  ownerB.acceptRead(read("b1", 2), { lifetime: 2, readId: "read-b1", boundary: "boundary-b1" });
+  ownerB.acceptRead(read("b2", 3), { lifetime: 2, readId: "read-b2", boundary: "boundary-b2" });
+  await Promise.resolve();
+  expect(issued.some((keys) => keys.includes("item-b1"))).toBe(false);
+
+  // Release A with no further input: both queued B batches must drain.
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-b2"));
+  expect((await keysInCache(fixture.cache)).sort()).toEqual([
+    "item-a1",
+    "item-b1",
+    "item-b2",
+    "item-baseA",
+    "item-baseB",
+  ]);
+  spy.mockRestore();
+  ownerA.dispose();
+  ownerB.dispose();
+});
+
+// Task 3f N3: a preserved ended handoff body that does not fit the aggregate is
+// still retained by the model, so it must be charged and inventoried honestly
+// rather than left invisible.
+it("charges and inventories an over-budget ended handoff body through the real model", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(1_500);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const key = "stream:round-9/1:agentMessage";
+  expect(
+    owner.accept(
+      {
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId,
+          item: {
+            key,
+            kind: "stream",
+            turnId: "turn_1",
+            roundId: "round-9",
+            streamId: "round-9/1",
+            item: {
+              type: "agentMessage",
+              id: "item-ended",
+              turnId: "turn_1",
+              roundId: "round-9",
+              text: "z".repeat(3_000),
+            },
+          },
+        },
+      } as unknown as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  expect(
+    owner.accept(
+      { method: "overlay/end", params: { ref, threadId, roundId: "round-9" } } as unknown as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+
+  // The body is preserved by the model even though it exceeds the aggregate.
+  const overlayItem = owner.getSnapshot()?.overlay?.[key];
+  expect(overlayItem).toBeDefined();
+  const handoff = owner.retainedInventoryForTesting().handoffOverlayBodies;
+  expect(handoff).toContain(overlayItem);
+  expect(admission.isRetained(overlayItem as object)).toBe(true);
+  expect(allRetained(owner)).toContain(overlayItem);
+  // The aggregate honestly reports the over-limit retained body.
+  expect(admission.retainedBytes).toBeGreaterThan(admission.limit);
+
+  owner.dispose();
+  expect(admission.retainedBytes).toBe(0);
+});
+
+// Task 3f N3: invalidation releases an ended handoff body's charge, so it must
+// also drop that body from the model it keeps; otherwise the model retains a
+// body with no charge or inventory entry.
+it("drops ended handoff bodies from the model when their charge is released on invalidation", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(8_000);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const key = "stream:round-9/1:agentMessage";
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key,
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "round-9",
+          streamId: "round-9/1",
+          item: {
+            type: "agentMessage",
+            id: "item-ended",
+            turnId: "turn_1",
+            roundId: "round-9",
+            text: "z".repeat(3_000),
+          },
+        },
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "round-9" } } as unknown as AnyNotification, {
+    lifetime: 1,
+  });
+  expect(owner.getSnapshot()?.overlay?.[key]).toBeDefined();
+  expect(admission.retainedBytes).toBeGreaterThan(0);
+
+  owner.invalidate();
+  expect(owner.getSnapshot()?.overlay?.[key]).toBeUndefined();
+  expect(owner.retainedInventoryForTesting().handoffOverlayBodies).toHaveLength(0);
+  expect(admission.retainedBytes).toBe(0);
+  owner.dispose();
+});
+
+// Task 3f R1 remainder: the sole oversize exemption and the single background
+// slot are mutually exclusive. An oversize response must not issue while a
+// background batch holds the slot.
+it("refuses the oversize exemption while a background batch holds the slot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(1_500);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const issued: string[] = [];
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    issued.push(batch.items.map((row) => row.transcriptKey).join(","));
+    if (batch.items.some((row) => row.transcriptKey === "item-holder")) await gate.promise;
+    return realCommit(batch);
+  });
+
+  // A no-reader ordinary batch takes the background slot and stalls.
+  owner.acceptRead(readItems("holder", 2, [item("base", 1), bigItem("holder", 2, 100)]), {
+    lifetime: 1,
+    readId: "read-holder",
+    boundary: "boundary-holder",
+  });
+  await vi.waitFor(() => expect(issued.some((keys) => keys.includes("item-holder"))).toBe(true));
+  expect(admission.snapshotForTesting().backgroundInFlight).toBe(true);
+  expect(admission.snapshotForTesting().exemptActive).toBe(false);
+
+  // The oversize response must not issue concurrently; it is refused for caching.
+  owner.acceptRead(readItems("huge", 3, [item("base", 1), bigItem("huge", 3, 2_000)]), {
+    lifetime: 1,
+    readId: "read-huge",
+    boundary: "boundary-huge",
+  });
+  await Promise.resolve();
+  expect(issued.some((keys) => keys.includes("item-huge"))).toBe(false);
+  expect(await keysInCache(fixture.cache)).not.toContain("item-huge");
+  // The refused response is still displayed.
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((entry) => entry.transcriptKey),
+  ).toContain("item-huge");
+
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-holder"));
+  spy.mockRestore();
+  owner.dispose();
+});
+
+// Task 3f R1 remainder, other direction: while the sole oversize exemption is in
+// flight, an ordinary no-reader background batch must wait for it.
+it("holds an ordinary background batch while the sole oversize exemption is in flight", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(1_500);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const issued: string[] = [];
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    issued.push(batch.items.map((row) => row.transcriptKey).join(","));
+    if (batch.items.some((row) => row.transcriptKey === "item-huge")) await gate.promise;
+    return realCommit(batch);
+  });
+
+  // The oversize response takes the sole exemption and stalls.
+  owner.acceptRead(readItems("huge", 2, [item("base", 1), bigItem("huge", 2, 2_000)]), {
+    lifetime: 1,
+    readId: "read-huge",
+    boundary: "boundary-huge",
+  });
+  await vi.waitFor(() => expect(issued.some((keys) => keys.includes("item-huge"))).toBe(true));
+  expect(admission.snapshotForTesting().exemptActive).toBe(true);
+
+  // An ordinary no-reader batch must wait for the exemption to release.
+  owner.acceptRead(readItems("ordinary", 3, [item("base", 1), bigItem("ordinary", 3, 100)]), {
+    lifetime: 1,
+    readId: "read-ordinary",
+    boundary: "boundary-ordinary",
+  });
+  await Promise.resolve();
+  expect(issued.some((keys) => keys.includes("item-ordinary"))).toBe(false);
+
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-ordinary"));
+  spy.mockRestore();
+  owner.dispose();
+});
+
+// Task 3f quality (a): the inventory traverses the real retained batch objects
+// and the actual ended overlay, not the admission's descriptor list, so an
+// unregistered closure or ended body cannot hide. Exercises in-flight,
+// background-accept, retry, ended and pending stores under one aggregate.
+it("inventories every retained store from the real batches and the ended overlay", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduler } = capturingScheduler();
+  const admission = new EntryWriteAdmission(50_000);
+  const ownerNoReader = repository(fixture.cache, 1, undefined, scheduler, admission);
+  const ownerReader = repository(fixture.cache, 2, undefined, undefined, admission);
+  const reader = ownerReader.attachReader();
+  ownerNoReader.acceptRead(read("nbase"), { lifetime: 1, readId: "read-nbase", boundary: "boundary-nbase" });
+  await ownerNoReader.settled();
+  ownerReader.acceptRead(read("rbase"), { lifetime: 2, readId: "read-rbase", boundary: "boundary-rbase" });
+  await ownerReader.settled();
+
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const batches: Array<Parameters<typeof realCommit>[0]> = [];
+  const n1Gate = deferred<void>();
+  const r1Gate = deferred<void>();
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    batches.push(batch);
+    if (batch.items.some((row) => row.transcriptKey === "item-n1")) await n1Gate.promise;
+    if (batch.items.some((row) => row.transcriptKey === "item-r1")) await r1Gate.promise;
+    if (batch.items.some((row) => row.transcriptKey === "item-rfail")) {
+      return { outcome: "failed", error: new Error("simulated abort") };
+    }
+    return realCommit(batch);
+  });
+
+  // No-reader owner: one held background batch and one queued behind it.
+  ownerNoReader.acceptRead(readItems("n1", 2, [item("nbase", 1), bigItem("n1", 2, 1_000)]), {
+    lifetime: 1,
+    readId: "read-n1",
+    boundary: "boundary-n1",
+  });
+  await vi.waitFor(() =>
+    expect(batches.some((batch) => batch.items.some((row) => row.transcriptKey === "item-n1"))).toBe(true),
+  );
+  ownerNoReader.acceptRead(readItems("n2", 3, [item("nbase", 1), bigItem("n2", 3, 1_000)]), {
+    lifetime: 1,
+    readId: "read-n2",
+    boundary: "boundary-n2",
+  });
+
+  // Reader owner: one held foreground batch and one failed retry.
+  ownerReader.acceptRead(readItems("r1", 3, [item("rbase", 1), bigItem("r1", 3, 1_000)]), {
+    lifetime: 2,
+    readId: "read-r1",
+    boundary: "boundary-r1",
+  });
+  await vi.waitFor(() =>
+    expect(batches.some((batch) => batch.items.some((row) => row.transcriptKey === "item-r1"))).toBe(true),
+  );
+  ownerReader.acceptRead(readItems("rfail", 4, [item("rbase", 1), bigItem("rfail", 4, 1_000)]), {
+    lifetime: 2,
+    readId: "read-rfail",
+    boundary: "boundary-rfail",
+  });
+  await vi.waitFor(() => expect(ownerReader.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0));
+
+  // Ended overlay on the no-reader owner.
+  const overlayKey = "stream:round-9/1:agentMessage";
+  ownerNoReader.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: overlayKey,
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "round-9",
+          streamId: "round-9/1",
+          item: {
+            type: "agentMessage",
+            id: "item-ended",
+            turnId: "turn_1",
+            roundId: "round-9",
+            text: "z".repeat(300),
+          },
+        },
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  ownerNoReader.accept(
+    { method: "overlay/end", params: { ref, threadId, roundId: "round-9" } } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+
+  const batchFor = (key: string) => batches.find((batch) => batch.items.some((row) => row.transcriptKey === key))!;
+  const bodiesOf = (batch: Parameters<typeof realCommit>[0]) => [...batch.items, ...(batch.turns ?? [])];
+
+  // In-flight and background-accept are the real batch objects, not descriptors.
+  const inventoryNoReader = ownerNoReader.retainedInventoryForTesting();
+  expect(new Set(inventoryNoReader.inFlightBodies)).toEqual(new Set(bodiesOf(batchFor("item-n1"))));
+  // The queued accepted batch was never issued, so its real bodies come from the
+  // repository's own queue rather than the commit spy; they are still charged.
+  expect(inventoryNoReader.backgroundAcceptBodies.length).toBeGreaterThan(0);
+  for (const body of inventoryNoReader.backgroundAcceptBodies) {
+    expect(admission.retainedKeysFor(ownerNoReader)).toContain(body);
+  }
+  // The ended store is the actual preserved overlay object.
+  expect(inventoryNoReader.handoffOverlayBodies).toContain(ownerNoReader.getSnapshot()?.overlay?.[overlayKey]);
+
+  const inventoryReader = ownerReader.retainedInventoryForTesting();
+  expect(new Set(inventoryReader.inFlightBodies)).toEqual(new Set(bodiesOf(batchFor("item-r1"))));
+  expect(new Set(inventoryReader.retryBodies)).toEqual(new Set(bodiesOf(batchFor("item-rfail"))));
+
+  // Every real retained object is charged for its owner.
+  for (const body of allRetained(ownerNoReader)) expect(admission.retainedKeysFor(ownerNoReader)).toContain(body);
+  for (const body of allRetained(ownerReader)) expect(admission.retainedKeysFor(ownerReader)).toContain(body);
+
+  n1Gate.resolve();
+  r1Gate.resolve();
+  spy.mockRestore();
+  reader.dispose();
+  ownerNoReader.dispose();
+  ownerReader.dispose();
+});
+
+// Restored Task 3b behaviour 1 (round 1): distinct retained copies are charged
+// separately, shared identity is deduped, and an over-budget reservation is
+// atomic.
+it("counts distinct retained copies separately and dedupes only shared object identity", () => {
+  const admission = new EntryWriteAdmission(30);
+  const owner = {};
+  const shared = { transcriptKey: "a" };
+  // The same object retained from two sites is charged once against the queue.
+  expect(admission.retain([{ key: shared, bytes: 10 }], owner, "writing")).toBe(true);
+  expect(admission.retain([{ key: shared, bytes: 10 }], owner, "retry")).toBe(true);
+  expect(admission.snapshotForTesting().retainedBytes).toBe(10);
+  expect(admission.snapshotForTesting().retainedIdentities).toBe(1);
+  // A second, independently decoded copy of the same transcript key is a
+  // different object and is charged separately.
+  const copy = { transcriptKey: "a" };
+  expect(admission.retain([{ key: copy, bytes: 10 }], owner, "writing")).toBe(true);
+  expect(admission.snapshotForTesting().retainedBytes).toBe(20);
+  expect(admission.snapshotForTesting().retainedIdentities).toBe(2);
+  // An over-budget reservation is atomic: none of its identities are retained.
+  const extra = {};
+  expect(admission.retain([{ key: extra, bytes: 20 }], owner, "writing")).toBe(false);
+  expect(admission.snapshotForTesting().retainedBytes).toBe(20);
+  expect(admission.isRetained(extra)).toBe(false);
+  expect(admission.isRetained(shared)).toBe(true);
+});
+
+// Restored Task 3b behaviours 1 and 2 (round 1): the repository admits
+// queued/in-writing work against the shared aggregate, and an overflow drops the
+// affected cache work, keeps the row displayed, breaks readiness honestly and
+// schedules a paced reconciliation.
+it("drops over-aggregate entry work while keeping the referenced bodies and the reader honest", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const admission = new EntryWriteAdmission(3_000);
+  const owner = repository(fixture.cache, 1, undefined, scheduler, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  expect(admission.retainedBytes).toBe(0);
+
+  const reader = owner.attachReader();
+  // Hold the first large write in flight so its bodies are genuinely retained,
+  // and keep each batch below the limit so the second is ordinary overflow, not
+  // the oversize exception.
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const gate = deferred<void>();
+  const heldWrite = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(async (batch) => {
+    await gate.promise;
+    return realCommit(batch);
+  });
+  owner.acceptRead(readItems("first", 2, [item("base", 1), bigItem("first", 2, 2_000)]), {
+    lifetime: 1,
+    readId: "read-first",
+    boundary: "boundary-first",
+  });
+  await vi.waitFor(() => expect(admission.retainedBytes).toBeGreaterThan(0));
+  const heldKeys = admission.retainedKeysFor(owner);
+  expect(heldKeys.length).toBeGreaterThan(0);
+  const retainedBefore = admission.snapshotForTesting().retainedBytes;
+  expect(retainedBefore).toBeLessThanOrEqual(3_000);
+  expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+
+  // A second read cannot fit the remaining aggregate.
+  expect(
+    owner.acceptRead(readItems("second", 3, [item("base", 1), bigItem("second", 3, 1_000)]), {
+      lifetime: 1,
+      readId: "read-second",
+      boundary: "boundary-second",
+    }),
+  ).toBe(true);
+  await Promise.resolve();
+
+  // Counter bound: the aggregate never exceeds its limit.
+  expect(admission.retainedBytes).toBeLessThanOrEqual(3_000);
+  // Real references: the held bodies survive by object identity, and the dropped
+  // batch retained none of its own.
+  const heldAfter = admission.retainedKeysFor(owner);
+  for (const key of heldKeys) expect(heldAfter).toContain(key);
+  expect(heldAfter.length).toBe(heldKeys.length);
+  // The dropped work is not durably cached, but it is still displayed.
+  expect(await keysInCache(fixture.cache)).not.toContain("item-second");
+  expect(
+    reader
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((entry) => entry.transcriptKey),
+  ).toContain("item-second");
+  // Readiness is honestly broken and one paced reconciliation is scheduled.
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+  expect(scheduled.length).toBeGreaterThanOrEqual(1);
+
+  // The held predecessor still commits normally.
+  gate.resolve();
+  await vi.waitFor(() => expect(admission.retainedBytes).toBe(0));
+  expect(await keysInCache(fixture.cache)).toContain("item-first");
+  heldWrite.mockRestore();
+  reader.dispose();
+  owner.dispose();
+});
+
+// Restored Task 3b behaviour 2 (round 1): a single response above the queue
+// capacity is the sole immediate bounded batch, accounted separately and never
+// staged for retry.
+it("admits one immediate bounded batch above the queue capacity without staging it", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const admission = new EntryWriteAdmission(500);
+  const owner = repository(fixture.cache, 1, undefined, scheduler, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  expect(admission.retainedBytes).toBe(0);
+
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const gate = deferred<void>();
+  const heldWrite = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(async (batch) => {
+    await gate.promise;
+    return realCommit(batch);
+  });
+  owner.acceptRead(readItems("huge", 2, [item("base", 1), bigItem("huge", 2, 2_000)]), {
+    lifetime: 1,
+    readId: "read-huge",
+    boundary: "boundary-huge",
+  });
+  // The oversize response was committed immediately, not dropped...
+  expect(heldWrite).toHaveBeenCalled();
+  // ...accounted separately from the 4 MiB-class aggregate...
+  expect(admission.retainedBytes).toBe(0);
+  expect(admission.snapshotForTesting().exemptBytes).toBeGreaterThan(0);
+  expect(admission.snapshotForTesting().exemptActive).toBe(true);
+  gate.resolve();
+  await owner.settled();
+  expect(await keysInCache(fixture.cache)).toContain("item-huge");
+  // ...and never staged as a retry.
+  expect(scheduled).toHaveLength(0);
+  heldWrite.mockRestore();
+  owner.dispose();
+});
+
+// Restored Task 3b behaviour 3 (round 1, fairness): among repositories waiting
+// for the single background slot, one with live reader demand is served before
+// one without.
+it("serves a foreground waiter before a background waiter", () => {
+  const admission = new EntryWriteAdmission(100);
+  const holder = {};
+  const foreground = {};
+  const background = {};
+  const resumed: string[] = [];
+  expect(
+    admission.tryAcquireBackground(
+      holder,
+      () => false,
+      () => {},
+    ),
+  ).toBe(true);
+  const acquireBackground = () => {
+    if (admission.tryAcquireBackground(background, () => false, acquireBackground)) resumed.push("background");
+  };
+  const acquireForeground = () => {
+    if (admission.tryAcquireBackground(foreground, () => true, acquireForeground)) resumed.push("foreground");
+  };
+  expect(admission.tryAcquireBackground(background, () => false, acquireBackground)).toBe(false);
+  expect(admission.tryAcquireBackground(foreground, () => true, acquireForeground)).toBe(false);
+  admission.releaseBackground(holder);
+  expect(resumed).toEqual(["foreground"]);
+  admission.releaseBackground(foreground);
+  expect(resumed).toEqual(["foreground", "background"]);
+  expect(admission.snapshotForTesting().backgroundInFlight).toBe(true);
+});
+
+// Restored and strengthened Task 3b behaviour 4 (round 1): an overflow does not
+// start a repair loop. The paced callback is actually fired, repeated opens and
+// unchanged deltas arm nothing further, and a later overflow re-arms exactly one
+// more reconciliation.
+it("does not start a repair loop for repeated opens, unchanged deltas or a re-overflow", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  let reconciles = 0;
+  const admission = new EntryWriteAdmission(3_000);
+  const owner = repository(fixture.cache, 1, undefined, scheduler, admission, () => (reconciles += 1));
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // Hold a first large write so its bodies occupy the aggregate; the second read
+  // is then ordinary overflow (not the oversize exception).
+  const held = deferred<EntryWriteOutcome>();
+  const heldWrite = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(() => held.promise);
+  owner.acceptRead(readItems("occupier", 2, [item("base", 1), bigItem("occupier", 2, 2_000)]), {
+    lifetime: 1,
+    readId: "read-occupier",
+    boundary: "boundary-occupier",
+  });
+  await vi.waitFor(() => expect(admission.retainedBytes).toBeGreaterThan(0));
+  owner.acceptRead(readItems("overflow", 3, [item("base", 1), bigItem("overflow", 3, 1_000)]), {
+    lifetime: 1,
+    readId: "read-overflow",
+    boundary: "boundary-overflow",
+  });
+  await Promise.resolve();
+  const armedAfterOverflow = scheduled.length;
+  expect(armedAfterOverflow).toBeGreaterThanOrEqual(1);
+
+  // Firing the paced callback makes one real reconciliation request and does not
+  // re-arm itself.
+  scheduled.at(-1)!.fire();
+  expect(reconciles).toBe(1);
+  expect(scheduled.length).toBe(armedAfterOverflow);
+
+  // Repeated opens must not arm further reconciliation.
+  await reader.openLocal(40);
+  await reader.openLocal(40);
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterOverflow);
+
+  // An unchanged live notification with no recorded input arms nothing.
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [],
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterOverflow);
+
+  // Feedback: a recovery read that overflows again arms exactly one more
+  // reconciliation, not a spiral.
+  owner.acceptRead(readItems("overflow2", 4, [item("base", 1), bigItem("overflow2", 4, 1_000)]), {
+    lifetime: 1,
+    readId: "read-overflow2",
+    boundary: "boundary-overflow2",
+  });
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterOverflow + 1);
+
+  // Release the held occupier so the recovery read can commit and settle.
+  held.resolve({ outcome: "committed", coverage: "extended", encodedBytes: 0 });
+  heldWrite.mockRestore();
+  await vi.waitFor(() => expect(admission.retainedBytes).toBe(0));
+
+  // Changed eligible content is reconsidered and restores readiness.
+  owner.acceptRead(readItems("changed", 5, [item("base", 1), item("changed", 5)]), {
+    lifetime: 1,
+    readId: "read-changed",
+    boundary: "boundary-changed",
+  });
+  await owner.settled();
+  expect(await keysInCache(fixture.cache)).toContain("item-changed");
+  const opened = await reader.openLocal(40);
+  expect(opened.status).toBe("current");
+  reader.dispose();
+  owner.dispose();
 });

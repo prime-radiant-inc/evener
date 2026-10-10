@@ -37,6 +37,12 @@ interface RetainedRecord {
   /** Per-owner acquisition count, so shared identity survives a partial release. */
   owners: Map<object, number>;
   kind: EntryWorkKind;
+  /**
+   * Whether this body's bytes sit outside the bounded aggregate because its
+   * retention could not be refused (a preserved ended handoff body the model
+   * still displays). Such bytes are still reported by `retainedBytes`.
+   */
+  overLimit: boolean;
 }
 
 interface BackgroundWaiter {
@@ -64,11 +70,14 @@ interface ExemptBatch {
  * demand commits immediately, which is the accepted foreground exception and
  * keeps a stalled background batch from blocking healthy work. The oversize
  * exception is the *sole* immediate bounded batch: only one may be in flight at
- * a time, and its bytes are accounted separately.
+ * a time, its bytes are accounted separately, and it is mutually exclusive with
+ * the background slot so neither can overlap the other.
  */
 export class EntryWriteAdmission {
   readonly #budget: TranscriptPayloadBudget;
   readonly #retained = new Map<object, RetainedRecord>();
+  /** Bytes retained beyond the bound because their retention cannot be refused. */
+  #overage = 0;
   #exempt: ExemptBatch | undefined;
   #backgroundOwner: object | undefined;
   readonly #waiters: BackgroundWaiter[] = [];
@@ -83,23 +92,36 @@ export class EntryWriteAdmission {
   }
 
   get retainedBytes(): number {
-    return this.#budget.used;
+    return this.#budget.used + this.#overage;
   }
 
   /**
    * Reserve the charge for a set of retained bodies under one owner. Distinct
    * keys already present are shared identity: they are not charged again, and
    * the owner acquires one count of each. Two entries for the same new key in
-   * one call are also charged once. The reservation is all-or-nothing.
+   * one call are also charged once. The reservation is all-or-nothing. With
+   * `force`, a retention that cannot be refused (a preserved ended handoff body
+   * the model keeps for display) is charged beyond the bound rather than
+   * silently dropped, so the reported aggregate stays honest.
    */
-  retain(bodies: readonly EntryRetainedBody[], owner: object, kind: EntryWorkKind): boolean {
+  retain(bodies: readonly EntryRetainedBody[], owner: object, kind: EntryWorkKind, force = false): boolean {
     const fresh = new Map<object, number>();
     for (const body of bodies) {
       if (!this.#retained.has(body.key) && !fresh.has(body.key)) fresh.set(body.key, body.bytes);
     }
     let needed = 0;
     for (const bytes of fresh.values()) needed += bytes;
-    if (needed > 0 && !this.#budget.reserve(needed)) return false;
+    let overLimit = false;
+    if (needed > 0) {
+      if (this.#budget.reserve(needed)) {
+        // Charged to the bounded aggregate.
+      } else if (force) {
+        this.#overage += needed;
+        overLimit = true;
+      } else {
+        return false;
+      }
+    }
     const seen = new Set<object>();
     for (const body of bodies) {
       if (seen.has(body.key)) continue;
@@ -114,6 +136,7 @@ export class EntryWriteAdmission {
           bytes: fresh.get(body.key) ?? body.bytes,
           owners: new Map([[owner, 1]]),
           kind,
+          overLimit,
         });
       }
     }
@@ -146,7 +169,8 @@ export class EntryWriteAdmission {
     record.owners.delete(owner);
     if (record.owners.size === 0) {
       this.#retained.delete(key);
-      this.#budget.release(record.bytes);
+      if (record.overLimit) this.#overage -= record.bytes;
+      else this.#budget.release(record.bytes);
     }
   }
 
@@ -164,7 +188,7 @@ export class EntryWriteAdmission {
    * caching rather than starting a second unbounded immediate write.
    */
   retainExempt(bodies: readonly EntryRetainedBody[], owner: object): boolean {
-    if (this.#exempt !== undefined) return false;
+    if (this.#exempt !== undefined || this.#backgroundOwner !== undefined) return false;
     let bytes = 0;
     const keys: object[] = [];
     for (const body of bodies) {
@@ -176,7 +200,9 @@ export class EntryWriteAdmission {
   }
 
   releaseExempt(owner: object): void {
-    if (this.#exempt?.owner === owner) this.#exempt = undefined;
+    if (this.#exempt?.owner !== owner) return;
+    this.#exempt = undefined;
+    this.#wakeNext();
   }
 
   get exemptBytes(): number {
@@ -207,7 +233,7 @@ export class EntryWriteAdmission {
    */
   tryAcquireBackground(owner: object, foreground: () => boolean, resume: () => void): boolean {
     if (this.#backgroundOwner === owner) return true;
-    if (this.#backgroundOwner === undefined) {
+    if (this.#backgroundOwner === undefined && this.#exempt === undefined) {
       this.#backgroundOwner = owner;
       return true;
     }
@@ -233,7 +259,7 @@ export class EntryWriteAdmission {
     if (this.#waking) return;
     this.#waking = true;
     try {
-      while (this.#backgroundOwner === undefined && this.#waiters.length > 0) {
+      while (this.#backgroundOwner === undefined && this.#exempt === undefined && this.#waiters.length > 0) {
         let best = 0;
         for (let index = 1; index < this.#waiters.length; index += 1) {
           const candidate = this.#waiters[index];
@@ -262,7 +288,7 @@ export class EntryWriteAdmission {
   snapshotForTesting(): EntryWriteAdmissionSnapshot {
     return {
       limit: this.#budget.limit,
-      retainedBytes: this.#budget.used,
+      retainedBytes: this.retainedBytes,
       retainedIdentities: this.#retained.size,
       exemptBytes: this.exemptBytes,
       exemptActive: this.#exempt !== undefined,
