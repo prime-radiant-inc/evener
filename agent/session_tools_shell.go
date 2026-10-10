@@ -58,7 +58,7 @@ func formatDirListing(r listDirResult) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(e.Name)
+		b.WriteString(execenv.OneLinePath(e.Name))
 		switch {
 		case e.IsDir:
 			b.WriteByte('/')
@@ -233,7 +233,11 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
-			result := strings.Join(matches, "\n")
+			lines := make([]string, len(matches))
+			for i, match := range matches {
+				lines[i] = execenv.OneLinePath(match)
+			}
+			result := strings.Join(lines, "\n")
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).

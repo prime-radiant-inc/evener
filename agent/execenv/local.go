@@ -2192,7 +2192,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// Best-effort cap: keep first maxResults lines.
 		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
 		if len(lines) > maxResults {
-			lines = lines[:maxResults]
+			lines = append(lines[:maxResults], grepTruncationNote(maxResults))
 		}
 		return strings.Join(lines, "\n"), nil
 	}
@@ -2213,7 +2213,7 @@ func grepTargetsOneFile(dir string) bool {
 // ripgrepOutputLines splits ripgrep's --null output into lines in the shape
 // the native fallback (grepNative) gives, so a search reads the same whether
 // or not ripgrep is installed (#3259): no trailing newline, and each path
-// relative to the searched directory and written as grepOutputPath gives it.
+// relative to the searched directory and written as OneLinePath gives it.
 // rg echoes the directory it was given in front of every path and ends the
 // path with a NUL, so a line starting with that directory holds a path up to
 // its NUL, even one holding a newline; any other line (a "--" between context
@@ -2235,11 +2235,11 @@ func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 		hasPath := cut && strings.HasPrefix(path, prefix)
 		switch {
 		case hasPath && filesOnly:
-			line, rest = grepOutputPath(path[len(prefix):]), afterPath
+			line, rest = OneLinePath(path[len(prefix):]), afterPath
 		case hasPath:
 			var text string
 			text, rest, _ = strings.Cut(afterPath, "\n")
-			line = grepOutputPath(path[len(prefix):]) + ripgrepPathSeparator(text) + text
+			line = OneLinePath(path[len(prefix):]) + ripgrepPathSeparator(text) + text
 		default:
 			line, rest, _ = strings.Cut(rest, "\n")
 		}
