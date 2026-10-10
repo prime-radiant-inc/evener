@@ -54,6 +54,30 @@ func renderCheckpointWorkingNotes(notes []string) string {
 	return b.String()
 }
 
+// renderCheckpointEarlierSummaries renders the LLM summaries a checkpoint folds,
+// each whole and fenced, so their own "## " headings stay inside the section
+// and a later checkpoint can extract them again.
+func renderCheckpointEarlierSummaries(summaries []string) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Earlier Summaries\n\n")
+	for _, summary := range summaries {
+		b.WriteString("### Summary\n\n")
+		writeMarkdownFence(&b, summary)
+	}
+	return b.String()
+}
+
+func extractCheckpointEarlierSummaries(text string) []string {
+	var summaries []string
+	for _, block := range parseMarkdownBlocks(markdownSection(text, "## Earlier Summaries")) {
+		summaries = append(summaries, block.Text)
+	}
+	return summaries
+}
+
 func writeMarkdownFence(b *strings.Builder, text string) {
 	fence := markdownFence(text)
 	b.WriteString(fence)

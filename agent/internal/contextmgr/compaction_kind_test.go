@@ -216,3 +216,89 @@ func resummarizePrompt(t *testing.T, previous string) string {
 	}
 	return prompt
 }
+
+// TestForceCompact_SecondCompactionSeesTheFirstSummary pins the production
+// order: the deterministic checkpoint folds history before the summarizer
+// runs, so a previous LLM summary reaches the next summarizer only through the
+// checkpoint. Its permissions and holds must survive that fold, or the second
+// summary drops a hold or permission the first one quoted (#4173).
+func TestForceCompact_SecondCompactionSeesTheFirstSummary(t *testing.T) {
+	var prompts []string
+	summarize := func(req llm.Request) llm.Response {
+		prompts = append(prompts, req.Messages[0].Text())
+		return llm.Response{Message: llm.Assistant("## " + summarySections[0] + "\nFIRST_SUMMARY_QUOTE_SENTINEL\n\n## Progress\nfirst summary")}
+	}
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{summarize, summarize}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	noop := func(events.EventKind, events.EventData) {}
+	if !cm.ForceCompact(context.Background(), &history, "", noop) {
+		t.Fatal("first compaction did not summarize")
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("second question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("more work")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")),
+	)
+	if !cm.ForceCompact(context.Background(), &history, "", noop) {
+		t.Fatal("second compaction did not summarize")
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("summarizer ran %d times, want 2", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "FIRST_SUMMARY_QUOTE_SENTINEL") {
+		t.Fatalf("the second summarizer did not see the first summary's quote:\n%s", prompts[1])
+	}
+}
+
+// TestCheckpoint_CarriesEarlierSummaries pins that the deterministic
+// checkpoint keeps an LLM summary it folds: whole and first when it fits,
+// through a checkpoint of that checkpoint, and trimmed from its tail when it
+// is oversized, so its leading permissions and holds survive.
+func TestCheckpoint_CarriesEarlierSummaries(t *testing.T) {
+	recent := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	fold := func(first schema.Turn) string {
+		history := append([]schema.Turn{first, schema.NewTurn(schema.TurnUserInput, llm.User("next question"))}, recent...)
+		result := checkpoint(history, 2, nil, "communicate")
+		if result[0].Kind != schema.TurnCheckpoint {
+			t.Fatalf("first turn kind = %q, want a checkpoint", result[0].Kind)
+		}
+		return result[0].Message.Text()
+	}
+	summary := "[CONTEXT SUMMARY]\n## " + summarySections[0] + "\nSUMMARY_QUOTE_SENTINEL\n\n## Progress\nSUMMARY_TAIL_SENTINEL\n[END SUMMARY]"
+
+	once := fold(schema.NewTurn(schema.TurnSummary, llm.User(summary)))
+	if got := extractCheckpointEarlierSummaries(once); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q, want the whole summary", got)
+	}
+	if !strings.HasPrefix(once, "[CONTEXT CHECKPOINT]\n## Earlier Summaries") {
+		t.Fatalf("earlier summaries are not first in the checkpoint:\n%s", once)
+	}
+	twice := fold(schema.NewTurn(schema.TurnCheckpoint, llm.User(once)))
+	if got := extractCheckpointEarlierSummaries(twice); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint of a checkpoint carried %q, want the whole summary", got)
+	}
+
+	oversized := strings.Replace(summary, "## Progress\n", "## Progress\n"+strings.Repeat("progress ", 10_000), 1)
+	trimmed := fold(schema.NewTurn(schema.TurnSummary, llm.User(oversized)))
+	got := extractCheckpointEarlierSummaries(trimmed)
+	if len(got) != 1 || !strings.Contains(got[0], "SUMMARY_QUOTE_SENTINEL") || strings.Contains(got[0], "SUMMARY_TAIL_SENTINEL") {
+		t.Fatalf("oversized summary was not trimmed from its tail: %d summaries", len(got))
+	}
+	if len(trimmed) > 60_000 {
+		t.Fatalf("checkpoint is %d chars, over its 60k cap", len(trimmed))
+	}
+}
