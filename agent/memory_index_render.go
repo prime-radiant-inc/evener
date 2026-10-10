@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
@@ -61,12 +63,18 @@ const memoryUnlinkedPathNote = "(no link: the name holds a control character, sh
 // can hold one, so the line has no link: the path as a JSON string, which a
 // tool call can pass back as file_path, then memoryUnlinkedPathNote, and no
 // title, description or tags. JSON leaves DEL bare, so it is escaped here.
+// No JSON string, and so no tool call, holds invalid UTF-8, which JSON
+// encoding would replace with U+FFFD; such a name is Go-quoted with \x
+// escapes instead, so each name keeps a line of its own.
 func memoryUnlinkedIndexLine(rel string) string {
-	var b strings.Builder
-	encoder := json.NewEncoder(&b)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(rel) // a string always encodes
-	name := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
+	name := strconv.Quote(rel)
+	if utf8.ValidString(rel) {
+		var b strings.Builder
+		encoder := json.NewEncoder(&b)
+		encoder.SetEscapeHTML(false)
+		_ = encoder.Encode(rel) // a string always encodes
+		name = strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
+	}
 	return "- " + name + " — " + memoryUnlinkedPathNote
 }
 

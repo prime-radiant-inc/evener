@@ -262,7 +262,8 @@ character other than tab, which `memory_write` refuses but a file can still
 have, gets no link. Its line is the path as a JSON string, then a note, with no
 title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
 a control character, shown JSON-escaped; read or delete it, and save its
-content under another name)`. So every page stays one line. A scope with no
+content under another name)`. A name holding invalid UTF-8, which no JSON string
+can carry, is quoted with `\x` escapes instead. So every page stays one line. A scope with no
 pages has the `missing` state.
 
 When the rendering passes the 8 KiB projection budget, the projection keeps the
