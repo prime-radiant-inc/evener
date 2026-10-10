@@ -1246,10 +1246,12 @@ func memoryWaitChild(t *testing.T, parent *Session, id string) *subagent {
 }
 
 // Catches lost runtime binding on descriptor construction, role writes, late disabled
-// overrides, and restored children regaining live-parent revoked capabilities.
+// overrides, restored children regaining live-parent revoked capabilities, and a
+// tree saved before project memory leaving its children unbound once the parent
+// adopts a binding on resume.
 func TestMemoryDelegateRestore(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"disabled-parent", "child-disabled", "project-revoked", "project-different", "tool-ceiling", "worktree-binding"} {
+	for _, mode := range []string{"disabled-parent", "child-disabled", "project-adopted", "project-unresolved", "project-different", "tool-ceiling", "worktree-binding"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			host, history := t.TempDir(), t.TempDir()
@@ -1306,11 +1308,14 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "child-disabled" {
+			switch mode {
+			case "child-disabled":
 				childMeta.Config.DisableMemory = true
-				if err := schema.SaveSessionMeta(history, childMeta); err != nil {
-					t.Fatal(err)
-				}
+			case "project-adopted":
+				childMeta.Config.MemoryProjectID = ""
+			}
+			if err := schema.SaveSessionMeta(history, childMeta); err != nil {
+				t.Fatal(err)
 			}
 			s.Close()
 			meta, err := schema.LoadSessionMeta(history, s.id)
@@ -1318,8 +1323,13 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch mode {
-			case "project-revoked":
+			case "project-adopted":
 				meta.Config.MemoryProjectID = ""
+			case "project-unresolved":
+				// An unbound parent whose home cannot bind stays unbound, so the
+				// child's saved binding exceeds the parent's ceiling.
+				meta.Config.MemoryProjectID = ""
+				meta.EnvInfo.WorkingDir = "."
 			case "project-different":
 				meta.Config.MemoryProjectID = "different-project"
 			}
@@ -1338,7 +1348,9 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				r.reg.Remove("memory_read")
 				refreshModelFacingCaches(r)
 			}
-			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { return finalResponse("restored child finished") }}})
+			// project-adopted also spawns a fresh child, which takes the second step.
+			finished := func(llm.Request) llm.Response { return finalResponse("restored child finished") }
+			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{finished, finished}})
 			accesses.Store(0)
 			projectAccesses.Store(0)
 			send := (delegateRuntime{owner: r}).send(context.Background(), result.DelegateID, "restore older child", 0).result
@@ -1363,7 +1375,24 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				if accesses.Load() != 0 {
 					t.Fatalf("disabled child native accesses=%d", accesses.Load())
 				}
-			case "project-revoked", "project-different":
+			case "project-adopted":
+				if r.cfg.MemoryProjectID != project.ID || restored.sess.cfg.MemoryProjectID != project.ID {
+					t.Fatalf("adopted parent=%q cold child=%q want %q", r.cfg.MemoryProjectID, restored.sess.cfg.MemoryProjectID, project.ID)
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "project", "file_path": "fact.md"}); res.IsError || !strings.Contains(res.Output, "opaque-project-44") {
+					t.Fatalf("cold child project read=%+v", res)
+				}
+				fresh := r.createDelegate(context.Background(), delegateArgs{Task: "fixture fresh child", AgentType: "explorer", DelegationAllowance: new(0)})
+				if fresh.Err != nil {
+					t.Fatal(fresh.Err)
+				}
+				if got := memoryWaitChild(t, r, fresh.ChildSessionID).sess.cfg.MemoryProjectID; got != project.ID {
+					t.Fatalf("fresh child of adopted parent=%q want %q", got, project.ID)
+				}
+			case "project-unresolved", "project-different":
+				if mode == "project-unresolved" && r.cfg.MemoryProjectID != "" {
+					t.Fatalf("parent with an unresolvable home bound %q", r.cfg.MemoryProjectID)
+				}
 				if restored.sess.cfg.MemoryProjectID != "" {
 					t.Fatalf("cold child recovered project=%q", restored.sess.cfg.MemoryProjectID)
 				}
@@ -1487,6 +1516,12 @@ func TestMemoryDelegateFrozenBinding(t *testing.T) {
 		if got.MemoryStateRoot != parent.MemoryStateRoot || got.DisableMemory != parent.DisableMemory || got.MemoryProjectID != want {
 			t.Fatalf("frozen root=%q disabled=%t project=%q", got.MemoryStateRoot, got.DisableMemory, got.MemoryProjectID)
 		}
+	}
+	// A descriptor frozen before project memory carries no binding; it takes
+	// the binding its parent adopted on resume.
+	got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{}, SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "adopted"})
+	if got.MemoryProjectID != "adopted" {
+		t.Fatalf("unbound frozen child project=%q", got.MemoryProjectID)
 	}
 }
 
@@ -1695,6 +1730,93 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 			}
 			if wantID == "" && project.Load() != 0 {
 				t.Fatalf("revoked project accesses=%d", project.Load())
+			}
+		})
+	}
+}
+
+// Catches home binding probing a home the resume environment's sandbox
+// refused to re-root to.
+func TestMemoryHomeBindingHonorsSandboxReroot(t *testing.T) {
+	t.Parallel()
+	home, project := memoryGitFixture(t)
+	elsewhere, _ := memoryGitFixture(t)
+	meta := schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: home}}
+	if got := homeMemoryProjectID(execenv.NewLocalExecutionEnvironment(elsewhere), meta); got != project.ID {
+		t.Fatalf("unsandboxed home binding=%q want %q", got, project.ID)
+	}
+	confined := execenv.NewLocalExecutionEnvironment(elsewhere)
+	// An enforced policy that retains no re-root inputs is one
+	// WithWorkingDirectory cannot re-anchor: the clone comes back refused.
+	confined.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, Backend: sandbox.BackendBwrap}
+	if got := homeMemoryProjectID(confined, meta); got != "" {
+		t.Fatalf("refused re-root still bound %q", got)
+	}
+}
+
+// Catches a session saved without a project binding (before project memory
+// shipped) staying personal-only after resume, binding the resume command's
+// cwd instead of its own home, replacing a saved binding, binding while
+// memory is off, binding a relative home against the process cwd, or a
+// directly resumed delegate binding itself outside its parent's ceiling.
+func TestMemoryResumeAdoptsProjectBinding(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"unbound", "saved-binding", "disabled", "disabled-on-resume", "no-state-root", "relative-home", "delegate"} {
+		t.Run(mode, func(t *testing.T) {
+			home, project := memoryGitFixture(t)
+			elsewhere, _ := memoryGitFixture(t)
+			host, history := t.TempDir(), t.TempDir()
+			memorySeedPage(t, host, filepath.Join("projects", project.ID), "fact.md", "opaque-project-61")
+			saved := ""
+			if mode == "saved-binding" {
+				saved = "saved-project"
+			}
+			s := newSession(t, withDir(home), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: host, MemoryProjectID: saved, DisableMemory: mode == "disabled"}))
+			s.Close()
+			meta, err := schema.LoadSessionMeta(history, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "relative-home":
+				// A relative path names no home outside the process that wrote it.
+				meta.EnvInfo.WorkingDir = "."
+			case "delegate":
+				meta.IsSubagent = true
+			}
+			// The restore reloads metadata from disk once it owns the session.
+			if err := schema.SaveSessionMeta(history, meta); err != nil {
+				t.Fatal(err)
+			}
+			root := host
+			if mode == "no-state-root" {
+				root = ""
+			}
+			// The resume runs from another project's checkout: the binding must
+			// come from the session's own home, never from where it was resumed.
+			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(elsewhere), meta, RestoreSessionConfig{
+				StateDir: history, MemoryStateRoot: root, DisableMemory: mode == "disabled-on-resume",
+				AcquireSessionOwnership: func(string) error { return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{"unbound": project.ID, "saved-binding": "saved-project"}[mode]
+			if r.cfg.MemoryProjectID != want {
+				t.Fatalf("resumed binding=%q want %q", r.cfg.MemoryProjectID, want)
+			}
+			if mode == "unbound" {
+				if res := memoryExec(t, r, "memory_read", map[string]any{"scope": "project", "file_path": "fact.md"}); res.IsError || !strings.Contains(res.Output, "opaque-project-61") {
+					t.Fatalf("adopted project read=%+v", res)
+				}
+			}
+			r.Close()
+			reloaded, err := schema.LoadSessionMeta(history, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reloaded.Config.MemoryProjectID != want {
+				t.Fatalf("persisted binding=%q want %q", reloaded.Config.MemoryProjectID, want)
 			}
 		})
 	}

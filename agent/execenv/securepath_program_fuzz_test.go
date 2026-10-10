@@ -652,6 +652,7 @@ func pfsAssertGrep(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixt
 	if out == "" {
 		return
 	}
+	out = strings.TrimSuffix(out, "\n"+grepTruncationNote(maxResults))
 	for _, line := range strings.Split(out, "\n") {
 		rel := line
 		if before, _, ok := strings.Cut(line, ":"); ok {

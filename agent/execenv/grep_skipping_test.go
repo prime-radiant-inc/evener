@@ -36,7 +36,7 @@ func TestGrepSkipping(t *testing.T) {
 			t.Fatalf("%s: got %q, %v; want %q", name, got, err, want)
 		}
 		got, err = env.GrepSkipping(t.Context(), "needle", dir, "", false, 1, "files_with_matches", 0, skip)
-		if want := "A.md-1-x.md"; err != nil || got != want {
+		if want := "A.md-1-x.md\n" + grepTruncationNote(1); err != nil || got != want {
 			t.Fatalf("%s capped: got %q, %v; want %q", name, got, err, want)
 		}
 	}
