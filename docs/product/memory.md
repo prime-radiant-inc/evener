@@ -220,7 +220,9 @@ parsed for frontmatter. Any other file, or a page that cannot be read, renders
 with its filename as the description and no `(no description)` marker.
 
 **Page format.** A page starts with YAML frontmatter, parsed with
-`agent/internal/frontmatter`:
+`agent/internal/frontmatter`. Its lines may end in `\n`, `\r\n` or a lone
+`\r`; every page reader and the stamping below treat the three alike, so a page
+saved with CRLF line endings keeps its frontmatter:
 
 ```markdown
 ---
@@ -244,9 +246,8 @@ kept untouched and ignored.
 
 **Fallback description.** When `description` is missing or empty, the line
 uses the page's first Markdown heading, else its first non-blank body line, cut
-to 120 characters and followed by `(no description)`. A carriage return ends a
-line as a newline does, and whitespace runs in the heading or line collapse to
-one space. A page whose frontmatter
+to 120 characters and followed by `(no description)`. Whitespace runs in the
+heading or line collapse to one space. A page whose frontmatter
 does not parse is still a page; it renders as
 `<fallback> (no description) (frontmatter unreadable)`.
 
@@ -312,7 +313,8 @@ index repair; its line is gone from the next rendering.
 counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so
 it reads back as a YAML date) and `by` (the session's full id, YAML-encoded)
 in the bytes the tool writes, creating a frontmatter block if there is none and
-keeping every other byte. Frontmatter Evener can't safely edit in place is left
+keeping every other byte, except that a stamped page's line endings become
+`\n`. Frontmatter Evener can't safely edit in place is left
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
 delete of the page. A failed write writes nothing. Before stamping, a
