@@ -205,7 +205,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 			tree.root.findAll((node) => node.props.accessibilityRole === "header" && textOf(node) === "Session"),
 		).toEqual([]);
 		expect(styleOf(textNode(tree, "Fix the settle race"))).toMatchObject({ fontSize: 20, fontWeight: "600" });
-		expect(renderedText(tree)).toContain("Finished");
+		expect(renderedText(tree)).toContain("Idle");
 	});
 
 	it("dims the host's dot while the host is offline", () => {

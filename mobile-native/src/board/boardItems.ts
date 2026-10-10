@@ -5,7 +5,7 @@
 // one list is what lets a row that changes band move instead of leaving and
 // arriving. `group` names the section container an item draws inside.
 import type { NavigationPinSectionDescriptor, NavigationSessionSummary } from "@evener/appwire-client";
-import type { Band, ClassifiedRow, LiveBands } from "./attention";
+import { type Band, type ClassifiedRow, LIVE_BAND_ORDER, type LiveBands } from "./attention";
 import type { ProjectSection, ProjectTreeItem } from "./projectTree";
 
 export type LiveBand = Exclude<Band, "idle">;
@@ -33,7 +33,7 @@ export type BoardItem = { key: string; group: string } & (
 	| { kind: "tree"; section: ProjectSection; tree: Exclude<ProjectTreeItem, { kind: "session" }> }
 );
 
-const LIVE_BANDS: readonly LiveBand[] = ["needsYou", "finished", "working"];
+const LIVE_BANDS = LIVE_BAND_ORDER.filter((band): band is LiveBand => band !== "idle");
 const LIVE = "live";
 
 /** Live: each band that has rows, as its header and its rows, then Idle's
