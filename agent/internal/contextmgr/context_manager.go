@@ -1081,6 +1081,20 @@ type checkpointData struct {
 	earlierSummaries []string
 }
 
+// collectCompaction carries a previous compaction turn's text into the new
+// checkpoint so it survives repeated compactions: the user messages and working
+// notes a checkpoint holds, and an LLM summary whole (summary is true) or the
+// earlier summaries a checkpoint already carries.
+func (d *checkpointData) collectCompaction(text string, summary bool) {
+	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
+	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
+	if summary {
+		d.earlierSummaries = append(d.earlierSummaries, text)
+	} else {
+		d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
+	}
+}
+
 // checkpointWriteStatus classifies a write tool call by the outcome of its
 // paired tool result. The checkpoint may only report a file as modified when a
 // result confirmed the write; an attempted write that failed or whose result is
@@ -1120,25 +1134,17 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			// Extract user messages and working notes from previous compaction turns
-			// so they survive across repeated compactions.
-			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
-			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
-			if t.Kind == schema.TurnSummary {
-				data.earlierSummaries = append(data.earlierSummaries, t.Message.Text())
-			} else {
-				data.earlierSummaries = append(data.earlierSummaries, extractCheckpointEarlierSummaries(t.Message.Text())...)
-			}
+			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
 
 		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if text == "" {
 				continue
 			}
-			// Old-format checkpoint/summary stored as TurnUserInput — extract
-			// user messages from them just like typed compaction turns.
+			// Old-format checkpoint/summary stored as TurnUserInput — carry it
+			// just like a typed compaction turn.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.conversation = append(data.conversation, extractCheckpointConversation(text)...)
+				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -1679,6 +1685,13 @@ func promptSectionNames(prompt string) []string {
 // summarizing (#3978). One filled section is enough, so a summary that drops
 // some sections still keeps what it has. Caller instructions replace the
 // sections, so under them only emptiness is checked.
+//
+// The permissions-and-holds section is not required either. Its presence
+// would not show the quotes are faithful or complete (a reply can say "None."
+// and drop them), and rejecting a summary for lacking it would discard
+// everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
+// pins that one filled section is accepted). The human partner's messages
+// also stay verbatim in the timeline the prompt asks for.
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {

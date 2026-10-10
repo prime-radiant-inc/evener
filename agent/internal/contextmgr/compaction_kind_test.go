@@ -287,6 +287,13 @@ func TestCheckpoint_CarriesEarlierSummaries(t *testing.T) {
 	if !strings.HasPrefix(once, "[CONTEXT CHECKPOINT]\n## Earlier Summaries") {
 		t.Fatalf("earlier summaries are not first in the checkpoint:\n%s", once)
 	}
+	// A legacy compaction stored as user input carries the same way.
+	if got := extractCheckpointEarlierSummaries(fold(schema.NewTurn(schema.TurnUserInput, llm.User(summary)))); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q from a legacy summary, want the whole summary", got)
+	}
+	if got := extractCheckpointEarlierSummaries(fold(schema.NewTurn(schema.TurnUserInput, llm.User(once)))); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q from a legacy checkpoint, want the whole summary", got)
+	}
 	twice := fold(schema.NewTurn(schema.TurnCheckpoint, llm.User(once)))
 	if got := extractCheckpointEarlierSummaries(twice); len(got) != 1 || got[0] != summary {
 		t.Fatalf("checkpoint of a checkpoint carried %q, want the whole summary", got)
