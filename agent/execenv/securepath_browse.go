@@ -53,7 +53,6 @@ type grepAccum struct {
 	maxResults   int
 	contextLines int
 	results      []string
-	fileCounts   map[string]int
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
@@ -105,7 +104,6 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 		outputMode:   outputMode,
 		maxResults:   maxResults,
 		contextLines: contextLines,
-		fileCounts:   map[string]int{},
 	}, nil
 }
 
@@ -143,15 +141,13 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		if n == 0 {
 			return false
 		}
-		// The cap counts entries like files_with_matches does: once
-		// maxResults files hold a count row, the walk stops, so the
-		// rendered count output has at most maxResults rows — the same
-		// first-N truncation the ripgrep path applies to rg --count.
-		if len(a.fileCounts) >= a.maxResults {
-			return a.cutAtCap()
+		// One row per file in walk order, capped like files_with_matches —
+		// the same first-N truncation the ripgrep path applies to rg
+		// --count. A named file's row is the bare count, as rg prints it.
+		if singleFile {
+			return a.emit(strconv.Itoa(n))
 		}
-		a.fileCounts[relPath] = n
-		return false
+		return a.emit(name + ":" + strconv.Itoa(n))
 	default:
 		return a.feedContent(name, singleFile, lines)
 	}
@@ -249,7 +245,7 @@ func grepFileSelected(name, rel string, globFilters []string, skip func(rel stri
 // grepTruncationNote as a note (searchresult.WithNotes) when the cap left
 // results out.
 func (a *grepAccum) finish() string {
-	out := a.render()
+	out := strings.Join(a.results, "\n")
 	if a.truncated {
 		return searchresult.WithNotes(out, grepTruncationNote(a.maxResults))
 	}
@@ -268,24 +264,6 @@ func (a *grepAccum) finishWalk(excludedByIgnore int) string {
 		return searchresult.WithNotes("", fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
 	}
 	return out
-}
-
-// render is the accumulated results in the requested output mode.
-func (a *grepAccum) render() string {
-	if a.outputMode == "count" {
-		var countResults []string
-		for file, cnt := range a.fileCounts {
-			if file == "." {
-				// Single explicit file target: rg prints the bare count.
-				countResults = append(countResults, strconv.Itoa(cnt))
-				continue
-			}
-			countResults = append(countResults, fmt.Sprintf("%s:%d", OneLinePath(file), cnt))
-		}
-		sort.Strings(countResults)
-		return strings.Join(countResults, "\n")
-	}
-	return strings.Join(a.results, "\n")
 }
 
 // grepTruncationNote is the note on a grep result the cap cut short, so a

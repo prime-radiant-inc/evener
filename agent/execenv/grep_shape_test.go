@@ -15,7 +15,8 @@ import (
 // writeGrepShapeTree lays out a small tree both grep implementations search
 // the same way: two matching files at different depths, a file with no match,
 // and a file whose match sits alone with context around it. The ctx/ files
-// match "hit" (never "foo") to pin how context windows join: overlapping,
+// match "hit" (never "foo", but for ctx/deep, which pins that a directory's
+// files come before a sibling file extending its name) to pin how context windows join: overlapping,
 // touching, or apart, and at the end of a file that ends in a newline.
 func writeGrepShapeTree(t *testing.T) string {
 	t.Helper()
@@ -30,6 +31,7 @@ func writeGrepShapeTree(t *testing.T) string {
 		"ctx/apart":    "hit 1\nx\ny\nz\nhit 2\n",
 		"ctx/eof":      "before\nhit one\nafter\nhit two\n",
 		"ctx/empty":    "",
+		"ctx/deep":     "foo deep\n",
 		"ctx/blank":    "\n",
 	}
 	for name, content := range files {
@@ -49,9 +51,8 @@ func writeGrepShapeTree(t *testing.T) string {
 // relative to the searched directory, and no trailing newline (#3259); context
 // windows that overlap or touch joined into one group, and a "--" only between
 // groups apart; and in content mode a cap on output lines, separators and
-// context included (#3284). rg sorts files by path, but the native walk
-// descends into "cmd/" before a sibling "cmd.go", so across several files only
-// the set of lines is compared; a single file's output is compared exactly. Without ripgrep installed only the fallback is checked.
+// context included (#3284); and files in the same order. Without ripgrep
+// installed only the fallback is checked. Without ripgrep installed only the fallback is checked.
 func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	root := writeGrepShapeTree(t)
 	fallback := NewLocalExecutionEnvironment(root)
@@ -72,11 +73,11 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	cases := []struct {
 		name, path, mode, pattern string
 		context, maxResults       int
-		ordered                   bool
 		want                      []string
 	}{
 		{name: "content from the root", mode: "content", want: []string{
 			filepath.FromSlash("a.go") + ":2:foo one",
+			filepath.FromSlash("ctx/deep") + ":1:foo deep",
 			filepath.FromSlash("ctx.txt") + ":3:foo ctx",
 			filepath.FromSlash("sub/b.go") + ":1:foo two",
 			filepath.FromSlash("sub/b.go") + ":2:foo three",
@@ -86,38 +87,38 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 			"b.go:2:foo three",
 		}},
 		{name: "files with matches", mode: "files_with_matches", want: []string{
-			"a.go", "ctx.txt", filepath.FromSlash("sub/b.go"),
+			"a.go", filepath.FromSlash("ctx/deep"), "ctx.txt", filepath.FromSlash("sub/b.go"),
 		}},
 		{name: "count", mode: "count", want: []string{
-			"a.go:1", "ctx.txt:1", filepath.FromSlash("sub/b.go") + ":2",
+			"a.go:1", filepath.FromSlash("ctx/deep") + ":1", "ctx.txt:1", filepath.FromSlash("sub/b.go") + ":2",
 		}},
-		{name: "content with context in one file", path: "ctx.txt", mode: "content", context: 1, ordered: true, want: []string{
+		{name: "content with context in one file", path: "ctx.txt", mode: "content", context: 1, want: []string{
 			"2-before1", "3:foo ctx", "4-after1",
 		}},
-		{name: "one named file", path: "sub/b.go", mode: "content", ordered: true, want: []string{
+		{name: "one named file", path: "sub/b.go", mode: "content", want: []string{
 			"1:foo two", "2:foo three",
 		}},
-		{name: "one named file's matches", path: "a.go", mode: "files_with_matches", ordered: true, want: []string{"."}},
-		{name: "one named file's count", path: "sub/b.go", mode: "count", ordered: true, want: []string{"2"}},
-		{name: "overlapping context windows join", path: "ctx/overlap", pattern: "hit", context: 1, ordered: true, want: []string{
+		{name: "one named file's matches", path: "a.go", mode: "files_with_matches", want: []string{"."}},
+		{name: "one named file's count", path: "sub/b.go", mode: "count", want: []string{"2"}},
+		{name: "overlapping context windows join", path: "ctx/overlap", pattern: "hit", context: 1, want: []string{
 			"1-a", "2:hit 1", "3:hit 2", "4-b",
 		}},
-		{name: "touching context windows join", path: "ctx/touching", pattern: "hit", context: 1, ordered: true, want: []string{
+		{name: "touching context windows join", path: "ctx/touching", pattern: "hit", context: 1, want: []string{
 			"1:hit 1", "2-x", "3-y", "4:hit 2", "5-z",
 		}},
-		{name: "context windows apart get a separator", path: "ctx/apart", pattern: "hit", context: 1, ordered: true, want: []string{
+		{name: "context windows apart get a separator", path: "ctx/apart", pattern: "hit", context: 1, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",
 		}},
-		{name: "context stops at the last line", path: "ctx/eof", pattern: "hit", context: 1, ordered: true, want: []string{
+		{name: "context stops at the last line", path: "ctx/eof", pattern: "hit", context: 1, want: []string{
 			"1-before", "2:hit one", "3-after", "4:hit two",
 		}},
-		{name: "no empty line past the last one", path: "ctx/eof", pattern: "^$", ordered: true, want: []string{""}},
-		{name: "an empty file has no lines", path: "ctx/empty", pattern: "^", context: 1, ordered: true, want: []string{""}},
-		{name: "a lone newline is one empty line", path: "ctx/blank", pattern: "^", context: 1, ordered: true, want: []string{"1:"}},
-		{name: "the cap counts context lines and separators", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 4, ordered: true, want: []string{
+		{name: "no empty line past the last one", path: "ctx/eof", pattern: "^$", want: []string{""}},
+		{name: "an empty file has no lines", path: "ctx/empty", pattern: "^", context: 1, want: []string{""}},
+		{name: "a lone newline is one empty line", path: "ctx/blank", pattern: "^", context: 1, want: []string{"1:"}},
+		{name: "the cap counts context lines and separators", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 4, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "", grepTruncationNote(4),
 		}},
-		{name: "output exactly at the cap has no note", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 5, ordered: true, want: []string{
+		{name: "output exactly at the cap has no note", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 5, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",
 		}},
 	}
@@ -134,9 +135,6 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 					t.Errorf("%s: output ends with a newline: %q", arm.name, got)
 				}
 				lines := strings.Split(got, "\n")
-				if !tc.ordered {
-					slices.Sort(lines)
-				}
 				if !slices.Equal(lines, tc.want) {
 					t.Errorf("%s: lines = %q, want %q", arm.name, lines, tc.want)
 				}
@@ -166,6 +164,10 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 		// rg searches files in parallel and prints them in the order they
 		// finish; the lines come back in path order, so the cap keeps the
 		// same lines on every run (#3284).
+		// The native walk lists a directory's files before a sibling file
+		// whose name extends the directory's ("ctx/" before "ctx.txt"), so
+		// paths compare one segment at a time.
+		{name: "a directory before a sibling file sharing its prefix", stdout: dir + sep + "ctx.txt\x00" + dir + sep + "ctx" + sep + "m.txt\x00", filesOnly: true, want: []string{"ctx" + sep + "m.txt", "ctx.txt"}},
 		{name: "files in the order rg finished them", stdout: dir + sep + "b.go\x00" + dir + sep + "a.go\x00", filesOnly: true, want: []string{"a.go", "b.go"}},
 		{
 			name:   "context groups in the order rg finished their files",

@@ -71,7 +71,8 @@ func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (conte
 }
 
 // egrep_countOutput renders the reference count-mode output the way grepNative
-// does: "rel:count" for every file with a nonzero count, sorted lexically.
+// does: "rel:count" for every file with a nonzero count, in walk order, which
+// for this fixture's names (no file shares a directory's name) is lexical.
 func egrep_countOutput(counts map[string]int) string {
 	var out []string
 	for file, n := range counts {

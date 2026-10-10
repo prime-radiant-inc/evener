@@ -2227,9 +2227,9 @@ func grepTargetsOneFile(dir string) bool {
 // file carry no path from either.
 //
 // rg searches files in parallel and prints each file's lines together, in
-// the order the files finish, so the lines come back sorted by path, each
-// file's own lines in order: the cap then keeps the same lines on every run
-// (#3284). Sorting here rather than with rg's --sort path keeps the search
+// the order the files finish, so the lines come back sorted by path in the
+// native walk's order, each file's own lines in order: the cap then keeps the
+// same lines on every run, with or without ripgrep (#3284). Sorting here rather than with rg's --sort path keeps the search
 // parallel. A "--" between two files' lines is set again between them after
 // the sort; one inside a file stays where it is.
 func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
@@ -2282,7 +2282,12 @@ func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 		}
 		pendingSeparator = false
 	}
-	slices.SortStableFunc(blocks, func(a, b fileBlock) int { return strings.Compare(a.rel, b.rel) })
+	// Compare one path segment at a time, the native walk's order: a
+	// directory's files come before a sibling file whose name extends the
+	// directory's ("ctx/m.txt" before "ctx.txt").
+	slices.SortStableFunc(blocks, func(a, b fileBlock) int {
+		return slices.Compare(strings.Split(a.rel, string(filepath.Separator)), strings.Split(b.rel, string(filepath.Separator)))
+	})
 	var lines []string
 	for i, block := range blocks {
 		if i > 0 && separated {
