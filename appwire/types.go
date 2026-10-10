@@ -1919,12 +1919,15 @@ const (
 	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
 	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
 	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
-	// ThreadItemEventKindMemoryContext marks the systemMessage item a reloaded
-	// transcript renders for a schema.TurnMemoryContext turn: an automatic
-	// memory index refresh. apptranscript owns extracting the display metadata
-	// into the item's Raw ({"memoryContext": {...}}) and preserving the exact
-	// recorded text; the web renderer owns presenting it as a collapsed
-	// steering-style notification.
+	// ThreadItemEventKindMemoryContext marks each systemMessage item a
+	// schema.TurnMemoryContext turn projects: one per section of the
+	// boundary's memory notification (a scope's index, its index changes, or
+	// a notice of read pages another session changed). apptranscript owns the
+	// split, each item's exact recorded section text, and the Raw
+	// ({"memoryContext": {...}}) that only index sections carry; change and
+	// page sections, and a message that does not decode, carry no Raw and
+	// clients show their text. The web and native renderers own presenting
+	// each as a collapsed steering-style notification.
 	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 
