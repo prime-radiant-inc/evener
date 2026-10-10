@@ -60,7 +60,12 @@ import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
-import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import {
+  blockedUpgradeRequest,
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  neverSettlingRequest,
+} from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -115,15 +120,18 @@ async function flushMicrotasks(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
-// A storage-unavailable wedge on the outbox's read path: while armed, every
-// per-ref listOutbox read rejects with the adapter's watchdog error - the
+// A storage failure on the outbox's read path: while armed, every per-ref
+// listOutbox read rejects - by default with the adapter's watchdog error, the
 // same shape a never-answering IndexedDB open produces. The bound real read
 // is returned so a test can still inspect rows while the fault is armed.
-function wedgeOutboxReads(storage: MutationOutboxIndexedDB) {
+function wedgeOutboxReads(
+  storage: MutationOutboxIndexedDB,
+  storageError: () => unknown = () => new MutationStorageTimeoutError(),
+) {
   let armed = false;
   const readOutbox = storage.listOutbox.bind(storage);
   vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
-    if (armed && ref) throw new MutationStorageTimeoutError();
+    if (armed && ref) throw storageError();
     return readOutbox(ref);
   });
   return {
@@ -157,8 +165,8 @@ function parkRefReconcileRead(storage: MutationOutboxIndexedDB, ref: string) {
 }
 
 // The durable write cannot be made: every enqueue attempt rejects with the
-// adapter's watchdog error, the one storage failure the send fallback
-// answers.
+// adapter's watchdog error, the wedge shape the retry ladder retries before
+// the send fallback answers it.
 function timeOutDurableEnqueues(storage: MutationOutboxIndexedDB): void {
   storage.enqueueIntent = async () => {
     throw new MutationStorageTimeoutError();
@@ -6309,26 +6317,51 @@ describe("useThreadsStore.listModels", () => {
   });
 });
 
-test.each([false, true])(
-  "a failed enqueue preserves only durable pins (existing mutation: %s)",
-  async (existingMutation) => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await threadsStore.getState().ensureThread("ref_a");
-    fake.on("turn/start", () => new Promise<never>(() => undefined));
-    if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
-    const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
-    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
-      throw new DOMException("storage full", "QuotaExceededError");
-    });
-    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
-    expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
-    threadsStore.getState().releaseThread("ref_a");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
-    await unsubscribed;
-  },
-);
+// A full origin is not a wedge: IndexedDB refuses the write at once with
+// QuotaExceededError. The outbox is local persistence only, so the send still
+// goes out as a plain RPC, exactly as it does through a wedge; the refusal is
+// final, so the ladder does not retry it. Nothing durable pins the ref.
+test("a send whose durable write the browser refuses for quota goes out directly and pins nothing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+  const unsubscribed = nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
+  const add = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await threadsStore.getState().send("ref_a", "sent from a full origin");
+  expect(add).toHaveBeenCalledTimes(1);
+  const sent = fake.calls.filter((call) => call.method === "turn/start");
+  expect(sent, "the send from a full origin never reached the daemon").toHaveLength(1);
+  expect((sent[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+  expect(await storage.listOutbox()).toEqual([]);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  await unsubscribed;
+});
+
+// Behind an undelivered durable send the fallback refuses rather than jump
+// it, and only that earlier durable row keeps the ref pinned.
+test("a refused write behind an undelivered durable send fails and preserves only the durable pin", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await threadsStore.getState().send("ref_a", "already saved");
+  vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+  expect(await storage.listOutbox()).toHaveLength(1);
+  threadsStore.getState().releaseThread("ref_a");
+  expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+});
 
 test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
   const storage = new MutationOutboxIndexedDB();
@@ -10008,12 +10041,12 @@ test("periodic discovery recovers failed compatible reconciliation after storage
     expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
     expect(failures).toBeGreaterThan(1);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
   } finally {
     vi.useRealTimers();
   }
@@ -10024,8 +10057,14 @@ test("periodic discovery recovers failed compatible reconciliation after storage
 // read. Recording it as a genuine failure would fence the direct-dispatch
 // fallback and strand every send behind a page reload, so a storage-unavailable
 // reconcile records the ref as storage-blocked - the slice the send fallback
-// may admit - while every other failure keeps its old, fencing meaning.
-test("a storage-unavailable reconciliation records the ref as storage-blocked, not failed", async () => {
+// may admit - while every other failure keeps its old, fencing meaning. A
+// retired connection fails the read at once instead of timing out, and is
+// just as much a storage failure.
+test.each([
+  { failure: "a storage timeout", storageError: () => new MutationStorageTimeoutError() },
+  { failure: "a retired connection", storageError: () => new DOMException("closing", "InvalidStateError") },
+  { failure: "an aborted transaction", storageError: () => new DOMException("aborted", "AbortError") },
+])("a reconciliation that $failure fails records the ref as storage-blocked, not failed", async ({ storageError }) => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-reconcile" });
   await storage.enqueueIntent({
     targetRef: "ref_a",
@@ -10034,7 +10073,7 @@ test("a storage-unavailable reconciliation records the ref as storage-blocked, n
     attachments: [],
     optimisticDisplay: { text: "sentinel" },
   });
-  const wedge = wedgeOutboxReads(storage);
+  const wedge = wedgeOutboxReads(storage, storageError);
   setMutationStorageForTests(storage);
   const fake = connectFakeClient("connecting");
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
@@ -10249,11 +10288,11 @@ test("periodic discovery recovers reconciliation after the final durable record 
       .refreshThread("ref_a")
       .catch(() => undefined);
     expect(await storage.listTargetRefs()).toEqual([]);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
-    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationFailures.has("ref_a"));
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
   } finally {
     vi.useRealTimers();
@@ -14032,10 +14071,10 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // treated exactly like the failed enqueue it precedes: disarmed on the way
   // out.
   //
-  // A capture that instead fails with MutationStorageTimeoutError - storage
-  // not answering - no longer aborts: it takes the direct-dispatch fallback
-  // (pinned by "a send whose storage never answers still reaches the daemon").
-  // This test keeps the abort-and-disarm contract for every OTHER rejection.
+  // A composer send whose capture fails does not abort: it takes the
+  // direct-dispatch fallback (pinned by "a send whose storage never answers
+  // still reaches the daemon" and the quota variant). A Promote has no
+  // fallback, so it keeps the abort-and-disarm contract this test pins.
   test("a rejecting stop-epoch capture aborts the submission without leaving the ref's dispatch bookkeeping armed", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -14059,9 +14098,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       };
 
       // The submission aborts and leaves nothing durable behind.
-      await expect(threadsStore.getState().queue("ref_a", "past a failed capture")).rejects.toThrow(
-        "Mutation outbox upgrade is blocked",
-      );
+      await expect(
+        threadsStore.getState().promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "past a failed capture" }),
+      ).rejects.toThrow("Mutation outbox upgrade is blocked");
       expect((await storage.listOutbox("ref_a")).filter((record) => record.state === "submitting")).toEqual([]);
 
       // A later discovery pass names the ref (its canceled row). What the
@@ -14080,7 +14119,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
         await vi.advanceTimersByTimeAsync(2000);
         await flushUntilArrived("the discovery pass to name the ref", () => discoveredRefA);
         expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
-        // And nothing reached the wire for the ref's dead row either.
+        // And nothing reached the wire for the failed click or the ref's dead row.
+        expect(fake.calls.filter((call) => call.method === "turn/promoteQueuedAsSteer")).toEqual([]);
         expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
       } finally {
         dispatchTargets.mockRestore();
@@ -14142,6 +14182,65 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     expect(await reader.listOutbox("ref_a")).toEqual([]);
     reader.close();
+  });
+
+  // A browser that denies this origin IndexedDB (a privacy mode, blocked site
+  // data) refuses the open with SecurityError: a storage policy, not a verdict
+  // on the send, so the send goes out directly.
+  test("a send whose browser denies IndexedDB access still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-denied";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      if (name === databaseName) throw new DOMException("The operation is insecure.", "SecurityError");
+      return open(name, version);
+    });
+    try {
+      await threadsStore.getState().send("ref_a", "sent while storage is denied");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  // Another tab still holding the previous schema blocks the outbox's upgrade,
+  // and the adapter refuses the open at once rather than wait. That refusal is
+  // the storage's, not the send's, so the send goes out directly.
+  test("a send whose outbox upgrade another tab blocks still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-blocked";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? blockedUpgradeRequest() : open(name, version),
+      );
+    try {
+      await threadsStore.getState().send("ref_a", "sent while the upgrade is blocked");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 
   // The fallback send's RPC is its only transport, so a failure on the wire
@@ -14332,6 +14431,79 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
     await send;
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // A body that throws inside the adapter's real transaction rejects with its
+  // own error, never the AbortError its abort then reports: here the
+  // cross-store id guard meets a recovery record another ref holds. That is a
+  // record judgment, so the send fails closed with nothing sent.
+  test("a send whose write the outbox's own id guard refuses stays fail-closed", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-shared" });
+    const refused = await storage.enqueueIntent({
+      targetRef: "ref_b",
+      method: "turn/queue",
+      payload: { ref: "ref_b", input: [{ type: "text", text: "refused elsewhere" }] },
+      attachments: [],
+      optimisticDisplay: { text: "refused elsewhere" },
+    });
+    await storage.transferToRecovery(refused.clientMutationId, "rejected", "turn is not active");
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    await expect(threadsStore.getState().send("ref_a", "collides with the recovery record")).rejects.toThrow(
+      "clientMutationId is already active",
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  });
+
+  // A retired connection (or a VersionError) refuses the write at once and
+  // fails the reconcile's read the same way, so a reconcile still pending for
+  // the ref sits on the same broken storage: the fallback classifies it and
+  // sends rather than meet the pending fence.
+  test("a send survives a reconciliation still pending when the browser refuses its write", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    const parked = parkRefReconcileRead(storage, "ref_a");
+    void threadsStore.getState().refreshThread("ref_a");
+    await flushUntilArrived("the reconcile read to park", parked.opened);
+    storage.enqueueIntent = async () => {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    };
+
+    await threadsStore.getState().send("ref_a", "sent while the connection is retired");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
+  });
+
+  // The fallback answers storage failures only. An error that is not one - the
+  // outbox's own validation, or a payload IndexedDB cannot clone - keeps the
+  // ordinary submission failure, with nothing sent.
+  test.each([
+    { failure: "a validation error", error: () => new Error("targetRef is required") },
+    { failure: "an uncloneable payload", error: () => new DOMException("could not be cloned", "DataCloneError") },
+    { failure: "a missing object store", error: () => new DOMException("no such store", "NotFoundError") },
+    {
+      failure: "a request on a finished transaction",
+      error: () => new DOMException("transaction finished", "TransactionInactiveError"),
+    },
+  ])("a send whose durable write fails with $failure stays fail-closed", async ({ error }) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const thrown = error();
+    storage.enqueueIntent = async () => {
+      throw thrown;
+    };
+    await expect(threadsStore.getState().send("ref_a", "not a storage failure")).rejects.toBe(thrown);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // The classification must not wait for the reconcile's own watchdog. The
