@@ -1740,6 +1740,12 @@ Follow the caller instructions above when deciding what to preserve verbatim and
 	return defaultSummaryPrefix + historyText
 }
 
+// isPartnerSteering reports whether a steering turn is the human partner's own
+// message, sent during a turn, rather than a daemon nudge.
+func isPartnerSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
+}
+
 // noteElicitationPrompt asks the model, at compaction time, to enumerate the
 // details that must survive verbatim — explicitly targeting the kinds a lossy
 // summary erodes (opaque tokens, exact numbers, hashes, names). Used by the
@@ -1955,7 +1961,12 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: ")
+			// Labeled for the summary prompt's quoting rule.
+			if isPartnerSteering(t) {
+				b.WriteString("User: ")
+			} else {
+				b.WriteString("System: ")
+			}
 			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		}

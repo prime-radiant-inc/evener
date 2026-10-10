@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -155,5 +156,36 @@ func TestSummaryPromptSectionsComeFromThePrompt(t *testing.T) {
 	want := []string{"Permissions and Holds", "Conversation Timeline", "Progress", "Key Decisions", "Current State", "Pending Work", "Analytical Findings", "Critical Context"}
 	if strings.Join(summarySections, "|") != strings.Join(want, "|") {
 		t.Fatalf("summarySections = %q, want %q", summarySections, want)
+	}
+}
+
+// Steering the human partner sent during a turn reaches the summarizer as
+// their message, under the label the summary prompt tells it to quote from;
+// daemon nudges stay labeled as system text.
+func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
+	var prompt string
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			prompt = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\nDone")}
+		},
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	userSteer := schema.NewTurn(schema.TurnSteering, llm.User("PARTNER_STEER_SENTINEL"))
+	userSteer.SteeringSource = events.SteeringSourceUser
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		userSteer,
+		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err != nil {
+		t.Fatalf("summarizeWithLLMSteered: %v", err)
+	}
+	if !strings.Contains(prompt, "User: PARTNER_STEER_SENTINEL") || !strings.Contains(prompt, "System: DAEMON_NUDGE_SENTINEL") {
+		t.Fatalf("steering labels wrong in the summarizer input:\n%s", prompt)
 	}
 }
