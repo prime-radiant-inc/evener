@@ -518,3 +518,32 @@ func servedHome(t *testing.T) string {
 	}
 	return home
 }
+
+// A Go cache inside a persistent write root that sits within an overlaid cache
+// root (re-bound writable on top of the overlay) is not served by the overlay:
+// writes there persist, so it goes to the scratch like one in the worktree.
+func TestEnvFloorRedirectsAGoCacheInsideAWritableRootUnderTheOverlay(t *testing.T) {
+	home := servedHome(t)
+	library := filepath.Join(home, ".cache", "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOENV=off", "GOCACHE=" + filepath.Join(library, "go-build")}, rp, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a GOCACHE inside a writable root must go to the scratch, got %q", v)
+	}
+	out = ApplyEnvFloor([]string{"HOME=" + home, "GOENV=off", "GOCACHE=" + filepath.Join(home, ".cache", "go-build")}, rp, tmp)
+	if _, ok := envValue(out, "GOCACHE"); !ok {
+		t.Fatalf("GOCACHE missing: %v", out)
+	}
+	if v, _ := envValue(out, "GOCACHE"); strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a GOCACHE elsewhere in the overlaid cache must be left alone, got %q", v)
+	}
+}

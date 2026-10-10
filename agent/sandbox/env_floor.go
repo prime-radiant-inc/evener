@@ -106,8 +106,9 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // redirectedCacheVars names the cache variables the floor points into the
 // session scratch: every one under the session-private strategy. Under the
 // overlay, any Go cache whose directory the overlay does not serve
-// (overlayGoCacheDirs; its root was dropped, say inside the worktree), which
-// would otherwise stay persistently writable, and all of them when the spawn's
+// (overlayGoCacheDirs; its root was dropped, say inside the worktree) or that
+// lies in a persistent write root re-bound on top of the overlay, which would
+// otherwise stay persistently writable, and all of them when the spawn's
 // go env file cannot be judged (unreadable now, relative, or not the probe's),
 // since the overlay cannot know where go will write.
 //
@@ -128,8 +129,9 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 		}
 	case CacheOverlay:
 		dirs, goKnown := overlayGoCacheDirs(env, policy.resolveHost)
+		writeRoots := bwrapWriteRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
-			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && !overlayServes(policy.CacheRoots, dir)) {
+			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && (!overlayServes(policy.CacheRoots, dir) || insideAnyRoot(dir, writeRoots))) {
 				out[name] = true
 			}
 		}
@@ -158,6 +160,17 @@ func overlayServes(roots []string, dir string) bool {
 		}
 	}
 	return false
+}
+
+// insideAnyRoot reports whether dir lies at or under one of roots, by spelling
+// or resolved location. A persistent write root inside an overlaid cache root
+// is bound writable on top of the overlay (buildBwrapArgv), so a cache there
+// persists and is not served.
+func insideAnyRoot(dir string, roots []string) bool {
+	rd := resolveExistingPrefix(dir)
+	return slices.ContainsFunc(roots, func(r string) bool {
+		return pathUnder(dir, r) || pathUnder(rd, resolveExistingPrefix(r))
+	})
 }
 
 // canBeDirectory reports whether dir is a directory or could be created as
