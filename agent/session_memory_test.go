@@ -1245,7 +1245,7 @@ func memoryWaitChild(t *testing.T, parent *Session, id string) *subagent {
 	return child
 }
 
-// Catches lost runtime binding on descriptor construction, role writes, late disabled
+// Catches lost runtime binding on descriptor construction, delegate writes, late disabled
 // overrides, restored children regaining live-parent revoked capabilities, and a
 // tree saved before project memory leaving its children unbound once the parent
 // adopts a binding on resume.
@@ -1257,6 +1257,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			host, history := t.TempDir(), t.TempDir()
 			memorySeedPage(t, host, "personal", "fact.md", "opaque-personal-72")
 			memorySeedPage(t, host, filepath.Join("projects", project.ID), "fact.md", "opaque-project-44")
+			memorySeedPage(t, host, filepath.Join("projects", "different-project"), "fact.md", "opaque-different-53")
 			var accesses, projectAccesses atomic.Int32
 			testCfg := testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(scope, operation string) error {
 				accesses.Add(1)
@@ -1282,8 +1283,13 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if mode == "worktree-binding" && child.sess.currentEnv().WorkingDirectory() == workspace {
 				t.Fatal("worktree delegate was not isolated")
 			}
-			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); res.IsError {
-				t.Fatalf("read-only role memory write: %s", res.Output)
+			// A delegate never writes memory; the stored file stands in for
+			// memory its parent saved, which must survive every restore below.
+			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); !res.IsError {
+				t.Fatal("delegate wrote memory")
+			}
+			if err := os.WriteFile(filepath.Join(host, "memory", "projects", project.ID, "child.txt"), []byte("opaque-child-57"), 0o600); err != nil {
+				t.Fatal(err)
 			}
 			if res := memoryExec(t, child.sess, "write_file", map[string]any{"file_path": "workspace.txt", "content": "bad"}); !res.IsError {
 				t.Fatal("read-only role regained workspace tool")
@@ -1326,8 +1332,8 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			case "project-adopted":
 				meta.Config.MemoryProjectID = ""
 			case "project-unresolved":
-				// An unbound parent whose home cannot bind stays unbound, so the
-				// child's saved binding exceeds the parent's ceiling.
+				// An unbound parent whose home cannot bind stays unbound, so its
+				// child drops the binding it saved.
 				meta.Config.MemoryProjectID = ""
 				meta.EnvInfo.WorkingDir = "."
 			case "project-different":
@@ -1389,8 +1395,16 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				if got := memoryWaitChild(t, r, fresh.ChildSessionID).sess.cfg.MemoryProjectID; got != project.ID {
 					t.Fatalf("fresh child of adopted parent=%q want %q", got, project.ID)
 				}
-			case "project-unresolved", "project-different":
-				if mode == "project-unresolved" && r.cfg.MemoryProjectID != "" {
+			case "project-different":
+				// The child's own saved binding gives way to its parent's.
+				if restored.sess.cfg.MemoryProjectID != "different-project" {
+					t.Fatalf("cold child project=%q want the parent's", restored.sess.cfg.MemoryProjectID)
+				}
+				if res := memoryExec(t, restored.sess, "memory_read", map[string]any{"scope": "project", "file_path": "fact.md"}); res.IsError || !strings.Contains(res.Output, "opaque-different-53") {
+					t.Fatalf("cold child parent-project read=%+v", res)
+				}
+			case "project-unresolved":
+				if r.cfg.MemoryProjectID != "" {
 					t.Fatalf("parent with an unresolvable home bound %q", r.cfg.MemoryProjectID)
 				}
 				if restored.sess.cfg.MemoryProjectID != "" {
@@ -1462,6 +1476,156 @@ func TestMemoryDelegateFreshCeilings(t *testing.T) {
 	}
 }
 
+// A delegate reports what it learned to the session that started it, which
+// decides what to save: whatever its role grants, a delegate can read and
+// search the scopes it inherits but never write, edit or delete a page, is
+// never told to save, and never migrates a hand-written index. Its parent keeps
+// every memory tool.
+func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
+	t.Parallel()
+	assertReadOnly := func(t *testing.T, child *Session) {
+		t.Helper()
+		defs := child.ToolDefinitions()
+		for _, name := range memorySaveToolNames {
+			if child.reg.Get(name) != nil || hasToolDef(defs, name) {
+				t.Errorf("delegate has %s", name)
+			}
+		}
+		for _, name := range []string{"memory_read", "memory_search"} {
+			if child.reg.Get(name) == nil || !hasToolDef(defs, name) {
+				t.Errorf("delegate lost %s", name)
+			}
+		}
+		data, _ := child.buildPromptData(child.currentEnv())
+		if !data.MemoryRead || data.MemorySaves || !data.IsSubagent {
+			t.Errorf("delegate MemoryRead=%t MemorySaves=%t IsSubagent=%t, want delegate read guidance without save instructions", data.MemoryRead, data.MemorySaves, data.IsSubagent)
+		}
+	}
+	for _, agentType := range []string{"explorer", "default"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			workspace, project := memoryGitFixture(t)
+			root := t.TempDir()
+			const legacy = "- [Cents](cents.md) — opaque-legacy-description\n"
+			memorySeedPage(t, root, "personal", "fact.md", "opaque-delegate-fact-91")
+			writeMemoryPage(t, root, "MEMORY.md", legacy)
+			writeMemoryPage(t, root, "cents.md", "# Cents\n")
+			long := "# Long\n" + strings.Repeat("opaque-long-line-93\n", 300)
+			writeMemoryPage(t, root, "long.md", long)
+			var childTools []llm.ToolDefinition
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(req llm.Request) llm.Response {
+				childTools = req.Tools
+				return finalResponse("child finished")
+			}))
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: agentType, DelegationAllowance: new(0)})
+			if res.Err != nil {
+				t.Fatal(res.Err)
+			}
+			child := memoryWaitChild(t, s, res.ChildSessionID)
+			assertReadOnly(t, child.sess)
+			if child.sess.cfg.MemoryProjectID != project.ID {
+				t.Errorf("delegate project=%q, want the parent's %q", child.sess.cfg.MemoryProjectID, project.ID)
+			}
+			if len(childTools) == 0 {
+				t.Fatal("delegate made no model request")
+			}
+			for _, def := range childTools {
+				if slices.Contains(memorySaveToolNames, def.Name) || strings.Contains(def.Description, memoryReportReminder) {
+					t.Errorf("delegate's model request offers saving through %s", def.Name)
+				}
+			}
+			scope := filepath.Join(root, "memory", "personal")
+			if raw, err := os.ReadFile(filepath.Join(scope, "MEMORY.md")); err != nil || string(raw) != legacy {
+				t.Errorf("delegate migrated MEMORY.md=%q, %v", raw, err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "cents.md")); err != nil || string(raw) != "# Cents\n" {
+				t.Errorf("delegate migrated cents.md=%q, %v", raw, err)
+			}
+			for _, name := range nativeMemoryToolNames {
+				if s.reg.Get(name) == nil {
+					t.Errorf("parent lost %s", name)
+				}
+			}
+			// The gardening skill fixes a long page with the save tools, so
+			// only the parent's long-page note points at it.
+			for _, tc := range []struct {
+				who       string
+				sess      *Session
+				withSkill bool
+			}{{"parent", s, true}, {"delegate", child.sess, false}} {
+				res := memoryExec(t, tc.sess, "memory_read", map[string]any{"scope": "personal", "file_path": "long.md"})
+				if res.IsError || !strings.HasSuffix(res.Output, memoryPageSizeNote(len(long), tc.withSkill)) {
+					t.Errorf("%s long-page read ends %q, want the note with withSkill=%t", tc.who, res.Output[max(0, len(res.Output)-120):], tc.withSkill)
+				}
+			}
+		})
+	}
+	// A bare resume of a delegate carries no spawn parent; the persisted
+	// subagent flag alone keeps it read-only.
+	t.Run("bare-resume", func(t *testing.T) {
+		t.Parallel()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		meta := schema.SessionMeta{
+			ID:         "restored-delegate",
+			ProfileID:  "openai",
+			Model:      "gpt-5.2",
+			IsSubagent: true,
+			Config:     (SessionConfig{}).toSnapshot(),
+		}
+		restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{MemoryStateRoot: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer restored.Close()
+		assertReadOnly(t, restored)
+	})
+}
+
+// A stable delegate's persisted tool ceiling never names a save tool, so its
+// descriptor and job status report only what the delegate can call.
+func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	for _, policy := range []struct {
+		name     string
+		allTools bool
+		allowed  []string
+	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
+		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		for _, name := range memorySaveToolNames {
+			if slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling lacks %s: %v", policy.name, name, ceiling)
+			}
+		}
+	}
+}
+
+// The parent's delegation guidance lists a role's tools; it never lists a save
+// tool, because no delegate can call one.
+func TestMemoryDelegateToolSummaryOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MaxSubagentDepth: 2}))
+	for _, agentType := range []string{"explorer", "default"} {
+		summary := s.defaultToolSummaryForAgent(s.pluginAgents[agentType])
+		for _, name := range memorySaveToolNames {
+			if strings.Contains(summary, name) {
+				t.Errorf("%s summary lists %s: %s", agentType, name, summary)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !strings.Contains(summary, name) {
+				t.Errorf("%s summary lacks %s: %s", agentType, name, summary)
+			}
+		}
+	}
+}
+
 func TestMemoryDisableProfilePlaceholders(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range []SessionConfig{{}, {MemoryStateRoot: t.TempDir(), DisableMemory: true}} {
@@ -1507,21 +1671,21 @@ func TestMemoryBindingSeparation(t *testing.T) {
 
 func TestMemoryDelegateFrozenBinding(t *testing.T) {
 	t.Parallel()
-	for _, parent := range []SessionConfig{{MemoryStateRoot: t.TempDir(), MemoryProjectID: "saved", DisableMemory: true}, {MemoryStateRoot: t.TempDir()}, {MemoryStateRoot: t.TempDir(), MemoryProjectID: "different"}} {
-		got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{MemoryProjectID: "saved"}, parent)
-		want := ""
-		if parent.MemoryProjectID == "saved" {
-			want = "saved"
+	// The child takes its parent's binding whatever it froze, including none
+	// (frozen before project memory) and one the parent no longer has.
+	for _, tc := range []struct {
+		frozen string
+		parent SessionConfig
+	}{
+		{"saved", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "saved", DisableMemory: true}},
+		{"saved", SessionConfig{MemoryStateRoot: t.TempDir()}},
+		{"saved", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "different"}},
+		{"", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "adopted"}},
+	} {
+		got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{MemoryProjectID: tc.frozen}, tc.parent)
+		if got.MemoryStateRoot != tc.parent.MemoryStateRoot || got.DisableMemory != tc.parent.DisableMemory || got.MemoryProjectID != tc.parent.MemoryProjectID {
+			t.Fatalf("frozen %q: root=%q disabled=%t project=%q", tc.frozen, got.MemoryStateRoot, got.DisableMemory, got.MemoryProjectID)
 		}
-		if got.MemoryStateRoot != parent.MemoryStateRoot || got.DisableMemory != parent.DisableMemory || got.MemoryProjectID != want {
-			t.Fatalf("frozen root=%q disabled=%t project=%q", got.MemoryStateRoot, got.DisableMemory, got.MemoryProjectID)
-		}
-	}
-	// A descriptor frozen before project memory carries no binding; it takes
-	// the binding its parent adopted on resume.
-	got := subagentConfigFromFrozenDescriptor(schema.ConfigSnapshot{}, SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "adopted"})
-	if got.MemoryProjectID != "adopted" {
-		t.Fatalf("unbound frozen child project=%q", got.MemoryProjectID)
 	}
 }
 
@@ -1685,10 +1849,11 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 	}
 }
 
-// Catches ceilings applied to a stale caller copy instead of the restorer's authoritative reload.
+// Catches a delegate's parent binding lost to the restorer's authoritative
+// metadata reload, which carries the binding the delegate saved.
 func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 	t.Parallel()
-	for _, parentID := range []string{"", "different-project", "saved-project"} {
+	for _, parentID := range []string{"", "different-project"} {
 		t.Run("parent-"+parentID, func(t *testing.T) {
 			root, history := t.TempDir(), t.TempDir()
 			memorySeedPage(t, root, "personal", "fact.md", "opaque-personal-89")
@@ -1699,10 +1864,9 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			meta.Config.MemoryProjectID = "caller-stale-project"
 			var personal, project atomic.Int32
 			r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
-				StateDir: history, MemoryStateRoot: root, memoryProjectCeiling: &parentID,
+				StateDir: history, MemoryStateRoot: root, parentMemoryProjectID: parentID, spawn: spawnConfig{parentSessionID: "fixture-parent"},
 				AcquireSessionOwnership: func(string) error { return nil },
 				testOnly: testConfig{memoryBeforeIO: func(scope, operation string) error {
 					if scope == "project" {
@@ -1718,17 +1882,13 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 			}
 			defer r.Close()
 			r.maybeAppendMemoryContext(context.Background(), true)
-			wantID := ""
-			if parentID == "saved-project" {
-				wantID = parentID
-			}
-			if r.cfg.MemoryProjectID != wantID || r.cfg.MemoryStateRoot != root {
+			if r.cfg.MemoryProjectID != parentID || r.cfg.MemoryStateRoot != root {
 				t.Fatalf("binding project=%q root=%q", r.cfg.MemoryProjectID, r.cfg.MemoryStateRoot)
 			}
 			if personal.Load() == 0 {
 				t.Fatal("healthy personal scope not read")
 			}
-			if wantID == "" && project.Load() != 0 {
+			if parentID == "" && project.Load() != 0 {
 				t.Fatalf("revoked project accesses=%d", project.Load())
 			}
 		})
@@ -1758,7 +1918,7 @@ func TestMemoryHomeBindingHonorsSandboxReroot(t *testing.T) {
 // shipped) staying personal-only after resume, binding the resume command's
 // cwd instead of its own home, replacing a saved binding, binding while
 // memory is off, binding a relative home against the process cwd, or a
-// directly resumed delegate binding itself outside its parent's ceiling.
+// delegate resumed on its own binding itself from its home.
 func TestMemoryResumeAdoptsProjectBinding(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"unbound", "saved-binding", "disabled", "disabled-on-resume", "no-state-root", "relative-home", "delegate"} {
@@ -1902,6 +2062,114 @@ func memoryExec(t *testing.T, s *Session, name string, args map[string]any) tool
 		t.Fatal(err)
 	}
 	return s.execTool(context.Background(), llm.ToolCallData{ID: "memory-direct", Name: name, Arguments: raw}, "")
+}
+
+// Memory tools take paths relative to the scope root, so their results and
+// errors name pages the same way and never show the host path of the scope:
+// a model that copied one back would be refused.
+func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			stateRoot := t.TempDir()
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+			env, err := s.openMemoryEnvironment(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := env.WorkingDirectory()
+			for _, call := range []struct {
+				tool    string
+				args    map[string]any
+				isError bool
+			}{
+				{"memory_write", map[string]any{"file_path": "dir/page.md", "content": "---\ndescription: d\n---\nopaque-needle\n"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
+				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
+				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
+				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
+				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
+				{"memory_write", map[string]any{"file_path": "dir/other.md", "content": "x"}, false},
+				{"memory_delete", map[string]any{"file_path": "dir/page.md"}, false},
+			} {
+				call.args["scope"] = scope
+				res := memoryExec(t, s, call.tool, call.args)
+				if res.IsError != call.isError {
+					t.Fatalf("%s %v: IsError=%v: %s", call.tool, call.args, res.IsError, res.Output)
+				}
+				for _, hostPath := range []string{root, stateRoot} {
+					if strings.Contains(res.Output, hostPath) {
+						t.Fatalf("%s %v names the host path %s: %s", call.tool, call.args, hostPath, res.Output)
+					}
+				}
+			}
+			// A page's own text is never rewritten, even where it quotes a host path.
+			quoted := "see " + filepath.Join(root, "quoted.md") + "\n"
+			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "quoting.txt", "content": quoted}); res.IsError {
+				t.Fatal(res.Output)
+			}
+			for _, call := range []struct {
+				tool string
+				args map[string]any
+			}{
+				{"memory_read", map[string]any{"scope": scope, "file_path": "quoting.txt"}},
+				{"memory_search", map[string]any{"scope": scope, "pattern": "quoted"}},
+			} {
+				if res := memoryExec(t, s, call.tool, call.args); res.IsError || !strings.Contains(res.Output, strings.TrimSuffix(quoted, "\n")) {
+					t.Fatalf("%s rewrote page text: %+v", call.tool, res)
+				}
+			}
+		})
+	}
+}
+
+// scopeRelativeText names the scope root "." and a path under it by its
+// relative path where the text sets them off as a path, and leaves the text
+// as it is wherever the match could be part of a longer name.
+func TestScopeRelativeText(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
+	sep := string(filepath.Separator)
+	for in, want := range map[string]string{
+		"wrote 3 bytes to " + root + sep + "dir" + sep + "a.md": "wrote 3 bytes to dir" + sep + "a.md",
+		"is outside working directory \"" + root + "\"":         "is outside working directory \".\"",
+		"scope " + root: "scope .",
+		root + sep + "a.md and " + root + sep + "b.md":              "a.md and b.md",
+		root + "-2" + sep + "a.md":                                  root + "-2" + sep + "a.md",
+		root + "s":                                                  root + "s",
+		"x" + root + sep + "page.md":                                "x" + root + sep + "page.md",
+		"open " + root + "~archive" + sep + "note.md: no such file": "open " + root + "~archive" + sep + "note.md: no such file",
+		root + "+x":                            root + "+x",
+		root + ",x":                            root + ",x",
+		"open " + root + ": permission denied": "open .: permission denied",
+		root + sep + ":page.md":                ":page.md",
+		"wrote to " + root + sep + " page.md":  "wrote to  page.md",
+		"removed " + root + sep:                "removed .",
+		"(" + root + sep + "a.md)":             "(a.md)",
+		"no host path here":                    "no host path here",
+	} {
+		if got := scopeRelativeText(root, in); got != want {
+			t.Errorf("scopeRelativeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A memory tool's error, and any output returned with it, name the scope
+// root's paths relative to it, whichever step produced them.
+func TestMemoryToolErrorsAndTheirOutputAreScopeRelative(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+	root := filepath.Join(stateRoot, "memory", "projects", "fixture-project")
+	cause := errors.New("opaque cause")
+	exec := s.scopeRelativeMemoryErrors(func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		return "rg: " + filepath.Join(root, "missing") + ": No such file", fmt.Errorf("searching %q: %w", root, cause)
+	})
+	out, err := exec(context.Background(), nil, map[string]any{"scope": "project"})
+	if out != "rg: missing: No such file" || err == nil || err.Error() != `searching ".": opaque cause` || !errors.Is(err, cause) {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
 }
 
 func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
@@ -2927,7 +3195,8 @@ var updatePromptGoldens = flag.Bool("update-prompt", false,
 
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions and the result
-// tool's reminder only when the save tools are callable, and project-scope
+// tool's reminder only when the save tools are callable (never in a delegate,
+// which reports findings to its parent instead), and project-scope
 // wording only when project memory is bound. Where memory is readable, the
 // guidance and the memory tools' descriptions are prompt text, pinned whole
 // per shape in testdata/memoryprompt, never by substring; regenerate after an
@@ -2948,6 +3217,7 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
 		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
 		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
+		{"delegate", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", spawn: spawnConfig{parentSessionID: "parent-session", depth: 1}}, "", true, false, true},
 		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
 		{"unbound", SessionConfig{}, "", false, false, false},
 	} {

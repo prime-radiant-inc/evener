@@ -2,7 +2,7 @@
 
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { transactionCompletion } from "./idbConnection";
+import { IDBConnection, IDBUpgradeError, transactionCompletion } from "./idbConnection";
 import { SessionCacheIndexedDB, type SessionCacheOpenDiagnostic } from "./sessionCacheIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
@@ -111,4 +111,27 @@ test.each(["complete", "abort"])("cache transaction completion waits past error 
   transaction.dispatchEvent(new Event(terminal));
   if (terminal === "complete") expect(await observed).toBe("committed");
   else expect(await observed).toEqual(new Error("IndexedDB transaction aborted"));
+});
+
+// The open names a throwing upgrade's own failure (see IDBUpgradeError).
+test("a throwing schema upgrade rejects the open with its own failure", async () => {
+  const schemaBug = new TypeError("schema bug");
+  const connection = new IDBConnection({
+    indexedDB: new IDBFactory(),
+    databaseName: "evener-upgrade-bug",
+    databaseVersion: 1,
+    waitMs: 10_000,
+    upgrade: () => {
+      throw schemaBug;
+    },
+    errors: {
+      open: () => new Error("open failed"),
+      superseded: () => new Error("open superseded"),
+      timeout: () => new Error("open timed out"),
+    },
+    reportDiagnostic: () => undefined,
+  });
+  const open = connection.open();
+  await expect(open).rejects.toBeInstanceOf(IDBUpgradeError);
+  await expect(open).rejects.toMatchObject({ cause: schemaBug });
 });

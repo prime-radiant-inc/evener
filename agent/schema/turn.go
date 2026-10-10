@@ -95,6 +95,15 @@ const (
 // it is a legacy entry, whose turn identity readers infer as they always have.
 const TurnFormatIdentity = 1
 
+// PublicTranscript reports whether entries of this kind appear in the public
+// transcript, the one read_transcript and doctor transcript number turn by
+// turn. Resolution markers carry no model/public content, and transcript-only
+// entries exist for the history projection alone; both are omitted entirely so
+// interleaved tool calls and results remain adjacent.
+func (k TurnKind) PublicTranscript() bool {
+	return k != TurnAttentionResolution && !k.TranscriptOnly()
+}
+
 // TranscriptOnly reports whether entries of this kind are written to the
 // transcript only. They never enter a session's in-memory history, resume
 // skips them, and every other consumer of transcript entries skips them too:

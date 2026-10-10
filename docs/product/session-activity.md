@@ -496,10 +496,14 @@ authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
 
-The selected session and its immediate parent are readable columns. Earlier
-ancestors are live compact spines. Each readable scope has an independent
-transcript position; collapsed spines retain their reader state while pausing
-older-history demand. Pop, reopen and Jump to live use the existing transcript
+The selected session and its immediate parent are readable columns, except
+that a parent equal to the cascade's live origin conversation stays a compact
+spine: that origin pane is already on screen, and the cascade does not repeat
+it. Closing the origin pane retires that association and restores the readable
+parent column. Earlier ancestors are live compact spines. Each readable scope
+has an independent transcript position; collapsed spines retain their reader
+state while pausing older-history demand. Pop, reopen and Jump to live use the
+existing transcript
 and history owners. The ordinary source keeps its own pending demand while
 inspection is open. A retained source in an existing in-place cascade keeps
 that demand even while collapsed. Another same-ref reader cannot adopt or cancel

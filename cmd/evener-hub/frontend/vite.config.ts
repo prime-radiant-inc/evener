@@ -30,10 +30,13 @@ const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client
 // otherwise forbids for good reason. Restoring the file HERE, as part of the
 // build itself, means every invocation path (`make build-web`, `npm run
 // build`, or `vite build` run directly during frontend dev) leaves the
-// tracked file's content byte-identical afterward instead of missing.
+// tracked file's content byte-identical afterward instead of missing. Vite
+// also calls closeBundle when a dev or test server closes, so the plugin
+// applies to builds only: a vitest run must write nothing into the checkout.
 function restoreDistPlaceholder(): Plugin {
   return {
     name: "restore-dist-placeholder",
+    apply: "build",
     closeBundle() {
       const outDir = path.join(__dirname, "dist");
       fs.mkdirSync(outDir, { recursive: true });

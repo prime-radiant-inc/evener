@@ -5552,8 +5552,13 @@ test.each([
       expect(conversationPaneLifetime(original)).toBe(lifetime);
       expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
       expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
-      expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("local:owner");
-      expect(within(screen.getByTestId("cascade-spine")).queryByText("report-local:owner")).toBeNull();
+      // The nested source's own pane (local:child) is the immediate parent of
+      // the drilled leaf, so it collapses to a spine beside its owner spine.
+      const spines = screen.getAllByTestId("cascade-spine");
+      expect(spines.map((spine) => spine.getAttribute("data-scope-ref"))).toEqual(
+        source === "nested" ? ["local:owner", "local:child"] : ["local:owner"],
+      );
+      for (const spine of spines) expect(within(spine).queryByText("report-local:owner")).toBeNull();
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
       expect(
         workspaceStore
