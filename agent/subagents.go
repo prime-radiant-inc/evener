@@ -525,6 +525,10 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 	for _, name := range protectedGrantTools() {
 		delete(selected, name)
 	}
+	// No delegate saves memory (filterUnavailableMemoryTools).
+	for _, name := range memorySaveToolNames {
+		delete(selected, name)
+	}
 	if !canDelegate {
 		for _, name := range rootOnlySubagentTools() {
 			delete(selected, name)

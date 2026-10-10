@@ -176,8 +176,9 @@ context or memory files. CLI and TUI context presentation remains unchanged.
 
 A `memory_read` of a text page other than `MEMORY.md` that is longer than 4096
 bytes ends with a note giving its size, rounded to KB. When the session can
-load the gardening-memory skill (`use_skill` is callable and the skill is
-advertised to the model), the note says to use it to learn how to fix the
+load and follow the gardening-memory skill (it has the save tools, so it is
+never a delegate, `use_skill` is callable and the skill is advertised to the
+model), the note says to use it to learn how to fix the
 page; otherwise it says a memory page should hold one fact. The index is never
 noted as long; its projection counts what it leaves out.
 

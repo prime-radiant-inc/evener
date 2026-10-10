@@ -1472,6 +1472,8 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 			memorySeedPage(t, root, "personal", "fact.md", "opaque-delegate-fact-91")
 			writeMemoryPage(t, root, "MEMORY.md", legacy)
 			writeMemoryPage(t, root, "cents.md", "# Cents\n")
+			long := "# Long\n" + strings.Repeat("opaque-long-line-93\n", 300)
+			writeMemoryPage(t, root, "long.md", long)
 			var childTools []llm.ToolDefinition
 			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(req llm.Request) llm.Response {
 				childTools = req.Tools
@@ -1506,6 +1508,18 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 					t.Errorf("parent lost %s", name)
 				}
 			}
+			// The gardening skill fixes a long page with the save tools, so
+			// only the parent's long-page note points at it.
+			for _, tc := range []struct {
+				who       string
+				sess      *Session
+				withSkill bool
+			}{{"parent", s, true}, {"delegate", child.sess, false}} {
+				res := memoryExec(t, tc.sess, "memory_read", map[string]any{"scope": "personal", "file_path": "long.md"})
+				if res.IsError || !strings.HasSuffix(res.Output, memoryPageSizeNote(len(long), tc.withSkill)) {
+					t.Errorf("%s long-page read ends %q, want the note with withSkill=%t", tc.who, res.Output[max(0, len(res.Output)-120):], tc.withSkill)
+				}
+			}
 		})
 	}
 	// A bare resume of a delegate carries no spawn parent; the persisted
@@ -1528,6 +1542,30 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 		defer restored.Close()
 		assertReadOnly(t, restored)
 	})
+}
+
+// A stable delegate's persisted tool ceiling never names a save tool, so its
+// descriptor and job status report only what the delegate can call.
+func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	for _, policy := range []struct {
+		name     string
+		allTools bool
+		allowed  []string
+	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
+		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		for _, name := range memorySaveToolNames {
+			if slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling lacks %s: %v", policy.name, name, ceiling)
+			}
+		}
+	}
 }
 
 // The parent's delegation guidance lists a role's tools; it never lists a save
