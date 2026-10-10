@@ -175,7 +175,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -185,7 +185,8 @@ unsandboxed root's `TMPDIR` is not in the tree.
   contained caches. This is the natural mode for coding work that must not touch
   anything outside the project.
 - **`restricted`** is the tightest mode: the model's file tools can only browse and
-  write inside the worktree. Spawned processes additionally get read-only access to
+  write inside the worktree, plus read Evener's own content (installed plugins and
+  your skills directory, below). Spawned processes additionally get read-only access to
   the system roots a process needs to run — `/usr`, `/bin`, `/sbin`, `/lib`,
   `/lib64`, `/etc`, `/opt`, `/nix/store`, and on macOS the developer-toolchain
   directories below — but not
@@ -340,6 +341,30 @@ daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot driv
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
 affect `AF_UNIX`).
+
+**One exception to "the mask wins", for the file tools: Evener's own content.**
+Installed plugins (the plugin store's `cache` and `bundled` directories under
+`~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
+sit inside the masked `~/.config/evener` by default, but they hold only content
+the session itself loads, such as the skills whose `base_directory` it hands the
+model. So in every mode (`restricted` included) the file tools read those
+directories, **read-only**, carved out of the mask; spawned processes still see
+them masked. The rest of `~/.config/evener` stays masked: hub configuration,
+credentials, and the plugin store's metadata (`known_marketplaces.json`, the
+registries and the marketplace clones), which records marketplace URLs that may
+carry a token. Inside the carve-out any `.git` stays masked too (in any letter
+case): a plugin installed by cloning keeps its remote URL, which may carry a
+token, in its installed copy's `.git/config`, and skills never need it. The
+carve-out never writes and never touches the pseudo-filesystem floor. It is cut
+only from Evener's own config mask, and a directory is left masked when it
+contains a masked path or sits under another one (so your own denylist entries,
+inside or above it, win), when a write root overlaps it (it would not stay
+read-only), or when it resolves anywhere but its own place under Evener's config
+mask (a symlink into, or above, a masked directory). The file tools check that
+resolution again when they open the directory, against the directory actually
+opened, so one swapped for a symlink mid-session is refused. With
+`EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
+masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:
@@ -590,9 +615,10 @@ raw stderr never becomes the model's opening context.
 
 Three boundary edges are deliberately documented as open rather than claimed closed:
 
-- **A pre-existing hardlink** inside the worktree to an out-of-tree secret is
-  *readable* through the worktree (path-based masking cannot see that two names share
-  an inode). A *write* through such a hardlink does not propagate to the original —
+- **A pre-existing hardlink** inside the worktree, or inside the read-only
+  plugin and skills carve-out, to an out-of-tree secret is *readable* through it
+  (path-based masking cannot see that two names share an inode). Nothing Evener
+  installs creates one: plugin installs clone or copy file contents. A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
   a fresh inode. This read residual is out of the running-amok threat model.
 - **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap

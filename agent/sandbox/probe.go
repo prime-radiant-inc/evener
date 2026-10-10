@@ -114,6 +114,13 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
+	// EvenerContentRoots are the installed plugin files in Evener's plugin store
+	// and the user's skills directory at their configured locations (see
+	// ResolvedPolicy.UnmaskedRoots).
+	// Missing directories are listed anyway, so one created mid-session is
+	// readable at its next spawn.
+	EvenerContentRoots []string
+
 	// EvenerConfigRoot is Evener's config root ($XDG_CONFIG_HOME/evener, else
 	// ~/.config/evener). Resolve masks it wherever it lives, since that is where
 	// hub configuration and credentials are kept.
@@ -267,7 +274,16 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
-	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
+	facts.EvenerConfigRoot = userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
+	// Evener resolves a relative XDG_CONFIG_HOME against its working directory,
+	// as this process does here, so the mask covers the directory it really uses.
+	if facts.EvenerConfigRoot != "" && !filepath.IsAbs(facts.EvenerConfigRoot) {
+		if abs, err := filepath.Abs(facts.EvenerConfigRoot); err == nil {
+			facts.EvenerConfigRoot = abs
+		}
+	}
+	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
+
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
 
@@ -329,6 +345,27 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// evenerContentRoots returns the plugin store's installed plugin files and the
+// user skills directory under Evener's config root, or nothing when the root is
+// unresolved. The store's metadata, which records marketplace URLs that may
+// carry tokens, is left out and stays masked.
+//
+// noUserSkills (EVENER_NO_USER_SKILLS=1) leaves the user skills directory out,
+// since such a session loads none. Installed plugins stay: their hooks still
+// run, and the variable is the eval harness's way to keep the skill catalog
+// independent of the operator, not an access boundary (envvars marks it
+// Tooling); a readable plugin file adds nothing to the catalog.
+func evenerContentRoots(root string, noUserSkills bool) []string {
+	if root == "" {
+		return nil
+	}
+	roots := userdirs.PluginContentDirs(userdirs.PluginStore(root))
+	if !noUserSkills {
+		roots = append(roots, userdirs.UserSkills(root))
+	}
+	return roots
 }
 
 // goEnvValue returns a go command setting as configured on this host, with the
@@ -397,22 +434,6 @@ func goPathEntries(host HostFacts) []string {
 		entries = []string{filepath.Join(host.Home, "go")}
 	}
 	return entries
-}
-
-// probeEvenerConfigRoot returns Evener's config root as Evener resolves it:
-// $XDG_CONFIG_HOME/evener, else ~/.config/evener. A relative XDG_CONFIG_HOME is
-// resolved against the working directory, as Evener's own process does, so the
-// mask covers the directory it really uses. "" when it cannot be resolved.
-func probeEvenerConfigRoot(system probeSystem) string {
-	root := userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
-	if root == "" || filepath.IsAbs(root) {
-		return root
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return ""
-	}
-	return abs
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

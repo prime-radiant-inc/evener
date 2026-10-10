@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -115,9 +116,26 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 	if fd, ok := s.rootFds[root]; ok {
 		return fd, nil
 	}
+	// A carve-out root swapped for a symlink after resolution would otherwise be
+	// followed here; it must still resolve to its own place under its mask.
+	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
+	if carveOut && !s.policy.CarveOutIntact(root) {
+		return -1, errEscapesRoot
+	}
 	fd, err := openRootDir(root)
 	if err != nil {
 		return -1, err
+	}
+	// The directory actually opened is judged too, since the root could be
+	// swapped between the check above and the open.
+	if carveOut {
+		canon, cerr := canonicalPathForFd(fd)
+		// Required on every platform for a carve-out: without the opened
+		// directory's canonical path the swap cannot be ruled out.
+		if cerr != nil || canon == "" || !s.policy.CarveOutResolvesTo(root, canon) {
+			_ = unix.Close(fd)
+			return -1, errEscapesRoot
+		}
 	}
 	s.rootFds[root] = fd
 	return fd, nil
@@ -203,7 +221,7 @@ func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, err
 	}
 	rootFd, err := s.rootFd(root)
 	if err != nil {
-		return -1, err
+		return -1, s.mapOpenErr(tool, abs, err)
 	}
 	fd, err := openBeneathRoot(rootFd, rel, flags, 0)
 	if err != nil {
