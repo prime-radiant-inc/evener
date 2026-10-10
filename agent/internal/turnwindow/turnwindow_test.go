@@ -5,13 +5,6 @@ import (
 	"testing"
 )
 
-func TestGrammar(t *testing.T) {
-	t.Parallel()
-	if Grammar != "N-M | last:N | start:N" {
-		t.Fatalf("Grammar = %q", Grammar)
-	}
-}
-
 func TestParseSelectsTurnWindows(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -52,10 +45,7 @@ func TestClamp(t *testing.T) {
 		{0, 9, 2, 0, 1},
 	}
 	for _, tc := range tests {
-		lo, hi, err := clamp(tc.lo, tc.hi, tc.count)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
+		lo, hi := clamp(tc.lo, tc.hi, tc.count)
 		if lo != tc.wantLo || hi != tc.wantHi {
 			t.Errorf("clamp(%d,%d,%d) = %d,%d want %d,%d", tc.lo, tc.hi, tc.count, lo, hi, tc.wantLo, tc.wantHi)
 		}

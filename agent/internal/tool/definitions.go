@@ -355,7 +355,7 @@ func DefModelList() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it, so repeat those values with it."},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
 				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
 				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},

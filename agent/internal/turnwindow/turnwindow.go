@@ -39,21 +39,24 @@ func Parse(spec string, count int) (start, end int, err error) {
 		if !ok {
 			return 0, 0, fmt.Errorf("%w: %q", ErrMalformed, spec)
 		}
-		return clamp(count-n, last, count)
+		start, end = clamp(count-n, last, count)
+		return start, end, nil
 
 	case strings.HasPrefix(spec, "start:"):
 		n, ok := ParsePositiveInt(strings.TrimPrefix(spec, "start:"))
 		if !ok {
 			return 0, 0, fmt.Errorf("%w: %q", ErrMalformed, spec)
 		}
-		return clamp(0, n-1, count)
+		start, end = clamp(0, n-1, count)
+		return start, end, nil
 
 	case strings.Contains(spec, "-"):
 		lo, hi, ok := ParseDash(spec)
 		if !ok {
 			return 0, 0, fmt.Errorf("%w: %q", ErrMalformed, spec)
 		}
-		return clamp(lo, hi, count)
+		start, end = clamp(lo, hi, count)
+		return start, end, nil
 
 	default:
 		return 0, 0, fmt.Errorf("%w: %q", ErrMalformed, spec)
@@ -62,7 +65,7 @@ func Parse(spec string, count int) (start, end int, err error) {
 
 // clamp clamps [lo, hi] to [0, count-1] and returns it as inclusive bounds. A
 // resulting lo > hi denotes an empty selection.
-func clamp(lo, hi, count int) (start, end int, err error) {
+func clamp(lo, hi, count int) (start, end int) {
 	if lo < 0 {
 		lo = 0
 	}
@@ -75,7 +78,7 @@ func clamp(lo, hi, count int) (start, end int, err error) {
 	if lo > count-1 {
 		lo = count - 1
 	}
-	return lo, hi, nil
+	return lo, hi
 }
 
 // ParsePositiveInt parses s as a strictly positive base-10 integer.

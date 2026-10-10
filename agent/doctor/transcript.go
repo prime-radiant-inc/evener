@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
@@ -214,35 +213,39 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 	}
 	resultTool := resolveResultTool(paths)
 
-	// turnStarts[n] is the entry index of read_transcript's Turn n.
+	// turnOf[i] is entry i's read_transcript turn number, or -1 for an entry
+	// read_transcript omits; turnStarts[n] is the entry index of Turn n.
+	turnOf := make([]int, len(doc.Entries))
 	var turnStarts []int
 	for i, e := range doc.Entries {
+		turnOf[i] = -1
 		if e.Turn.Kind.PublicTranscript() {
+			turnOf[i] = len(turnStarts)
 			turnStarts = append(turnStarts, i)
 		}
 	}
 	total := len(turnStarts)
-	first, last := 0, total-1
+	lo, hi, rendered := 0, len(doc.Entries), total
 	if opts.Range != "" {
-		first, last, err = turnwindow.Parse(opts.Range, total)
+		first, last, err := turnwindow.Parse(opts.Range, total)
 		if err != nil {
 			return TranscriptResult{}, fmt.Errorf("invalid range %q; accepted: %s", opts.Range, turnwindow.Grammar)
 		}
-	}
-	// The entry window runs from the first selected turn to just before the
-	// turn after the last, so unnumbered entries ride with the turn they
-	// follow. Entries before Turn 0 belong to a window that starts there.
-	lo, hi, rendered := 0, len(doc.Entries), 0
-	if last >= first {
-		rendered = last - first + 1
-		if first > 0 {
-			lo = turnStarts[first]
+		// The entry window runs from the first selected turn to just before
+		// the turn after the last, so unnumbered entries ride with the turn
+		// they follow. Entries before Turn 0 belong to a window that starts
+		// there.
+		rendered = max(0, last-first+1)
+		if rendered == 0 {
+			hi = 0
+		} else {
+			if first > 0 {
+				lo = turnStarts[first]
+			}
+			if last+1 < total {
+				hi = turnStarts[last+1]
+			}
 		}
-		if last+1 < total {
-			hi = turnStarts[last+1]
-		}
-	} else if opts.Range != "" {
-		hi = 0
 	}
 	res := TranscriptResult{
 		SessionID:     paths.SessionID,
@@ -255,13 +258,10 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 	if textMax <= 0 {
 		textMax = DefaultTextMax
 	}
-	turn := first
 	for i := lo; i < hi; i++ {
 		ts := summarizeTurn(doc.Entries[i], resultTool, textMax)
-		if doc.Entries[i].Turn.Kind.PublicTranscript() {
-			n := turn
-			ts.Turn = &n
-			turn++
+		if turnOf[i] >= 0 {
+			ts.Turn = &turnOf[i]
 		}
 		res.Turns = append(res.Turns, ts)
 	}
@@ -371,7 +371,7 @@ func RenderTranscript(r TranscriptResult, format string) string {
 	var b strings.Builder
 	for _, t := range r.Turns {
 		if format == "outline" {
-			fmt.Fprintf(&b, "[%s] %s", turnLabel(t), t.Kind)
+			fmt.Fprintf(&b, "[%s] %s", optionalIntString(t.Turn), t.Kind)
 			if names := toolCallNames(t.ToolCalls); names != "" {
 				fmt.Fprintf(&b, "  tools: %s", names)
 			}
@@ -385,7 +385,7 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			continue
 		}
 		// markdown
-		fmt.Fprintf(&b, "### [%s] %s\n", turnLabel(t), t.Kind)
+		fmt.Fprintf(&b, "### [%s] %s\n", optionalIntString(t.Turn), t.Kind)
 		if t.Text != "" {
 			fmt.Fprintf(&b, "%s\n", t.Text)
 		}
@@ -411,15 +411,6 @@ func RenderTranscript(r TranscriptResult, format string) string {
 	fmt.Fprintf(&b, "— turns_total=%d turns_rendered=%d elided=%d (session %s, result_tool=%s)\n",
 		r.TurnsTotal, r.TurnsRendered, r.Elided, r.SessionID, r.ResultTool)
 	return b.String()
-}
-
-// turnLabel is a row's read_transcript turn number, or "-" for an entry
-// read_transcript omits.
-func turnLabel(t TurnSummary) string {
-	if t.Turn == nil {
-		return "-"
-	}
-	return strconv.Itoa(*t.Turn)
 }
 
 func toolCallNames(tcs []ToolCallSummary) string {
