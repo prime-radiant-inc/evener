@@ -283,6 +283,29 @@ func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	}
 }
 
+// A page saved with CRLF line endings outside the tools is edited in place:
+// its description is repaired and stamped in its one frontmatter block, never
+// pushed into the body under a second block, and the index reads it.
+func TestMemoryEditStampsACRLFPageInPlace(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	page := filepath.Join(scope, "a.md")
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(page, []byte("---\r\ndescription: Rule 7: whole numbers\r\n---\r\n# Rule\r\nold body\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "old body", "new_string": "new body"})
+	if res.IsError || strings.Contains(res.Output, "no description") || strings.Contains(res.Output, "not valid YAML") {
+		t.Fatalf("%+v", res)
+	}
+	want := "---\ndescription: 'Rule 7: whole numbers'\n" + memoryOwnStamps(s) + "---\n# Rule\nnew body\n"
+	if raw, _ := os.ReadFile(page); string(raw) != want {
+		t.Fatalf("got %q\nwant %q", raw, want)
+	}
+}
+
 // memory_search never reports the physical hand-written root index that a
 // session without memory_write leaves unmigrated: memory_read renders the
 // generated index under that name instead. Files whose names merely start

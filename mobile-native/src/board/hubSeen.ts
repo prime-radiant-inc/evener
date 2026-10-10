@@ -2,9 +2,10 @@
 // turn_ended_at is the hub's to decide: it is Finished while the hub says
 // unseen. Marks this phone makes go to the hub through
 // evener/session/seen/set and show at once through a pending map until the
-// hub's rows catch up. A row without a readable turn_ended_at (an older hub,
-// or a daemon that hasn't stamped a turn end) keeps the device's own
-// SeenMarkers.
+// hub's rows catch up. A mark reads a session through a turn end or, on a hub
+// that sends seen_through, its last motion. A row without a readable
+// turn_ended_at (an older hub, or a daemon that hasn't stamped a turn end)
+// also keeps the device's own SeenMarkers.
 import {
 	isMethodNotFound,
 	type NavigationSessionSummary,
@@ -25,12 +26,13 @@ const MAX_MARKS_PER_CALL = 500;
 const INVALID_PARAMS = -32602;
 
 interface PendingEntry {
-	/** The turn end the mark reads the session through, in ms. */
+	/** The hub time the mark reads the session through (a turn end or a last
+	 * motion), in ms. */
 	seenThrough: number;
 	/** The hub answered a call carrying this very entry. */
 	acknowledged: boolean;
 }
-type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen">;
+type HubRow = Pick<NavigationSessionSummary, "ref" | "turn_ended_at" | "unseen" | "seen_through">;
 
 // Clients whose hub answered seen/set with method not found: an older hub.
 // Per client object, so a reconnect to an upgraded hub tries again.
@@ -56,8 +58,13 @@ export class HubSeenMarks {
 		const ended = hubTurnEnd(row);
 		if (ended === null) return null;
 		const entry = this.pending.get(row.ref);
-		if (entry && ended <= entry.seenThrough) return true;
+		if (entry && ended <= entry.seenThrough && !unreadSince(row, entry)) return true;
 		return row.unseen !== true;
+	}
+
+	/** This phone's pending seen-through mark for a ref, if it has one. */
+	pendingSeenThrough(ref: string): number | undefined {
+		return this.pending.get(ref)?.seenThrough;
 	}
 
 	/** Records seen marks and sends them. A mark that doesn't advance a pending
@@ -85,8 +92,10 @@ export class HubSeenMarks {
 	}
 
 	/** Drops each pending mark the hub's rows show landed, or show no longer
-	 * applies: once the row reads seen or a newer turn ended. Only a row the
-	 * hub decides can show either, so a row without a readable turn_ended_at
+	 * applies. On a hub that sends seen_through, a mark has landed once the
+	 * row's seen_through reaches it; on an older one, once the row reads seen.
+	 * A newer turn end supersedes it either way. A row that shows neither (no
+	 * seen_through and no readable turn_ended_at) can't show a mark landed and
 	 * is skipped. */
 	prune(rows: Iterable<HubRow>): void {
 		let changed = false;
@@ -94,8 +103,13 @@ export class HubSeenMarks {
 			const entry = this.pending.get(row.ref);
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
-			if (ended === null) continue;
-			if (row.unseen !== true || ended > entry.seenThrough) {
+			const mark = hubTime(row.seen_through);
+			if (ended === null && mark === null) continue;
+			// seen_through doesn't reflect an unread set elsewhere, so a mark
+			// has landed once the row reads seen as well, or once the hub
+			// answered it and an unread came after (unreadSince).
+			const landed = (row.unseen !== true && (mark === null || mark >= entry.seenThrough)) || unreadSince(row, entry);
+			if (landed || (ended !== null && ended > entry.seenThrough)) {
 				this.pending.delete(row.ref);
 				changed = true;
 			}
@@ -156,6 +170,21 @@ export class HubSeenMarks {
 	}
 }
 
+/** Whether the row's hub tracks seen-through marks, so a mark can follow the
+ * session's motion as well as its turn end: an older hub sends no
+ * seen_through. */
+export function tracksSeenThrough(row: NavigationSessionSummary): boolean {
+	return row.seen_through !== undefined;
+}
+
+/** Whether an unread set elsewhere came after this phone's mark: the hub
+ * answered the mark, and its seen_through has reached it, yet the row still
+ * reads unseen. That unread is the newer word, so it wins over the mark. */
+function unreadSince(row: HubRow, entry: PendingEntry): boolean {
+	const mark = hubTime(row.seen_through);
+	return entry.acknowledged && row.unseen === true && mark !== null && mark >= entry.seenThrough;
+}
+
 /** When the row's last turn ended, in ms, if the hub decides the row: a row
  * without a readable turn_ended_at is the device's to decide. */
 function hubTurnEnd(row: Pick<HubRow, "turn_ended_at">): number | null {
@@ -187,12 +216,32 @@ export class BoardSeen {
 		return this.hub.isSeenOnHub(row) ?? this.markers.isSeen(row);
 	}
 
-	markRead(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
+	/** Whether the session's tree moved after the hub's seen-through mark for
+	 * it (or this phone's newer pending one): output the person hasn't seen,
+	 * mid-turn included. False without both times: an older hub sends no
+	 * seen_through, and a session that hasn't moved since its daemon began
+	 * serving it reports no last-moved time. */
+	movedSinceSeen(row: NavigationSessionSummary, lastMovedAt: number | undefined): boolean {
+		const mark = hubTime(row.seen_through);
+		if (lastMovedAt === undefined || mark === null) return false;
+		return lastMovedAt > Math.max(mark, this.hub.pendingSeenThrough(row.ref) ?? 0);
+	}
+
+	/** Marks rows seen through the later of their turn end and their last
+	 * motion (lastMovedAt), on the hub when it decides the row or tracks its
+	 * seen-through mark, else with the device's own marker. */
+	markRead(
+		client: ConversationClientLike | null,
+		rows: readonly NavigationSessionSummary[],
+		lastMovedAt: (row: NavigationSessionSummary) => number | undefined = () => undefined,
+	): void {
 		const marks: { ref: string; seenThrough: number }[] = [];
 		for (const row of rows) {
 			const ended = hubTurnEnd(row);
-			if (ended !== null) marks.push({ ref: row.ref, seenThrough: ended });
-			else this.markers.markSeen(row);
+			const moved = tracksSeenThrough(row) ? lastMovedAt(row) : undefined;
+			if (ended === null) this.markers.markSeen(row);
+			const through = Math.max(ended ?? 0, moved ?? 0);
+			if (through > 0) marks.push({ ref: row.ref, seenThrough: through });
 		}
 		this.hub.markSeen(client, marks);
 	}

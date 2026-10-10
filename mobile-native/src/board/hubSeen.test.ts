@@ -451,3 +451,87 @@ describe("the Board's marks", () => {
 		expect(calls).toHaveLength(0);
 	});
 });
+
+describe("motion since the seen mark", () => {
+	it("reads a session moved when its last motion is after the hub's mark and any newer pending one", () => {
+		const { client, seen } = board();
+		const marked = row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) });
+		expect(seen.movedSinceSeen(marked, T + 1)).toBe(true);
+		expect(seen.movedSinceSeen(marked, T)).toBe(false);
+		expect(seen.movedSinceSeen(marked, undefined)).toBe(false);
+		// An older hub sends no seen_through, so nothing reads moved.
+		expect(seen.movedSinceSeen(row("old", { turn_ended_at: iso(T) }), T + 1)).toBe(false);
+		// This phone's pending mark counts until the hub's row catches up.
+		seen.markRead(client, [marked], () => T + 5);
+		expect(seen.movedSinceSeen(marked, T + 5)).toBe(false);
+		expect(seen.movedSinceSeen(marked, T + 6)).toBe(true);
+	});
+
+	it("marks a row seen through the later of its turn end and its last motion", () => {
+		const { calls, client, seen, markers } = board();
+		seen.markRead(
+			client,
+			[
+				row("ended-later", { turn_ended_at: iso(T), seen_through: iso(T - 9) }),
+				row("moved-later", { turn_ended_at: iso(T), seen_through: iso(T - 9) }),
+				row("no-turn-end", { seen_through: iso(T - 9) }),
+				row("old-hub", { turn_ended_at: iso(T) }),
+			],
+			(r) => ({ "ended-later": T - 5, "moved-later": T + 5, "no-turn-end": T + 7, "old-hub": T + 9 })[r.ref],
+		);
+		expect(calls.map((call) => call.sessions)).toEqual([
+			[
+				{ ref: "ended-later", seenThrough: T },
+				{ ref: "moved-later", seenThrough: T + 5 },
+				{ ref: "no-turn-end", seenThrough: T + 7 },
+				{ ref: "old-hub", seenThrough: T },
+			],
+		]);
+		// A row without a turn end still takes the device's own marker too.
+		expect(markers.isSeen(row("no-turn-end"))).toBe(true);
+	});
+});
+
+describe("pruning a motion mark", () => {
+	it("keeps a mark until the hub's seen_through reaches it, though the row already reads seen", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T + 5) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
+	});
+
+	it("keeps a mark while the row still reads unseen, an unread set elsewhere, though seen_through reached it", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBe(T);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
+	it("lets an unread set elsewhere after the hub answered this phone's mark win", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		const unread = row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) });
+		// Before the hub answers, the mark stands and keeps the row seen.
+		expect(marks.isSeenOnHub(unread)).toBe(true);
+		calls[0].answer();
+		await settle();
+		// Answered, the mark reached seen_through, and the row still reads
+		// unseen: an unread came after it.
+		expect(marks.isSeenOnHub(unread)).toBe(false);
+		marks.prune([unread]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
+	it("keeps a motion mark on a row with no turn end until its seen_through lands", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
+		marks.prune([row("m", { seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("m")).toBe(T + 5);
+		marks.prune([row("m", { seen_through: iso(T + 9) })]);
+		expect(marks.pendingSeenThrough("m")).toBeUndefined();
+	});
+});

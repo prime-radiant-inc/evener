@@ -142,8 +142,12 @@ it("marks a notice with the triangle and no second line, and edges a finished re
 	expect(tree.root.findByType("SymbolView" as never).props.name).toBe("exclamationmark.triangle.fill");
 	expect(renderedText(tree)).toBe("paradise-park is offline · 3 sessions now");
 	expect(card.props.style).toMatchObject({ borderColor: palette.attentionEdge });
-	expect(mount(banner(session("d", "finished"))).card.props.style).toMatchObject({
-		borderColor: palette.accentEdge,
+	const finished = mount(banner(session("d", "finished")));
+	expect(finished.card.props.style).toMatchObject({ borderColor: palette.accentEdge });
+	// The finished mark is the blue dot (spec 13.3).
+	expect(finished.tree.root.findByType("SymbolView" as never).props).toMatchObject({
+		name: "circle.fill",
+		tintColor: palette.accent,
 	});
 });
 

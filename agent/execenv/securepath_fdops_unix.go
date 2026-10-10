@@ -449,18 +449,27 @@ func (s *sandboxFS) removeRegularFile(tool, abs string) error {
 	return s.removeWithPolicy(tool, abs, true)
 }
 
-func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
-	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
+// openRemoveParent opens abs's authorized parent for a removal. gone reports
+// that the parent is simply absent, so the target is already gone: best-effort
+// delete, matching off-mode RemovePath (which swallows a missing target), makes
+// a missing-parent ENOENT/ENOTDIR a no-op success rather than a failed
+// apply_patch. Genuine policy denials (outside a writable root, masked,
+// git-protected, a refused symlink component) still propagate.
+func (s *sandboxFS) openRemoveParent(tool, abs string) (parentFd int, leaf string, gone bool, err error) {
+	parentFd, leaf, err = s.openWriteParent(tool, abs, false)
 	if err != nil {
-		// Best-effort delete, matching off-mode RemovePath (which swallows a missing
-		// target): when the target's parent directory is simply absent, the target is
-		// already gone, so a missing-parent ENOENT/ENOTDIR is a no-op success rather
-		// than a failed apply_patch. Genuine policy denials (outside a writable root,
-		// masked, git-protected, a refused symlink component) still propagate.
 		var denied *sandbox.DeniedError
 		if !errors.As(err, &denied) && isAbsentRemove(err) {
-			return nil
+			return -1, "", true, nil
 		}
+		return -1, "", false, err
+	}
+	return parentFd, leaf, false, nil
+}
+
+func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
+	parentFd, leaf, gone, err := s.openRemoveParent(tool, abs)
+	if err != nil || gone {
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
@@ -511,6 +520,23 @@ func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 		return nil
 	}
 	return fmt.Errorf("remove %s: %w", abs, uerr)
+}
+
+// removeEmptyDirectory removes abs, an empty directory, through its
+// authorized parent fd. rmdir itself refuses a nonempty directory and a
+// non-directory leaf, a symlink included, so nothing else is ever removed.
+func (s *sandboxFS) removeEmptyDirectory(tool, abs string) error {
+	parentFd, leaf, gone, err := s.openRemoveParent(tool, abs)
+	if err != nil || gone {
+		return err
+	}
+	defer func() { _ = unix.Close(parentFd) }()
+	// Only ENOENT is a vanished leaf here: rmdir of a symlink or file is
+	// ENOTDIR, which must stop the caller's climb rather than read as gone.
+	if err := secureUnlinkat(parentFd, leaf, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove directory %s: %w", abs, err)
+	}
+	return nil
 }
 
 // rename moves oldAbs to newAbs. Both endpoints must resolve beneath a writable

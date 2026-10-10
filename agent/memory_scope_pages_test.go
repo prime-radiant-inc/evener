@@ -35,7 +35,7 @@ func TestListMemoryScopePages(t *testing.T) {
 	want := []MemoryScopePage{
 		{Path: "a.md", Description: "alpha one", HasDescription: true, Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
 		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true, Tags: []string{}},
-		{Path: "crlf.md", Description: "--- " + memoryNoDescription, Tags: []string{}},
+		{Path: "crlf.md", Description: "d", HasDescription: true, Frontmatter: true, Tags: []string{}},
 		{Path: "plain.md", Description: "no description " + memoryNoDescription, Frontmatter: true, Tags: []string{"x"}},
 	}
 	if !reflect.DeepEqual(got, want) {
