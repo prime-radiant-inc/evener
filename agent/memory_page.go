@@ -48,14 +48,6 @@ func isMemoryPagePath(rel string) bool {
 	return !isMemoryIndexPath(rel) && !execenv.IsDotPath(rel)
 }
 
-// memoryPathHasControl reports whether rel holds an ASCII control character
-// other than tab: a line ending splits an index line, and a Markdown link
-// destination can hold no other control character either. A tab fits in an
-// angle-bracket destination (memoryLinkTarget).
-func memoryPathHasControl(rel string) bool {
-	return strings.ContainsFunc(rel, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f })
-}
-
 // matchMemoryNameCase is the name in names equal to name, else the only one
 // equal to it ignoring case, since on a case-insensitive filesystem a name's
 // case need not match the file's. An ambiguous or missing name matches
@@ -141,7 +133,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 		p.Title = heading
 	}
 	if description, ok := doc.Meta["description"].(string); ok {
-		p.Description = strings.Join(strings.Fields(description), " ")
+		p.Description = collapseWhitespace(description)
 		p.HasDescription = p.Description != ""
 	}
 	if !p.HasDescription {
@@ -154,10 +146,11 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 }
 
 // firstMarkdownHeading returns the text of body's first ATX heading outside a
-// fenced code block, without closing hashes, or "".
+// fenced code block, without closing hashes and with whitespace runs
+// collapsed, or "".
 func firstMarkdownHeading(body string) string {
 	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
-	for line := range strings.SplitSeq(body, "\n") {
+	for line := range markdownLines(body) {
 		text := strings.TrimLeft(line, " ")
 		if len(line)-len(text) > 3 {
 			continue // indented code
@@ -182,7 +175,7 @@ func firstMarkdownHeading(body string) string {
 				heading = strings.TrimSpace(stripped)
 			}
 			if heading != "" {
-				return heading
+				return collapseWhitespace(heading)
 			}
 		}
 	}
@@ -210,8 +203,8 @@ func fenceRun(line string) string {
 func memoryFallbackDescription(heading, body string) string {
 	text := heading
 	if text == "" {
-		for line := range strings.SplitSeq(body, "\n") {
-			if text = strings.TrimSpace(line); text != "" {
+		for line := range markdownLines(body) {
+			if text = collapseWhitespace(line); text != "" {
 				break
 			}
 		}
@@ -221,6 +214,21 @@ func memoryFallbackDescription(heading, body string) string {
 		return memoryNoDescription
 	}
 	return text + " " + memoryNoDescription
+}
+
+// markdownLineEndings turns each Markdown line ending ("\r\n", a lone "\r")
+// into "\n".
+var markdownLineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// markdownLines yields text's lines, split at each Markdown line ending.
+func markdownLines(text string) iter.Seq[string] {
+	return strings.SplitSeq(markdownLineEndings.Replace(text), "\n")
+}
+
+// collapseWhitespace trims text and turns each inner run of whitespace into
+// one space, so an index line's text holds no tab, vertical tab, or form feed.
+func collapseWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // normalizeMemoryTags reads a tags value: a list, or a single string as one

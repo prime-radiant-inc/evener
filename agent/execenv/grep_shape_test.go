@@ -115,24 +115,32 @@ func TestRipgrepOutputLinesTakesTheFallbacksShape(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator)+"work", "repo")
 	sep := string(filepath.Separator)
 	cases := []struct {
-		name    string
-		stdout  string
-		oneFile bool
-		want    []string
+		name      string
+		stdout    string
+		oneFile   bool
+		filesOnly bool
+		want      []string
 	}{
 		{
 			name:   "content under a directory, with a context group",
-			stdout: dir + sep + "a.go:2:foo\n--\n" + dir + sep + "sub" + sep + "b.go-1-before\n" + dir + sep + "sub" + sep + "b.go:2:foo\n",
+			stdout: dir + sep + "a.go\x002:foo\n--\n" + dir + sep + "sub" + sep + "b.go\x001-before\n" + dir + sep + "sub" + sep + "b.go\x002:foo\n",
 			want:   []string{"a.go:2:foo", "--", "sub" + sep + "b.go-1-before", "sub" + sep + "b.go:2:foo"},
 		},
-		{name: "files with matches", stdout: dir + sep + "a.go\n", want: []string{"a.go"}},
-		{name: "a named file's matches", stdout: dir + "\n", oneFile: true, want: []string{"."}},
+		{name: "files with matches", stdout: dir + sep + "a.go\x00" + dir + sep + "b.go\x00", filesOnly: true, want: []string{"a.go", "b.go"}},
+		{name: "count", stdout: dir + sep + "a.go\x0012\n", want: []string{"a.go:12"}},
+		{
+			name:   "a name holding a newline",
+			stdout: dir + sep + "a\nb.md\x001-x\n" + dir + sep + "a\nb.md\x002:foo\n--\n" + dir + sep + "c.md\x009:foo\n",
+			want:   []string{`"a\nb.md"-1-x`, `"a\nb.md":2:foo`, "--", "c.md:9:foo"},
+		},
+		{name: "a name holding a newline, files with matches", stdout: dir + sep + "a\nb.md\x00", filesOnly: true, want: []string{`"a\nb.md"`}},
+		{name: "a named file's matches", stdout: dir + "\x00", oneFile: true, filesOnly: true, want: []string{"."}},
 		{name: "a named file's lines", stdout: "1:foo\n2:foo\n", oneFile: true, want: []string{"1:foo", "2:foo"}},
 		{name: "a named file's count", stdout: "2\n", oneFile: true, want: []string{"2"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ripgrepOutputLines(tc.stdout, dir, tc.oneFile); !slices.Equal(got, tc.want) {
+			if got := ripgrepOutputLines(tc.stdout, dir, tc.oneFile, tc.filesOnly); !slices.Equal(got, tc.want) {
 				t.Fatalf("ripgrepOutputLines = %q, want %q", got, tc.want)
 			}
 		})
