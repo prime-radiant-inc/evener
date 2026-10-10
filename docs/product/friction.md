@@ -392,7 +392,8 @@ tab's older schema blocks — falls back at once. So sends keep working in a sto
 composer's draft follows the send's own outcome. A failure that judges the
 record rather than the storage (the outbox's own validation, an uncloneable
 payload, a duplicate id) or that only a bug in the outbox raises (a missing
-store, a request on a finished transaction) stays an ordinary send failure. The same storage
+store, a request on a finished transaction, a schema upgrade that throws) stays
+an ordinary send failure. The same storage
 failure also fails the ref's reconciliation (its outbox read), and that failure
 is classified apart from a genuine one: the ref is recorded as storage-blocked -
 at the reconcile's rejection, or earlier when the send fallback's own storage
