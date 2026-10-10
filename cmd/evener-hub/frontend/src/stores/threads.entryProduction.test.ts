@@ -1245,6 +1245,19 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
     expect(threadsStore.getState().threads.has("local:a")).toBe(false);
     finishNew?.();
     await opening;
+    expect(threadsStore.getState().threads.get("local:a")).toMatchObject({
+      history: { incarnation: "replacement-incarnation" },
+    });
+    expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).not.toBe(true);
+    await settleEntryTranscriptForTests("local:a");
+    const freshKey = entryHistoryKey({
+      ...identity,
+      clientId: location.origin,
+      incarnation: "replacement-incarnation",
+    });
+    expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual([
+      "replacement-client-baseline",
+    ]);
     finishOld?.();
     await releasing;
     await settleEntryTranscriptForTests("local:a");
