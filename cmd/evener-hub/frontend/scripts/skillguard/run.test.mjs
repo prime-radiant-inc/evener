@@ -27,6 +27,7 @@ function renderRail(refs) {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  Reflect.deleteProperty(document, "elementFromPoint");
 });
 
 describe("railRowsExpr readiness predicate", () => {
@@ -48,6 +49,117 @@ describe("railRowsExpr readiness predicate", () => {
 
   test("keeps the always-truthy { rows } shape when no minimum is given", () => {
     expect(evaluateExpr(driver.railRowsExpr())).toEqual({ rows: [] });
+  });
+});
+
+// openSession presses a rail row in the same page turn it finds and measures
+// it. A press measured in one turn and sent in the next landed on the
+// neighbouring session's row once the rail shifted, and the target's composer
+// never mounted (#3874).
+describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
+  // jsdom has no hit test, so each case stubs elementFromPoint on the
+  // document; dropping that own property leaves later tests without one again.
+  afterEach(() => {
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
+
+  function renderRows() {
+    document.body.innerHTML = `<button data-session-ref="target">status chip</button><nav data-sidebar-rail>${["other", "target"]
+      .map((ref) => `<span data-session-ref="${ref}"><span class="text"><b>${ref}</b></span><span>now</span></span>`)
+      .join("")}</nav>`;
+    const clicks = [];
+    for (const text of document.querySelectorAll(".text")) {
+      text.addEventListener("click", () => clicks.push(text.textContent));
+      text.scrollIntoView = () => {};
+    }
+    return clicks;
+  }
+
+  test("presses the target row's text when it is topmost at its center", () => {
+    const clicks = renderRows();
+    document.elementFromPoint = () => document.querySelector('[data-session-ref="target"] .text');
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBe(true);
+    expect(clicks).toEqual(["target"]);
+  });
+
+  test("presses the row when its center hits a child of the text, as in a browser", () => {
+    const clicks = renderRows();
+    document.elementFromPoint = () => document.querySelector('[data-session-ref="target"] .text b');
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBe(true);
+    expect(clicks).toEqual(["target"]);
+  });
+
+  test("presses nothing and reports not ready while another row is at its center", () => {
+    const clicks = renderRows();
+    document.elementFromPoint = () => document.querySelector('[data-session-ref="other"] .text');
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBeNull();
+    expect(clicks).toEqual([]);
+  });
+
+  test("reports not ready while the row is absent", () => {
+    document.elementFromPoint = () => null;
+    expect(evaluateExpr(driver.pressRailRowExpr("target"))).toBeNull();
+  });
+});
+
+// The slash menu row keeps its native press (its mousedown keeps the editor
+// focused), but is found, scrolled to and hit-tested in the turn that returns
+// the point, never measured a turn earlier (#4071).
+describe("slashRowPointExpr hit-tests the skill's own row", () => {
+  function renderMenu() {
+    document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button><button><span>/review</span></button></div>`;
+    for (const button of document.querySelectorAll("button")) button.scrollIntoView = () => {};
+  }
+
+  test("returns the row's center while the row is topmost there", () => {
+    renderMenu();
+    document.elementFromPoint = () => document.querySelectorAll("button span")[1];
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 0, y: 0 });
+  });
+
+  test("reports not ready while another row is at its center", () => {
+    renderMenu();
+    document.elementFromPoint = () => document.querySelector("button span");
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
+  });
+
+  test("reports not ready while the row is absent", () => {
+    document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button></div>`;
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
+  });
+});
+
+// A tile's remove button is clicked in the turn it is found and hit-tested.
+describe("removeAttachmentExpr presses the first tile's remove button in one turn", () => {
+  function renderTiles() {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:a"></div>${["one.png", "two.png"]
+      .map((name) => `<div data-testid="attachment-tile"><button aria-label="Remove ${name}"><b>x</b></button></div>`)
+      .join("")}</div>`;
+    const removed = [];
+    for (const button of document.querySelectorAll("button")) {
+      button.scrollIntoView = () => {};
+      button.addEventListener("click", () => removed.push(button.getAttribute("aria-label")));
+    }
+    return removed;
+  }
+
+  test("clicks the first remove button and returns its label", () => {
+    const removed = renderTiles();
+    document.elementFromPoint = () => document.querySelector("button b");
+    expect(evaluateExpr(driver.removeAttachmentExpr("a"))).toBe("Remove one.png");
+    expect(removed).toEqual(["Remove one.png"]);
+  });
+
+  test("clicks nothing while the button is covered", () => {
+    const removed = renderTiles();
+    document.elementFromPoint = () => null;
+    expect(evaluateExpr(driver.removeAttachmentExpr("a"))).toBe("covered");
+    expect(removed).toEqual([]);
+  });
+
+  test("reports a pane with no tile", () => {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:a"></div></div>`;
+    expect(evaluateExpr(driver.removeAttachmentExpr("a"))).toBe("missing");
   });
 });
 

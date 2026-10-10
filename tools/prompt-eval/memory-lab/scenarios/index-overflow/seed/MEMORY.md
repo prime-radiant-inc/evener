@@ -1,0 +1,122 @@
+# Project memory
+
+- [Vitest note 1](vitest/vitest-001.md) — Vitest run 1 needs --pool=forks when worker 1 crashes on teardown
+- [Indexeddb note 2](indexeddb/indexeddb-002.md) — IndexedDB store 2 keeps records as plain JSON, never class instances
+- [Release note 3](release/release-003.md) — Release step 3 tags only after main CI is green on the merge commit
+- [Ci note 4](ci/ci-004.md) — CI job 4 caches modules by go.sum hash, never by branch name
+- [Logging note 5](logging/logging-005.md) — Log field 5 uses snake_case keys through log/slog
+- [Catalog note 6](catalog/catalog-006.md) — Catalog rule 6: SKUs are lowercase with no spaces
+- [Cart note 7](cart/cart-007.md) — Cart rule 7: line quantities are whole numbers
+- [Tests note 8](tests/tests-008.md) — Test helper 8 builds catalogs with prices in cents
+- [Docs note 9](docs/docs-009.md) — Doc comment rule 9: start with the identifier's name
+- [Api note 10](api/api-010.md) — Exported API rule 10: no new exported names without a doc comment
+- [Pricing note 11](pricing/pricing-011.md) — Pricing rule 11: totals are computed in integer cents
+- [Vitest note 12](vitest/vitest-012.md) — Vitest run 12 needs --pool=forks when worker 12 crashes on teardown
+- [Indexeddb note 13](indexeddb/indexeddb-013.md) — IndexedDB store 13 keeps records as plain JSON, never class instances
+- [Release note 14](release/release-014.md) — Release step 14 tags only after main CI is green on the merge commit
+- [Ci note 15](ci/ci-015.md) — CI job 15 caches modules by go.sum hash, never by branch name
+- [Logging note 16](logging/logging-016.md) — Log field 16 uses snake_case keys through log/slog
+- [Catalog note 17](catalog/catalog-017.md) — Catalog rule 17: SKUs are lowercase with no spaces
+- [Cart note 18](cart/cart-018.md) — Cart rule 18: line quantities are whole numbers
+- [Tests note 19](tests/tests-019.md) — Test helper 19 builds catalogs with prices in cents
+- [Docs note 20](docs/docs-020.md) — Doc comment rule 20: start with the identifier's name
+- [Api note 21](api/api-021.md) — Exported API rule 21: no new exported names without a doc comment
+- [Pricing note 22](pricing/pricing-022.md) — Pricing rule 22: totals are computed in integer cents
+- [Vitest note 23](vitest/vitest-023.md) — Vitest run 23 needs --pool=forks when worker 23 crashes on teardown
+- [Indexeddb note 24](indexeddb/indexeddb-024.md) — IndexedDB store 24 keeps records as plain JSON, never class instances
+- [Release note 25](release/release-025.md) — Release step 25 tags only after main CI is green on the merge commit
+- [Ci note 26](ci/ci-026.md) — CI job 26 caches modules by go.sum hash, never by branch name
+- [Logging note 27](logging/logging-027.md) — Log field 27 uses snake_case keys through log/slog
+- [Catalog note 28](catalog/catalog-028.md) — Catalog rule 28: SKUs are lowercase with no spaces
+- [Cart note 29](cart/cart-029.md) — Cart rule 29: line quantities are whole numbers
+- [Tests note 30](tests/tests-030.md) — Test helper 30 builds catalogs with prices in cents
+- [Docs note 31](docs/docs-031.md) — Doc comment rule 31: start with the identifier's name
+- [Api note 32](api/api-032.md) — Exported API rule 32: no new exported names without a doc comment
+- [Pricing note 33](pricing/pricing-033.md) — Pricing rule 33: totals are computed in integer cents
+- [Vitest note 34](vitest/vitest-034.md) — Vitest run 34 needs --pool=forks when worker 34 crashes on teardown
+- [Indexeddb note 35](indexeddb/indexeddb-035.md) — IndexedDB store 35 keeps records as plain JSON, never class instances
+- [Release note 36](release/release-036.md) — Release step 36 tags only after main CI is green on the merge commit
+- [Ci note 37](ci/ci-037.md) — CI job 37 caches modules by go.sum hash, never by branch name
+- [Logging note 38](logging/logging-038.md) — Log field 38 uses snake_case keys through log/slog
+- [Catalog note 39](catalog/catalog-039.md) — Catalog rule 39: SKUs are lowercase with no spaces
+- [Cart note 40](cart/cart-040.md) — Cart rule 40: line quantities are whole numbers
+- [Tests note 41](tests/tests-041.md) — Test helper 41 builds catalogs with prices in cents
+- [Docs note 42](docs/docs-042.md) — Doc comment rule 42: start with the identifier's name
+- [Api note 43](api/api-043.md) — Exported API rule 43: no new exported names without a doc comment
+- [Pricing note 44](pricing/pricing-044.md) — Pricing rule 44: totals are computed in integer cents
+- [Vitest note 45](vitest/vitest-045.md) — Vitest run 45 needs --pool=forks when worker 45 crashes on teardown
+- [Indexeddb note 46](indexeddb/indexeddb-046.md) — IndexedDB store 46 keeps records as plain JSON, never class instances
+- [Release note 47](release/release-047.md) — Release step 47 tags only after main CI is green on the merge commit
+- [Ci note 48](ci/ci-048.md) — CI job 48 caches modules by go.sum hash, never by branch name
+- [Logging note 49](logging/logging-049.md) — Log field 49 uses snake_case keys through log/slog
+- [Catalog note 50](catalog/catalog-050.md) — Catalog rule 50: SKUs are lowercase with no spaces
+- [Cart note 51](cart/cart-051.md) — Cart rule 51: line quantities are whole numbers
+- [Tests note 52](tests/tests-052.md) — Test helper 52 builds catalogs with prices in cents
+- [Docs note 53](docs/docs-053.md) — Doc comment rule 53: start with the identifier's name
+- [Api note 54](api/api-054.md) — Exported API rule 54: no new exported names without a doc comment
+- [Pricing note 55](pricing/pricing-055.md) — Pricing rule 55: totals are computed in integer cents
+- [Vitest note 56](vitest/vitest-056.md) — Vitest run 56 needs --pool=forks when worker 56 crashes on teardown
+- [Indexeddb note 57](indexeddb/indexeddb-057.md) — IndexedDB store 57 keeps records as plain JSON, never class instances
+- [Release note 58](release/release-058.md) — Release step 58 tags only after main CI is green on the merge commit
+- [Ci note 59](ci/ci-059.md) — CI job 59 caches modules by go.sum hash, never by branch name
+- [Logging note 60](logging/logging-060.md) — Log field 60 uses snake_case keys through log/slog
+- [Catalog note 61](catalog/catalog-061.md) — Catalog rule 61: SKUs are lowercase with no spaces
+- [Cart note 62](cart/cart-062.md) — Cart rule 62: line quantities are whole numbers
+- [Tests note 63](tests/tests-063.md) — Test helper 63 builds catalogs with prices in cents
+- [Docs note 64](docs/docs-064.md) — Doc comment rule 64: start with the identifier's name
+- [Api note 65](api/api-065.md) — Exported API rule 65: no new exported names without a doc comment
+- [Pricing note 66](pricing/pricing-066.md) — Pricing rule 66: totals are computed in integer cents
+- [Vitest note 67](vitest/vitest-067.md) — Vitest run 67 needs --pool=forks when worker 67 crashes on teardown
+- [Indexeddb note 68](indexeddb/indexeddb-068.md) — IndexedDB store 68 keeps records as plain JSON, never class instances
+- [Release note 69](release/release-069.md) — Release step 69 tags only after main CI is green on the merge commit
+- [Ci note 70](ci/ci-070.md) — CI job 70 caches modules by go.sum hash, never by branch name
+- [Logging note 71](logging/logging-071.md) — Log field 71 uses snake_case keys through log/slog
+- [Catalog note 72](catalog/catalog-072.md) — Catalog rule 72: SKUs are lowercase with no spaces
+- [Cart note 73](cart/cart-073.md) — Cart rule 73: line quantities are whole numbers
+- [Tests note 74](tests/tests-074.md) — Test helper 74 builds catalogs with prices in cents
+- [Docs note 75](docs/docs-075.md) — Doc comment rule 75: start with the identifier's name
+- [Api note 76](api/api-076.md) — Exported API rule 76: no new exported names without a doc comment
+- [Pricing note 77](pricing/pricing-077.md) — Pricing rule 77: totals are computed in integer cents
+- [Vitest note 78](vitest/vitest-078.md) — Vitest run 78 needs --pool=forks when worker 78 crashes on teardown
+- [Indexeddb note 79](indexeddb/indexeddb-079.md) — IndexedDB store 79 keeps records as plain JSON, never class instances
+- [Release note 80](release/release-080.md) — Release step 80 tags only after main CI is green on the merge commit
+- [Ci note 81](ci/ci-081.md) — CI job 81 caches modules by go.sum hash, never by branch name
+- [Logging note 82](logging/logging-082.md) — Log field 82 uses snake_case keys through log/slog
+- [Catalog note 83](catalog/catalog-083.md) — Catalog rule 83: SKUs are lowercase with no spaces
+- [Cart note 84](cart/cart-084.md) — Cart rule 84: line quantities are whole numbers
+- [Tests note 85](tests/tests-085.md) — Test helper 85 builds catalogs with prices in cents
+- [Docs note 86](docs/docs-086.md) — Doc comment rule 86: start with the identifier's name
+- [Api note 87](api/api-087.md) — Exported API rule 87: no new exported names without a doc comment
+- [Pricing note 88](pricing/pricing-088.md) — Pricing rule 88: totals are computed in integer cents
+- [Vitest note 89](vitest/vitest-089.md) — Vitest run 89 needs --pool=forks when worker 89 crashes on teardown
+- [Indexeddb note 90](indexeddb/indexeddb-090.md) — IndexedDB store 90 keeps records as plain JSON, never class instances
+- [Release note 91](release/release-091.md) — Release step 91 tags only after main CI is green on the merge commit
+- [Ci note 92](ci/ci-092.md) — CI job 92 caches modules by go.sum hash, never by branch name
+- [Logging note 93](logging/logging-093.md) — Log field 93 uses snake_case keys through log/slog
+- [Catalog note 94](catalog/catalog-094.md) — Catalog rule 94: SKUs are lowercase with no spaces
+- [Cart note 95](cart/cart-095.md) — Cart rule 95: line quantities are whole numbers
+- [Tests note 96](tests/tests-096.md) — Test helper 96 builds catalogs with prices in cents
+- [Docs note 97](docs/docs-097.md) — Doc comment rule 97: start with the identifier's name
+- [Api note 98](api/api-098.md) — Exported API rule 98: no new exported names without a doc comment
+- [Pricing note 99](pricing/pricing-099.md) — Pricing rule 99: totals are computed in integer cents
+- [Vitest note 100](vitest/vitest-100.md) — Vitest run 100 needs --pool=forks when worker 100 crashes on teardown
+- [Indexeddb note 101](indexeddb/indexeddb-101.md) — IndexedDB store 101 keeps records as plain JSON, never class instances
+- [Release note 102](release/release-102.md) — Release step 102 tags only after main CI is green on the merge commit
+- [Ci note 103](ci/ci-103.md) — CI job 103 caches modules by go.sum hash, never by branch name
+- [Logging note 104](logging/logging-104.md) — Log field 104 uses snake_case keys through log/slog
+- [Catalog note 105](catalog/catalog-105.md) — Catalog rule 105: SKUs are lowercase with no spaces
+- [Cart note 106](cart/cart-106.md) — Cart rule 106: line quantities are whole numbers
+- [Tests note 107](tests/tests-107.md) — Test helper 107 builds catalogs with prices in cents
+- [Docs note 108](docs/docs-108.md) — Doc comment rule 108: start with the identifier's name
+- [Api note 109](api/api-109.md) — Exported API rule 109: no new exported names without a doc comment
+- [Pricing note 110](pricing/pricing-110.md) — Pricing rule 110: totals are computed in integer cents
+- [Vitest note 111](vitest/vitest-111.md) — Vitest run 111 needs --pool=forks when worker 111 crashes on teardown
+- [Indexeddb note 112](indexeddb/indexeddb-112.md) — IndexedDB store 112 keeps records as plain JSON, never class instances
+- [Release note 113](release/release-113.md) — Release step 113 tags only after main CI is green on the merge commit
+- [Ci note 114](ci/ci-114.md) — CI job 114 caches modules by go.sum hash, never by branch name
+- [Logging note 115](logging/logging-115.md) — Log field 115 uses snake_case keys through log/slog
+- [Catalog note 116](catalog/catalog-116.md) — Catalog rule 116: SKUs are lowercase with no spaces
+- [Cart note 117](cart/cart-117.md) — Cart rule 117: line quantities are whole numbers
+- [Tests note 118](tests/tests-118.md) — Test helper 118 builds catalogs with prices in cents
+- [Docs note 119](docs/docs-119.md) — Doc comment rule 119: start with the identifier's name
+- [Coupons never stack](coupon-stacking.md) — A cart's coupons never stack: only the largest percent applies

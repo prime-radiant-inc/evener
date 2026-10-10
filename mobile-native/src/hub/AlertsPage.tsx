@@ -16,7 +16,7 @@ export function AlertsPage() {
 			<Group label="Show a banner when">
 				<SwitchRow label="A session fails" value={preferences.failures} onChange={toggle("failures")} />
 				<SwitchRow
-					label="A session asks a question or needs approval"
+					label="A session asks a question, needs approval, or needs your reply"
 					value={preferences.questions}
 					onChange={toggle("questions")}
 				/>

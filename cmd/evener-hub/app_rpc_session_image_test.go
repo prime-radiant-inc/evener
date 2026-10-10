@@ -195,9 +195,10 @@ func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 // A session whose folder is reached through a symlink still serves its images:
 // the check resolves the folder and the path alike, and the open measures one
 // against the other (#3188). A symlink made here, so every platform runs it,
-// not only macOS with its /var link.
+// not only macOS with its /var link. The folder is canonical so the symlink
+// made here is the only alias in play.
 func TestHubSessionImageServesFromASessionFolderReachedThroughASymlink(t *testing.T) {
-	folder := t.TempDir()
+	folder := canonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(folder, "shot.png"), sessionImageTestPNG, 0o644); err != nil {
 		t.Fatal(err)
 	}

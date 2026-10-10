@@ -8,7 +8,7 @@ const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISO
 const failed = row("failed", { state: "errored", updated_at: at(5) });
 const question = row("question", { state: "awaiting", ask_pending: true, updated_at: at(1) });
 const working = row("working", { state: "active", updated_at: at(9) });
-const finished = row("finished", { state: "awaiting", updated_at: at(8) });
+const finished = row("finished", { state: "idle", updated_at: at(8) });
 const bands = liveBands([failed, question, working, finished], [failed, question], () => false);
 /** Next's destination: the head of the order it serves. */
 const nextSession = (from: LiveBands, ref: string, recent: readonly string[]) =>

@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -54,13 +55,8 @@ type grepAccum struct {
 	total        int
 }
 
-// newGrepAccum compiles the pattern (with optional case-insensitivity) and
-// initializes the accumulator; maxResults defaults to 100 when non-positive.
-// contextLines (0-10, validated by the caller) adds that many lines of
-// surrounding context around each match in "content"/"" output mode; it has no
-// effect on "files_with_matches" or "count", which report per-file, not
-// per-line.
-func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
+// compileGrepPattern compiles a grep pattern as the native search reads it.
+func compileGrepPattern(pattern string, caseInsensitive bool) (*regexp.Regexp, error) {
 	flags := ""
 	if caseInsensitive {
 		flags = "(?i)"
@@ -68,6 +64,31 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 	re, err := regexp.Compile(flags + pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return re, nil
+}
+
+// CheckGrepArgs reports the error a grep would give for its pattern or its
+// glob filter's brace syntax before searching anything, so a caller that
+// searches nothing can still refuse bad arguments.
+func CheckGrepArgs(pattern, globFilter string, caseInsensitive bool) error {
+	if _, err := expandGrepFilter(globFilter); err != nil {
+		return err
+	}
+	_, err := compileGrepPattern(pattern, caseInsensitive)
+	return err
+}
+
+// newGrepAccum compiles the pattern (with optional case-insensitivity) and
+// initializes the accumulator; maxResults defaults to 100 when non-positive.
+// contextLines (0-10, validated by the caller) adds that many lines of
+// surrounding context around each match in "content"/"" output mode; it has no
+// effect on "files_with_matches" or "count", which report per-file, not
+// per-line.
+func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
+	re, err := compileGrepPattern(pattern, caseInsensitive)
+	if err != nil {
+		return nil, err
 	}
 	if maxResults <= 0 {
 		maxResults = DefaultGrepMaxResults
@@ -92,9 +113,14 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 // not a file found under a directory. Ripgrep omits the filename entirely when
 // given a single explicit file argument, so content and count output do the
 // same here; otherwise the tool's output would differ between environments with
-// and without rg on PATH.
+// and without rg on PATH. A path is written as grepOutputPath gives it. A
+// binary file (one holding a NUL byte) is skipped.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return false
+	}
 	singleFile := relPath == "."
+	name := grepOutputPath(relPath)
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		if !a.re.MatchString(line) {
@@ -104,7 +130,7 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		case "files_with_matches":
 			if _, seen := a.filesSeen[relPath]; !seen {
 				a.filesSeen[relPath] = struct{}{}
-				a.results = append(a.results, relPath)
+				a.results = append(a.results, name)
 				a.total++
 				if a.total >= a.maxResults {
 					return true
@@ -143,13 +169,13 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 					if singleFile {
 						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
 					} else {
-						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
+						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", name, sep, j+1, sep, lines[j]))
 					}
 				}
 			} else if singleFile {
 				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
 			} else {
-				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", name, i+1, line))
 			}
 			a.total++
 			if a.total >= a.maxResults {
@@ -158,6 +184,20 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		}
 	}
 	return false
+}
+
+// grepFileSelected reports whether grep searches the file named name, at
+// slash path rel, once dotfile and ignore rules have let it through: a file
+// skip names (when skip is not nil) or outside the glob filters is left out.
+// The error is a malformed glob filter's.
+func grepFileSelected(name, rel string, globFilters []string, skip func(rel string) bool) (bool, error) {
+	if skip != nil && skip(rel) {
+		return false, nil
+	}
+	if len(globFilters) == 0 {
+		return true, nil
+	}
+	return matchesAnyGrepFilter(name, globFilters)
 }
 
 // finish renders the accumulated results in the requested output mode.
@@ -170,7 +210,7 @@ func (a *grepAccum) finish() string {
 				countResults = append(countResults, strconv.Itoa(cnt))
 				continue
 			}
-			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
+			countResults = append(countResults, fmt.Sprintf("%s:%d", grepOutputPath(file), cnt))
 		}
 		sort.Strings(countResults)
 		return strings.Join(countResults, "\n")

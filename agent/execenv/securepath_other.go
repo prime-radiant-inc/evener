@@ -77,13 +77,17 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 	return errSandboxUnsupported()
 }
 
+func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	return errSandboxUnsupported()
+}
+
 func (s *sandboxFS) mkdirAll(tool, abs string) error {
 	return errSandboxUnsupported()
 }
 
 func (s *sandboxFS) exists(tool, abs string) bool { return false }
 
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
@@ -91,6 +95,6 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	return nil, 0, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	return "", errSandboxUnsupported()
 }

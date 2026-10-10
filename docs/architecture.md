@@ -238,6 +238,24 @@ posted questions, regardless of the communicate's own end-turn value. `ask_user`
 interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
 branch never applies to a delegate.
 
+On the roots that get `ask_user`, `communicate` also takes `end_reason`, read only when
+`end_turn=true`: `done` (the default), `needs_response`, or `waiting_on_work`. It is recorded
+with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on
+`done` or `waiting_on_work` rests idle. One that ends on `needs_response` rests awaiting, unless
+autonomous work (a working child, a pending delegate report, a pending notification, queued
+input, a goal kick) will move the session first; a finished child's warm runtime does not
+count. The settle reads the first turn-ending call the input accepted, and restore derives the
+same state from the transcript. A pending question rests awaiting at the settle. A
+`needs_response` rest first waits a 5-second quiet period, resting idle, so a session that ends
+a turn and starts the next one at once never flickers to awaiting. When the period passes, the
+timer checks everything the settle checked again: a new turn or settle, a close, queued input,
+runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
+announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
+reserved, or the session has closed. One that arrives while an input is being taken, before any
+turn is published, is held and published when processing ends, unless a turn is published or the
+input's SESSION_END (an interrupted one included) lands first. A turn start waits for a rest that is arming to finish
+its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
+
 ### The repeated-call breaker
 
 Steering a stuck agent has two layers. `injectPostToolSteering`

@@ -201,7 +201,7 @@ describe("the row's long press, with the sheet", () => {
 		const tree = render(
 			<RowMenu
 				item={shown}
-				actions={["markRead"]}
+				actions={["pin"]}
 				hostLabel={hostLabel}
 				onOpenSession={() => {}}
 				onAction={() => {}}

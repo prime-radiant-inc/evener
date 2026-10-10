@@ -696,7 +696,10 @@ func startLiveThread(ctx context.Context, t *testing.T, client *appwire.Client, 
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
-		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+		// A fresh connection: one open when the session was force-stopped
+		// must resume it on a fresh connection before any other action.
+		shutdown := stack.dialRPC(shutdownCtx, t)
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, shutdown, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 			t.Errorf("thread/shutdown left the daemon running: %v", err)
 		}
 	})

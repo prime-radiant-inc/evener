@@ -17,9 +17,8 @@ import { type BoardSeen, hubSeenMarks } from "./hubSeen";
  *   no live push, so this is what catches a turn that ends while you watch.
  *   A row with no hub turn end is the device's SeenMarkers' to mark.
  * A given turn end is marked at most once while the screen stays in front,
- * whichever source sees it first. So a mark the hub refuses is not sent again
- * on every re-render, and a Mark as unread made elsewhere at a turn end
- * already marked here wins; a newer turn end is marked again.
+ * whichever source sees it first, so a mark the hub refuses is not sent
+ * again on every re-render; a newer turn end is marked again.
  * A mark made with no ready client waits in the hub's controller, and goes
  * out when this screen next has one: the Board may not be mounted to flush
  * it. */

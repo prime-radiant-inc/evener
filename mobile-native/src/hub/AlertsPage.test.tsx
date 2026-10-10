@@ -13,7 +13,7 @@ import { AlertsPage } from "./AlertsPage";
 
 const LABELS = [
 	"A session fails",
-	"A session asks a question or needs approval",
+	"A session asks a question, needs approval, or needs your reply",
 	"A session finishes",
 	"Hold alerts while reading or typing",
 	"Haptics",

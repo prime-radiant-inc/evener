@@ -304,6 +304,9 @@ type SessionConfig struct {
 type testConfig struct {
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
+	// memoryRealBudget gives the memory boundary its production read budget
+	// instead of the long default tests get (see memoryBoundaryWait).
+	memoryRealBudget bool
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
@@ -576,6 +579,21 @@ type testConfig struct {
 	// window. Nil keeps the production default. Inherited by child configs
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
+
+	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
+	// tests; zero rests awaiting at the settle itself. Nil keeps the
+	// production default.
+	needsResponseQuietPeriod *time.Duration
+
+	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
+	// timer after the session rests awaiting and before STATUS_SETTLED is
+	// emitted, with restMu held, so a test can start a turn in that gap.
+	needsResponseRestBeforeAnnounce func()
+
+	// turnStartBeforeRestMu, when set, runs in processOneInput right before
+	// the turn start takes restMu, so a test knows the lock is the next thing
+	// the turn waits on.
+	turnStartBeforeRestMu func()
 
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil

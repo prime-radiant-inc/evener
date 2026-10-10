@@ -1649,10 +1649,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		needsYou = append(needsYou, node)
 	}
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
-	// errored (broken beats blocked) > blocked on a question or an approval
-	// (blocked beats your-move) > your-move (a generic amber settle).
-	// AttentionRank isn't used here: it would also separate plain awaiting
-	// from warning, which both belong in the your-move band unless blocked.
+	// errored (broken beats blocked) > blocked on a person (a question, an
+	// approval, or a turn that ended on needs_response, #4093) > the rest of
+	// the tier (warnings and restarts). hubapi.NeedsYouBand owns the bands.
 	sort.SliceStable(needsYou, func(i, j int) bool {
 		a, b := &needsYou[i], &needsYou[j]
 		bi, bj := hubapi.NeedsYouBand(a.State, a.AskPending, a.ApprovalPending), hubapi.NeedsYouBand(b.State, b.AskPending, b.ApprovalPending)

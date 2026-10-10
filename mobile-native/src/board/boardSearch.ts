@@ -131,6 +131,8 @@ export function searchResultMark(result: SearchResult): BoardState {
 	if (decisive) return decisive;
 	if (result.askPending) return "question";
 	if (result.approvalPending) return "approval";
+	// Awaiting without a question: the turn ended on needs_response (#4093).
+	if (result.state === "awaiting") return "needsYou";
 	if (result.state === "active") return "working";
 	return "idle";
 }

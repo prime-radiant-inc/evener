@@ -148,6 +148,10 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
+	// EndReason is why a root session's call ended its turn (one of
+	// tool.CommunicateEndReasons); empty on a call that kept the turn going
+	// and wherever end_reason is not offered (delegates, headless roots).
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // NoticeKind names a presentational notice.
