@@ -576,6 +576,33 @@ func dropsToolResultImages(res registry.Resolved) bool {
 	}
 }
 
+// DeliversToolResultImages reports whether the resolved row's adapter puts
+// tool-result image bytes on the wire. It answers whether a session model
+// receives tool-result images natively, so consumers deciding between inline
+// vision and an out-of-band description share one truth with token
+// estimation.
+func DeliversToolResultImages(res registry.Resolved) bool {
+	return !dropsToolResultImages(res)
+}
+
+// DeliversToolResultMedia reports whether the row's adapter delivers
+// tool-result bytes of this media type in a form the model can consume. The
+// predicate is deliberately image-only: the Responses builder gates
+// tool-result images on image/* (image_input.go), and although the
+// Anthropic and Google builders write whatever media type a result claims,
+// their APIs accept images only — a written-but-rejected document block is
+// the #4209 failure family, not delivery. Keep the gate image-only: treating
+// a written document as delivered would send PDFs down the invalid inline
+// path instead of the side-channel. An empty media type reads as the image
+// default the tool layer applies.
+func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	if mt == "" || strings.HasPrefix(mt, "image/") {
+		return DeliversToolResultImages(res)
+	}
+	return false
+}
+
 // unsignedThinkingReplayed reports whether the adapter the resolved target
 // selects replays a ContentThinking part that carries text and no replay
 // metadata:

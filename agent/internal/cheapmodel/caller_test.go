@@ -787,20 +787,78 @@ func TestCompleteRoutedUsesTheExplicitRoute(t *testing.T) {
 	caller := cheapmodel.New(clientWith(adapter))
 	profile := provider.NewOpenAIProfile("main")
 
-	resp, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+	resp, ranSessionModel, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
 		Messages: []llm.Message{llm.User("hi")},
 	})
 	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
 		t.Fatalf("CompleteRouted = (%q, %v), want answered via fallback", resp.Text(), err)
 	}
+	if !ranSessionModel {
+		t.Fatal("CompleteRouted did not report the refusal fallback as a session-model run")
+	}
 	// Refusal of the routed model is learned: the second call goes straight to
 	// the session model instead of re-probing.
-	if _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+	if _, _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
 		Messages: []llm.Message{llm.User("hi")},
 	}); err != nil {
 		t.Fatalf("second CompleteRouted: %v", err)
 	}
 	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "main"}; !slices.Equal(got, want) {
 		t.Fatalf("models = %v, want %v", got, want)
+	}
+}
+
+// A media-bearing request never reaches a session model that cannot see
+// media, whichever refusal path would put it there: the live refusal
+// fallback, or the reroute of a latched refusal. The caller's own choice of
+// the session route stays ungated — that is the "always try the session
+// model" default, not a fallback.
+func TestCompleteRoutedMediaRequestNeverFallsBackToABlindSessionModel(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("m")
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png"), MediaType: "image/png"}},
+	}}}}
+
+	_, ranSessionModel, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", req)
+	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
+		t.Fatalf("first call error = %v, want ErrSessionModelCannotTakeMedia", err)
+	}
+	if ranSessionModel {
+		t.Fatal("first call reported a session-model run that must not have happened")
+	}
+	// The refusal is learned, so the second call must not re-probe either.
+	_, _, err = caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", req)
+	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
+		t.Fatalf("second (latched) call error = %v, want ErrSessionModelCannotTakeMedia", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want exactly one routed probe and no session call", got)
+	}
+}
+
+// A document part never reaches the session model through a fallback even on
+// an image-capable row: no protocol vouches for a user-message document today
+// (the Anthropic and Google builders reject the kind, chat strips it; #4209),
+// so unlike an image there is no capability that can vouch for it.
+func TestCompleteRoutedDocumentNeverFallsBackToTheSessionModel(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("gpt-5.2") // image-capable row
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "application/pdf"}},
+	}}}}
+
+	_, _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", req)
+	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
+		t.Fatalf("document fallback error = %v, want ErrSessionModelCannotTakeMedia", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want exactly the routed probe and no session call", got)
 	}
 }

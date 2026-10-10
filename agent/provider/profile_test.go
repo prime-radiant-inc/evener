@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -15,20 +16,28 @@ import (
 // embedded catalog and overlay with a handful of instances and no user layer,
 // cache, or environment.
 func fixtureRegistry(t *testing.T) *registry.Registry {
+	return fixtureRegistryWith(t, nil)
+}
+
+// fixtureRegistryWith is fixtureRegistry with extra instances merged over the
+// fixture set, for tests that need synthetic rows.
+func fixtureRegistryWith(t *testing.T, extra map[string]registry.Provider) *registry.Registry {
 	t.Helper()
+	instances := map[string]registry.Provider{
+		"anthropic":  {APIKey: "k"},
+		"google":     {APIKey: "k"},
+		"openrouter": {APIKey: "k"},
+		// ollama is the instance with no curated cheap_model, so the
+		// cheap-model fallthrough has something to fall through on.
+		"ollama":   {},
+		"work":     {Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, APIKey: "k", Transport: registry.Transport{BaseURL: "https://gw.example.com/v1"}, DefaultModel: "glm-5", CheapModel: "glm-5-flash"},
+		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic, APIKey: "k", Models: map[string]registry.Model{"minimax/*": {Surface: registry.SurfaceAnthropic}}},
+	}
+	maps.Copy(instances, extra)
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(), registry.WithStateRoot(t.TempDir()),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
-		registry.WithInstances(map[string]registry.Provider{
-			"anthropic":  {APIKey: "k"},
-			"google":     {APIKey: "k"},
-			"openrouter": {APIKey: "k"},
-			// ollama is the instance with no curated cheap_model, so the
-			// cheap-model fallthrough has something to fall through on.
-			"ollama":   {},
-			"work":     {Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, APIKey: "k", Transport: registry.Transport{BaseURL: "https://gw.example.com/v1"}, DefaultModel: "glm-5", CheapModel: "glm-5-flash"},
-			"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic, APIKey: "k", Models: map[string]registry.Model{"minimax/*": {Surface: registry.SurfaceAnthropic}}},
-		}),
+		registry.WithInstances(instances),
 	)
 	if err != nil {
 		t.Fatalf("registry: %v", err)

@@ -123,3 +123,10 @@ func (c Caps) EffortCapable() bool {
 	}
 	return len(c.ReasoningControls) == 0 && c.Reasoning == nil
 }
+
+// AcceptsModality reports whether the row declares an input modality. The
+// catalog vocabulary is lowercase ("text", "image", "pdf", ...), matching what
+// every layer writes; an unknown row with no InputModalities declares none.
+func (c Caps) AcceptsModality(modality string) bool {
+	return slices.Contains(c.InputModalities, modality)
+}
