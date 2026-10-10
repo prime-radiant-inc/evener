@@ -110,8 +110,9 @@ later session couldn't know whether they still hold, and memory never records
 permission), instructions scoped to one job (such as which model to use for
 some steps), and bugs in Evener itself, which go to the partner or the report
 so they get filed. What the agent found or did belongs in its report. The
-Finishing guidance repeats the check for what the partner told and for what was
-worked out the hard way; the result tool carries no save reminder. Pages that
+Finishing guidance repeats the check for what the partner told and for project
+or environment facts the repository doesn't show; the result tool carries no
+save reminder. Pages that
 contradict what the agent observes are corrected in the same turn. Saving
 sessions are also told the shape of a useful page (one durable fact with its reason and
 when it bears on work, with a frontmatter description that says what the page
