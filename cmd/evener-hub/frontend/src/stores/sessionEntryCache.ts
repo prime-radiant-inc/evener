@@ -630,6 +630,7 @@ export class SessionEntryCache {
   // owner registers real Live/demand state, and the policy consults it only as
   // a fallback to the construction-time `isPreferred` seam.
   readonly #preferredHistories = new Map<string, () => boolean>();
+  readonly #writeListeners = new Set<() => void>();
 
   constructor(options: SessionEntryCacheOptions) {
     this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
@@ -659,6 +660,58 @@ export class SessionEntryCache {
   /** The same clock used for TTL, LRU and metadata written by this cache's owners. */
   now(): number {
     return this.#now();
+  }
+
+  subscribeWrites(listener: () => void): () => void {
+    this.#writeListeners.add(listener);
+    return () => this.#writeListeners.delete(listener);
+  }
+
+  #notifyWrites(): void {
+    for (const listener of this.#writeListeners) {
+      try {
+        listener();
+      } catch {
+        /* An observer cannot turn a committed write into a failure. */
+      }
+    }
+  }
+
+  /** Count logical cached sessions from item-free metadata, including unmigrated legacy sources. */
+  async count(): Promise<number | undefined> {
+    try {
+      const database = await this.#connection.open();
+      const transaction = database.transaction([ENTRY_META_STORE, LEGACY_META_STORE, CURRENT_META_STORE], "readonly");
+      const complete = transactionCompletion(transaction);
+      const [entries, legacy, current] = await Promise.all([
+        requestResult(transaction.objectStore(ENTRY_META_STORE).getAll() as IDBRequest<TranscriptHistoryMetaRow[]>),
+        requestResult(
+          transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<Array<{ ref: string; savedAt?: number }>>,
+        ),
+        requestResult(
+          transaction.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<Array<{ ref: string; savedAt?: number }>>,
+        ),
+      ]);
+      await complete;
+      const cutoff = this.#now() - this.#ttlMs;
+      const sessions = new Set<string>();
+      const entryRefs = new Set<string>();
+      for (const entry of entries) {
+        const identity = entry.resolvedIdentity;
+        if (!identity || entry.savedAt === undefined || Math.max(entry.savedAt, entry.accessedAt ?? 0) < cutoff)
+          continue;
+        sessions.add(JSON.stringify([identity.clientId, identity.hostId, identity.sessionId]));
+        for (const requested of entry.requestedRefs ?? []) entryRefs.add(requested.ref);
+      }
+      const legacyRefs = new Set(
+        [...legacy, ...current]
+          .filter((row) => row.savedAt !== undefined && row.savedAt >= cutoff && !entryRefs.has(row.ref))
+          .map((row) => row.ref),
+      );
+      return sessions.size + legacyRefs.size;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -768,6 +821,7 @@ export class SessionEntryCache {
         return { outcome: "refused", reason: "capacity" };
       }
       await complete;
+      this.#notifyWrites();
       return {
         outcome: "committed",
         coverage: policy.protectedSurvived ? coverageResult.result : "not-extended",
@@ -907,6 +961,7 @@ export class SessionEntryCache {
         return { outcome: "refused", reason: "capacity" };
       }
       await complete;
+      this.#notifyWrites();
       return {
         outcome: "converted",
         itemCount: converted.items.length,

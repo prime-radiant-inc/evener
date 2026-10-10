@@ -6697,12 +6697,14 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
  * undefined means unavailable (a failed open or transaction), never a throw
  * and never a zero that would let the row claim a remedy ran. */
 export async function countCachedSessions(): Promise<number | undefined> {
+  if (sessionCacheAdapterOverride === undefined) return currentEntryCache().count();
   return currentSessionCache().count();
 }
 
 /** Same-tab committed writes invalidate a mounted settings row immediately.
  * Sibling writes still use its existing per-render count. */
 export function subscribeCacheWrites(listener: () => void): () => void {
+  if (sessionCacheAdapterOverride === undefined) return currentEntryCache().subscribeWrites(listener);
   return currentSessionCache().subscribeWrites(listener);
 }
 
