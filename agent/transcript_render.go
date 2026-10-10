@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -199,9 +200,6 @@ type readMeta struct {
 	LastRendered  int
 }
 
-// errBadRange is the sentinel wrapped by parseRangeErr for malformed range specs.
-var errBadRange = errors.New("malformed range")
-
 var encodeTranscriptJSON = func(v any) (string, error) {
 	var buf strings.Builder
 	enc := json.NewEncoder(&buf)
@@ -228,94 +226,14 @@ func parseRange(spec string, entryCount int) (startSeq, endSeq int) {
 
 // parseRangeErr is parseRange's strict variant: it returns an error for a
 // syntactically malformed spec instead of falling back to the default, so the
-// tool layer can surface a clear error. Valid syntax produces the same clamped
-// bounds as parseRange. An empty entry list is not malformed; it yields (0, -1).
-//
-// Grammar (Task 5):
-//   - ""         → the last defaultRangeTurns turns.
-//   - "last:N"   → the last N turns (N must be a positive integer).
-//   - "start:N"  → the first N turns (N must be a positive integer).
-//   - "N-M"      → seq N..M inclusive (N, M non-negative integers).
-//
-// "N-M" with N > M is syntactically valid; it clamps to an empty range rather
-// than erroring.
+// tool layer can surface a clear error. The empty spec is the smart default,
+// the last defaultRangeTurns turns; every other spec follows turnwindow's
+// grammar, shared with doctor transcript.
 func parseRangeErr(spec string, entryCount int) (startSeq, endSeq int, err error) {
-	if entryCount <= 0 {
-		return 0, -1, nil
+	if spec == "" {
+		spec = fmt.Sprintf("last:%d", defaultRangeTurns)
 	}
-	last := entryCount - 1
-
-	switch {
-	case spec == "":
-		return clampRange(entryCount-defaultRangeTurns, last, entryCount)
-
-	case strings.HasPrefix(spec, "last:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "last:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(entryCount-n, last, entryCount)
-
-	case strings.HasPrefix(spec, "start:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "start:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(0, n-1, entryCount)
-
-	case strings.Contains(spec, "-"):
-		lo, hi, ok := parseDashRange(spec)
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(lo, hi, entryCount)
-
-	default:
-		return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-	}
-}
-
-// clampRange clamps [lo, hi] to [0, entryCount-1] and returns it as inclusive
-// bounds. A resulting lo > hi denotes an empty selection.
-func clampRange(lo, hi, entryCount int) (startSeq, endSeq int, err error) {
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > entryCount-1 {
-		hi = entryCount - 1
-	}
-	if hi < 0 {
-		hi = 0
-	}
-	if lo > entryCount-1 {
-		lo = entryCount - 1
-	}
-	return lo, hi, nil
-}
-
-// parsePositiveInt parses s as a strictly positive base-10 integer.
-func parsePositiveInt(s string) (int, bool) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
-}
-
-// parseDashRange parses an "N-M" spec into non-negative integers N and M. Both
-// operands must be present and non-negative; either side missing or non-numeric
-// is rejected.
-func parseDashRange(spec string) (lo, hi int, ok bool) {
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	lo, err1 := strconv.Atoi(parts[0])
-	hi, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || lo < 0 || hi < 0 {
-		return 0, 0, false
-	}
-	return lo, hi, true
+	return turnwindow.Parse(spec, entryCount)
 }
 
 // rawLinesForRange reads the transcript file at path and returns semantic
@@ -678,7 +596,7 @@ func isFrontAnchored(spec string) bool {
 	if spec == "" || strings.HasPrefix(spec, "last:") {
 		return false
 	}
-	_, _, ok := parseDashRange(spec)
+	_, _, ok := turnwindow.ParseDash(spec)
 	return ok
 }
 
@@ -814,7 +732,7 @@ func writeDocumentHeader(b *strings.Builder, header transcript.Header, opt rende
 
 // writeEntry emits one transcript entry as markdown.
 func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool string, idx *resultIndex, opt renderOpts) {
-	if !publicTranscriptKind(e.Turn.Kind) {
+	if !e.Turn.Kind.PublicTranscript() {
 		// Attention resolutions are durable private correlation records, and
 		// transcript-only entries exist for the history projection. Both are
 		// transparent to the public conversation and its tool-round structure.

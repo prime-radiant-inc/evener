@@ -381,16 +381,23 @@ transfer while retaining the record of what already happened.
 
 ### C13 Storage-unavailable send fallback ordering and Stop fence
 
-**Current behavior.** When the mutation outbox cannot be written — the storage
-watchdog rejects the durable enqueue with `MutationStorageTimeoutError` — a
-composer send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
-retried once and then dispatched directly as a plain RPC instead of failing
-closed, so sends keep working in a storage wedge. The same wedge also fails the
-ref's reconciliation (its outbox read), and that failure is classified apart
-from a genuine one: the ref is recorded as storage-blocked - at the reconcile's
-rejection, or earlier when the send fallback's own storage timeout observes the
-wedge while that reconcile is still pending - and the send fallback admits it,
-including the reconcile still pending on the same wedge, while the durable dispatcher, a queued record's Retry press and the recovery
+**Current behavior.** When the mutation outbox cannot be written, a composer
+send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
+dispatched directly as a plain RPC instead of failing closed. A write the
+storage watchdog gave up on (`MutationStorageTimeoutError`) is retried once
+first; a write the browser refuses outright — a full origin's
+`QuotaExceededError`, a browser that denies this origin storage
+(`SecurityError`), a `VersionError`, a retired connection, an upgrade another
+tab's older schema blocks — falls back at once. So sends keep working in a storage wedge or a full origin, and the
+composer's draft follows the send's own outcome. A failure that judges the
+record rather than the storage (the outbox's own validation, an uncloneable
+payload, a duplicate id) or that only a bug in the outbox raises (a missing
+store, a request on a finished transaction) stays an ordinary send failure. The same storage
+failure also fails the ref's reconciliation (its outbox read), and that failure
+is classified apart from a genuine one: the ref is recorded as storage-blocked -
+at the reconcile's rejection, or earlier when the send fallback's own storage
+failure observes it while that reconcile is still pending - and the send
+fallback admits it, including the reconcile still pending on the same failure, while the durable dispatcher, a queued record's Retry press and the recovery
 banner stay fenced until discovery's retry reconciles once storage answers, so
 a storage-blocked ref shows no recovery banner. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered
@@ -411,17 +418,17 @@ lands and its reply is lost the composer reports a failure and keeps the draft,
 and the person's re-send is a new intent with a new id, so the daemon can apply
 the send twice.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2995)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3088);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3243)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3789)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
 splits the storage-caused failure from a genuine one, and
-[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1147)
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
-`threads.test.ts` pins the direct dispatch, the retry ladder, the refusal to
+`threads.test.ts` pins the direct dispatch through a wedge and a full origin, the retry ladder, the refusal to
 jump an undelivered or concurrent durable send, the storage-blocked
 classification, the wedged-reconcile journey (a send still delivers when the
 same wedge failed the reconcile), the still-pending variant, and the refusal a
@@ -433,8 +440,8 @@ human-retry cases above still need the storage the wedge makes unreadable; the
 accepted behavior keeps the in-memory guard and accepts the three gaps
 (issue #3313).
 
-**Deferred.** Keep the existing behavior: sends keep working in every storage
-wedge, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
+**Deferred.** Keep the existing behavior: sends keep working through every
+storage failure, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
 duplicate on human retry in the narrow cases above. Revisit when the outbox can
 be read again but not written, or if a reorder, a duplicated send, or an
 unhonoured cross-tab Stop is observed in practice.

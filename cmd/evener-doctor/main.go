@@ -8,7 +8,7 @@
 // Usage:
 //
 //	evener-doctor locate     <selector>
-//	evener-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B] [--text-max N] [--full-text]
+//	evener-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|N-M] [--text-max N] [--full-text]
 //	evener-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
 //	evener-doctor jobs       <selector> [--job <id>]
 //	evener-doctor mutations  <selector>
@@ -213,7 +213,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	count := fs.String("count", "", "print the structural invocation count of this tool name and exit")
 	health := fs.Bool("health", false, "print mechanical per-session health metrics (tool errors, identical-run loops, truncation, steering, jobs, stale notifications) and exit")
 	format := fs.String("format", "markdown", "render format: outline | markdown")
-	rangeArg := fs.String("range", "", "turn window: last:N | start:N | A-B")
+	rangeArg := fs.String("range", "", "window of read_transcript turn numbers: last:N | start:N | N-M")
 	textMax := fs.Int("text-max", doctor.DefaultTextMax, "byte cap on each turn's rendered text and each tool-result preview")
 	fullText := fs.Bool("full-text", false, "render every turn's text and tool-result preview whole, with no byte cap; takes precedence over --text-max. Reads past the cap that hides a repetition loop inside one response, whose repeated calls are salvaged into turn text and so are counted by no tool-call metric -- narrow with --range first, a turn can run to tens of kilobytes")
 	sel, code := parseSelectorAndFlags(fs, args)
