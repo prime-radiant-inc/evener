@@ -8,6 +8,7 @@ import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
+  acquireBackgroundThread,
   installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
   settleEntryTranscriptForTests,
@@ -197,4 +198,67 @@ it("entry store and cache share one clock for metadata and TTL", async () => {
   } finally {
     fixture.dispose();
   }
+});
+
+it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
+  const storage = cache();
+  const ref = "local:a";
+  const client = connect();
+  let reads = 0;
+  let latest = response(ref, [turn("latest", 2)]);
+  latest.olderCursor = "older";
+  client.on("thread/read", (params) => {
+    reads += 1;
+    return { ...latest, requestGeneration: params.requestGeneration };
+  });
+  let pages = 0;
+  client.on("thread/turns/list", () => {
+    pages += 1;
+    return { turns: [turn("older", 1)], bootGeneration: "1", epoch: 1, snapshot: latest.snapshot };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["latest"]);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().loadOlderTurns(ref);
+  expect(pages).toBe(1);
+  await settleEntryTranscriptForTests(ref);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref,
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("pushed", 3).items,
+    },
+  });
+  await settleEntryTranscriptForTests(ref);
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["older", "latest", "pushed"]);
+  threadsStore.getState().releaseThread(ref);
+  await settleEntryTranscriptForTests(ref);
+  expect(JSON.stringify(threadsStore.getState().threads.get(ref))).not.toContain('"text":"pushed"');
+  const beforeOpen = reads;
+  await threadsStore.getState().ensureThread(ref);
+  expect(reads).toBe(beforeOpen);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.transcriptKey),
+  ).toContain("older");
+  latest = response(ref, [turn("latest", 2), turn("pushed", 3), turn("reconnected", 4)]);
+  latest.snapshot = { incarnation: "inc-a", length: 5 };
+  client.emitStateChange("reconnecting");
+  client.emitStateChange("ready");
+  await settleEntryTranscriptForTests(ref);
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("reconnected");
+  threadsStore.getState().releaseThread(ref);
+  expect(await lease.release()).toEqual({ kind: "saved" });
+  expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  expect(await factory.databases()).toEqual([{ name: SESSION_CACHE_DATABASE_NAME, version: 3 }]);
 });
