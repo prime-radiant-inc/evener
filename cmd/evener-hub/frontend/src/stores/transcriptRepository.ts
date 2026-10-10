@@ -375,12 +375,28 @@ export class TranscriptRepository {
     if (!current) return false;
     const before = request.before ?? this.#oldestPosition(current);
     const candidate = mergeOlderItemPage(current, response);
-    // A discarded page leaves the model in place; a defer/invalidate moved the
-    // page into history's pending buckets. Neither establishes a certified
-    // returned range, so neither may carry coverage.
+    // A discarded page leaves the model in place.
     if (candidate === current) return false;
-    if (candidate.history?.invalidatedAtGeneration !== undefined) return false;
-    if ((candidate.history?.deferredPages?.length ?? 0) > (current.history?.deferredPages?.length ?? 0)) return false;
+    // An invalidating/deferring page establishes no certified returned range,
+    // so it may not carry coverage. But the shared reducer's invalidation is a
+    // source-authority transition that belongs to this acceptance owner: adopt
+    // it here rather than discarding it. Otherwise the repository would keep a
+    // stale valid model and unchanged source revision while only the store's
+    // fallback invalidates, and a later repository publication could push the
+    // old valid authority back over that store-only invalidation.
+    if (
+      candidate.history?.invalidatedAtGeneration !== undefined ||
+      (candidate.history?.deferredPages?.length ?? 0) > (current.history?.deferredPages?.length ?? 0)
+    ) {
+      this.#model = candidate;
+      this.#boundary++;
+      if (candidate.history?.invalidatedAtGeneration !== undefined) {
+        this.#advanceSourceRevision();
+        this.#recoveryNeeded = true;
+      }
+      this.#publish();
+      return false;
+    }
     this.#model = candidate;
     this.#boundary++;
     const rows = this.#pageItemRows(response, candidate);
@@ -418,15 +434,19 @@ export class TranscriptRepository {
    * the current oldest row: the ordinary server continuation is correct.
    * `exhausted` means the certified chain ended with no older rows. A lookup
    * that crosses a baseline change or loses its lifetime publishes nothing.
+   * `superseded` means the caller's `beforePublish` guard rejected the page
+   * after the lookup: nothing was merged or published.
    */
   async loadOlderPage(
     limit: number,
     lifetime: number,
+    beforePublish?: () => boolean,
   ): Promise<
     | { kind: "local"; model: ThreadModel }
     | { kind: "exhausted"; model: ThreadModel }
     | { kind: "server" }
     | { kind: "reconcile" }
+    | { kind: "superseded" }
   > {
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     const current = this.#model;
@@ -461,6 +481,11 @@ export class TranscriptRepository {
     const restored = this.#restoreWindow(newest, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
     if (!restored) return { kind: "server" };
     const model: ThreadModel = window.complete ? { ...restored, olderCursor: window.serverCursor } : restored;
+    // Evaluate the caller's ownership guard immediately before publication,
+    // with no await between: the attached-reader subscription publishes this
+    // model synchronously, so a guard that ran only after this method returned
+    // would see the frontier cursor it just changed and reject its own page.
+    if (beforePublish && !beforePublish()) return { kind: "superseded" };
     this.#model = model;
     this.#publish();
     return { kind: "local", model };

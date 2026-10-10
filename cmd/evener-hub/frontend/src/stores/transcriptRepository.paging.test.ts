@@ -206,6 +206,45 @@ function holdOlderWindow() {
   };
 }
 
+/**
+ * Runs the real cache older-window lookup to completion, then holds before
+ * returning it. This exposes the window between "the cache read finished" and
+ * "the repository merged it", so a live update that arrives after the read is
+ * genuinely in memory rather than queued to disk before the query starts.
+ */
+function holdOlderWindowAfterRead() {
+  const original = SessionEntryCache.prototype.getOlderWindow;
+  let seen: Awaited<ReturnType<typeof original>> | undefined;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let markRead!: () => void;
+  const read = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+    this: SessionEntryCache,
+    ...args: Parameters<typeof original>
+  ) {
+    return (async () => {
+      const result = await original.apply(this, args);
+      seen = result;
+      markRead();
+      await gate;
+      return result;
+    })();
+  } as typeof original);
+  return {
+    whenRead: read,
+    lastWindow: () => seen,
+    release: () => {
+      releaseGate();
+      spy.mockRestore();
+    },
+  };
+}
+
 /** A page certificate committed straight to the cache (ambiguous frontier setup). */
 async function commitPageCertificate(
   cache: SessionEntryCache,
@@ -536,6 +575,65 @@ test("a recorded update during the local lookup is preserved", async () => {
   if (outcome.kind !== "local") return;
   expect(itemVersionAt(outcome.model, 4)).toBe(9);
   expect(orderedPositions(outcome.model)).toEqual([3, 4, 5, 6, 7, 8]);
+});
+
+test("a recorded update after the cache result was already read is preserved", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+
+  const gate = holdOlderWindowAfterRead();
+  const lookup = repo.loadOlderPage(40, 1);
+  await gate.whenRead;
+  // The cache window is already in hand (it is held, not delayed). The live
+  // update lands only now, so this proves the merge uses the newest in-memory
+  // model rather than the one captured before the query started.
+  expect(gate.lastWindow()?.rows.length).toBe(3);
+  expect(repo.accept(historyUpdate(4, 9, "newer", 8), { lifetime: 1 })).toBe(true);
+  gate.release();
+  const outcome = await lookup;
+  expect(outcome.kind).toBe("local");
+  if (outcome.kind !== "local") return;
+  expect(itemVersionAt(outcome.model, 4)).toBe(9);
+  expect(orderedPositions(outcome.model)).toEqual([3, 4, 5, 6, 7, 8]);
+});
+
+test("an invalidating page is refused as a certificate but its invalidation is adopted", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  const reader = repo.attachReader();
+
+  // A newer epoch in the SAME incarnation makes the reducer invalidate history
+  // (not replace it): nothing merges until a later latest-window read.
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8, epoch: 1 }), {
+      lifetime: 1,
+      readId: "r2",
+      boundary: "p-inv",
+      authority,
+      requestCursor: "C1",
+    }),
+  ).toBe(false);
+  expect(await fixture.cache.getCoverage(historyKey, "page:r2:p-inv")).toBeUndefined();
+
+  // Refusing the certificate must not discard the reducer's invalidation: both
+  // the repository and its held reader keep the invalid model.
+  expect(repo.getSnapshot()?.history?.invalidatedAtGeneration).not.toBeUndefined();
+  expect(reader.getSnapshot()?.history?.invalidatedAtGeneration).not.toBeUndefined();
+  // The repository's recovery state moved with it: the reader reports it.
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+
+  // A frame from the old generation cannot restore the old valid authority.
+  expect(repo.accept(historyUpdate(6, 9, "old-gen", 8), { lifetime: 1 })).toBe(false);
+  expect(repo.getSnapshot()?.history?.invalidatedAtGeneration).not.toBeUndefined();
+  expect(reader.getSnapshot()?.history?.invalidatedAtGeneration).not.toBeUndefined();
+  reader.dispose();
 });
 
 test("an authoritative reconciliation during the local lookup retires the old window", async () => {

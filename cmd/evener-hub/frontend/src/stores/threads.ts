@@ -580,6 +580,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
     historyKey?: string;
     model?: ThreadModel;
     baseline?: string;
+    olderPageGeneration: number;
     readerRetention?: ReturnType<TranscriptReader["getRetentionSnapshotForTesting"]>;
   };
   dispose(): void;
@@ -596,6 +597,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
       ...(fixture.historyKey ? { historyKey: fixture.historyKey } : {}),
       ...(fixture.repository?.getSnapshot() ? { model: fixture.repository.getSnapshot() } : {}),
       ...(fixture.repository ? { baseline: fixture.repository.getBaselineIdentity() } : {}),
+      olderPageGeneration: olderPageGenerations.get(fixture.ref) ?? 0,
       ...(fixture.reader ? { readerRetention: fixture.reader.getRetentionSnapshotForTesting() } : {}),
     }),
     dispose: () => {
@@ -5557,18 +5559,40 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // frontier runs the bounded reconciliation; no local certificate is an
       // ordinary server continuation.
       if (fixtureState && fixtureRepository) {
-        const outcome = await fixtureRepository.loadOlderPage(TRANSCRIPT_ITEM_PAGE_SIZE, fixtureState.lifetime);
+        const outcome = await fixtureRepository.loadOlderPage(
+          TRANSCRIPT_ITEM_PAGE_SIZE,
+          fixtureState.lifetime,
+          stillOwned,
+        );
         if (outcome.kind === "reconcile") {
           if (!stillOwned()) return;
+          // The reconciliation is itself the new baseline boundary: the cache
+          // reported a connected-but-unverified frontier, so the certificates
+          // that made it ambiguous must be retired BEFORE the refresh. A live
+          // read that reports the same identity and omits the wire
+          // authoritative flag does not advance the source revision on its
+          // own, and without this the same conflicting certificates would stay
+          // eligible and every later action would repeat the refresh.
+          fixtureRepository.beginFreshBaseline();
           await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
           return;
         }
-        if (outcome.kind === "local" || outcome.kind === "exhausted") {
+        if (outcome.kind === "local") {
+          // loadOlderPage evaluated `stillOwned` with no await before its own
+          // publication (it is the publication that changed olderCursor), so
+          // this page is ours; re-testing the cursor here would reject the page
+          // we just accepted and skip the generation advance.
+          olderPageGenerations.set(ref, capturedPageGeneration + 1);
+          putThreadModel(ref, outcome.model);
+          return;
+        }
+        if (outcome.kind === "exhausted") {
           if (!stillOwned()) return;
           olderPageGenerations.set(ref, capturedPageGeneration + 1);
           putThreadModel(ref, outcome.model);
           return;
         }
+        if (outcome.kind === "superseded") return;
       }
       let resp: ThreadTurnsListResponse;
       try {
