@@ -2,13 +2,19 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // visionRouteError is the ordinary provider failure the retry tests script on a
@@ -404,6 +410,102 @@ func TestDescribeImage_UnroutableRouteBlindSessionModelReportsUnavailable(t *tes
 	}
 	if len(openai.Requests()) != 0 {
 		t.Fatalf("blind session received %d describe calls", len(openai.Requests()))
+	}
+}
+
+// An entry the resolver cannot answer right now may serve later — the round
+// runner re-resolves every entry on each failing round — so an error at
+// decision time must keep the descriptions flowing: an image-stripping
+// fallback that recovers would otherwise inherit history holding neither the
+// image bytes nor their description.
+func TestDescribeImage_UnresolvableFallbackKeepsTheSideChannel(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	var resolves atomic.Int32
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"ghostprov/ghost-model"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				// The init validation's one call answers; the chain
+				// check's call is the one that must not vouch.
+				if resolves.Add(1) > 1 {
+					return nil, fmt.Errorf("resolver temporarily broken for %s", ref)
+				}
+				return NewOpenAIProfile("gpt-5.2"), nil
+			},
+		}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("unresolvable-fallback result = %+v, want the side-channel description", result)
+	}
+	if len(openai.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(openai.Requests()))
+	}
+}
+
+// The native-vision capability question is metadata about a model that may
+// never serve, so answering it must not resolve the entry the way the round
+// runner serves it: full resolution materializes credentials, and a
+// command-bearing api_key would spend a mint and prompt the user's password
+// manager just to read an image. Facts depth answers with no resolver call
+// and no command executed.
+func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "minted")
+	instances := map[string]registry.Provider{
+		"cmdprov": {
+			Surface:       registry.SurfaceOpenAI,
+			Protocol:      registry.ProtocolOpenAIResponses,
+			APIKey:        "$(touch " + marker + ")",
+			DefaultModel:  "cmd-1",
+			Transport:     registry.Transport{BaseURL: "http://cmdprov.test.invalid/v1"},
+			InheritModels: new(false),
+			Models: map[string]registry.Model{
+				"cmd-1": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+			},
+		},
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("fixture registry: %v", err)
+	}
+	sessionProfile, err := provider.Resolve(r, "openai/gpt-5.2")
+	if err != nil {
+		t.Fatalf("resolve session profile: %v", err)
+	}
+	var resolves atomic.Int32
+	sess := newSession(t, withAdapter(&fakeErrAdapter{name: "openai"}), withProfile(sessionProfile),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"cmdprov/cmd-1"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				resolves.Add(1)
+				return provider.Resolve(r, ref)
+			},
+		}))
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("init validation did not mint the command credential: %v", statErr)
+	}
+	os.Remove(marker)
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "" {
+		t.Fatalf("capable-fallback result = %+v, want the native skip with no description", result)
+	}
+	if got := resolves.Load(); got != 1 {
+		t.Fatalf("resolver calls after describe = %d, want the init validation's 1 only", got)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("the native-vision check materialized the fallback's command credential")
 	}
 }
 

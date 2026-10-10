@@ -324,6 +324,16 @@ Code passes images inline with no describing call at all.
 - Chat-protocol rows and Google rows without `multimodal_tool_results` keep
   the side-channel: their adapters leave tool-result images off the wire, so
   the side-channel is the only path.
+- The skip holds only while every model that could serve a later round sees
+  the bytes — including each `model_fallbacks` entry. Those capability facts
+  resolve at facts depth (`ResolveInstanceModelFacts`): the question is
+  metadata about a model that may never serve, while the full resolution the
+  round runner uses to serve an entry materializes credentials — including
+  command-bearing keys that would spend a mint and prompt the user's
+  password manager just to read an image. An entry whose facts cannot be
+  resolved right now keeps the side-channel: the runner re-resolves every
+  entry on each failing round, so an image-stripping fallback that recovers
+  must find the description still flowing.
 
 Failure fallback: the description retries once on the session model only
 when the failed attempt did not already run there — cheapmodel reports the

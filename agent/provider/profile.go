@@ -362,7 +362,25 @@ func (p *Profile) AcceptsDocumentInput() bool {
 // inherited image input is not evidence the named model sees media, so the
 // skip requires the model's own row.
 func (p *Profile) SeesToolResultMedia(mediaType string) bool {
-	return !p.rowFactsInherited && p.AcceptsImageInput() && llm.DeliversToolResultMedia(p.res, mediaType)
+	return !p.rowFactsInherited && llm.RowSeesToolResultMedia(p.res, mediaType)
+}
+
+// ResolveModelFactsForRef resolves a model ref's advertised facts at facts
+// depth — every fact, no credential materialized, no credential command
+// executed — the depth a capability question about configuration needs when
+// no decision to serve has been made. The ref decomposition matches
+// WithModel: a bare model, or a ref prefixed with this profile's own
+// instance, names this instance's row; anything else names another
+// instance's.
+func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
+	instance, model := p.ID(), strings.TrimSpace(ref)
+	if prefix, rest, ok := strings.Cut(model, "/"); ok && prefix != "" && rest != "" {
+		instance, model = prefix, rest
+		if strings.EqualFold(prefix, p.ID()) {
+			instance = p.ID()
+		}
+	}
+	return p.registry.ResolveInstanceModelFacts(instance, model)
 }
 
 // Warnings are the registry's notices for this reference (an uncatalogued

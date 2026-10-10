@@ -457,19 +457,26 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 // A generated description is steering text every serving model can read, so
 // skipping it is safe only while every model that might serve can see the
 // bytes natively: a text-only or image-stripping fallback inherits the same
-// history and would otherwise lose the image twice over. An entry the
-// resolver cannot answer never serves (the round runner skips it with a
-// warning), so it cannot lose the description either.
+// history and would otherwise lose the image twice over.
+//
+// Fallback capability facts resolve at facts depth
+// (Profile.ResolveModelFactsForRef): the answer is metadata about a model that
+// may never serve, while the full resolution the round runner uses to serve
+// an entry materializes credentials — including command-bearing keys that
+// would spend a mint and prompt the user's password manager just to read an
+// image. An entry whose facts cannot be resolved right now breaks the chain
+// instead of passing it: the round runner re-resolves every entry on each
+// failing round (its "could not be resolved; skipping it" warning is
+// per-attempt), so today's error says nothing about whether the entry serves
+// later — and an image-stripping fallback that recovers must find the
+// description still flowing.
 func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fallbacks []string, mt string) bool {
 	if !profile.SeesToolResultMedia(mt) {
 		return false
 	}
 	for _, ref := range fallbacks {
-		fbProfile, _, err := s.resolveProfileForRef(profile, ref)
-		if err != nil || fbProfile == nil {
-			continue
-		}
-		if !fbProfile.SeesToolResultMedia(mt) {
+		res, err := profile.ResolveModelFactsForRef(ref)
+		if err != nil || !llm.RowSeesToolResultMedia(res, mt) {
 			return false
 		}
 	}

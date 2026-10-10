@@ -619,6 +619,15 @@ func DeliversUserMessageDocuments(res registry.Resolved) bool {
 	}
 }
 
+// RowSeesToolResultMedia reports whether a resolved row's advertised facts let
+// the model receive tool-result bytes of this media type inline: the row
+// declares image input and its adapter delivers tool-result media of this
+// type. Facts depth only, so a caller that resolved the row without
+// materializing credentials can still answer the native-vision question.
+func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
+	return res.Caps.AcceptsModality("image") && DeliversToolResultMedia(res, mediaType)
+}
+
 // unsignedThinkingReplayed reports whether the adapter the resolved target
 // selects replays a ContentThinking part that carries text and no replay
 // metadata:
