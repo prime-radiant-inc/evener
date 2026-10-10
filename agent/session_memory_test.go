@@ -1816,7 +1816,8 @@ func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 
 // Deleting a page removes the directories it leaves empty, up to but never
 // including the scope root, since no memory tool can remove a directory. A
-// directory still holding anything, a dot file included, is kept.
+// directory still holding anything, a dot file included, is kept, and so is
+// an empty one named by the delete of a file that is not there.
 func TestMemoryDeletePrunesEmptiedDirectories(t *testing.T) {
 	t.Parallel()
 	for _, scope := range []string{"personal", "project"} {
@@ -1846,7 +1847,14 @@ func TestMemoryDeletePrunesEmptiedDirectories(t *testing.T) {
 					t.Fatalf("emptied directory %s remains: %v", rel, err)
 				}
 			}
-			for _, rel := range []string{".", "kept/other.md", "hidden/.keep"} {
+			// Deleting a missing file is a no-op: an empty directory it names stays.
+			if err := os.Mkdir(filepath.Join(root, "empty"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "empty/missing.md"}); res.IsError {
+				t.Fatal(res.Output)
+			}
+			for _, rel := range []string{".", "kept/other.md", "hidden/.keep", "empty"} {
 				if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 					t.Fatalf("%s removed: %v", rel, err)
 				}

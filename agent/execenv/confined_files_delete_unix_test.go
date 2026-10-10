@@ -241,3 +241,32 @@ func TestConfinedEmptyDirectoryDelete(t *testing.T) {
 		t.Fatalf("outside lost: %v", err)
 	}
 }
+
+// A write that opened a page's directory before memory_delete pruned it
+// fails instead of landing in the detached directory: the kernel refuses to
+// create an entry in a removed directory (ENOENT; Linux checks IS_DEADDIR),
+// so the page is never silently lost and the writer can retry.
+func TestConfinedWriteIntoAPrunedDirectoryFails(t *testing.T) {
+	t.Parallel()
+	env, err := NewConfinedFileEnvironment(t.TempDir(), "memory/personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Cleanup()
+	root := env.WorkingDirectory()
+	page := filepath.Join(root, "dir", "page.md")
+	parentFd, leaf, err := env.sbfs.openWriteParent("memory_write", page, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(parentFd) }()
+	if err := env.RemoveConfinedEmptyDirectory("dir"); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteAt(parentFd, leaf, []byte("opaque-page-4185"), 0o600); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("write into a pruned directory: %v, want ENOENT", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "dir")); !os.IsNotExist(err) {
+		t.Fatalf("pruned directory came back: %v", err)
+	}
+}
