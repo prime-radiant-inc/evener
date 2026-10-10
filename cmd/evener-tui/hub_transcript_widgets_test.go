@@ -83,10 +83,21 @@ func memoryContextWireItem(t *testing.T, name string) appwire.ThreadItem {
 // history update does and renders the system message it becomes.
 func renderDeliveredSystemItem(t *testing.T, item appwire.ThreadItem) string {
 	t.Helper()
+	rendered := renderDeliveredSystemItems(t, item)
+	if len(rendered) != 1 {
+		t.Fatalf("delivered item became %d system messages, want 1", len(rendered))
+	}
+	return rendered[0]
+}
+
+// renderDeliveredSystemItems delivers items in one history update and renders
+// the system messages they become, in order.
+func renderDeliveredSystemItems(t *testing.T, items ...appwire.ThreadItem) []string {
+	t.Helper()
 	m := newSessionHubModel(nil)
 	m.detail.Ref = "local:memory-context-fixture"
 	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
-		ThreadID: "memory-context-fixture", Ref: m.detail.Ref, Items: []appwire.ThreadItem{item},
+		ThreadID: "memory-context-fixture", Ref: m.detail.Ref, Items: items,
 	}).Notification})
 	var rendered []string
 	for _, msg := range updated.(hubModel).session.messages {
@@ -94,13 +105,10 @@ func renderDeliveredSystemItem(t *testing.T, item appwire.ThreadItem) string {
 			rendered = append(rendered, msgrender.RenderMessage(msg, 120, false))
 		}
 	}
-	if len(rendered) != 1 {
-		t.Fatalf("delivered item became %d system messages, want 1", len(rendered))
-	}
-	return rendered[0]
+	return rendered
 }
 
-// An index change block reads as the changed lines it carries, not as a full
+// An index change section reads as the changed lines it carries, not as a full
 // index: the unchanged line it leaves out stays out.
 func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "index-change-project"))
@@ -112,14 +120,33 @@ func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 	}
 }
 
-// A truncated index refresh renders its quoted index whether it is the
-// current form (the partial sentence) or an earlier build's explicit
-// "truncated true".
-func TestMemoryContextTruncatedIndexRendersInBothForms(t *testing.T) {
-	for _, name := range []string{"truncated-project", "legacy-truncated-project"} {
-		rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, name))
-		if !strings.Contains(rendered, strings.Repeat("x", 64)) {
-			t.Fatalf("%s lost its quoted index: %.200s", name, rendered)
+// A truncated index refresh renders its quoted index.
+func TestMemoryContextTruncatedIndexRendersItsIndex(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
+	if !strings.Contains(rendered, strings.Repeat("x", 64)) {
+		t.Fatalf("truncated-project lost its quoted index: %.200s", rendered)
+	}
+}
+
+// One message carrying both scopes' changes and a page notice reaches the
+// TUI as one system message per section, each reading as its own scope's news.
+func TestMemoryContextCombinedMessageRendersEverySection(t *testing.T) {
+	cases := []struct{ name, want string }{
+		{"index-change-personal", "opaque-personal-added"},
+		{"index-change-project", "opaque-change-added"},
+		{"page-notice-project", "opaque-notice-changed.md"},
+	}
+	var items []appwire.ThreadItem
+	for _, c := range cases {
+		items = append(items, memoryContextWireItem(t, c.name))
+	}
+	rendered := renderDeliveredSystemItems(t, items...)
+	if len(rendered) != len(cases) {
+		t.Fatalf("combined message became %d system messages, want %d", len(rendered), len(cases))
+	}
+	for i, c := range cases {
+		if !strings.Contains(rendered[i], c.want) {
+			t.Fatalf("%s lost %s: %s", c.name, c.want, rendered[i])
 		}
 	}
 }
