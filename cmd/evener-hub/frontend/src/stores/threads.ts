@@ -3139,6 +3139,13 @@ async function enqueueMutationIntent(
     // window the fallback exists to close. A reconcile that later succeeds
     // (a full origin's reads still answer) clears the record, so a read that
     // was healthy after all self-corrects.
+    //
+    // A full origin's QuotaExceededError refuses only writes, so its pending
+    // reconcile may still finish and find an undelivered row this send then
+    // jumps. That reorder is accepted on purpose (friction C13's per-ref
+    // ordering gap). Keeping the pending fence for quota would fail the send
+    // the person just made, in order to wait on a reconcile that usually finds
+    // nothing; getting the send out wins.
     if (pendingMutationReconciliations.has(ref)) {
       threadsStore.setState((state) => ({
         mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),

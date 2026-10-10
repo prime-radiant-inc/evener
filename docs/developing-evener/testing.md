@@ -887,9 +887,14 @@ out of commits by path, not by ignore.
 The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
 `vitest_run_args` selects `--configLoader runner` (Vite's default loader
 writes a bundled config under `node_modules/.vite-temp`), and the plugin
-that restores `dist/PLACEHOLDER` applies to builds only. Its one remaining
-write is the dependency cache in the checkout's `.vite-cache`, so a
-read-only lane still needs a scratch config for focused experiments: run
+that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
+not read-only yet. Vitest still writes its dependency cache to the
+checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
+phase loads Vite configs with the default loader in
+`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
+`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
+(issue #4193). So a read-only lane still needs a scratch config for focused
+experiments: run
 it with `--configLoader runner --cache=false`, and give the scratch-rooted
 Vite config a `server.fs.allow` that names the checkout, the AppWire
 package and the dependency realpath, or external setup imports fail as
@@ -897,8 +902,8 @@ package and the dependency realpath, or external setup imports fail as
 the custom config, test files, cacheDir and dependency symlink in scratch,
 reuse the frontend's resolve aliases and test setup, and keep at least two
 workers (the vmThreads isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`, which in a read-only
-lane still needs that writable `.vite-cache`.
+probes; canonical verdicts stay with `make test-web`, which cannot run in
+a read-only lane until those writes are gone.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
