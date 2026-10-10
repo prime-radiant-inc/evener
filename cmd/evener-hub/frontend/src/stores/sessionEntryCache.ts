@@ -10,6 +10,8 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
 import {
+  CURRENT_META_STORE,
+  CURRENT_STORE,
   ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX,
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
@@ -17,6 +19,7 @@ import {
   ENTRY_TURN_STORE,
   entryHistoryKey,
   LEGACY_META_STORE,
+  LEGACY_RECORDS_STORE,
   SESSION_CACHE_DATABASE_NAME,
   type TranscriptAggregateMetaRow,
   type TranscriptCoverageRow,
@@ -31,6 +34,14 @@ export interface SessionEntryCacheOptions {
   databaseName: string;
   indexedDB?: IDBFactory;
   keyRange?: typeof IDBKeyRange;
+  // Aggregate encoded-byte cap. Defaults to the spec's 32 MiB disk policy; the
+  // injection seam lets tests exercise eviction with tiny budgets.
+  maxBytes?: number;
+  // Retention window for a history identity's saved/accessed time. Defaults to
+  // the spec's 14 days.
+  ttlMs?: number;
+  // Clock seam for TTL and LRU decisions, so tests never wait on real time.
+  now?: () => number;
 }
 
 export type EntryCoverageInput =
@@ -92,8 +103,32 @@ export interface EntryWindow {
   serverCursor?: string;
 }
 
+export type EntryMigrationSource =
+  | { kind: "records"; ref: string }
+  | { kind: "current"; key: readonly [string, string] };
+
+export interface EntryMigrationRequest {
+  historyKey: string;
+  clearEpoch: number;
+  source: EntryMigrationSource;
+  sessionMetadata?: TranscriptSessionMetadata;
+  // Pure conversion of the stored legacy value into keyed entry rows. Returning
+  // undefined marks the record undecodable and leaves its source intact.
+  convert: (
+    legacy: unknown,
+  ) => { items: readonly TranscriptItemRow<unknown>[]; turns?: readonly TurnModel[] } | undefined;
+}
+
+export type EntryMigrationOutcome =
+  | { outcome: "converted"; itemCount: number; turnCount: number; encodedBytes: number; removedBytes: number }
+  | { outcome: "skipped"; reason: "missing" | "undecodable" }
+  | { outcome: "refused"; reason: "clear-epoch" }
+  | { outcome: "failed"; error: unknown };
+
 const CLEAR_EPOCH_KEY = "__clearEpoch";
 const AGGREGATE_META_KEY = "__aggregate";
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const WRITE_STORES = [
   ENTRY_ITEM_STORE,
   ENTRY_TURN_STORE,
@@ -101,6 +136,7 @@ const WRITE_STORES = [
   ENTRY_META_STORE,
   LEGACY_META_STORE,
 ] as const;
+const MIGRATION_STORES = [...WRITE_STORES, LEGACY_RECORDS_STORE, CURRENT_STORE, CURRENT_META_STORE] as const;
 
 function encodedBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -367,16 +403,79 @@ function turnModel(row: TranscriptTurnRow): TurnModel {
   return { id: row.turnId, ...row.metadata, items: [] };
 }
 
+// Versioned upsert of keyed item/turn rows within one open transaction. Shared
+// by the ordinary batch path and migration so both honour the same identity and
+// richness rules. Returns the encoded-byte delta and the count of newly created
+// items; a row that loses to its held version contributes nothing.
+async function applyEntryRows(
+  itemStore: IDBObjectStore,
+  turnStore: IDBObjectStore,
+  historyKey: string,
+  items: readonly TranscriptItemRow<unknown>[],
+  turns: readonly TurnModel[],
+): Promise<{ byteDelta: number; changedItems: number }> {
+  let byteDelta = 0;
+  let changedItems = 0;
+  for (const row of items) {
+    const current = await requestResult(
+      itemStore.get([row.historyKey, row.transcriptKey]) as IDBRequest<
+        (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined
+      >,
+    );
+    const cachedInput = row.item as Partial<CachedSessionItem> | null;
+    const encodedInput =
+      cachedInput && (cachedInput.identityOnly === true || cachedInput.textOmitted === true)
+        ? (row.item as CachedSessionItem)
+        : encodeTranscriptItem(row.item as ItemModel);
+    const incoming = decodeTranscriptItem(encodedInput);
+    if (!incoming) throw new Error("invalid transcript item for entry write");
+    const held = current ? decodeTranscriptItem(current.item) : undefined;
+    const merged: ItemModel = mergeTranscriptItemVersioned(held, current?.version, incoming, row.version);
+    if (current && merged === held) continue;
+    const encodedRow = { ...row, positionSub: row.position.sub ?? 0, item: encodeTranscriptItem(merged) };
+    const oldBytes = current ? encodedBytes(current) : 0;
+    const newBytes = encodedBytes(encodedRow);
+    byteDelta += newBytes - oldBytes;
+    changedItems += current ? 0 : 1;
+    itemStore.put(encodedRow);
+  }
+  for (const incoming of turns) {
+    const heldRow = await requestResult(
+      turnStore.get([historyKey, incoming.id]) as IDBRequest<TranscriptTurnRow | undefined>,
+    );
+    const held = heldRow ? turnModel(heldRow) : undefined;
+    const merged = mergeTranscriptTurnVersioned(held, { ...incoming, items: [] });
+    if (held && merged === held) continue;
+    const row: TranscriptTurnRow = {
+      historyKey,
+      turnId: incoming.id,
+      version: merged.version,
+      metadata: turnMetadata(merged),
+    };
+    const oldBytes = heldRow ? encodedBytes(heldRow) : 0;
+    const newBytes = encodedBytes(row);
+    byteDelta += newBytes - oldBytes;
+    turnStore.put(row);
+  }
+  return { byteDelta, changedItems };
+}
+
 /** Keyed transcript entry storage. Entry stores are enabled only in isolated fixture databases. */
 export class SessionEntryCache {
   readonly #connection: IDBConnection;
   readonly #keyRange: typeof IDBKeyRange;
+  readonly #maxBytes: number;
+  readonly #ttlMs: number;
+  readonly #now: () => number;
 
   constructor(options: SessionEntryCacheOptions) {
     if (options.databaseName === SESSION_CACHE_DATABASE_NAME) {
       throw new Error("entry storage requires an isolated fixture database");
     }
     this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
+    this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    this.#now = options.now ?? Date.now;
     this.#connection = new IDBConnection({
       indexedDB: options.indexedDB ?? globalThis.indexedDB,
       databaseName: options.databaseName,
@@ -454,56 +553,10 @@ export class SessionEntryCache {
       )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
       let historyBytes = historyMeta.encodedBytes;
       let aggregateBytes = aggregateMeta.encodedBytes;
-      let changedItems = 0;
-
-      for (const row of batch.items) {
-        const current = await requestResult(
-          itemStore.get([row.historyKey, row.transcriptKey]) as IDBRequest<
-            (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined
-          >,
-        );
-        const cachedInput = row.item as Partial<CachedSessionItem> | null;
-        const encodedInput =
-          cachedInput && (cachedInput.identityOnly === true || cachedInput.textOmitted === true)
-            ? (row.item as CachedSessionItem)
-            : encodeTranscriptItem(row.item as ItemModel);
-        const incoming = decodeTranscriptItem(encodedInput);
-        if (!incoming) throw new Error("invalid transcript item for entry write");
-        const held = current ? decodeTranscriptItem(current.item) : undefined;
-        const merged: ItemModel = mergeTranscriptItemVersioned(held, current?.version, incoming, row.version);
-        if (current && merged === held) continue;
-        const encodedRow = {
-          ...row,
-          positionSub: row.position.sub ?? 0,
-          item: encodeTranscriptItem(merged),
-        };
-        const oldBytes = current ? encodedBytes(current) : 0;
-        const newBytes = encodedBytes(encodedRow);
-        historyBytes += newBytes - oldBytes;
-        aggregateBytes += newBytes - oldBytes;
-        changedItems += current ? 0 : 1;
-        itemStore.put(encodedRow);
-      }
-
-      for (const incoming of batch.turns ?? []) {
-        const heldRow = await requestResult(
-          turnStore.get([batch.historyKey, incoming.id]) as IDBRequest<TranscriptTurnRow | undefined>,
-        );
-        const held = heldRow ? turnModel(heldRow) : undefined;
-        const merged = mergeTranscriptTurnVersioned(held, { ...incoming, items: [] });
-        if (held && merged === held) continue;
-        const row: TranscriptTurnRow = {
-          historyKey: batch.historyKey,
-          turnId: incoming.id,
-          version: merged.version,
-          metadata: turnMetadata(merged),
-        };
-        const oldBytes = heldRow ? encodedBytes(heldRow) : 0;
-        const newBytes = encodedBytes(row);
-        historyBytes += newBytes - oldBytes;
-        aggregateBytes += newBytes - oldBytes;
-        turnStore.put(row);
-      }
+      const written = await applyEntryRows(itemStore, turnStore, batch.historyKey, batch.items, batch.turns ?? []);
+      historyBytes += written.byteDelta;
+      aggregateBytes += written.byteDelta;
+      const changedItems = written.changedItems;
 
       const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
       historyBytes += coverageResult.byteDelta;
@@ -524,6 +577,7 @@ export class SessionEntryCache {
         itemCount: historyMeta.itemCount + changedItems,
       });
       metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
+      await this.#enforcePolicy(transaction, batch.historyKey);
       await complete;
       return { outcome: "committed", coverage: coverageResult.result, encodedBytes: aggregateBytes };
     } catch (error) {
@@ -535,6 +589,286 @@ export class SessionEntryCache {
       await complete?.catch(() => {});
       return { outcome: "failed", error };
     }
+  }
+
+  /**
+   * Convert one legacy record into entry rows and remove its source together
+   * in one transaction. Interrupted or aborted conversion aborts before any
+   * durable effect, so the source survives for retry. Records import as stale
+   * seeds: items and item-free turns only, never overlay, currentness or
+   * coverage. The durable Clear epoch fences the whole transaction.
+   */
+  async commitMigration(request: EntryMigrationRequest): Promise<EntryMigrationOutcome> {
+    if (
+      request.sessionMetadata &&
+      (request.sessionMetadata.historyKey !== request.historyKey ||
+        entryHistoryKey(request.sessionMetadata.resolvedIdentity) !== request.historyKey)
+    ) {
+      return { outcome: "failed", error: new Error("entry metadata does not match its resolved history identity") };
+    }
+    let transaction: IDBTransaction | undefined;
+    let complete: Promise<void> | undefined;
+    try {
+      const database = await this.#connection.open();
+      transaction = database.transaction([...MIGRATION_STORES], "readwrite");
+      complete = transactionCompletion(transaction);
+      void complete.catch(() => {});
+      const legacyMetaStore = transaction.objectStore(LEGACY_META_STORE);
+      const metaStore = transaction.objectStore(ENTRY_META_STORE);
+      const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
+      const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
+      const durableEpoch =
+        (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
+          ?.epoch ?? 0;
+      if (durableEpoch !== request.clearEpoch) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "refused", reason: "clear-epoch" };
+      }
+
+      let legacy: unknown;
+      let removedBytes = 0;
+      if (request.source.kind === "records") {
+        const record = await requestResult(transaction.objectStore(LEGACY_RECORDS_STORE).get(request.source.ref));
+        const sourceMeta = await requestResult(legacyMetaStore.get(request.source.ref));
+        if (record === undefined) {
+          await complete;
+          return { outcome: "skipped", reason: "missing" };
+        }
+        legacy = record;
+        removedBytes = encodedBytes(record) + (sourceMeta === undefined ? 0 : encodedBytes(sourceMeta));
+        transaction.objectStore(LEGACY_RECORDS_STORE).delete(request.source.ref);
+        legacyMetaStore.delete(request.source.ref);
+      } else {
+        const key = [...request.source.key];
+        const record = await requestResult(transaction.objectStore(CURRENT_STORE).get(key));
+        const sourceMeta = await requestResult(transaction.objectStore(CURRENT_META_STORE).get(key));
+        if (record === undefined) {
+          await complete;
+          return { outcome: "skipped", reason: "missing" };
+        }
+        legacy = record;
+        removedBytes = encodedBytes(record) + (sourceMeta === undefined ? 0 : encodedBytes(sourceMeta));
+        transaction.objectStore(CURRENT_STORE).delete(key);
+        transaction.objectStore(CURRENT_META_STORE).delete(key);
+      }
+
+      const converted = request.convert(legacy);
+      if (!converted) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "skipped", reason: "undecodable" };
+      }
+      if (converted.items.some((row) => row.historyKey !== request.historyKey)) {
+        throw new Error("migration produced a different history identity");
+      }
+
+      const historyMeta = (await requestResult(
+        metaStore.get(request.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+      )) ?? { historyKey: request.historyKey, encodedBytes: 0, itemCount: 0 };
+      const aggregateMeta = (await requestResult(
+        metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
+      )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
+      let historyBytes = historyMeta.encodedBytes;
+      let aggregateBytes = aggregateMeta.encodedBytes;
+      const written = await applyEntryRows(
+        itemStore,
+        turnStore,
+        request.historyKey,
+        converted.items,
+        converted.turns ?? [],
+      );
+      historyBytes += written.byteDelta;
+      aggregateBytes += written.byteDelta;
+      if (request.sessionMetadata) {
+        const previousPayload = sessionMetadataPayload(historyMeta);
+        const nextPayload = sessionMetadataPayload(request.sessionMetadata);
+        const metadataDelta =
+          (nextPayload ? encodedBytes(nextPayload) : 0) - (previousPayload ? encodedBytes(previousPayload) : 0);
+        historyBytes += metadataDelta;
+        aggregateBytes += metadataDelta;
+      }
+      metaStore.put({
+        ...historyMeta,
+        ...request.sessionMetadata,
+        historyKey: request.historyKey,
+        encodedBytes: historyBytes,
+        itemCount: historyMeta.itemCount + written.changedItems,
+      });
+      metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
+      await this.#enforcePolicy(transaction, request.historyKey);
+      await complete;
+      return {
+        outcome: "converted",
+        itemCount: converted.items.length,
+        turnCount: converted.turns?.length ?? 0,
+        encodedBytes: aggregateBytes,
+        removedBytes,
+      };
+    } catch (error) {
+      try {
+        transaction?.abort();
+      } catch {
+        // The transaction may already have finished.
+      }
+      await complete?.catch(() => {});
+      return { outcome: "failed", error };
+    }
+  }
+
+  /**
+   * Atomically remove every entry row for one history identity and retire its
+   * byte accounting. A late write that still holds a pre-delete version cannot
+   * regress an already-removed row, because the rows are gone and the write
+   * merges against an empty held value. Returns true only when the transaction
+   * completed, so a caller never treats an aborted delete as durable.
+   */
+  async deleteHistory(historyKey: string): Promise<boolean> {
+    let transaction: IDBTransaction | undefined;
+    let complete: Promise<void> | undefined;
+    try {
+      const database = await this.#connection.open();
+      transaction = database.transaction([...WRITE_STORES], "readwrite");
+      complete = transactionCompletion(transaction);
+      void complete.catch(() => {});
+      const metaStore = transaction.objectStore(ENTRY_META_STORE);
+      const aggregateMeta = await requestResult(
+        metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
+      );
+      const removed = await this.#deleteHistoryRows(transaction, historyKey);
+      metaStore.put({
+        historyKey: AGGREGATE_META_KEY,
+        encodedBytes: Math.max(0, (aggregateMeta?.encodedBytes ?? 0) - removed),
+      });
+      await complete;
+      return true;
+    } catch {
+      try {
+        transaction?.abort();
+      } catch {
+        // The transaction may already have finished.
+      }
+      await complete?.catch(() => {});
+      return false;
+    }
+  }
+
+  /**
+   * Atomically remove every entry-store row and advance the shared durable
+   * Clear epoch by one in the same transaction. The reserved epoch row in the
+   * legacy meta store is the existing cross-tab fence, so a write captured
+   * before this Clear is refused without a second authority service.
+   */
+  async clear(): Promise<{ committed: boolean; epoch: number }> {
+    let observed = 0;
+    let transaction: IDBTransaction | undefined;
+    let complete: Promise<void> | undefined;
+    try {
+      const database = await this.#connection.open();
+      transaction = database.transaction([...WRITE_STORES], "readwrite");
+      complete = transactionCompletion(transaction);
+      void complete.catch(() => {});
+      const legacyMetaStore = transaction.objectStore(LEGACY_META_STORE);
+      observed =
+        (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
+          ?.epoch ?? 0;
+      transaction.objectStore(ENTRY_ITEM_STORE).clear();
+      transaction.objectStore(ENTRY_TURN_STORE).clear();
+      transaction.objectStore(ENTRY_COVERAGE_STORE).clear();
+      transaction.objectStore(ENTRY_META_STORE).clear();
+      legacyMetaStore.put({ ref: CLEAR_EPOCH_KEY, epoch: observed + 1 });
+      await complete;
+      return { committed: true, epoch: observed + 1 };
+    } catch {
+      try {
+        transaction?.abort();
+      } catch {
+        // The transaction may already have finished.
+      }
+      await complete?.catch(() => {});
+      return { committed: false, epoch: observed };
+    }
+  }
+
+  // Delete every entry row for one history identity within an open
+  // transaction and return its accounted encoded bytes. Item rows go through
+  // the historyKey index; turn and coverage rows through their composite key
+  // range, so the identity leaves no partial rows behind.
+  async #deleteHistoryRows(transaction: IDBTransaction, historyKey: string): Promise<number> {
+    const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
+    const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
+    const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+    const metaStore = transaction.objectStore(ENTRY_META_STORE);
+    const itemKeys = await requestResult(
+      itemStore.index("historyKey").getAllKeys(historyKey) as IDBRequest<IDBValidKey[]>,
+    );
+    for (const key of itemKeys) itemStore.delete(key);
+    const range = this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"]);
+    const turnKeys = await requestResult(turnStore.getAllKeys(range) as IDBRequest<IDBValidKey[]>);
+    for (const key of turnKeys) turnStore.delete(key);
+    const coverageKeys = await requestResult(coverageStore.getAllKeys(range) as IDBRequest<IDBValidKey[]>);
+    for (const key of coverageKeys) coverageStore.delete(key);
+    const meta = await requestResult(metaStore.get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>);
+    metaStore.delete(historyKey);
+    return meta?.encodedBytes ?? 0;
+  }
+
+  // TTL reclamation and LRU eviction inside the committing transaction, so a
+  // history's rows and its coverage retire together and a reader's in-memory
+  // pages are untouched. The cap counts combined old/new bytes: entry records
+  // plus any still-present legacy record meta rows. Legacy bodies stay their
+  // owner's to retire; migration removes them in its own transaction.
+  async #enforcePolicy(transaction: IDBTransaction, protectHistoryKey: string): Promise<void> {
+    const metaStore = transaction.objectStore(ENTRY_META_STORE);
+    const rows = await requestResult(
+      metaStore.getAll() as IDBRequest<
+        Array<{
+          historyKey: string;
+          encodedBytes?: number;
+          savedAt?: number;
+          accessedAt?: number;
+        }>
+      >,
+    );
+    const histories = rows.filter((row) => row.historyKey !== AGGREGATE_META_KEY);
+    let entryTotal = histories.reduce((sum, row) => sum + (row.encodedBytes ?? 0), 0);
+    const legacyRows = await requestResult(
+      transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<Array<{ ref?: string; bytes?: number }>>,
+    );
+    const legacyTotal = legacyRows.reduce(
+      (sum, row) => (row.ref !== CLEAR_EPOCH_KEY && Number.isFinite(row.bytes) ? sum + (row.bytes ?? 0) : sum),
+      0,
+    );
+    let combined = entryTotal + legacyTotal;
+    const now = this.#now();
+    const stamp = (row: { savedAt?: number; accessedAt?: number }): number => {
+      if (Number.isFinite(row.accessedAt)) return row.accessedAt as number;
+      if (Number.isFinite(row.savedAt)) return row.savedAt as number;
+      return 0;
+    };
+    for (const row of histories) {
+      if ((row.encodedBytes ?? 0) === 0) continue;
+      const age = stamp(row);
+      if (age > 0 && age + this.#ttlMs <= now) {
+        const removed = await this.#deleteHistoryRows(transaction, row.historyKey);
+        entryTotal -= removed;
+        combined -= removed;
+        row.encodedBytes = 0;
+      }
+    }
+    if (combined > this.#maxBytes) {
+      const victims = histories
+        .filter((row) => (row.encodedBytes ?? 0) > 0 && row.historyKey !== protectHistoryKey)
+        .sort((left, right) => stamp(left) - stamp(right) || left.historyKey.localeCompare(right.historyKey));
+      for (const victim of victims) {
+        if (combined <= this.#maxBytes) break;
+        const removed = await this.#deleteHistoryRows(transaction, victim.historyKey);
+        entryTotal -= removed;
+        combined -= removed;
+        victim.encodedBytes = 0;
+      }
+    }
+    metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: Math.max(0, entryTotal) });
   }
 
   async #applyCoverage(

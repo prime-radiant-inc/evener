@@ -990,7 +990,12 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
-  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    now: () => 0,
+  });
   caches.push(cache);
   const identity = (sessionId: string) => ({
     clientId: "client",
@@ -2115,4 +2120,99 @@ it("ignores a page certificate when the latest window is requested by that page 
   const explicit = await cache.getLatestWindow(historyKey, 3, "page-boundary");
   expect(explicit).toMatchObject({ complete: false, stale: true });
   expect(explicit.serverCursor).toBeUndefined();
+});
+
+function identityFor(sessionId: string) {
+  return { clientId: "c", hostId: "h", sessionId, incarnation: "i" };
+}
+
+function metadataFor(sessionId: string, savedAt: number, accessedAt: number) {
+  const resolvedIdentity = identityFor(sessionId);
+  return {
+    historyKey: entryHistoryKey(resolvedIdentity),
+    requestedRefs: [{ clientId: resolvedIdentity.clientId, ref: `local:${sessionId}` }],
+    resolvedIdentity,
+    savedAt,
+    accessedAt,
+    formatVersion: 3,
+  };
+}
+
+it("evicts the least recently used history together with its coverage under a small cap", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(cache);
+  const older = entryHistoryKey(identityFor("older"));
+  const newer = entryHistoryKey(identityFor("newer"));
+  await cache.commitBatch({
+    historyKey: older,
+    clearEpoch: 0,
+    items: [itemRow(older, 1)],
+    coverage: {
+      kind: "read",
+      readId: "read-older",
+      start: { entry: 1, item: 0 },
+      end: { entry: 1, item: 0 },
+      representedSnapshot: 1,
+      boundary: "older",
+    },
+    sessionMetadata: metadataFor("older", 1, 1),
+  });
+  await cache.commitBatch({
+    historyKey: newer,
+    clearEpoch: 0,
+    items: [itemRow(newer, 2)],
+    sessionMetadata: metadataFor("newer", 2, 2),
+  });
+
+  // The protected (current) identity survives; the only other identity is
+  // evicted atomically with its coverage rather than left with a silent hole.
+  await expect(cache.getLatest(older, 10)).resolves.toEqual([]);
+  await expect(cache.getCoverage(older, "read:read-older")).resolves.toBeUndefined();
+  await expect(cache.getByteTotals(older)).resolves.toEqual({ historyBytes: 0, aggregateBytes: expect.any(Number) });
+  await expect(cache.getLatest(newer, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+});
+
+it("reclaims expired history on the next transaction under an injected clock", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  let now = 1_000;
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 32 * 1024 * 1024,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(cache);
+  const expired = entryHistoryKey(identityFor("expired"));
+  const fresh = entryHistoryKey(identityFor("fresh"));
+  await cache.commitBatch({
+    historyKey: expired,
+    clearEpoch: 0,
+    items: [itemRow(expired, 1)],
+    sessionMetadata: metadataFor("expired", 1_000, 1_000),
+  });
+
+  now = 1_200;
+  await cache.commitBatch({
+    historyKey: fresh,
+    clearEpoch: 0,
+    items: [itemRow(fresh, 2)],
+    sessionMetadata: metadataFor("fresh", 1_200, 1_200),
+  });
+
+  await expect(cache.getLatest(expired, 10)).resolves.toEqual([]);
+  await expect(cache.getLatest(fresh, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
 });
