@@ -31,6 +31,10 @@ Run `python3 -B test_memcheck.py` for its tests.
 import argparse, glob, json, os, subprocess, sys
 
 MAX_INDEX_LINE = 200
+# Where evener keeps each memory scope under its state root: personal memory is
+# memory/ itself, and each project's memory is projects/<id>/memory/.
+PROJECT_SCOPES = "projects/*/memory"
+PERSONAL_AND_PROJECT_SCOPES = ["memory", PROJECT_SCOPES]
 MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "memscope")
 MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
 MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"
@@ -66,10 +70,10 @@ def scope_pages(dirs):
 
 
 def scope_dirs(root, scopes):
-    """The memory scope directories under the trial's state root, e.g. scopes ["personal", "projects/*"].
+    """The memory scope directories under the trial's evener state root, e.g. scopes ["memory", "projects/*/memory"].
     A scope reached through a symlink anywhere below the state root is skipped, as evener's confined
     resolution refuses a symlinked path component."""
-    base = os.path.join(root, "evener", "memory")
+    base = os.path.join(root, "evener")
     return sorted(d for scope in scopes for d in glob.glob(os.path.join(glob.escape(base), scope))
                   if os.path.isdir(d) and not symlink_below(root, d))
 
@@ -114,7 +118,7 @@ def seed_problems(seed_dirs):
 
 
 def index_lines_ok(root):
-    for scope, pages in scope_pages(scope_dirs(root, ["personal", "projects/*"])).items():
+    for scope, pages in scope_pages(scope_dirs(root, PERSONAL_AND_PROJECT_SCOPES)).items():
         index = root_index(scope)
         lines = [(index, line) for line in read(index).split("\n")] if index else []
         lines += [(os.path.join(scope, p["path"]), p["description"]) for p in pages if p["has_description"]]
@@ -127,7 +131,7 @@ def index_lines_ok(root):
 
 def new_pages_ok(root, require_description, tags_subset):
     new = 0
-    for scope, pages in scope_pages(scope_dirs(root, ["projects/*"])).items():
+    for scope, pages in scope_pages(scope_dirs(root, [PROJECT_SCOPES])).items():
         for p in pages:
             if p["by"] == "seed-fixture":
                 continue

@@ -288,8 +288,22 @@ def context_window_config(model, window):
     return text
 
 
-def memory_root(xdg):
+def personal_memory_dir(xdg):
     return os.path.join(xdg, "evener", "memory")
+
+
+def project_memory_dir(xdg, project_id):
+    return os.path.join(xdg, "evener", "projects", project_id, "memory")
+
+
+def snapshot_memory(xdg, dest):
+    """Copies every memory scope under xdg's evener state root into dest at its path relative to that
+    root: memory/ for personal memory, projects/<id>/memory/ for each project's. The rest of the state
+    root, such as the projects' sessions, stays out."""
+    state = os.path.join(xdg, "evener")
+    scopes = [personal_memory_dir(xdg), *glob.glob(project_memory_dir(glob.escape(xdg), "*"))]
+    for scope in sorted(d for d in scopes if os.path.isdir(d)):
+        shutil.copytree(scope, os.path.join(dest, os.path.relpath(scope, state)), dirs_exist_ok=True)
 
 
 def find_files(root, suffix=""):
@@ -494,7 +508,7 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
         if rc != 0:
             raise RuntimeError(f"projid failed: {out}")
         pid = out.strip()
-        dest = os.path.join(memory_root(xdg), "projects", pid)
+        dest = project_memory_dir(xdg, pid)
         shutil.copytree(os.path.join(scen, stage["seed_project_memory"]), dest, dirs_exist_ok=True)
     if stage.get("before"):
         rc, out = run_bounded(stage["before"], work, env, COMMAND_TIMEOUT)
@@ -548,7 +562,7 @@ def grade_trace(spec, inputs):
 
 
 def grade_memory(spec, inputs):
-    prefix = {"personal": "personal/", "project": "projects/"}.get(spec.get("scope"), "")
+    prefix = {"personal": "memory/", "project": "projects/"}.get(spec.get("scope"), "")
     blob = "\n".join(body for path, body in inputs["memory"].items() if path.startswith(prefix))
     found = bool(re.search(spec["regex"], blob))
     return (not found) if spec.get("absent") else found
@@ -749,8 +763,7 @@ def grade_stage(label, arm, scen, stage, trial, session, earlier=()):
     grade["session_id"] = root_session_id(session["events"], session["state"])
     mem_dir = os.path.join(trial, f"{name}.memory")
     try:
-        if os.path.isdir(memory_root(session["xdg"])):
-            shutil.copytree(memory_root(session["xdg"]), mem_dir, dirs_exist_ok=True)
+        snapshot_memory(session["xdg"], mem_dir)
     except OSError as e:
         grade["evidence_error"] = f"memory snapshot: {e}"
     inputs = {"work": session["work"], "env": session["env"], "calls": calls, "messages": messages,

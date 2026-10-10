@@ -30,7 +30,7 @@
         },
         {
           "name": "at most 1 memory page",
-          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
+          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" \"$XDG_STATE_HOME\"/evener/projects/*/memory -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
         }
       ],
       "trace": [
