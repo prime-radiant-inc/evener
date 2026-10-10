@@ -499,6 +499,9 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
         if rc != 0:
             raise RuntimeError(f"projid failed: {out}")
         pid = out.strip()
+        # Seeding, snapshots, grading and the scenarios' checks all use the current memory layout
+        # (memcheck.py), so every --version binary must be built from a commit that has it; an older
+        # binary reads and writes memory elsewhere. The lab carries no second layout.
         dest = os.path.join(xdg, "evener", memcheck.project_scope(pid))
         shutil.copytree(os.path.join(scen, stage["seed_project_memory"]), dest, dirs_exist_ok=True)
     if stage.get("before"):

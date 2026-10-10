@@ -38,6 +38,12 @@ var memoryScopes = []string{"personal", "project"}
 // the memory directory in that project's own state directory,
 // projects/<Project.ID>. An error means the scope is unknown or not bound for
 // this session.
+//
+// Every entry under memory/ belongs to personal memory, and nothing reads or
+// excludes the earlier memory/personal/, memory/projects/<id>/ and
+// memory/sessions/ directories. That is deliberate: the product chose no
+// migration code and no fallback for the old layout, and each host moves its
+// files once by hand (a one-time script outside the repo) when it upgrades.
 func (s *Session) memoryScopeBinding(scope string) (string, error) {
 	switch scope {
 	case "personal":
