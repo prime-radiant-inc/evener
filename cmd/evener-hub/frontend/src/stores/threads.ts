@@ -986,22 +986,24 @@ async function runEntryHistoryRequest<T>(
   let result!: T;
   while (!ran) {
     if (!current()) throw new Error("entry history request was retired");
-    await residency.scheduleHydration(
-      fixture.ref,
-      heldCountsAtStore(fixture.ref) ? "foreground" : "background",
-      async (scheduledSignal) => {
-        if (!current() || scheduledSignal.aborted)
-          throw new Error(
-            `entry history request was retired, pre, callerAborted=${signal?.aborted}, schedulerAborted=${scheduledSignal.aborted}, repositoryChanged=${fixture.repository !== repository}, clear=${fixture.clearInert}, epochChanged=${epoch !== readyEpoch}`,
-          );
-        ran = true;
-        result = await run();
-        if (!current() || scheduledSignal.aborted)
-          throw new Error(
-            `entry history request was retired, post, callerAborted=${signal?.aborted}, schedulerAborted=${scheduledSignal.aborted}, repositoryChanged=${fixture.repository !== repository}, clear=${fixture.clearInert}, epochChanged=${epoch !== readyEpoch}`,
-          );
-      },
-    );
+    let activated = false;
+    await residency
+      .scheduleHydration(
+        fixture.ref,
+        heldCountsAtStore(fixture.ref) ? "foreground" : "background",
+        async (scheduledSignal) => {
+          activated = true;
+          if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+          ran = true;
+          result = await run();
+          if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+        },
+      )
+      .catch((error) => {
+        // A cancelled predecessor can reject the shared slot before this
+        // callback ran. Only its settlement was joined, so try our own request.
+        if (activated || !current()) throw error;
+      });
     // A previous same-ref read occupies this slot. Join its settlement, never
     // its response, then acquire a distinct request for the fresh authority.
   }
@@ -7101,7 +7103,6 @@ export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel
 }
 
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
-  const renewingRetirement = entryTranscriptRoute(ref)?.retirement !== undefined;
   beginCanonicalThreadClaim(ref);
   backgroundRefCounts.set(ref, (backgroundRefCounts.get(ref) ?? 0) + 1);
   syncTranscriptResidencyOwners(ref);
@@ -7115,11 +7116,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
     settleRetired = resolve;
   });
   const acquisition = (async () => {
-    if (
-      threadsStore.getState().deletedRefs.has(ref) ||
-      (!renewingRetirement && threadsStore.getState().threads.has(ref))
-    )
-      return;
+    if (threadsStore.getState().deletedRefs.has(ref) || threadsStore.getState().threads.has(ref)) return;
     try {
       const client = await requireReadyClient();
       const epoch = readyEpoch;

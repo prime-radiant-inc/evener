@@ -1116,13 +1116,6 @@ export class TranscriptRepository {
     });
     const work = (async (): Promise<TranscriptRetirementOutcome> => {
       const read = this.#binding.readHistory;
-      console.error("RETIRE-BEGIN", {
-        hasRead: !!read,
-        disposed: this.#disposed,
-        invalidated: this.#invalidated,
-        suppressed: this.#binding.suppressed?.(),
-        sealed: this.#sealed,
-      });
       if (!read || !current()) return { kind: "stale" };
       const response = await read(undefined, controller.signal);
       if (!current()) return { kind: "cancelled" };
@@ -1130,12 +1123,6 @@ export class TranscriptRepository {
       const boundary = `final:${this.#boundary}:${response.snapshot.length}`;
       const finalWrite = { boundary, persisted: false };
       this.#retirementWrite = finalWrite;
-      console.error("RETIRE-DIAGNOSTIC", {
-        sealed: this.#sealed,
-        requestGeneration: response.requestGeneration,
-        issued: this.#model?.history?.issuedGeneration,
-        invalidated: this.#model?.history?.invalidatedAtGeneration,
-      });
       if (
         !this.acceptRead(response, {
           lifetime: this.#binding.lifetime,
@@ -1154,12 +1141,6 @@ export class TranscriptRepository {
       // Settlement can also mean a policy refusal dropped the work. Track this
       // read's commit, not the last-completing (possibly earlier) suffix.
       const persisted = !this.#cacheContinuityLost && finalWrite.persisted;
-      console.error("RETIRE-RESULT", {
-        persisted,
-        recoveryNeeded: this.#recoveryNeeded,
-        continuityLost: this.#cacheContinuityLost,
-        unresolvedEnd,
-      });
       return { kind: this.#recoveryNeeded || unresolvedEnd || !persisted ? "stale" : "saved" };
     })();
     const retirement: Promise<TranscriptRetirementOutcome> = Promise.race([
@@ -1169,10 +1150,7 @@ export class TranscriptRepository {
         timer = setTimeout(() => resolve({ kind: "stale" }), 30_000);
       }),
     ])
-      .catch((error): TranscriptRetirementOutcome => {
-        console.error("RETIRE-ERROR", String(error));
-        return { kind: current() ? "stale" : "cancelled" };
-      })
+      .catch((): TranscriptRetirementOutcome => ({ kind: current() ? "stale" : "cancelled" }))
       .then((outcome) => {
         if (this.#retirement !== retirement) return { kind: "cancelled" } as const;
         this.#sealed = true;
