@@ -587,6 +587,7 @@ function currentEntryCache(): SessionEntryCache {
 export function setProductionEntryCacheForTests(cache: SessionEntryCache): void {
   productionEntryCache = cache;
 }
+
 // This process-local token scopes current checkpoints to this browser instance.
 // It is deliberately regenerated on reload and never persisted as identity.
 const currentAppliedSequences = new Map<string, number>();
@@ -5213,6 +5214,10 @@ async function refreshTrackedThread(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<number | undefined> {
+  // The scheduler can join an existing repository end read. Apply the same
+  // owner fence as refreshTrackedThreadNow before joining, so a released ref
+  // cannot carry that retired read's rejection into the reconnect callback.
+  if (!canonicalThreadOwnerActive(ref)) return undefined;
   if (intent !== "background" || entryTranscriptFixtureForTests?.ref === ref)
     return refreshTrackedThreadNow(
       client,

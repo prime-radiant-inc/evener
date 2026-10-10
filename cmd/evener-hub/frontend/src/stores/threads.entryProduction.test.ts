@@ -1,3 +1,4 @@
+import type { AnyNotification, ThreadItem } from "@evener/appwire-client";
 import {
   cachedSessionRecord,
   currentTranscriptState,
@@ -7,6 +8,8 @@ import {
   type Turn,
   WireError,
 } from "@evener/appwire-client";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -1722,4 +1725,86 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
     await opening;
     await releasing;
   }
+});
+
+const ref = "local:retirement";
+const threadId = `thr_${ref}`;
+function recorded(text = "recorded-stream"): ThreadItem {
+  return {
+    type: "agentMessage",
+    id: "recorded",
+    turnId: "turn_1",
+    transcriptKey: "recorded",
+    position: { entry: 41, item: 0 },
+    version: 41,
+    roundId: "r1",
+    text,
+  };
+}
+function readOf(items: ThreadItem[] = [], length = 40): ThreadReadResponse {
+  const base = currentRead(ref);
+  return {
+    ...base,
+    snapshot: { incarnation: "inc-1", length },
+    thread: {
+      ...base.thread,
+      turns: [{ id: "turn_1", status: "completed", itemsView: "full", version: length, items }],
+    },
+  };
+}
+const end: AnyNotification = { method: "overlay/end", params: { ref, threadId, roundId: "r1" } };
+const tool: AnyNotification = {
+  method: "overlay/upserted",
+  params: {
+    ref,
+    threadId,
+    item: {
+      key: "tool:old",
+      kind: "tool",
+      roundId: "r1",
+      historyKey: "old-tool",
+      turnId: "turn_1",
+      anchor: { entry: 2, item: 0 },
+      item: {
+        id: "old-tool",
+        type: "commandExecution",
+        turnId: "turn_1",
+        status: "inProgress",
+        output: "provisional-tool",
+      },
+    },
+  },
+};
+
+it("ordinary default reconnect handles the retired end-read rejection without an unhandled promise", async () => {
+  const storage = cache();
+  const key = entryHistoryKey({
+    clientId: location.origin,
+    hostId: "local",
+    sessionId: readOf().thread.sessionId,
+    incarnation: "inc-1",
+  });
+  const client = new FakeClient("ready");
+  const pendingEnd = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner = acquireBackgroundThread(ref);
+  await owner.ready;
+  await settleEntryTranscriptForTests(ref);
+  client.emitNotification(tool);
+  client.emitNotification(end);
+  await vi.waitFor(() => expect(reads).toBe(2));
+  const releasing = owner.release();
+  client.emitStateChange("reconnecting");
+  client.emitReady();
+  pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
+  expect(await releasing).toEqual({ kind: "stale" });
+  expect(reads).toBe(2);
+  expect(await storage.getLatest(key, 100)).toEqual([]);
+  const renewed = acquireBackgroundThread(ref);
+  await renewed.ready;
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+  expect(await renewed.release()).toEqual({ kind: "saved" });
 });
