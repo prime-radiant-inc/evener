@@ -959,4 +959,192 @@ describe("entry repository: older paging", () => {
       entryCache.close();
     }
   });
+
+  test("a same-connection close/reopen restores later-page rows locally and the next older request carries the stored boundary cursor", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reopen-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    const pageCursors: (string | undefined)[] = [];
+    let pageCalls = 0;
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", (params) => {
+      pageCalls += 1;
+      const cursor = (params as { cursor?: string }).cursor;
+      pageCursors.push(cursor);
+      if (cursor === "cursor_1") {
+        return {
+          data: [
+            {
+              id: "turn_mid",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_mid"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      }
+      if (cursor === "cursor_2") {
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([1, 2], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_3",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      }
+      return {
+        data: [],
+        nextCursor: undefined,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2"]);
+      await fixture.settled();
+
+      // Close and reopen locally on the SAME connection/binding. The reader is
+      // disposed and re-attached; the certified pages are restored from disk.
+      threadsStore.getState().releaseThread(SELECTED);
+      await threadsStore.getState().ensureThread(SELECTED);
+      const reopenedEntries = (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((item) => item.position?.entry);
+      expect(reopenedEntries).toEqual(expect.arrayContaining([1, 2, 3, 4, 5, 6, 7, 8]));
+      // Unique: the later-page row (position 2) is retained exactly once.
+      expect(reopenedEntries.filter((entry) => entry === 2)).toHaveLength(1);
+
+      // Continue paging across the join: the next older request is a real
+      // supported thread/turns/list issued on the stored boundary cursor.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(3);
+      expect(pageCursors.at(-1)).toBe("cursor_3");
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a same-connection refresh preserves paged history and a missed-event reconnect pages afresh from the returned cursor", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-refresh-reconnect-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    const pageCursors: (string | undefined)[] = [];
+    let pageCalls = 0;
+    const pageResponse = (id: string, entries: number[], nextCursor: string, length = 8) =>
+      ({
+        data: [
+          {
+            id,
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems(entries, id),
+          },
+        ],
+        nextCursor,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length },
+      }) as ThreadTurnsListResponse;
+    const turnsList = (params: { cursor?: string }) => {
+      pageCalls += 1;
+      pageCursors.push(params.cursor);
+      if (params.cursor === "cursor_1") return pageResponse("turn_mid", [3, 4, 5], "cursor_2");
+      if (params.cursor === "cursor_fresh") return pageResponse("turn_fresh", [4, 5, 6], "cursor_fresh2", 10);
+      return pageResponse("turn_old", [1, 2], "cursor_fresh3", 10);
+    };
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", turnsList);
+    const modelEntries = () =>
+      (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((item) => item.position?.entry);
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+      expect(modelEntries()).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+
+      // A same-connection refresh must preserve the compatible paged history.
+      await threadsStore.getState().refreshThread(SELECTED);
+      expect(modelEntries()).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+      expect(pageCalls).toBe(1);
+
+      // Reconnect with a missed event: a new client reports the same source
+      // identifiers but a fresh latest boundary that excludes the old rows.
+      const replacement = new FakeClient("ready");
+      replacement.on("thread/read", (params) => {
+        const response = read("entry-paging-reconnected", {
+          requestGeneration: params.requestGeneration,
+          length: 10,
+        });
+        response.thread.turns = [
+          {
+            id: "turn_reconnect",
+            itemsView: "full",
+            status: "completed",
+            version: 10,
+            items: pageItems([7, 8, 9], "turn_reconnect"),
+          },
+        ];
+        response.thread.evener.ref = SELECTED;
+        return { ...response, olderCursor: "cursor_fresh" };
+      });
+      replacement.on("thread/turns/list", turnsList);
+      connectionStore.getState().connect(replacement);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await settleBackgroundTranscriptsForTests();
+      // No paging was issued just by reconnecting.
+      expect(pageCalls).toBe(1);
+      expect(modelEntries()).toEqual(expect.arrayContaining([7, 8, 9]));
+
+      // Renewed paging: the old cached rows may NOT certify the missed interval,
+      // so the next older request is a real server page on the fresh cursor.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      expect(pageCursors.at(-1)).toBe("cursor_fresh");
+      // The later-page row is recoverable through a further renewed page.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(3);
+      expect(pageCursors.at(-1)).toBe("cursor_fresh2");
+      expect(modelEntries()).toEqual(expect.arrayContaining([1, 2]));
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
 });

@@ -169,6 +169,17 @@ export class TranscriptRepository {
    */
   beginFreshBaseline(): void {
     this.#advanceSourceRevision();
+    // A real connection/reconciliation boundary retires the held history too.
+    // A reconnect can report the same boot generation, epoch and incarnation
+    // while entries were missed over the gap; merging the fresh read into
+    // pre-gap rows would keep their old cursor and let renewed paging continue
+    // from the pre-gap boundary. Marking the model invalid makes the next
+    // accepted read replace it, so the fresh latest boundary and its returned
+    // cursor win.
+    if (this.#model) {
+      this.#model = invalidateHistory(this.#model);
+      this.#recoveryNeeded = true;
+    }
   }
 
   /** The oldest recorded position this repository holds, or undefined. */

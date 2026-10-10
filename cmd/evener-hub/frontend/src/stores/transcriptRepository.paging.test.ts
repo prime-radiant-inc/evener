@@ -601,6 +601,44 @@ test("a recorded update after the cache result was already read is preserved", a
   expect(orderedPositions(outcome.model)).toEqual([3, 4, 5, 6, 7, 8]);
 });
 
+test("a compatible old-tool completion survives a latest response whose window excludes its position", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+
+  // A compatible completion for an older tool item at position 4, outside the
+  // latest window. The isolated update establishes no intervening coverage, but
+  // its content must stay in committed rows (or bounded pending work).
+  expect(repo.accept(historyUpdate(4, 9, "tool-completed", 8), { lifetime: 1 })).toBe(true);
+
+  // A latest response re-issues the in-window window [6,7,8] and excludes
+  // position 4 entirely; item 6 is newer here so the response's version wins.
+  const latest = readOf([6, 7, 8], { olderCursor: "C1", length: 8 });
+  latest.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: 8,
+      items: [itemOf(6, 9), itemOf(7), itemOf(8)],
+    },
+  ];
+  expect(repo.acceptRead(latest, { lifetime: 1, readId: "r2", boundary: "b2" })).toBe(true);
+  await repo.settled();
+
+  const snapshot = repo.getSnapshot();
+  expect(holdsPosition(snapshot, 4)).toBe(true);
+  expect(itemVersionAt(snapshot, 4)).toBe(9);
+  expect(itemVersionAt(snapshot, 6)).toBe(9);
+
+  // The completion's content is preserved in the real cache's committed rows,
+  // not merely in memory.
+  const rows = await fixture.cache.getLatest(historyKey, 40);
+  const row4 = rows.find((row) => row.position.entry === 4);
+  expect(row4?.version).toBe(9);
+});
+
 test("an invalidating page is refused as a certificate but its invalidation is adopted", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -682,6 +720,91 @@ test("a disposal during an outstanding lookup publishes nothing", async () => {
   expect(publishes).toBe(0);
   unsubscribe();
   expect(repo.getSnapshot()).toBeUndefined();
+});
+
+test("a page completion raced with a newer item version and reader disposal keeps the newer content and leaves the repository alive", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+  const reader = repo.attachReader();
+  // openLocal restores the latest read window; the older page below it is
+  // served by the page completion under test.
+  expect(orderedPositions((await reader.openLocal(40)).model)).toEqual([6, 7, 8]);
+
+  // Hold the real older-window lookup after the cache result was read, so both
+  // a newer item version and the reader's disposal land mid-completion.
+  const gate = holdOlderWindowAfterRead();
+  const lookup = repo.loadOlderPage(40, 1);
+  await gate.whenRead;
+  expect(repo.accept(historyUpdate(4, 9, "newer", 8), { lifetime: 1 })).toBe(true);
+  reader.dispose();
+  gate.release();
+  const outcome = await lookup;
+  expect(outcome.kind).toBe("local");
+
+  // The newer content is kept; the retired reader holds nothing to publish.
+  expect(itemVersionAt(repo.getSnapshot(), 4)).toBe(9);
+  expect(orderedPositions(repo.getSnapshot())).toEqual([3, 4, 5, 6, 7, 8]);
+  expect(reader.getSnapshot()).toBeUndefined();
+
+  // The disposal did not take the repository down: a fresh reader attaches and
+  // opens against the same live repository.
+  const later = repo.attachReader();
+  expect(orderedPositions((await later.openLocal(40)).model)).toEqual([3, 4, 5, 6, 7, 8]);
+  later.dispose();
+  repo.dispose();
+});
+
+test("a disposed reader's in-flight openLocal publishes nothing and the repository keeps its newer content", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+  const reader = repo.attachReader();
+
+  // Hold the real latest-window read openLocal uses, completing it first and
+  // then holding before it returns, so the disposal races a finished read.
+  const realGetLatestWindow = fixture.cache.getLatestWindow.bind(fixture.cache);
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let markRead!: () => void;
+  const read = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  fixture.cache.getLatestWindow = (async (historyKeyArg: string, limit: number, boundary?: string) => {
+    const window = await realGetLatestWindow(historyKeyArg, limit, boundary);
+    markRead();
+    await gate;
+    return window;
+  }) as typeof fixture.cache.getLatestWindow;
+  try {
+    let publishes = 0;
+    const unsubscribe = repo.subscribe(() => {
+      publishes += 1;
+    });
+    const restore = reader.openLocal(40);
+    await read;
+    expect(repo.accept(historyUpdate(4, 9, "newer", 8), { lifetime: 1 })).toBe(true);
+    reader.dispose();
+    const before = publishes;
+    releaseGate();
+    const result = await restore;
+    // The retired reader's restore published nothing after its disposal.
+    expect(result.status).toBe("recovery-needed");
+    expect(publishes).toBe(before);
+    expect(reader.getSnapshot()).toBeUndefined();
+    expect(itemVersionAt(repo.getSnapshot(), 4)).toBe(9);
+    unsubscribe();
+  } finally {
+    repo.dispose();
+  }
 });
 
 test("an open reader keeps its loaded rows when disk eviction removes the history", async () => {

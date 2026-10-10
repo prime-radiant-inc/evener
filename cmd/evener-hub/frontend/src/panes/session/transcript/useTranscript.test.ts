@@ -2,13 +2,19 @@ import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evene
 import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, renderHook } from "@testing-library/react";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { SessionEntryCache } from "../../../stores/sessionEntryCache";
+import {
+  installEntryTranscriptFixtureForTests,
+  resetThreadsStoreForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
@@ -1185,4 +1191,112 @@ test("keeps fulfilled unresolved history quiet and paces geometry demand until i
   expect(result.current.loadingOlder).toBe(false);
   expect(result.current.olderError).toBeNull();
   unmount();
+});
+
+test("two entry-route panes sharing ingestion issue one page and one pane's cancellation does not cancel the other's demand", async () => {
+  // A preceding test leaves fake timers installed; this test awaits real
+  // timers while the async entry-route page settles.
+  vi.useRealTimers();
+  const entryCache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `entry-pane-isolation-${crypto.randomUUID()}`,
+  });
+  const REF = "local:entry-pane";
+  const fixture = installEntryTranscriptFixtureForTests({
+    ref: REF,
+    cache: entryCache,
+    clientId: "fixture-client",
+    hostId: "fixture-host",
+  });
+  const fake = connectFakeClient();
+  const item = (entry: number, turnId: string) => ({
+    type: "agentMessage" as const,
+    id: `item-${entry}`,
+    transcriptKey: `item-${entry}`,
+    turnId,
+    position: { entry, item: 0 },
+    version: entry,
+    text: `row-${entry}`,
+  });
+  let pageCalls = 0;
+  const box: { resolve?: (response: ThreadTurnsListResponse) => void } = {};
+  fake.on("thread/read", (params) => ({
+    thread: testThread(REF, {
+      turns: [
+        {
+          id: "turn_top",
+          status: "completed",
+          itemsView: "full",
+          version: 8,
+          items: [item(6, "turn_top"), item(7, "turn_top"), item(8, "turn_top")],
+        },
+      ],
+    }),
+    requestGeneration: params.requestGeneration,
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: "inc_pane", length: 8 },
+    overlay: [],
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => {
+    pageCalls += 1;
+    return new Promise<ThreadTurnsListResponse>((resolve) => {
+      box.resolve = resolve;
+    });
+  });
+  try {
+    await act(async () => {
+      await threadsStore.getState().ensureThread(REF);
+    });
+    const a = renderHook(() => useTranscript(REF, "pane-a"));
+    const b = renderHook(() => useTranscript(REF, "pane-b"));
+    let firstLoad!: Promise<void>;
+    let secondLoad!: Promise<void>;
+    act(() => {
+      // The same tick, the shape automatic paging produces for two panes.
+      firstLoad = a.result.current.loadOlder();
+      secondLoad = b.result.current.loadOlder();
+    });
+    await act(async () => {
+      for (let i = 0; i < 50 && box.resolve === undefined; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+    // Both panes share one ingestion and one in-flight page request.
+    expect(pageCalls).toBe(1);
+    expect(b.result.current.loadingOlder).toBe(true);
+    // Pane A abandons its demand; pane B's demand survives the cancellation.
+    act(() => a.result.current.cancelOlder());
+    await act(async () => {
+      box.resolve?.({
+        data: [
+          {
+            id: "turn_old",
+            status: "completed",
+            itemsView: "full",
+            version: 8,
+            items: [item(3, "turn_old"), item(4, "turn_old"), item(5, "turn_old")],
+          },
+        ],
+        nextCursor: undefined,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: "inc_pane", length: 8 },
+      });
+      await Promise.all([firstLoad, secondLoad]);
+    });
+    // The single page merged once into the shared ingestion both panes read.
+    expect(pageCalls).toBe(1);
+    const entries = (b.result.current.model?.turns ?? []).flatMap((turn) => turn.items).map((it) => it.position?.entry);
+    expect(entries).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+    expect(entries.filter((entry) => entry === 3)).toHaveLength(1);
+    a.unmount();
+    b.unmount();
+  } finally {
+    threadsStore.getState().releaseThread(REF);
+    fixture.dispose();
+    entryCache.close();
+  }
 });
