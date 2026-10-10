@@ -137,6 +137,10 @@ type HostFacts struct {
 	// so the env floor can tell whether a spawn's go would read the same one.
 	GoEnvFile string
 
+	// GoEnvFileSettings holds the GOPATH, GOMODCACHE and GOCACHE lines of that
+	// go env file alone, without the host process's environment overrides.
+	GoEnvFileSettings map[string]string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -276,6 +280,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
+	facts.GoEnvFileSettings = goEnvFileSettings(system)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
@@ -359,21 +364,28 @@ func goEnvValue(system probeSystem, name string) string {
 	if value := system.getenv(name); value != "" {
 		return value
 	}
+	return goEnvFileSettings(system)[name]
+}
+
+// goEnvFileSettings returns the GOPATH, GOMODCACHE and GOCACHE lines of the go
+// env file alone, parsed as goEnvValue describes (nil when there is no file).
+func goEnvFileSettings(system probeSystem) map[string]string {
 	file := goEnvFile(system)
 	if file == "" {
-		return ""
+		return nil
 	}
 	data, err := system.readFile(file)
 	if err != nil {
-		return ""
+		return nil
 	}
-	value := ""
+	settings := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
-		if key, val, ok := strings.Cut(line, "="); ok && key == name {
-			value = val
+		key, val, ok := strings.Cut(line, "=")
+		if ok && (key == envvars.GoPath.Name || key == envvars.GoModCache.Name || key == envvars.GoCache.Name) {
+			settings[key] = val
 		}
 	}
-	return value
+	return settings
 }
 
 // goEnvFile returns the go env file the go command reads: $GOENV, or

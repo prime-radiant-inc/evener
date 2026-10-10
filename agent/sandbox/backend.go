@@ -56,7 +56,7 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 		if err := prepareGitSurfaces(policy); err != nil {
 			return nil, err
 		}
-		prepareCacheRoots(policy)
+		policy = prepareCacheRoots(policy)
 	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
 }
@@ -65,17 +65,26 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 // yet. Such a root has no lower to overlay and a mount target bwrap cannot create
 // in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
 // still point at it; the go command would create the same empty directory on its
-// first unsandboxed run. An empty directory cannot poison a cache. Best-effort:
-// a root that cannot be created stays skipped, as before.
-func prepareCacheRoots(rp ResolvedPolicy) {
+// first unsandboxed run. An empty directory cannot poison a cache. A root that
+// cannot be created is dropped from the policy's cache roots, so the env floor
+// redirects it.
+func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	if rp.CacheStrategy != CacheOverlay {
-		return
+		return rp
 	}
+	var served []string
 	for _, root := range rp.CacheRoots {
 		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
 			_ = os.MkdirAll(root, 0o755)
 		}
+		// A root that still is not a directory cannot be overlaid; leaving it
+		// out lets the env floor send what names it to the session scratch.
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			served = append(served, root)
+		}
 	}
+	rp.CacheRoots = served
+	return rp
 }
 
 // Policy returns the resolved policy this wrapper enforces.

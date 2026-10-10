@@ -47,8 +47,8 @@ var floorPrefixDrops = []string{
 //     session-private strategy, and under the overlay the Go caches it does not
 //     serve (see redirectedCacheVars).
 //
-// It is a pure function of its inputs and returns a fresh slice; it never reads
-// the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
+// It returns a fresh slice and never reads the process environment; the overlay
+// branch resolves symlinks on the cache paths it judges (overlayServes). Called at EVERY spawn site (shell jobs, rg, stdio MCP
 // servers, hook commands) so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
@@ -124,19 +124,36 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 		if policy.resolveHost.GoEnvUnreadable {
 			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
 		}
-		dirs, known := overlayCacheDirs(env, policy.resolveHost)
+		dirs, goKnown := overlayCacheDirs(env, policy.resolveHost)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
-			if dir := dirs[name]; !known || (filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots)) {
+			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && !overlayServes(policy.CacheRoots, dir)) {
 				out[name] = true
 			}
 		}
 		for _, name := range []string{"npm_config_cache", envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots) {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !overlayServes(policy.CacheRoots, dir) {
 				out[name] = true
 			}
 		}
 	}
 	return out
+}
+
+// overlayServes reports whether the overlay covers writes to dir: dir lies under
+// a cache root by spelling, and its real destination (following any symlink on
+// the way, existing or not yet created) still lies under one, so a link from a
+// served root into the worktree does not count.
+func overlayServes(roots []string, dir string) bool {
+	if !isUnderAnyRoot(dir, roots) {
+		return false
+	}
+	dest := resolveExistingPrefix(dir)
+	for _, r := range roots {
+		if pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r)) {
+			return true
+		}
+	}
+	return false
 }
 
 // overlayCacheDirs returns, for each cache variable, the directory a spawned
@@ -161,29 +178,38 @@ func overlayCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
 		}
 		return ""
 	}
-	if file := goEnvFileFor(vars, host.OS); file != host.GoEnvFile {
-		if file != "" {
-			return nil, false
-		}
-		// No env file at all (GOENV=off, or nothing locates it): only the
-		// spawn's own settings and Go's defaults apply.
-		host.GoPath, host.GoModCache, host.GoCache = "", "", ""
-	}
 	// Defaults follow the spawn's own HOME and XDG_CACHE_HOME, never the
-	// host's: a child run with its own (or none) writes where its go decides.
+	// host's: a child run with its own (or none) writes where its tools decide.
 	home := vars[envvars.Home.Name]
+	out := map[string]string{
+		"npm_config_cache":     vars["npm_config_cache"],
+		envvars.CargoHome.Name: vars[envvars.CargoHome.Name],
+	}
+	if home != "" {
+		out["npm_config_cache"] = firstOr(out["npm_config_cache"], filepath.Join(home, ".npm"))
+		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(home, ".cargo"))
+	}
+
+	// Go settings come from the spawn's environment, then the go env file it
+	// reads: the host's file values only (never the host process's own
+	// environment overrides), and only when it is the file the probe read.
+	file := map[string]string{}
+	if spawnFile := goEnvFileFor(vars, host.OS); spawnFile != "" {
+		if spawnFile != host.GoEnvFile {
+			return out, false
+		}
+		file = host.GoEnvFileSettings
+	}
 	gopath := ""
-	if entries := goPathEntries(HostFacts{Home: home, GoPath: firstOr(vars[envvars.GoPath.Name], host.GoPath)}); len(entries) > 0 {
+	if entries := goPathEntries(HostFacts{Home: home, GoPath: firstOr(vars[envvars.GoPath.Name], file[envvars.GoPath.Name])}); len(entries) > 0 {
 		gopath = entries[0]
 	}
 	cacheHome := vars[envvars.XDGCacheHome.Name]
 	if cacheHome == "" && home != "" {
 		cacheHome = filepath.Join(home, ".cache")
 	}
-	out := map[string]string{
-		envvars.GoModCache.Name: firstOr(vars[envvars.GoModCache.Name], host.GoModCache),
-		envvars.GoCache.Name:    firstOr(vars[envvars.GoCache.Name], host.GoCache),
-	}
+	out[envvars.GoModCache.Name] = firstOr(vars[envvars.GoModCache.Name], file[envvars.GoModCache.Name])
+	out[envvars.GoCache.Name] = firstOr(vars[envvars.GoCache.Name], file[envvars.GoCache.Name])
 	if gopath != "" {
 		out[envvars.GoPath.Name] = filepath.Join(gopath, "pkg")
 		if out[envvars.GoModCache.Name] == "" {
@@ -192,12 +218,6 @@ func overlayCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
 	}
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
-	}
-	out["npm_config_cache"] = vars["npm_config_cache"]
-	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
-	if home != "" {
-		out["npm_config_cache"] = firstOr(out["npm_config_cache"], filepath.Join(home, ".npm"))
-		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(home, ".cargo"))
 	}
 	return out, true
 }
@@ -233,7 +253,7 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		host := policy.resolveHost
 		configured := ""
 		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
-			configured = host.GoPath
+			configured = host.GoEnvFileSettings[envvars.GoPath.Name]
 		}
 		ambient = goPathEntries(HostFacts{Home: vars[envvars.Home.Name], GoPath: configured})
 	}
