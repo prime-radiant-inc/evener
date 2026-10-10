@@ -988,28 +988,23 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 }
 
 // stagePresentedAttentionCoverage records one built request's candidate
-// coverage: the attention IDs the request presents that were not armed for
-// the root's own notification turn when this turn began. Staging is
-// candidacy, not credit — the round loop promotes the staged set into
-// attentionCoveredIDs only when the round's call settles, because a request
-// that never settled (a failed attempt, a content-filter retry whose
-// compaction then folds the steering turn away) presented nothing the design
-// may consume. Only a turn that coversPresentedAttention stages.
-//
-// A responses-continuation delta request carries only new items; any older
-// steering turn lives in server-side state this session cannot verify. Nothing
-// stages, and the items keep their wake for a full-history turn.
-func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, req llm.Request, historyTurns []schema.Turn) {
+// coverage: the attention IDs among presentedTurns, the exact history the
+// request projects, that were not armed for the root's own notification turn
+// when this turn began. Every request build replaces the staged set, so a
+// failed attempt's candidates never outlive it. Staging is candidacy, not
+// credit — promoteStagedAttentionCoverage credits the set only when the
+// round's call settles, because a request that never settled (a failed
+// attempt, a content-filter retry whose compaction then folds the steering
+// turn away) presented nothing the design may consume. Only a turn that
+// coversPresentedAttention stages.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
 	if !s.coversPresentedAttention(ctx) {
-		return
-	}
-	if req.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
-	for _, turn := range historyTurns {
+	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
 			continue
 		}
@@ -1025,20 +1020,28 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, req llm.R
 }
 
 // promoteStagedAttentionCoverage credits the staged set of a round whose
-// call settled. Called by the round loop on the success path only.
-func (s *Session) promoteStagedAttentionCoverage() {
+// call settled as settled, the request that actually answered. Called by the
+// round loop on the success path only.
+//
+// A responses-continuation delta carries only new items; any older steering
+// turn lives in server-side state this session cannot verify, so a round that
+// settled as a delta credits nothing and the items keep their wake for a
+// full-history turn. A delta whose call fell back to a full-history request
+// settled as that request, which carried every staged turn.
+func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.attentionStagedIDs) == 0 {
+	staged := s.attentionStagedIDs
+	s.attentionStagedIDs = nil
+	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
 	covered := s.attentionCoveredIDs
 	if covered == nil {
-		covered = make(map[string]struct{}, len(s.attentionStagedIDs))
+		covered = make(map[string]struct{}, len(staged))
 	}
-	maps.Copy(covered, s.attentionStagedIDs)
+	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
-	s.attentionStagedIDs = nil
 }
 
 // resetAttentionCoverage clears the per-turn coverage at turn start and

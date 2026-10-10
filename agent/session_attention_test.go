@@ -3326,7 +3326,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		steeringFor(midTurnID, midContent),
 		steeringFor(unarmedID, midContent),
 	}
-	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
 	root.attentionMu.Lock()
 	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
@@ -3339,7 +3339,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		}
 	}
 	// Staging is candidacy, not credit: only a settled round promotes.
-	root.promoteStagedAttentionCoverage()
+	root.promoteStagedAttentionCoverage(llm.Request{})
 	root.attentionMu.Lock()
 	covered := root.attentionCoveredIDs
 	root.attentionMu.Unlock()
@@ -3353,17 +3353,11 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	}
 }
 
-// A responses-continuation delta request carries only new items; older
-// steering turns live in server-side state this session cannot verify, so a
-// delta request stages nothing. The items keep their wake for a full-history
-// turn.
-func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
-	t.Parallel()
+// rootWithMidTurnAttention returns a root whose turn has begun and one
+// attention item armed after that, plus a presented history carrying it.
+func rootWithMidTurnAttention(t *testing.T, attentionID, content string) (*Session, []schema.Turn) {
+	t.Helper()
 	stateDir := t.TempDir()
-	const (
-		attentionID = "delegate:dlg_delta/delivery/1"
-		content     = `<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`
-	)
 	root := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
@@ -3377,27 +3371,77 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
 	steering.AttentionID = attentionID
-	historyTurns := []schema.Turn{
+	return root, []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("context")),
 		steering,
 	}
+}
 
-	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, historyTurns)
+func rootCoveredAttention(root *Session) map[string]struct{} {
 	root.attentionMu.Lock()
-	staged := maps.Clone(root.attentionStagedIDs)
-	root.attentionMu.Unlock()
-	if len(staged) != 0 {
-		t.Fatalf("delta request staged coverage: %v, want nothing", staged)
+	defer root.attentionMu.Unlock()
+	return maps.Clone(root.attentionCoveredIDs)
+}
+
+// A responses-continuation delta request carries only new items; older
+// steering turns live in server-side state this session cannot verify, so a
+// round that settles as a delta credits nothing. The items keep their wake
+// for a full-history turn.
+func TestRootDelegateAttention_SettledDeltaCreditsNothing(t *testing.T) {
+	t.Parallel()
+	const attentionID = "delegate:dlg_delta/delivery/1"
+	root, historyTurns := rootWithMidTurnAttention(t, attentionID,
+		`<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`)
+	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
+
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(delta)
+	if covered := rootCoveredAttention(root); len(covered) != 0 {
+		t.Fatalf("settled delta credited coverage: %v, want nothing", covered)
 	}
 
 	// The full-history round that follows credits normally.
-	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
-	root.attentionMu.Lock()
-	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
-		root.attentionMu.Unlock()
-		t.Fatal("full-history request did not stage the presented attention")
+	full := llm.Request{HistoryMode: llm.HistoryModeFullHistory}
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(full)
+	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
+		t.Fatal("settled full-history request did not credit the presented attention")
 	}
-	root.attentionMu.Unlock()
+}
+
+// A full-history attempt that failed leaves no candidate behind for the
+// round's retry: when the retry settles as a delta, which carried only new
+// items, nothing is credited.
+func TestRootDelegateAttention_FailedFullAttemptLeavesNothingForASettledDelta(t *testing.T) {
+	t.Parallel()
+	root, historyTurns := rootWithMidTurnAttention(t, "delegate:dlg_retry/delivery/1",
+		`<delegate-notification delegate_id="dlg_retry">retried as a delta</delegate-notification>`)
+
+	// The full-history attempt stages, then fails: no promotion.
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	// The retry builds and settles as a delta.
+	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(delta)
+	if covered := rootCoveredAttention(root); len(covered) != 0 {
+		t.Fatalf("a delta retry credited the failed attempt's candidates: %v, want nothing", covered)
+	}
+}
+
+// A delta request whose call falls back to a full-history request settles as
+// that request, which carried every turn the round presents, so the round
+// credits them.
+func TestRootDelegateAttention_FullHistoryFallbackCreditsWhatItCarried(t *testing.T) {
+	t.Parallel()
+	const attentionID = "delegate:dlg_fallback/delivery/1"
+	root, historyTurns := rootWithMidTurnAttention(t, attentionID,
+		`<delegate-notification delegate_id="dlg_fallback">carried by the fallback</delegate-notification>`)
+
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeFullHistoryFallback})
+	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
+		t.Fatal("the settled full-history fallback did not credit the attention it carried")
+	}
 }
 
 // Coverage is credit for presentation in a SETTLED call, not for being in a
@@ -3433,7 +3477,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	// content-filter retry whose compaction folds the steering turn away is
 	// the production shape). No promotion happens, and finish must not
 	// consume: the model never saw it in a settled call.
-	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
 	root.attentionMu.Lock()
 	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
@@ -3457,8 +3501,8 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 	// The retry's round settles with the item presented: promotion credits
 	// it, and finish consumes.
-	root.stagePresentedAttentionCoverage(context.Background(), llm.Request{}, historyTurns)
-	root.promoteStagedAttentionCoverage()
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(llm.Request{})
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
 	}

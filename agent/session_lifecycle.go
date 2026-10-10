@@ -2358,7 +2358,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// that failed — or was retried after compaction folded the steering
 		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
-		s.promoteStagedAttentionCoverage()
+		s.promoteStagedAttentionCoverage(req)
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -354,7 +355,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns = append([]schema.Turn{}, s.history...)
 	inFlightFrom = s.turnHistoryBaseline
+	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
+	if afterSnapshot != nil {
+		afterSnapshot()
+	}
 
 	// historyTurns already holds this round's refreshed copy, re-snapshotted
 	// above under s.mu; replayScope and the request expand that copy directly
@@ -369,12 +374,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		protocolOf:     s.instanceProtocol,
 		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
+	// presentedTurns is the history this request projects: a leased delegate
+	// turn projects the controller's own later snapshot, which can hold turns
+	// appended after historyTurns was taken.
+	presentedTurns := historyTurns
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
+		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
@@ -429,6 +439,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		for _, notification := range appended {
 			history = append(history, scope.projectTurnMessage(notification, true))
 		}
+		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
@@ -484,9 +495,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
-	// follows anchor planning because credit belongs to what the request
+	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stagePresentedAttentionCoverage(ctx, req, historyTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 

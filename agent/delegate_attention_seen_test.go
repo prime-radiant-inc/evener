@@ -104,6 +104,47 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	}
 }
 
+// Attention that lands after the round snapshots its history but before the
+// delegate's leased request takes its own snapshot is in the request the
+// model sees, so the generation consumes it like any other presented item and
+// starts no successor for it.
+func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm") },
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "review finished: approved") {
+				t.Errorf("the send's request did not present the attention that landed between snapshots")
+			}
+			return finalResponse("merged")
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var landOnce sync.Once
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			landOnce.Do(func() {
+				armStableSupervisionAttention(t, sub, "attention:between-snapshots", "review finished: approved")
+			})
+		}
+	})
+	sendAndAcknowledge(t, root, fixture.delegateID, "FOLLOW-UP: merge it")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (an attention generation re-ran the delegate)", got)
+	}
+	if got := attentionRunStarts(t, fixture); got != 0 {
+		t.Fatalf("attention generations = %d, want 0", got)
+	}
+	if resolution, generation := childAttentionResolution(t, sub, "attention:between-snapshots"); resolution != delegateAttentionConsumed || generation != 0 {
+		t.Fatalf("attention resolution = %q for generation %d, want consumed by the send generation that presented it (0)", resolution, generation)
+	}
+}
+
 // attentionRunStarts counts the fixture delegate's generations its journal
 // records as started by attention.
 func attentionRunStarts(t *testing.T, fixture coldStableDelegateFixture) int {
