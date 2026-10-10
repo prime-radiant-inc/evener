@@ -324,6 +324,16 @@ test("a subagent's recorded report renders its name and message, never the raw p
   expect(card.textContent).not.toContain('"kind"');
 });
 
+test("a subagent's recorded update renders as an update with its message, never as a report", () => {
+  render(<SteeringItem item={item({ text: notificationWireItem("delegate-update").text })} turn={turn} live={false} />);
+  const card = screen.getByTestId("notification-card");
+  expect(card.textContent).toContain("Delegate update");
+  expect(card.textContent).toContain("Fix race in tree settle");
+  expect(screen.getByTestId("notification-message").textContent).toContain("Which table holds the drain cursor");
+  expect(card.textContent).not.toContain("Delegate reported");
+  expect(card.textContent).not.toContain("Delegate completed");
+});
+
 // A failure whose whole error is one line IS its head's ending, so the row
 // renders as a static line: the cause on the head, no report body to expand.
 test("a subagent's recorded one-line failure says its cause on the head and renders no report body", () => {

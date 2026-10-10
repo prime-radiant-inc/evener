@@ -36,6 +36,7 @@ export type NotificationWireCase =
   | "delegate-stopped-by-parent-mid-run"
   | "delegate-exhausted"
   | "delegate-quiet"
+  | "delegate-update"
   | "job-shell-completed"
   | "job-shell-failed"
   | "job-shell-killed"
