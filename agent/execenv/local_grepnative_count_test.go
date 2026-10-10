@@ -35,8 +35,9 @@ func TestGrepNativeCountModeCapsRowsAtMaxResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grepNative count: %v", err)
 	}
-	if rows := countOutputRows(got); rows != 3 {
-		t.Fatalf("count mode returned %d rows, want exactly 3 (max_results caps rows at 3; 5 files match):\n%s", rows, got)
+	rows, cut := strings.CutSuffix(got, "\n"+grepTruncationNote(3))
+	if n := countOutputRows(rows); n != 3 || !cut {
+		t.Fatalf("count mode returned %d rows, want exactly 3 then the truncation note (max_results caps rows at 3; 5 files match):\n%s", n, got)
 	}
 }
 

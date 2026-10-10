@@ -417,7 +417,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		return "/fixture/rg", nil
 	}
 	grep, err := env.Grep(context.Background(), "x; touch never", "sub", "*.go", true, 2, "")
-	if err != nil || grep != "one\ntwo" {
+	if err != nil || grep != "one\ntwo\n"+grepTruncationNote(2) {
 		t.Fatalf("Grep ripgrep success = %q, %v", grep, err)
 	}
 	// Grep hands ripgrep an argument vector directly (never a shell command
