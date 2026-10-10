@@ -839,6 +839,38 @@ test("delegate_send: earlier results a wait carried render as incoming bubbles a
   expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
+// An update the wait carried (action "update", no status) is headed as an
+// update, never as an earlier reply.
+test("delegate_send: an update a wait carried renders as an earlier update", () => {
+  renderDelegateSendBody({
+    raw: {
+      delegate_id: "dlg_abc123",
+      type: "delegate",
+      status: "completed",
+      running_in_background: false,
+      action: "completed",
+      output: "Third result",
+      truncated: false,
+      earlier_results: [
+        {
+          delegate_id: "dlg_abc123",
+          type: "delegate",
+          running_in_background: false,
+          action: "update",
+          output: "Which table?",
+          truncated: false,
+        },
+      ],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const [earlier] = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(within(earlier!).getByText("dlg_abc123 (delegate, earlier update 1 of 1)")).toBeTruthy();
+  expect(within(earlier!).getByTestId("user-bubble").textContent).toBe("Which table?");
+  expect(screen.queryByText(/earlier reply/)).toBeNull();
+});
+
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {
   renderDelegateSendBody({
     output:

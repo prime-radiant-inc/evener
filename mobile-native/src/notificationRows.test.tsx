@@ -228,6 +228,14 @@ The retry loop splits reads from writes; the flaky test needs a fixed seed.
 		expect(renderedText(tree)).toContain("Fix race in tree settle quiet · 10m");
 	});
 
+	it("reads a subagent's update as who sent it, with the message beneath, never as a report", () => {
+		const { tree } = show("delegate-update");
+		expect(renderedText(tree)).toContain("Fix race in tree settle sent an update");
+		expect(renderedText(tree)).toContain("Which table holds the drain cursor");
+		expect(renderedText(tree)).not.toContain("Fix race in tree settle reported");
+		expect(renderedText(tree)).not.toContain("Fix race in tree settle finished");
+	});
+
 	it("reads a finished job by its intent and opens its output in place", () => {
 		const { tree, openSubagent } = show("job-shell-completed");
 		expect(renderedText(tree)).toContain("Run the agent tests finished");

@@ -34,7 +34,8 @@ func writeGrepTruncationTree(t *testing.T, root string) {
 
 // checkGrepTruncation asks each output mode for three results under a cap of
 // two and under a cap of three. A search the cap cut shows the first two
-// results and then a line saying it was cut and how to see the rest; a search
+// results and then, after a blank line, a note saying it was cut and how to
+// see the rest (#4186: a note never reads as a result); a search
 // that found exactly as many results as the cap allows says nothing, so a
 // model can tell a complete result from a partial one (#4169).
 func checkGrepTruncation(t *testing.T, arm string, env *LocalExecutionEnvironment, root string) {
@@ -51,8 +52,8 @@ func checkGrepTruncation(t *testing.T, arm string, env *LocalExecutionEnvironmen
 			t.Fatalf("%s: grep %s %s (cap 2): %v", arm, path, mode, err)
 		}
 		lines := strings.Split(cut, "\n")
-		if len(lines) != 3 || lines[2] != note {
-			t.Errorf("%s: grep %s %s with three results and a cap of 2 = %q, want two results then %q", arm, path, mode, cut, note)
+		if len(lines) != 4 || lines[2] != "" || lines[3] != note {
+			t.Errorf("%s: grep %s %s with three results and a cap of 2 = %q, want two results, a blank line, then %q", arm, path, mode, cut, note)
 		}
 		whole, err := env.Grep(t.Context(), "needle", filepath.Join(root, path), "", false, 3, mode)
 		if err != nil {

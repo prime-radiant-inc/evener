@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/fuzz/oracle"
 )
 
@@ -49,7 +50,12 @@ func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (conte
 			}
 		}
 		fileHad := false
+		// Lines as rg counts them: a final newline ends the last line rather
+		// than starting an empty one, and an empty file has no lines.
 		lines := strings.Split(string(f.content), "\n")
+		if len(f.content) == 0 || bytes.HasSuffix(f.content, []byte("\n")) {
+			lines = lines[:len(lines)-1]
+		}
 		for i, line := range lines {
 			if re.MatchString(line) {
 				content = append(content, fmt.Sprintf("%s:%d:%s", f.rel, i+1, line))
@@ -65,7 +71,8 @@ func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (conte
 }
 
 // egrep_countOutput renders the reference count-mode output the way grepNative
-// does: "rel:count" for every file with a nonzero count, sorted lexically.
+// does: "rel:count" for every file with a nonzero count, in walk order, which
+// for this fixture's names (no file shares a directory's name) is lexical.
 func egrep_countOutput(counts map[string]int) string {
 	var out []string
 	for file, n := range counts {
@@ -199,11 +206,11 @@ func FuzzEgrepGrepNative(f *testing.F) {
 			t.Fatalf("grepNative capped content errored: %v", err)
 		}
 		eff := egrep_effMax(fuzzMax)
-		capped := refContent
-		if len(capped) > eff {
-			capped = append(capped[:eff:eff], grepTruncationNote(eff))
+		wantCapped := strings.Join(refContent, "\n")
+		if len(refContent) > eff {
+			wantCapped = searchresult.WithNotes(strings.Join(refContent[:eff], "\n"), grepTruncationNote(eff))
 		}
-		if wantCapped := strings.Join(capped, "\n"); gotCapped != wantCapped {
+		if gotCapped != wantCapped {
 			t.Fatalf("cap consistency broken (max=%d eff=%d)\n got =%q\n want=%q",
 				fuzzMax, eff, gotCapped, wantCapped)
 		}
@@ -211,7 +218,8 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		// Soundness spot-check independent of the reference: every emitted content
 		// line is a genuine regex hit at its claimed position.
 		if gotCapped != "" {
-			for ln := range strings.SplitSeq(strings.TrimSuffix(gotCapped, "\n"+grepTruncationNote(eff)), "\n") {
+			entries, _ := searchresult.Split(gotCapped)
+			for ln := range strings.SplitSeq(entries, "\n") {
 				egrep_verifyMatchLine(t, ln, refRe, visible)
 			}
 		}

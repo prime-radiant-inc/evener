@@ -209,6 +209,8 @@ func (s stubProbeSystem) getenv(name string) string                  { return s.
 func (stubProbeSystem) userHomeDir() (string, error)                 { return "/Users/tester", nil }
 func (stubProbeSystem) lookPath(string) (string, error)              { return "", errors.New("not found") }
 func (stubProbeSystem) nonDirectoryFile(string) bool                 { return false }
+func (stubProbeSystem) userConfigDir() (string, error)               { return "", errors.New("no") }
+func (stubProbeSystem) readFile(string) ([]byte, error)              { return nil, errors.New("no") }
 func (stubProbeSystem) run(context.Context, string, ...string) error { return errors.New("no") }
 func (stubProbeSystem) combinedOutput(context.Context, string, ...string) ([]byte, error) {
 	return nil, errors.New("no")
