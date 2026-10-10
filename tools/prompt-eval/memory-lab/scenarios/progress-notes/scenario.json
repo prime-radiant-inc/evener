@@ -18,19 +18,19 @@
         },
         {
           "name": "no commit SHAs in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
         },
         {
           "name": "no scratch or temp paths in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\/tmp\\/|EVENER_SCRATCH|evener-sandbox|\\/var\\/folders/ } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\/tmp\\/|EVENER_SCRATCH|evener-sandbox|\\/var\\/folders/ } }'"
         },
         {
           "name": "no test counts in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b\\d+\\s*(tests?|passed|passing|subtests)\\b/i } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b\\d+\\s*(tests?|passed|passing|subtests)\\b/i } }'"
         },
         {
           "name": "durable pages under 2500 bytes",
-          "run": "perl -e 'for (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { exit 1 if -s $_ > 2500 }'"
+          "run": "perl -e 'for (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { exit 1 if -s $_ > 2500 }'"
         },
         {
           "name": "index lines under 200 chars",
@@ -38,7 +38,7 @@
         },
         {
           "name": "no in-progress status in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /(?i)\\b(in progress|next step|remaining:|todo|step [1-4] of|done so far|still to do)\\b/ } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /(?i)\\b(in progress|next step|remaining:|todo|step [1-4] of|done so far|still to do)\\b/ } }'"
         }
       ],
       "trace": [

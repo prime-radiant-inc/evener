@@ -29,8 +29,8 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, dir := t.TempDir(), t.TempDir()
-			memorySeedPage(t, root, "personal", "fact.md", "opaque-memory-personal-3730")
-			memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-memory-project-3730")
+			memorySeedPage(t, root, "memory", "fact.md", "opaque-memory-personal-3730")
+			memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-memory-project-3730")
 			adapter := &agenttest.FakeAdapter{
 				Provider: "openai",
 				PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
