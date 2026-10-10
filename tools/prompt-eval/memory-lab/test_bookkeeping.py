@@ -343,6 +343,20 @@ class TrialStateTest(unittest.TestCase):
         state = cmd[cmd.index("--state-dir") + 1]
         self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
 
+    def test_trial_state_stays_out_of_the_work_root_and_apart_from_the_users_state(self):
+        # A session exploring the work root must not find other trials' memory there, and the user's own
+        # evener state must not sit next to the trial's.
+        work_root = os.path.join(self.root, "wr")
+        trial, work = os.path.join(self.root, "out", "main", "on", "s", "r1"), os.path.join(work_root, "shop-abc")
+        os.makedirs(trial)
+        os.makedirs(work)
+        bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=work_root, providers_path=None), trial, work)
+        xdg = os.path.realpath(os.path.join(trial, "xdg"))
+        self.assertFalse(xdg.startswith(work_root + os.sep), xdg)
+        self.assertEqual(os.listdir(work_root), ["shop-abc"])
+        self.assertNotEqual(os.path.dirname(xdg), os.path.join(self.root, "state"))
+        self.assertEqual(os.path.realpath(os.path.join(trial, "sessions")), os.path.join(xdg, "sessions"))
+
     def test_session_state_stays_in_the_trial_without_work_root(self):
         self.run_trial(work_root=False)
         trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
