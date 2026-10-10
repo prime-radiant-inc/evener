@@ -194,8 +194,9 @@ INSERT INTO session_seen (source, session_id, seen_through, unread, updated_at) 
 ON CONFLICT(source, session_id) DO UPDATE SET unread = 1, updated_at = excluded.updated_at
 WHERE session_seen.unread = 0`
 
-// MarkSeen records that a client showed the session's last turn ending at
-// through: the row's turn_ended_at, a hub timestamp, never the client's clock.
+// MarkSeen records that a client showed the session as of through: the row's
+// turn_ended_at or the session's lastMovedAt, a hub or daemon timestamp, never
+// the client's clock.
 // The mark only moves forward, so a device showing an older Board cannot
 // un-see a turn another device already marked, and it clears an explicit
 // unread. It reports whether anything changed, and fires onChange only then.

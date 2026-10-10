@@ -37,18 +37,20 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 // every meter.
 function sessionActivity(value: unknown): SessionActivity | null {
   if (!isPlainObject(value)) return null;
-  const { ref, minutes, runningSubagents, quietForMs, latestIntent } = value;
+  const { ref, minutes, runningSubagents, quietForMs, latestIntent, lastMovedAt } = value;
   if (typeof ref !== "string" || ref === "" || ref.length > 1024) return null;
   if (!Array.isArray(minutes) || minutes.length === 0 || minutes.length > 60 || !minutes.every(count)) return null;
   if (!count(runningSubagents)) return null;
   if (quietForMs !== undefined && !count(quietForMs)) return null;
   if (latestIntent !== undefined && (typeof latestIntent !== "string" || !intentWithinBound(latestIntent))) return null;
+  if (lastMovedAt !== undefined && !count(lastMovedAt)) return null;
   return {
     ref,
     minutes: [...minutes],
     runningSubagents,
     ...(quietForMs === undefined ? {} : { quietForMs }),
     ...(latestIntent === undefined ? {} : { latestIntent }),
+    ...(lastMovedAt === undefined ? {} : { lastMovedAt }),
   };
 }
 

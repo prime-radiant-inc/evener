@@ -278,3 +278,26 @@ func TestActivityReadBoundsARemoteHostsIntent(t *testing.T) {
 		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
 	}
 }
+
+// The read carries when a session's tree last moved, for a client comparing it
+// with the session's seen-through mark, and nothing for a session that hasn't
+// moved since its daemon began serving it.
+func TestActivityReadCarriesWhenTheSessionLastMoved(t *testing.T) {
+	moved := silentFor(time.Minute)
+	moved.LastMovedAt = moved.LastActivityAt
+	roster := hubcore.NewRosterWithEntries(
+		liveActivityEntry(1, "01MOVED", appwire.ThreadStatusIdle, moved),
+		liveActivityEntry(2, "01STILL", appwire.ThreadStatusIdle, silentFor(time.Minute)),
+	)
+	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{Roster: roster}, nil, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "local:01MOVED", Minutes: activityReadMinutes, LastMovedAt: moved.LastMovedAt},
+		{Ref: "local:01STILL", Minutes: activityReadMinutes},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("read = %+v, want %+v", got.Sessions, want)
+	}
+}

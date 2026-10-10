@@ -50,6 +50,10 @@ type activityMeter struct {
 	mu         sync.Mutex
 	slots      [activitySlotCount]activitySlot
 	lastMotion time.Time
+	// lastMoved is lastMotion counting only real motion: zero from restart
+	// until the tree moves, since a daemon beginning to serve a session is not
+	// news to someone comparing it with what they last saw.
+	lastMoved time.Time
 	// intent is the newest intent a tool call of the meter's own root session
 	// stated (noteIntent), empty until this turn states one.
 	intent string
@@ -71,6 +75,7 @@ func (m *activityMeter) restart() {
 	defer m.mu.Unlock()
 	m.slots = [activitySlotCount]activitySlot{}
 	m.lastMotion = m.clock()
+	m.lastMoved = time.Time{}
 	m.intent = ""
 }
 
@@ -113,6 +118,9 @@ func (m *activityMeter) count(at time.Time) {
 func (m *activityMeter) touch(at time.Time) {
 	if at.After(m.lastMotion) {
 		m.lastMotion = at
+	}
+	if at.After(m.lastMoved) {
+		m.lastMoved = at
 	}
 }
 
@@ -168,5 +176,9 @@ func (m *activityMeter) snapshot() *appwire.ThreadActivity {
 			minutes[activityBars-1-age/activitySlotsPerBar] += slot.count
 		}
 	}
-	return &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli(), LatestIntent: m.intent}
+	activity := &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli(), LatestIntent: m.intent}
+	if !m.lastMoved.IsZero() {
+		activity.LastMovedAt = m.lastMoved.UnixMilli()
+	}
+	return activity
 }

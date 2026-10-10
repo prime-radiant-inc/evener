@@ -84,6 +84,7 @@ func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.Sessi
 		Minutes:          entry.Activity.Minutes,
 		RunningSubagents: entry.Subagents.Running,
 		LatestIntent:     appwire.Excerpt(entry.Activity.LatestIntent, appwire.MaxIntentRunes),
+		LastMovedAt:      entry.Activity.LastMovedAt,
 	}
 	// Jesse's ruling: an agent waiting on subagents is never stuck. A subagent
 	// inside one long model call emits nothing for minutes, so the tree's quiet

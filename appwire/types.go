@@ -664,9 +664,10 @@ type SessionSeenSetParams struct {
 }
 
 // SessionSeenMark is one session's mark, addressed by the ref its row carries.
-// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
-// turn_ended_at in Unix milliseconds, the turn the client showed, never a
-// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
+// daemon timestamp the client showed, in Unix milliseconds: the row's
+// turn_ended_at, or the session's lastMovedAt from an activity read; never a
+// client clock. The hub keeps the newest it has been sent. Unread is "Mark as
 // unread", which lasts until the next SeenThrough mark.
 type SessionSeenMark struct {
 	Ref         string `json:"ref"`
@@ -846,6 +847,12 @@ type SessionActivity struct {
 	// stated none, which is most of a session's life before its first tool
 	// call, and when the daemon predates the field.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+	// motion (ThreadActivity.LastMovedAt). A client compares it with the
+	// session's seen_through to tell whether anything moved since the person
+	// last looked, mid-turn included. Absent until the tree has moved since
+	// its daemon began serving it, and from an older hub or daemon.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -1190,6 +1197,10 @@ type ThreadActivity struct {
 	// first tool call that stated one, cleared when a turn begins, and absent
 	// from a daemon that predates it.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is LastActivityAt counting only real motion: absent until
+	// the tree has moved since the daemon began serving the session, so a
+	// daemon restart is not news to a client comparing it with a seen mark.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how

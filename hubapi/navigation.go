@@ -290,8 +290,10 @@ type NavigationSessionSummary struct {
 	Unseen bool `json:"unseen,omitempty"`
 	// SeenThrough is the hub's seen-through mark for a live row, floored at
 	// the seen store's start, so a client can tell output that moved after it
-	// (an activity time) from output already seen, even mid-turn. Absent on a
-	// row that isn't live, and from a hub with no seen store or an older hub.
+	// (an activity read's lastMovedAt) from output already seen, even
+	// mid-turn. It does not reflect an explicit "Mark as unread", so a client
+	// also reads Unseen. Absent on a row that isn't live, and from a hub with
+	// no seen store or an older hub.
 	SeenThrough *time.Time `json:"seen_through,omitempty"`
 	// Own-session activity counts are captured before navigation fitting.
 	// RunningJobCommand is the first available command, bounded for display.
