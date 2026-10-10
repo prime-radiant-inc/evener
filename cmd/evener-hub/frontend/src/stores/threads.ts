@@ -572,7 +572,8 @@ function currentSessionCache(): SessionCacheIndexedDB {
 // use. Both adapters open the same schema version and database, never a new tier.
 let productionEntryCache: SessionEntryCache | undefined;
 function currentEntryCache(): SessionEntryCache {
-  return (productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME }));
+  productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME });
+  return productionEntryCache;
 }
 // This process-local token scopes current checkpoints to this browser instance.
 // It is deliberately regenerated on reload and never persisted as identity.
@@ -1081,7 +1082,7 @@ async function acceptEntryTranscriptHydration(
       admission: entryWriteAdmissionFor(fixture.cache),
       reconcile: () => {
         const client = wiredClient;
-        if (!client || client.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
+        if (client?.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
         fixture.repository?.beginFreshBaseline();
         void refreshTrackedThread(
           client,
