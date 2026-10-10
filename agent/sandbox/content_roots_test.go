@@ -265,3 +265,44 @@ func TestEvenerContentRootsRefuseASymlinkIntoAnotherMask(t *testing.T) {
 		t.Errorf("a content root resolving into ~/.ssh must be refused, got %v", rp.UnmaskedRoots)
 	}
 }
+
+// A content root that is itself a symlink pointing elsewhere inside Evener's
+// config mask (to the config root, or to the plugin store with its metadata)
+// is refused: the backends re-grant the resolved path, which would expose the
+// credentials and marketplace URLs the carve-out keeps masked.
+func TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask(t *testing.T) {
+	root := mainRepo(t)
+	for _, target := range []string{".", "plugins"} {
+		t.Run(target, func(t *testing.T) {
+			home := clean(t.TempDir())
+			config := filepath.Join(home, ".config", "evener")
+			store := filepath.Join(config, "plugins")
+			if err := os.MkdirAll(store, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(config, "hub.toml"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cache := filepath.Join(store, "cache")
+			if err := os.Symlink(filepath.Join(config, target), cache); err != nil {
+				t.Fatal(err)
+			}
+			host := bwrapHost()
+			host.Home = home
+			host.EvenerContentRoots = []string{cache}
+			rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+			if len(rp.UnmaskedRoots) != 0 {
+				t.Errorf("a content root symlinked to %q inside the config mask must be refused, got %v", target, rp.UnmaskedRoots)
+			}
+			// The backends re-check each spawn (a symlink can appear after
+			// resolution) with the same predicate.
+			resolved, err := filepath.EvalSymlinks(cache)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !carveOutEscapes(resolved, cache, rp.MaskedPaths) {
+				t.Errorf("the backends' re-check must refuse %q resolving to %q", cache, resolved)
+			}
+		})
+	}
+}

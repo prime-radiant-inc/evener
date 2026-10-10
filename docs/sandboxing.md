@@ -360,8 +360,9 @@ masked directory. The locations follow
 masked too: a plugin installed by cloning keeps its remote URL, which may carry a
 token, in its installed copy's `.git/config`, and skills and hooks never need it.
 Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it
-finds at each spawn, so a copy cloned during a running command is masked from the
-next spawn on.
+finds, at any depth, at each spawn, so a copy cloned during a running command is
+masked from the next spawn on, and a carve-out too large to inspect at spawn
+(over 50,000 entries) stays masked for spawned processes.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:

@@ -504,3 +504,34 @@ func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
 		})
 	}
 }
+
+// bwrap masks a .git at any depth inside the carve-out, matching the file
+// tools and Seatbelt. A tree too large to inspect fully at spawn stays masked
+// for spawned processes rather than being re-granted with .git entries unseen.
+func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	deepGit := filepath.Join(skills, "a", "b", "c", "d", "e", ".git")
+	if err := os.MkdirAll(deepGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--tmpfs", deepGit) {
+		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
+	}
+
+	old := gitWalkBudget
+	gitWalkBudget = 3
+	t.Cleanup(func() { gitWalkBudget = old })
+	args := buildBwrapArgv(rp, t.TempDir(), cwd)
+	maskIdx := seqIndex(args, "--tmpfs", filepath.Dir(skills))
+	if maskIdx < 0 || seqIndex(args[maskIdx:], "--ro-bind", skills, skills) >= 0 {
+		t.Errorf("a root whose tree exceeds the walk budget must not be re-granted over its mask: %v", args)
+	}
+}

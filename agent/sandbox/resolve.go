@@ -737,8 +737,9 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the
-// carve-out root, lies under a mask other than the ones the root's own path
-// sits under (the config mask it is carved from), or under the pseudo-fs floor.
+// carve-out root, is anywhere but the root's own place inside the mask it is
+// carved from: under another mask, under the pseudo-fs floor, or elsewhere in
+// its own mask through a symlink at or below that mask.
 // The backends re-grant a carve-out at its real path, so such a root would
 // re-expose that other mask. Masks are compared both as written and resolved.
 func carveOutEscapes(resolved, root string, masked []string) bool {
@@ -747,6 +748,17 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 	}
 	for _, m := range masked {
 		if pathUnder(root, m) {
+			// The mask the root is carved from: the root must resolve to its own
+			// place inside it, so a symlink at or below the mask cannot redirect
+			// the re-grant to the config root or the store's metadata.
+			rm, err := filepath.EvalSymlinks(m)
+			if err != nil {
+				rm = m
+			}
+			rel, err := filepath.Rel(m, root)
+			if err != nil || resolved != filepath.Join(rm, rel) {
+				return true
+			}
 			continue
 		}
 		if pathUnder(resolved, m) {
