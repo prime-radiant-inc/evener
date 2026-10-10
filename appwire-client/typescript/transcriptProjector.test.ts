@@ -1125,7 +1125,7 @@ describe("memory refresh projection", () => {
     return item("item_memory_context_0", "systemMessage", {
       eventKind: "memory-context",
       description: "Memory context",
-      text: "Memory scope personal, current index state current",
+      text: 'Personal memory index: "- [a](a.md) — a note\\n"',
     });
   }
 

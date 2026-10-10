@@ -275,7 +275,7 @@ func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, tr
 	if sizes[len(sorted)] <= limit {
 		// Every page is shown, so the projection is not truncated:
 		// truncated promises a closing line counting pages left out
-		// (memoryIndexPartial). The capped header says itself how many
+		// (the partial index heading). The capped header says itself how many
 		// tags it leaves out.
 		return prefix + strings.Join(lines, ""), full, false
 	}

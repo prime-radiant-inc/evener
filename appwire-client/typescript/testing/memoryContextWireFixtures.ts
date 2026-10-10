@@ -1,15 +1,17 @@
 // memoryContextWireFixtures reads the daemon's automatic memory refreshes as
 // the hub sends them, from agent/testdata/memorycontextwire/events.json. The
 // agent's TestMemoryContextWireFixtures produces the fixture from the same
-// appendMemoryProjection the live projector and reload share, and re-verifies
+// appendMemoryContext the live projector and reload share, and re-verifies
 // it on every Go test run; regenerate it with
 // `go test ./agent -run 'TestMemoryContextWireFixtures$' -count=1 -update-wire`.
 // It is loaded through a `?raw` import, as systemEventWireFixtures loads its own.
 //
 // Each item is the frozen wire contract: type systemMessage, eventKind
-// "memory-context", id item_memory_context_<index>, Text the exact recorded
-// message, and raw.memoryContext present only on a successful strict decode
-// (the malformed case carries none, so the renderer falls back to the Text).
+// "memory-context", id item_memory_context_<index> (suffixed _<n> for a
+// message's later sections), Text the exact recorded section, and
+// raw.memoryContext present only on an index section (change and page
+// sections and the malformed case carry none, so the renderer falls back to
+// the Text).
 
 import memoryContextEvents from "../../../agent/testdata/memorycontextwire/events.json?raw";
 import type { ThreadItem } from "../types.gen";
@@ -20,19 +22,16 @@ const FIXTURE_PATH = "agent/testdata/memorycontextwire/events.json";
 export type MemoryContextWireCase =
   | "current-personal"
   | "current-project"
-  | "current-session"
   | "empty-project"
   | "missing-project"
   | "revoked-project"
   | "unavailable-project"
   | "truncated-project"
   | "quoted-project"
-  | "suffixed-session"
   | "malformed-project"
+  | "index-change-personal"
   | "index-change-project"
-  | "page-notice-project"
-  | "legacy-current-project"
-  | "legacy-truncated-project";
+  | "page-notice-project";
 
 interface MemoryContextWireFixture {
   case: MemoryContextWireCase;

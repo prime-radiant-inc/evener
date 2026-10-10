@@ -34,8 +34,7 @@ func TestMemoryContextProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := llm.User("opaque-memory-display-78")
-	msg.Name = "memory_project"
+	msg := llm.UserMachinery("opaque-memory-display-78")
 	if err := w.Append(schema.Turn{Kind: schema.TurnMemoryContext, Message: msg}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +48,7 @@ func TestMemoryContextProjection(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Turn.Message.Role != llm.RoleUser || entries[0].Turn.Message.Name != msg.Name {
+	if len(entries) != 1 || entries[0].Turn.Message.Role != llm.RoleUser || !entries[0].Turn.Message.Content[0].Machinery {
 		t.Fatalf("restored=%+v", entries)
 	}
 	items := ProjectTurn("memory-turn", 0, entries[0].Turn, NewToolCallRegistry(), nil, nil)
