@@ -186,10 +186,8 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 			return
 		}
 		for _, root := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
-			for _, masked := range rp.MaskedPaths {
-				if root == masked || pathUnder(root, masked) {
-					t.Fatalf("Resolve granted masked path %q through %q", masked, root)
-				}
+			if rp.Masks(root) {
+				t.Fatalf("Resolve granted masked path %q through %q", rp.MaskedPaths, root)
 			}
 		}
 	})

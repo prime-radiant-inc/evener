@@ -35,7 +35,9 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 	metadata = append(metadata,
 		filepath.Join(store, "cache", "mkt", "plugin", "abc", ".git", "config"),
 		filepath.Join(store, "cache", "mkt", "plugin", "abc", ".git"),
-		filepath.Join(skills, "mine", ".git", "config"))
+		filepath.Join(skills, "mine", ".git", "config"),
+		// On a case-insensitive filesystem .GIT is the same directory.
+		filepath.Join(store, "cache", "mkt", "plugin", "abc", ".GIT", "config"))
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, host, root)

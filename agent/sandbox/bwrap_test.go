@@ -526,12 +526,7 @@ func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
 		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
 	}
 
-	old := gitWalkBudget
-	gitWalkBudget = 3
-	t.Cleanup(func() { gitWalkBudget = old })
-	args := buildBwrapArgv(rp, t.TempDir(), cwd)
-	maskIdx := seqIndex(args, "--tmpfs", filepath.Dir(skills))
-	if maskIdx < 0 || seqIndex(args[maskIdx:], "--ro-bind", skills, skills) >= 0 {
-		t.Errorf("a root whose tree exceeds the walk budget must not be re-granted over its mask: %v", args)
+	if _, complete := gitDirsUnder(skills, 3); complete {
+		t.Errorf("a tree larger than the walk budget must be reported incomplete, so its root is not re-granted")
 	}
 }

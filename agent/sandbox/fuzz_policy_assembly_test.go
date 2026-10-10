@@ -126,10 +126,8 @@ func fuzzPolicyModes(t *testing.T, fixture structuralFixture, home, raw string, 
 			t.Fatalf("enforced policy did not select fake bwrap: %+v", rp)
 		}
 		for _, root := range slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots) {
-			for _, masked := range rp.MaskedPaths {
-				if root == masked || pathUnder(root, masked) {
-					t.Fatalf("mode %s granted masked %q through %q", mode, masked, root)
-				}
+			if rp.Masks(root) {
+				t.Fatalf("mode %s granted masked %q through %q", mode, rp.MaskedPaths, root)
 			}
 		}
 		if got := EnforcementLine(rp); got == "" {

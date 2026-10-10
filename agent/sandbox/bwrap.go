@@ -214,7 +214,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		if err != nil || carveOutEscapes(resolved, r, rp.MaskedPaths) {
 			continue
 		}
-		gitDirs, complete := gitDirsUnder(r)
+		gitDirs, complete := gitDirsUnder(resolved, gitWalkBudget)
 		if !complete {
 			continue
 		}
@@ -361,13 +361,13 @@ func maskHandledByNamespace(path string) bool {
 // gitWalkBudget bounds how many entries gitDirsUnder visits below one carve-out
 // root at each spawn. Installed plugins and user skills are small trees; one
 // past this bound is left masked for spawned processes instead of walked.
-var gitWalkBudget = 50_000
+const gitWalkBudget = 50_000
 
 // gitDirsUnder returns the .git entries (directories or gitdir files) at any
 // depth below root, without descending into them or following symlinks (the
 // bind exposes a symlink's target only where it is already visible), and
-// whether it saw the whole tree within gitWalkBudget entries.
-func gitDirsUnder(root string) ([]string, bool) {
+// whether it saw the whole tree within budget entries.
+func gitDirsUnder(root string, budget int) ([]string, bool) {
 	var found []string
 	visited := 0
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -375,10 +375,10 @@ func gitDirsUnder(root string) ([]string, bool) {
 		if err != nil && (d == nil || d.IsDir()) {
 			return filepath.SkipDir
 		}
-		if visited++; visited > gitWalkBudget {
+		if visited++; visited > budget {
 			return filepath.SkipAll
 		}
-		if d.Name() == ".git" && p != root {
+		if isGitName(d.Name()) && p != root {
 			found = append(found, p)
 			if d.IsDir() {
 				return filepath.SkipDir
@@ -386,7 +386,7 @@ func gitDirsUnder(root string) ([]string, bool) {
 		}
 		return nil
 	})
-	return found, err == nil && visited <= gitWalkBudget
+	return found, err == nil && visited <= budget
 }
 
 // pathExists reports whether path exists on the host (following symlinks).

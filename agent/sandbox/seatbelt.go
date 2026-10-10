@@ -273,7 +273,7 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 		}
 		for _, k := range ps.defineBothSpellings(fmt.Sprintf("UNMASKED_%d", i), r) {
 			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
-			gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.git(/|$)")))`)
+			gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
 		}
 	}
 	return strings.Join(append(grants, gitDenials...), "\n")

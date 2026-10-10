@@ -246,14 +246,20 @@ func (rp ResolvedPolicy) Masks(path string) bool {
 	return true
 }
 
-// insideGitDir reports whether path has a .git component below root.
+// insideGitDir reports whether path has a .git component below root. The name
+// is compared case-insensitively: on a case-insensitive filesystem (macOS by
+// default) .GIT names the same directory.
 func insideGitDir(path, root string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
-	return slices.Contains(strings.Split(rel, string(filepath.Separator)), ".git")
+	return slices.ContainsFunc(strings.Split(rel, string(filepath.Separator)), isGitName)
 }
+
+// isGitName reports whether a path component names git metadata (.git, in any
+// letter case).
+func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
 // enforcement implementation. Its race-safe primitives (openat2 /
@@ -715,9 +721,12 @@ func withEvenerConfigMask(masked []string, host HostFacts) (all, configMasks []s
 // fails the shared-tree guard (relative, at or above home, the worktree or a
 // temp root), lies at or beneath the non-removable pseudo-fs floor, sits under
 // any mask other than Evener's config mask (a user's own denylist entry above
-// it wins), holds a masked path (carving it out would expose that path), overlaps
-// a write root (it would not stay read-only), or resolves through a symlink into
-// another mask (re-granting its real path would expose that).
+// it wins), holds a masked path (carving it out would expose that path),
+// overlaps a write root (it would not stay read-only), or resolves anywhere but
+// its own place under the mask (carveOutEscapes). guardedHostRoots only cleans
+// a candidate, without resolving symlinks, so these checks see its literal
+// spelling: a cache -> plugins symlink is refused
+// (TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask).
 func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string) []string {
 	var out []string
 	for _, root := range guardedHostRoots(candidates, home, worktree) {
