@@ -112,9 +112,10 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 // not a file found under a directory. Ripgrep omits the filename entirely when
 // given a single explicit file argument, so content and count output do the
 // same here; otherwise the tool's output would differ between environments with
-// and without rg on PATH.
+// and without rg on PATH. A path is written as grepOutputPath gives it.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	singleFile := relPath == "."
+	name := grepOutputPath(relPath)
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		if !a.re.MatchString(line) {
@@ -124,7 +125,7 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		case "files_with_matches":
 			if _, seen := a.filesSeen[relPath]; !seen {
 				a.filesSeen[relPath] = struct{}{}
-				a.results = append(a.results, relPath)
+				a.results = append(a.results, name)
 				a.total++
 				if a.total >= a.maxResults {
 					return true
@@ -163,13 +164,13 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 					if singleFile {
 						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
 					} else {
-						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
+						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", name, sep, j+1, sep, lines[j]))
 					}
 				}
 			} else if singleFile {
 				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
 			} else {
-				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
+				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", name, i+1, line))
 			}
 			a.total++
 			if a.total >= a.maxResults {
@@ -190,7 +191,7 @@ func (a *grepAccum) finish() string {
 				countResults = append(countResults, strconv.Itoa(cnt))
 				continue
 			}
-			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
+			countResults = append(countResults, fmt.Sprintf("%s:%d", grepOutputPath(file), cnt))
 		}
 		sort.Strings(countResults)
 		return strings.Join(countResults, "\n")

@@ -285,7 +285,8 @@ counts the rest." after its `memory_read` route.
 `limit`, or returns `This scope has no pages yet.` `memory_search` skips a
 root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
-still an error. `memory_write`,
+still an error. A search result names a file whose path holds a control
+character as a JSON string, so each result stays one line. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an

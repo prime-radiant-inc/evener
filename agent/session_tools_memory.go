@@ -63,7 +63,7 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 
 // errMemoryPathControlCharacter refuses a write or edit of a path holding a
-// control character (memoryPathHasControl), which no index line can link to.
+// control character (execenv.PathHasControl), which no index line can link to.
 var errMemoryPathControlCharacter = errors.New("memory path holds a control character, such as a newline; choose a name without one")
 
 // isMemoryIndexPath reports whether file, cleaned and relative to the scope,
@@ -115,7 +115,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 	}
 	// A delete still takes such a path, so a file named that way from
 	// outside the tools can be removed.
-	if operation != "delete" && memoryPathHasControl(file) {
+	if operation != "delete" && execenv.PathHasControl(file) {
 		return nil, errMemoryPathControlCharacter
 	}
 	env, forwarded, release, err := s.memoryFileArgs(args, "file_path", operation)

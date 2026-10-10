@@ -52,12 +52,18 @@ func TestMemoryIndexWritesRefused(t *testing.T) {
 
 // memory_write and memory_edit refuse a path holding an ASCII control
 // character other than tab, in any segment, and change nothing; memory_delete
-// still removes such a file, which can arrive from outside the tools. A tab
-// is an ordinary path character.
+// still removes such a file, which can arrive from outside the tools, and
+// memory_search names it as a JSON string on one line. A tab is an ordinary
+// path character.
 func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
-	for _, name := range []string{"bad\nname.md", "dir\r/x.md", "bell\a.txt", "del\x7f.md"} {
+	for name, searched := range map[string]string{
+		"bad\nname.md": `"bad\nname.md"`,
+		"dir\r/x.md":   `"dir\r/x.md"`,
+		"bell\a.txt":   `"bell\u0007.txt"`,
+		"del\x7f.md":   `"del\u007f.md"`,
+	} {
 		path := filepath.Join(scope, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -76,6 +82,11 @@ func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 		}
 		if raw, err := os.ReadFile(path); err != nil || string(raw) != "x" {
 			t.Fatalf("%q changed: %q, %v", name, raw, err)
+		}
+		for mode, want := range map[string]string{"files_with_matches": searched, "content": searched + ":1:x", "count": searched + ":1"} {
+			if res := memoryExec(t, s, "memory_search", map[string]any{"scope": "personal", "pattern": "^x$", "output_mode": mode}); res.IsError || res.Output != want {
+				t.Fatalf("search %s for %q: %+v, want %q", mode, name, res, want)
+			}
 		}
 		if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "personal", "file_path": name}); res.IsError {
 			t.Fatalf("delete %q: %+v", name, res)
