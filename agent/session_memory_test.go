@@ -3083,8 +3083,8 @@ var updatePromptGoldens = flag.Bool("update-prompt", false,
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions only when the
 // save tools are callable (never in a delegate, which reports findings to its
-// parent instead), and project-scope
-// wording only when project memory is bound. Where memory is readable, the
+// parent instead), and project-scope wording only when project memory is
+// bound. Where memory is readable, the
 // guidance and the memory tools' descriptions are prompt text, pinned whole
 // per shape in testdata/memoryprompt, never by substring; regenerate after an
 // intended wording change with

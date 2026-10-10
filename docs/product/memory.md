@@ -84,11 +84,11 @@ the system prompt, rendered from what the session can do when the prompt is
 built. The guidance is cached with the prompt and re-rendered when the tool
 registry, model or environment changes. It says what each scope holds
 (personal memory: what applies beyond the current project, such as how the
-human partner works and how tools, systems and the world behave; project
+human partner works and how tools and systems behave here; project
 memory: knowledge about this project), when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Memory reflects what was true when it was
-written: the agent checks that a file, function, command or setting a note names
-still exists before relying on it, and follows a recorded decision or rule
+written: the agent checks that a file, function or command a note names
+still exists before relying on it, and follows a recorded decision
 unless the partner or newer evidence says it changed. A delegate is told
 instead to put what it learned that is worth keeping in its report, because
 its caller decides what to save. For sessions that can call the save tools, the
@@ -109,17 +109,15 @@ permission), instructions scoped to one job (such as which model to use for
 some steps), and bugs in Evener itself, which go to the partner or the report
 so they get filed. What the agent found or did belongs in its report. The
 Finishing guidance repeats the check for what the partner told and for what was
-worked out the hard way; the result tool carries no save reminder, because one
-there fired at every turn and every delegate report and drew low-value pages.
-Pages that contradict what the agent observes are corrected in the same turn.
-Saving sessions
-are also told the shape of a useful page (one durable fact with its reason and
+worked out the hard way; the result tool carries no save reminder. Pages that
+contradict what the agent observes are corrected in the same turn. Saving
+sessions are also told the shape of a useful page (one durable fact with its reason and
 when it bears on work, with a frontmatter description that says what the page
 holds and topic tags that reuse the index's) and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
-ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
+ends its turn. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
 for status, the task list or the ledger a skill keeps, with task notes only
 when something happened that a later step needs; the whiteboard carries status

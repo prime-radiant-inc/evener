@@ -44,7 +44,7 @@
           "regex": "(?i)lesson|root cause|symptom|always (check|verify|trace|test)|don'?t assume|before (blaming|assuming)|off.by"
         },
         {
-          "name": "info: saved BSD sed quirk",
+          "name": "saved BSD sed quirk (reported, not required)",
           "regex": "(?i)\\bsed\\b"
         }
       ]
