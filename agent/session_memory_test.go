@@ -1521,7 +1521,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 				t.Fatal("delegate made no model request")
 			}
 			for _, def := range childTools {
-				if slices.Contains(memorySaveToolNames, def.Name) || strings.Contains(def.Description, memoryReportReminder) {
+				if slices.Contains(memorySaveToolNames, def.Name) {
 					t.Errorf("delegate's model request offers saving through %s", def.Name)
 				}
 			}
@@ -3081,9 +3081,9 @@ var updatePromptGoldens = flag.Bool("update-prompt", false,
 	"rewrite agent/testdata/memoryprompt from the current memory guidance and tool descriptions")
 
 // Memory guidance follows what the session can do: read guidance (with the
-// trust guard) whenever memory is readable, save instructions and the result
-// tool's reminder only when the save tools are callable (never in a delegate,
-// which reports findings to its parent instead), and project-scope
+// trust guard) whenever memory is readable, save instructions only when the
+// save tools are callable (never in a delegate, which reports findings to its
+// parent instead), and project-scope
 // wording only when project memory is bound. Where memory is readable, the
 // guidance and the memory tools' descriptions are prompt text, pinned whole
 // per shape in testdata/memoryprompt, never by substring; regenerate after an
@@ -3111,15 +3111,11 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var system strings.Builder
-			var reminder bool
 			s := newSession(t, withConfig(tc.cfg), withSteps(func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
 					if msg.Role == llm.RoleSystem {
 						system.WriteString(msg.Text())
 					}
-				}
-				for _, def := range req.Tools {
-					reminder = reminder || strings.Contains(def.Description, memoryReportReminder)
 				}
 				return finalResponse("done")
 			}))
@@ -3132,8 +3128,8 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			}
 			_, section, read := strings.Cut(system.String(), memoryGuidanceHeading)
 			data, _ := s.buildPromptData(s.currentEnv())
-			if read != tc.read || data.MemoryRead != tc.read || data.MemorySaves != tc.save || reminder != tc.save {
-				t.Fatalf("section=%v MemoryRead=%v MemorySaves=%v reminder=%v, want read=%v save=%v", read, data.MemoryRead, data.MemorySaves, reminder, tc.read, tc.save)
+			if read != tc.read || data.MemoryRead != tc.read || data.MemorySaves != tc.save {
+				t.Fatalf("section=%v MemoryRead=%v MemorySaves=%v, want read=%v save=%v", read, data.MemoryRead, data.MemorySaves, tc.read, tc.save)
 			}
 			if data.ProjectMemory != (tc.read && tc.project) {
 				t.Fatalf("ProjectMemory=%v, want %v", data.ProjectMemory, tc.read && tc.project)

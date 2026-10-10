@@ -90,11 +90,6 @@ func homeMemoryProjectID(env execenv.ExecutionEnvironment, meta schema.SessionMe
 	return project.ID
 }
 
-// memoryReportReminder rides on the result tool's description because the
-// model reads it at the moment it decides the work is done, which system
-// prompt guidance alone did not reliably reach.
-const memoryReportReminder = "Before a final answer with end_turn=true, check whether your human partner told you a preference, rule or project fact this session, or whether you hit something the hard way that nothing written down would have told you, and save any of those not already in memory. What you found by reading the repository and what this session did belong in your report: the next session can read the repository again, and a page that repeats it costs your partner a transcript entry and every later session context."
-
 func (s *Session) memoryContextEnabled() bool {
 	return !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" && s.reg != nil && s.reg.Get("memory_read") != nil
 }
