@@ -254,7 +254,10 @@ The `Tags:` header lists every tag with its page count, alphabetically, and is
 omitted when no page has tags. Lines run newest `updated` first. A page with no
 `updated` sorts by its modification time's UTC date and shows no date; an
 `updated` that is neither a YAML date nor a `YYYY-MM-DD` string is ignored.
-Ties order by path. The title is the page's first heading (whitespace runs
+Ties order by path. Pages whose frontmatter is unreadable come after every
+other page, ordered by path: a broken page's file date says nothing about what
+it holds, so a freshly touched one never crowds the newest pages out of the
+projection. The title is the page's first heading (whitespace runs
 collapsed, as in the fallback), else its filename without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
 or `\` in a title is backslash-escaped. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets

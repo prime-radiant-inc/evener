@@ -49,7 +49,7 @@ Tags: formatting (3), money (2), vitest (6)
 ```
 
 - Header: `Tags:` and every tag with its page count, alphabetical. Omitted when no page has tags. A projection the whole index does not fit caps it (see Budget).
-- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date.
+- One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date. Pages whose frontmatter is unreadable sort after every other page, by path among themselves, so a freshly touched broken page never crowds the newest pages out of the projection.
 - Title: the first heading if there is one (whitespace runs collapsed, as in the fallback description), else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
 - A page whose path holds an ASCII control character other than tab has no link: its line is the path as a JSON string, then a note (see the product guide).

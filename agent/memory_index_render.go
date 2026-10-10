@@ -16,9 +16,15 @@ import (
 const memoryProjectionCap = 8192
 
 // memoryPageSortDate is the date a page sorts by: its stamp, else its file's
-// modification date.
+// modification date. A page whose frontmatter is unreadable has none, so it
+// sorts after every dated page: its file date says nothing about what it
+// holds, and a freshly touched broken page must not crowd out the newest
+// real ones.
 func memoryPageSortDate(p memoryPage) string {
-	if p.Updated != "" {
+	switch {
+	case p.Unreadable:
+		return ""
+	case p.Updated != "":
 		return p.Updated
 	}
 	return memoryStampDate(p.ModTime)
