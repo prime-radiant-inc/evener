@@ -1,6 +1,7 @@
 import type { AnyNotification, ThreadItem, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { afterEach, expect, it, vi } from "vitest";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import type { EntryWriteOutcome } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { TranscriptRepository } from "./transcriptRepository";
 
@@ -73,6 +74,20 @@ function readItems(label: string, snapshotLength: number, items: ThreadItem[]): 
   return response;
 }
 
+function historyNotification(label: string, entry: number, snapshotLength: number): AnyNotification {
+  return {
+    method: "history/updated",
+    params: {
+      ref,
+      threadId,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length: snapshotLength },
+      items: [item(label, entry)],
+    },
+  } as AnyNotification;
+}
+
 function repository(
   cache: ReturnType<typeof createEntryCacheFixture>["cache"],
   lifetime = 1,
@@ -103,13 +118,24 @@ function repository(
 
 function capturingScheduler() {
   const scheduled: Array<{ attempt: number; fire: () => void }> = [];
-  const captures: Array<[number, () => void]> = [];
+  let cancelCount = 0;
   const scheduler = (attempt: number, retry: () => void): (() => void) => {
-    captures.push([attempt, retry]);
     scheduled.push({ attempt, fire: retry });
-    return () => {};
+    return () => {
+      cancelCount += 1;
+    };
   };
-  return { scheduled, captures, scheduler };
+  return { scheduled, scheduler, cancelledCount: () => cancelCount };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 async function keysInCache(cache: ReturnType<typeof createEntryCacheFixture>["cache"]): Promise<string[]> {
@@ -454,6 +480,158 @@ it("paces the default retry on bounded exponential backoff and resets after succ
   failure.mockRestore();
   captured[4]!.fire();
   await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+  const nextFailure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort again") });
+  owner.acceptRead(read("next", 4), { lifetime: 1, readId: "read-next", boundary: "boundary-next" });
+  await vi.waitFor(() => expect(captured).toHaveLength(6));
+  expect(captured[5]!.delay).toBe(250);
+  nextFailure.mockRestore();
   timeoutSpy.mockRestore();
+  owner.dispose();
+});
+
+// R3 remainder: cancelling a held retry must be an explicit disposition, and
+// the cancelled callback must perform no write.
+it("reports a cancelled settlement and performs no write when a held retry is cancelled", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler, cancelledCount } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.acceptRead(read("alpha", 2), { lifetime: 1, readId: "read-alpha", boundary: "boundary-alpha" });
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
+  failure.mockRestore();
+  expect(scheduled).toHaveLength(1);
+
+  owner.invalidate();
+  expect(cancelledCount()).toBeGreaterThanOrEqual(1);
+  await expect(owner.settled()).rejects.toThrow(/cancel/);
+
+  // The cancelled callback performs no write.
+  const after = vi.spyOn(fixture.cache, "commitBatch");
+  scheduled[0]!.fire();
+  await Promise.resolve();
+  expect(after).not.toHaveBeenCalled();
+  after.mockRestore();
+  reader.dispose();
+  owner.dispose();
+});
+
+// R3 remainder: a failed write with no demand is never admitted to the queue
+// and must be reported, not settled as void success.
+it("reports a failed settlement for a failed write with no demand", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.acceptRead(read("alpha", 2), { lifetime: 1, readId: "read-alpha", boundary: "boundary-alpha" });
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  failure.mockRestore();
+  owner.dispose();
+});
+
+// N1 (P1): a repeatedly failed predecessor must not be moved behind its
+// dependent suffix. Consecutive suffix notifications recovered in order
+// certify the chain; the reverse order blocks it forever.
+it("recovers consecutive chained suffixes in order without permanently blocking the chain", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // Two consecutive suffixes chained R -> A -> B; both initial writes fail.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValue({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+  owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
+  await vi.waitFor(() => expect(failure).toHaveBeenCalledTimes(2));
+  expect(scheduled).toHaveLength(1);
+
+  // A's first retry fails again: it must keep the front, ahead of B.
+  scheduled[0]!.fire();
+  await vi.waitFor(() => expect(scheduled).toHaveLength(2));
+
+  // Storage recovers; drain with no new input.
+  failure.mockRestore();
+  scheduled[1]!.fire();
+  await vi.waitFor(() => expect(scheduled).toHaveLength(3));
+  scheduled[2]!.fire();
+  await owner.settled();
+
+  // The certified suffix reaches B and a fresh reader is honestly current.
+  const coverage = await fixture.cache.getCoverage(historyKey, "suffix:read-base");
+  expect(coverage?.representedSnapshot).toBe(3);
+  expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-alpha", "item-base", "item-beta"]);
+  const fresh = owner.attachReader();
+  const opened = await fresh.openLocal(40);
+  expect(opened.status).toBe("current");
+  fresh.dispose();
+  reader.dispose();
+  owner.dispose();
+});
+
+// N2 (P2): the drain is serial. While a retried batch is in flight, a normal
+// settled write must not arm the next retry.
+it("does not issue the next retry while a retried batch is in flight", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValue({ outcome: "failed", error: new Error("simulated abort") });
+  owner.acceptRead(read("alpha", 2), { lifetime: 1, readId: "read-alpha", boundary: "boundary-alpha" });
+  owner.acceptRead(read("beta", 3), { lifetime: 1, readId: "read-beta", boundary: "boundary-beta" });
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
+  await vi.waitFor(() => expect(failure).toHaveBeenCalledTimes(2));
+  expect(scheduled).toHaveLength(1);
+  failure.mockRestore();
+
+  // Hold A's retried commit; an ordinary C then commits for real.
+  const held = deferred<EntryWriteOutcome>();
+  const heldRetry = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce(() => held.promise);
+  scheduled[0]!.fire();
+  owner.acceptRead(read("gamma", 4), { lifetime: 1, readId: "read-gamma", boundary: "boundary-gamma" });
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-gamma"));
+
+  // A is still in flight: no next retry was armed and B did not issue.
+  expect(scheduled).toHaveLength(1);
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+
+  // Release A as failed; A keeps the front and the next attempt is armed.
+  held.resolve({ outcome: "failed", error: new Error("simulated abort") });
+  await vi.waitFor(() => expect(scheduled).toHaveLength(2));
+  heldRetry.mockRestore();
+  scheduled[1]!.fire();
+  await vi.waitFor(() => expect(scheduled).toHaveLength(3));
+  scheduled[2]!.fire();
+  await owner.settled();
+  expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-alpha", "item-base", "item-beta", "item-gamma"]);
+  reader.dispose();
   owner.dispose();
 });

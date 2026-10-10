@@ -131,8 +131,13 @@ export class TranscriptRepository {
   // retry instead of letting it overwrite the current committed coverage.
   #retryQueue: Array<{ batch: Parameters<SessionEntryCache["commitBatch"]>[0]; revision: number }> = [];
   #retryScheduled = false;
+  #retryInFlight = false;
   #retryCancel: (() => void) | undefined;
   #retryAttempt = 0;
+  // Explicit disposition of recovery work that will never run: a cancelled
+  // (invalidate/dispose/last-reader) or unadmitted (no demand) failed batch.
+  // Settlement must report it rather than resolving as void success.
+  #recoveryAbandoned: "cancelled" | "failed" | undefined;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -684,10 +689,13 @@ export class TranscriptRepository {
    */
   async settled(): Promise<void> {
     await Promise.all([...this.#writes]);
-    if (this.#invalidated) return;
-    if (!this.#disposed && (this.#retryQueue.length > 0 || this.#retryScheduled)) {
+    if (!this.#disposed && (this.#retryQueue.length > 0 || this.#retryScheduled || this.#retryInFlight)) {
       throw new Error("transcript recovery is outstanding");
     }
+    // Recovery work that was cancelled or never admitted is an explicit
+    // disposition, not silent success.
+    if (this.#recoveryAbandoned === "cancelled") throw new Error("transcript recovery was cancelled");
+    if (this.#recoveryAbandoned === "failed") throw new Error("transcript recovery failed");
   }
 
   invalidate(): void {
@@ -1015,7 +1023,7 @@ export class TranscriptRepository {
    * newer boundary, so its completion must not write the old baseline's
    * committed-coverage bookkeeping back over the new baseline's.
    */
-  #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): void {
+  #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): Promise<void> {
     const issuedRevision = retryRevision ?? this.#sourceRevision;
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       const superseded = retryRevision !== undefined && issuedRevision !== this.#sourceRevision;
@@ -1026,7 +1034,10 @@ export class TranscriptRepository {
         // `unchanged` batch adds none; `not-extended` means the row did not
         // survive policy or a suffix could not extend, and the cache refuses to
         // certify it). A superseded retry likewise contributes nothing.
-        if (!superseded && batch.coverage && outcome.coverage === "extended") this.#cacheContinuityLost = false;
+        if (!superseded && batch.coverage && outcome.coverage === "extended") {
+          this.#cacheContinuityLost = false;
+          this.#recoveryAbandoned = undefined;
+        }
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverageBoundary = batch.coverage.boundary;
           this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
@@ -1048,7 +1059,12 @@ export class TranscriptRepository {
         // refusal (`clear-epoch`, `history-fence`, `capacity`) is not transient:
         // retrying it would be the repair loop the policy forbids. A superseded
         // retry is dropped rather than re-armed.
-        if (outcome.outcome === "failed" && !superseded) this.#enqueueRetry(batch, issuedRevision);
+        // A retried batch that fails again keeps its place at the front so a
+        // dependent suffix never overtakes its predecessor; a first failure
+        // queues behind the failures already waiting.
+        if (outcome.outcome === "failed" && !superseded) {
+          this.#enqueueRetry(batch, issuedRevision, retryRevision !== undefined);
+        }
       }
       this.#scheduleRetry();
     });
@@ -1057,6 +1073,7 @@ export class TranscriptRepository {
       this.#writes.delete(write);
       this.#reclaimBackgroundModel();
     });
+    return write;
   }
 
   #now(): number {
@@ -1064,18 +1081,30 @@ export class TranscriptRepository {
   }
 
   // Retain a failed batch in arrival order. A second distinct failure is
-  // deferred behind the first; nothing is discarded, so no accepted cache work
-  // is abandoned. Demand-gated: with no reader there is nothing to recover for.
-  #enqueueRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0], revision: number): void {
-    if (this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
-    this.#retryQueue.push({ batch, revision });
+  // deferred behind the first; a re-failed retry keeps the front (atFront) so a
+  // dependent suffix never overtakes it. Nothing is discarded. Demand-gated:
+  // with no reader, or after cancel, the failure is an explicit disposition.
+  #enqueueRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0], revision: number, atFront: boolean): void {
+    if (this.#disposed || this.#invalidated) {
+      this.#recoveryAbandoned = "cancelled";
+      return;
+    }
+    if (this.#readerCount <= 0) {
+      this.#recoveryAbandoned = "failed";
+      return;
+    }
+    const entry = { batch, revision };
+    if (atFront) this.#retryQueue.unshift(entry);
+    else this.#retryQueue.push(entry);
   }
 
-  // One paced timer drains the queue in order, one batch at a time: the next
-  // attempt is scheduled only after the previous write settles (its own
-  // `.then` calls back here), so two batches never write concurrently.
+  // One paced timer drains the queue in order, one batch at a time: a retried
+  // write sets `#retryInFlight` until it settles, and `#scheduleRetry` refuses
+  // to arm while it is set, so no two batches (retried or ordinary) can be
+  // driven by the queue concurrently.
   #scheduleRetry(): void {
-    if (this.#retryScheduled || this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
+    if (this.#retryScheduled || this.#retryInFlight || this.#disposed || this.#invalidated) return;
+    if (this.#readerCount <= 0) return;
     if (this.#retryQueue.length === 0) return;
     this.#retryScheduled = true;
     this.#retryAttempt += 1;
@@ -1096,7 +1125,13 @@ export class TranscriptRepository {
   }
 
   #drainRetry(): void {
-    if (this.#disposed || this.#invalidated || this.#readerCount <= 0) {
+    if (this.#disposed || this.#invalidated) {
+      if (this.#retryQueue.length > 0) this.#recoveryAbandoned = "cancelled";
+      this.#retryQueue.length = 0;
+      return;
+    }
+    if (this.#readerCount <= 0) {
+      if (this.#retryQueue.length > 0) this.#recoveryAbandoned = "cancelled";
       this.#retryQueue.length = 0;
       return;
     }
@@ -1109,10 +1144,16 @@ export class TranscriptRepository {
       this.#scheduleRetry();
       return;
     }
-    this.#queueWrite(next.batch, next.revision);
+    this.#retryInFlight = true;
+    const write = this.#queueWrite(next.batch, next.revision);
+    void write.finally(() => {
+      this.#retryInFlight = false;
+      this.#scheduleRetry();
+    });
   }
 
   #cancelRetry(): void {
+    if (this.#retryQueue.length > 0 || this.#retryScheduled) this.#recoveryAbandoned = "cancelled";
     this.#retryQueue.length = 0;
     this.#retryScheduled = false;
     const cancel = this.#retryCancel;
