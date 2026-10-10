@@ -135,8 +135,7 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		case "files_with_matches":
 			if _, seen := a.filesSeen[relPath]; !seen {
 				if a.total >= a.maxResults {
-					a.truncated = true
-					return true
+					return a.cutAtCap()
 				}
 				a.filesSeen[relPath] = struct{}{}
 				a.results = append(a.results, name)
@@ -149,14 +148,12 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 			// rendered count output has at most maxResults rows — the same
 			// first-N truncation the ripgrep path applies to rg --count.
 			if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
-				a.truncated = true
-				return true
+				return a.cutAtCap()
 			}
 			a.fileCounts[relPath]++
 		default: // "content" or ""
 			if a.total >= a.maxResults {
-				a.truncated = true
-				return true
+				return a.cutAtCap()
 			}
 			if a.contextLines > 0 {
 				// Mirror rg's -C style: a "--" separator between match groups, the
@@ -194,6 +191,13 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	return false
 }
 
+// cutAtCap records that feed found a result past maxResults, which it leaves
+// out, and returns feed's stop.
+func (a *grepAccum) cutAtCap() (stop bool) {
+	a.truncated = true
+	return true
+}
+
 // grepFileSelected reports whether grep searches the file named name, at
 // slash path rel, once dotfile and ignore rules have let it through: a file
 // skip names (when skip is not nil) or outside the glob filters is left out.
@@ -218,12 +222,7 @@ func (a *grepAccum) finish() string {
 	return out
 }
 
-// grepTruncationNote is the last line of a grep result the cap cut short, so
-// a model never reads the results it got as all there are.
-func grepTruncationNote(maxResults int) string {
-	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
-}
-
+// render is the accumulated results in the requested output mode.
 func (a *grepAccum) render() string {
 	if a.outputMode == "count" {
 		var countResults []string
@@ -239,6 +238,12 @@ func (a *grepAccum) render() string {
 		return strings.Join(countResults, "\n")
 	}
 	return strings.Join(a.results, "\n")
+}
+
+// grepTruncationNote is the last line of a grep result the cap cut short, so
+// a model never reads the results it got as all there are.
+func grepTruncationNote(maxResults int) string {
+	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
 }
 
 // sortPathStat is the stat the glob result ordering runs on; a variable so

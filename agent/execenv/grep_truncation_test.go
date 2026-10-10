@@ -40,26 +40,26 @@ func writeGrepTruncationTree(t *testing.T, root string) {
 func checkGrepTruncation(t *testing.T, arm string, env *LocalExecutionEnvironment, root string) {
 	t.Helper()
 	const note = "[results truncated at 2; narrow the path or glob_filter, or raise max_results]"
-	for _, path := range []string{"tree", "three.txt"} {
-		for _, mode := range []string{"content", "files_with_matches", "count"} {
-			if path == "three.txt" && mode != "content" {
-				continue // one named file has one files_with_matches or count row
-			}
-			cut, err := env.Grep(t.Context(), "needle", filepath.Join(root, path), "", false, 2, mode)
-			if err != nil {
-				t.Fatalf("%s: grep %s %s (cap 2): %v", arm, path, mode, err)
-			}
-			lines := strings.Split(cut, "\n")
-			if len(lines) != 3 || lines[2] != note {
-				t.Errorf("%s: grep %s %s with three results and a cap of 2 = %q, want two results then %q", arm, path, mode, cut, note)
-			}
-			whole, err := env.Grep(t.Context(), "needle", filepath.Join(root, path), "", false, 3, mode)
-			if err != nil {
-				t.Fatalf("%s: grep %s %s (cap 3): %v", arm, path, mode, err)
-			}
-			if lines := strings.Split(whole, "\n"); len(lines) != 3 || strings.Contains(whole, "truncated") {
-				t.Errorf("%s: grep %s %s with three results and a cap of 3 = %q, want the three results and no note", arm, path, mode, whole)
-			}
+	// One named file has one files_with_matches or count row, so only its
+	// content can hold three results.
+	for _, tc := range []struct{ path, mode string }{
+		{"tree", "content"}, {"tree", "files_with_matches"}, {"tree", "count"}, {"three.txt", "content"},
+	} {
+		path, mode := tc.path, tc.mode
+		cut, err := env.Grep(t.Context(), "needle", filepath.Join(root, path), "", false, 2, mode)
+		if err != nil {
+			t.Fatalf("%s: grep %s %s (cap 2): %v", arm, path, mode, err)
+		}
+		lines := strings.Split(cut, "\n")
+		if len(lines) != 3 || lines[2] != note {
+			t.Errorf("%s: grep %s %s with three results and a cap of 2 = %q, want two results then %q", arm, path, mode, cut, note)
+		}
+		whole, err := env.Grep(t.Context(), "needle", filepath.Join(root, path), "", false, 3, mode)
+		if err != nil {
+			t.Fatalf("%s: grep %s %s (cap 3): %v", arm, path, mode, err)
+		}
+		if len(strings.Split(whole, "\n")) != 3 || strings.Contains(whole, "truncated") {
+			t.Errorf("%s: grep %s %s with three results and a cap of 3 = %q, want the three results and no note", arm, path, mode, whole)
 		}
 	}
 }

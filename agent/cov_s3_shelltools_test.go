@@ -49,6 +49,11 @@ func TestS3Cov_FormatDirListing(t *testing.T) {
 		if want := "\"bad\\nname.md\"\t1\n\"sub\\ndir\"/\n\n2 entries"; got != want {
 			t.Fatalf("listing = %q, want %q", got, want)
 		}
+		// The page budget sizes the quoted name, never the shorter raw one.
+		ctrl := execenv.DirEntry{Name: "\x01\x02\x03\x04\x05\x06", Size: 1}
+		if line := formatDirListing(listDirResult{Entries: []execenv.DirEntry{ctrl}}); dirEntrySize(ctrl) < len(strings.SplitN(line, "\n", 2)[0])+1 {
+			t.Fatalf("dirEntrySize(%q) = %d, under its rendered line %q", ctrl.Name, dirEntrySize(ctrl), line)
+		}
 	})
 
 	t.Run("truncated footer", func(t *testing.T) {
@@ -268,7 +273,8 @@ func TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches(t *testi
 func TestS3Cov_GlobTool_QuotesAControlCharacterPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	for _, name := range []string{"bad\nname.md", "ok.md"} {
+	const badName = "bad\nname.md"
+	for _, name := range []string{badName, "ok.md"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -280,7 +286,7 @@ func TestS3Cov_GlobTool_QuotesAControlCharacterPath(t *testing.T) {
 	}
 	lines := strings.Split(res.Output, "\n")
 	slices.Sort(lines)
-	want := []string{execenv.QuoteControlPath(filepath.Join(dir, "bad\nname.md")), filepath.Join(dir, "ok.md")}
+	want := []string{execenv.QuoteControlPath(filepath.Join(dir, badName)), filepath.Join(dir, "ok.md")}
 	slices.Sort(want)
 	if !slices.Equal(lines, want) {
 		t.Fatalf("glob lines = %q, want %q", lines, want)

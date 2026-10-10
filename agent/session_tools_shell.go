@@ -42,11 +42,11 @@ type listDirResult struct {
 	Truncated bool
 }
 
-// dirEntrySize over-estimates an entry's rendered line length (name, an optional
-// slash or tab-separated size, and a newline) so the running budget keeps the
-// rendered listing under the cap.
+// dirEntrySize over-estimates an entry's rendered line length (name as
+// formatDirListing writes it, an optional slash or tab-separated size, and a
+// newline) so the running budget keeps the rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(e.Name) + 16
+	return len(execenv.OneLinePath(e.Name)) + 16
 }
 
 // formatDirListing renders a page as plain text, ls-style: one entry per line,
@@ -233,11 +233,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
-			lines := make([]string, len(matches))
 			for i, match := range matches {
-				lines[i] = execenv.OneLinePath(match)
+				matches[i] = execenv.OneLinePath(match)
 			}
-			result := strings.Join(lines, "\n")
+			result := strings.Join(matches, "\n")
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).
