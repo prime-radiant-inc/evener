@@ -416,3 +416,44 @@ func TestStatusSettledIsNotAWatchableEventKind(t *testing.T) {
 		}
 	}
 }
+
+// A notification wake the session filters out (nothing deliverable) runs no
+// turn, so it leaves a needs_response rest where it was: still awaiting, as
+// the server's stored state and restore say.
+func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after the needs_response turn = %q, want awaiting", got)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after a filtered wake = %q, want awaiting kept", got)
+	}
+}
+
+// A filtered wake over an idle session leaves it idle.
+func TestFilteredWakeKeepsAnIdleRest(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("done", "done") }))
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after a filtered wake = %q, want idle", got)
+	}
+}
