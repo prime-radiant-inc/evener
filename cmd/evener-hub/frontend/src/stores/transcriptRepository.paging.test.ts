@@ -7,11 +7,13 @@
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
+  OverlayItem,
   ThreadItem,
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
+import { decodeTranscriptItem } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
@@ -625,18 +627,75 @@ test("a compatible old-tool completion survives a latest response whose window e
     },
   ];
   expect(repo.acceptRead(latest, { lifetime: 1, readId: "r2", boundary: "b2" })).toBe(true);
-  await repo.settled();
 
   const snapshot = repo.getSnapshot();
   expect(holdsPosition(snapshot, 4)).toBe(true);
   expect(itemVersionAt(snapshot, 4)).toBe(9);
   expect(itemVersionAt(snapshot, 6)).toBe(9);
+  // The whole completion payload survives, not only its version.
+  const item4 = (snapshot?.history?.turns ?? [])
+    .flatMap((turn) => turn.items)
+    .find((item) => item.position?.entry === 4);
+  expect(item4?.text).toBe("tool-completed");
 
   // The completion's content is preserved in the real cache's committed rows,
   // not merely in memory.
+  await repo.settled();
   const rows = await fixture.cache.getLatest(historyKey, 40);
   const row4 = rows.find((row) => row.position.entry === 4);
   expect(row4?.version).toBe(9);
+  expect(decodeTranscriptItem(row4?.item as never)?.text).toBe("tool-completed");
+});
+
+test("a response cut prunes an overlay delta it already represents, showing the recorded item once", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+
+  // A live preview overlay delta for a communicate call that history has not
+  // recorded yet: it is displayed from the overlay alone.
+  const preview: OverlayItem = {
+    key: "preview:call-6",
+    kind: "preview",
+    turnId: "turn_1",
+    roundId: "r1",
+    streamId: "r1/0",
+    callId: "call-6",
+    item: { type: "agentMessage", id: "preview:call-6", turnId: "turn_1", callId: "call-6", text: "preview" },
+  };
+  expect(
+    repo.accept({ method: "overlay/upserted", params: { ref, threadId, item: preview } } as AnyNotification, {
+      lifetime: 1,
+    }),
+  ).toBe(true);
+  expect(Object.keys(repo.getSnapshot()?.overlay ?? {})).toEqual(["preview:call-6"]);
+
+  // A latest response whose cut records the same communicate call and whose
+  // overlay still carries the delta. The covered delta must be pruned, not
+  // replayed alongside the recorded item.
+  const latest = readOf([6, 7, 8], { olderCursor: "C1", length: 8 });
+  latest.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: 8,
+      items: [{ ...itemOf(6, 7), callId: "call-6", text: "recorded done" }],
+    },
+  ];
+  latest.overlay = [preview];
+  expect(repo.acceptRead(latest, { lifetime: 1, readId: "r2", boundary: "b2" })).toBe(true);
+
+  const snapshot = repo.getSnapshot();
+  // No overlay multiplicity: the covered delta is gone from the overlay.
+  expect(Object.keys(snapshot?.overlay ?? {})).toEqual([]);
+  // Exactly one visible item for the call, carrying the recorded content.
+  const visible = (snapshot?.turns ?? [])
+    .flatMap((turn) => turn.items)
+    .filter((item) => (item as { callId?: string }).callId === "call-6");
+  expect(visible).toHaveLength(1);
+  expect(visible[0]?.text).toBe("recorded done");
 });
 
 test("an invalidating page is refused as a certificate but its invalidation is adopted", async () => {

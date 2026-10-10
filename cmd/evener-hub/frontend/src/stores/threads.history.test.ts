@@ -1028,14 +1028,17 @@ describe("entry repository: older paging", () => {
 
       // Close and reopen locally on the SAME connection/binding. The reader is
       // disposed and re-attached; the certified pages are restored from disk.
+      const pageCallsBeforeReopen = pageCalls;
       threadsStore.getState().releaseThread(SELECTED);
       await threadsStore.getState().ensureThread(SELECTED);
       const reopenedEntries = (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
         .flatMap((turn) => turn.items)
         .map((item) => item.position?.entry);
-      expect(reopenedEntries).toEqual(expect.arrayContaining([1, 2, 3, 4, 5, 6, 7, 8]));
-      // Unique: the later-page row (position 2) is retained exactly once.
-      expect(reopenedEntries.filter((entry) => entry === 2)).toHaveLength(1);
+      // Exact order and full uniqueness: the certified pages are restored from
+      // disk in document order, every row exactly once.
+      expect(reopenedEntries).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      // Restoration was local: the reopen issued no older-page request.
+      expect(pageCalls).toBe(pageCallsBeforeReopen);
 
       // Continue paging across the join: the next older request is a real
       // supported thread/turns/list issued on the stored boundary cursor.
@@ -1081,6 +1084,7 @@ describe("entry repository: older paging", () => {
       pageCalls += 1;
       pageCursors.push(params.cursor);
       if (params.cursor === "cursor_1") return pageResponse("turn_mid", [3, 4, 5], "cursor_2");
+      if (params.cursor === "cursor_2") return pageResponse("turn_old", [1, 2], "cursor_3");
       if (params.cursor === "cursor_fresh") return pageResponse("turn_fresh", [4, 5, 6], "cursor_fresh2", 10);
       return pageResponse("turn_old", [1, 2], "cursor_fresh3", 10);
     };
@@ -1093,13 +1097,17 @@ describe("entry repository: older paging", () => {
     try {
       await threadsStore.getState().ensureThread(SELECTED);
       await threadsStore.getState().loadOlderTurns(SELECTED);
-      expect(pageCalls).toBe(1);
-      expect(modelEntries()).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2"]);
+      // The identifiable later-page row held before the reconnect.
+      expect(modelEntries()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(modelEntries().filter((entry) => entry === 1)).toHaveLength(1);
 
       // A same-connection refresh must preserve the compatible paged history.
       await threadsStore.getState().refreshThread(SELECTED);
-      expect(modelEntries()).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
-      expect(pageCalls).toBe(1);
+      expect(modelEntries()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(pageCalls).toBe(2);
 
       // Reconnect with a missed event: a new client reports the same source
       // identifiers but a fresh latest boundary that excludes the old rows.
@@ -1127,19 +1135,26 @@ describe("entry repository: older paging", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await settleBackgroundTranscriptsForTests();
       // No paging was issued just by reconnecting.
-      expect(pageCalls).toBe(1);
+      expect(pageCalls).toBe(2);
+      // The fresh replacement drops the pre-gap rows entirely: they cannot
+      // certify the missed interval.
+      expect(modelEntries()).not.toContain(1);
+      expect(modelEntries()).not.toContain(5);
       expect(modelEntries()).toEqual(expect.arrayContaining([7, 8, 9]));
 
       // Renewed paging: the old cached rows may NOT certify the missed interval,
       // so the next older request is a real server page on the fresh cursor.
       await threadsStore.getState().loadOlderTurns(SELECTED);
-      expect(pageCalls).toBe(2);
-      expect(pageCursors.at(-1)).toBe("cursor_fresh");
-      // The later-page row is recoverable through a further renewed page.
-      await threadsStore.getState().loadOlderTurns(SELECTED);
       expect(pageCalls).toBe(3);
+      expect(pageCursors.at(-1)).toBe("cursor_fresh");
+      // The previously held later-page row is recoverable through a further
+      // renewed page from the fresh coverage.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(4);
       expect(pageCursors.at(-1)).toBe("cursor_fresh2");
-      expect(modelEntries()).toEqual(expect.arrayContaining([1, 2]));
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2", "cursor_fresh", "cursor_fresh2"]);
+      expect(modelEntries()).toContain(1);
+      expect(modelEntries().filter((entry) => entry === 1)).toHaveLength(1);
     } finally {
       threadsStore.getState().releaseThread(SELECTED);
       await settleBackgroundTranscriptsForTests();
