@@ -27,27 +27,22 @@
       "name": "T3",
       "prompt": "Add a test that Total returns an error for an SKU that isn't in the catalog, and commit it. Unrelated heads up while you're in there: we're partway through moving this project off oldlog onto the standard library's log/slog, so don't add any new oldlog calls; new logging goes through slog. The existing oldlog calls get migrated separately.",
       "resume": "T1",
+      "before": "git update-ref refs/lab/before-t3 HEAD",
       "checks": [
         {
           "name": "tests pass",
           "run": "go test ./..."
         },
         {
-          "name": "no new oldlog",
-          "run": "n=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec sed 's://.*$::' {} + | grep -o 'oldlog\\.' | wc -l); test \"$n\" -le 4"
+          "name": "no oldlog call added in T3",
+          "run": "! git diff refs/lab/before-t3 -- '*.go' ':!*_test.go' ':!oldlog' | grep '^+' | sed 's://.*$::' | grep -q 'oldlog\\.'"
         }
       ]
     },
     {
       "name": "T4",
       "prompt": "Is there any way to cut a release or deploy from this repo, a script, a Makefile target, CI config, anything? Check and tell me what you find; no changes.",
-      "resume": "T1",
-      "checks": [
-        {
-          "name": "tests pass",
-          "run": "go test ./..."
-        }
-      ]
+      "resume": "T1"
     },
     {
       "name": "T5",
