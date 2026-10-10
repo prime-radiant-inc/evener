@@ -698,8 +698,16 @@ func dedupeRoots(roots []string) []string {
 	return out
 }
 
+// resolveExistingPrefix returns p with its longest existing ancestor resolved
+// through symlinks and the missing rest appended, so a path that does not exist
+// yet is still placed where creating it would land.
+func resolveExistingPrefix(p string) string {
+	return StripDataVolumeAlias(canonicalizeLongestPrefix(p, filepath.EvalSymlinks))
+}
+
 // withResolvedMasks adds the symlink-resolved location of each masked path that
-// is reached through a symlink, so a secret is masked under both spellings: the
+// is reached through a symlink (for one not created yet, where creating it
+// would land), so a secret is masked under both spellings: the
 // file tools compare paths, and would otherwise read a symlinked credential
 // directory (or config root) by its target's name. The backends already mask
 // the resolved target. The pseudo-filesystem floor is left as written: its
@@ -711,7 +719,7 @@ func withResolvedMasks(masked []string) []string {
 		if slices.Contains(defaultPseudoFSPaths, m) {
 			continue
 		}
-		if resolved, err := filepath.EvalSymlinks(m); err == nil && resolved != m && !slices.Contains(out, resolved) {
+		if resolved := resolveExistingPrefix(m); resolved != m && !slices.Contains(out, resolved) {
 			out = append(out, resolved)
 		}
 	}
@@ -751,16 +759,6 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	cr := filepath.Clean(host.EvenerConfigRoot)
 	// A config root the user denylisted themselves stays theirs: it is masked,
 	// and nothing is carved from it, since their own entries win.
-	// Judged by file identity, since neither spelling nor resolved path tells
-	// on a case-insensitive volume (~/.CONFIG/EVENER is ~/.config/evener).
-	sameDir := func(a, b string) bool {
-		if a == b {
-			return true
-		}
-		fa, aerr := os.Stat(a)
-		fb, berr := os.Stat(b)
-		return aerr == nil && berr == nil && os.SameFile(fa, fb)
-	}
 	for _, a := range policy.DenylistAdd {
 		if added := resolveHomePath(a, host.Home); sameDir(added, def) || sameDir(added, cr) {
 			configMasks = nil
@@ -778,6 +776,33 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 		return append(slices.Clone(masked), cr), nil
 	}
 	return append(slices.Clone(masked), cr), append(configMasks, cr)
+}
+
+// sameDir reports whether a and b name the same directory, by file identity:
+// neither spelling nor resolved path tells on a case-insensitive volume
+// (~/.CONFIG/EVENER is ~/.config/evener).
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
+}
+
+// underByIdentity reports whether p, or a directory above it, is the existing
+// directory dir (sameDir), so containment holds under any spelling of either.
+func underByIdentity(p, dir string) bool {
+	for {
+		if sameDir(p, dir) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
 }
 
 // unmaskedContentRoots admits the host's Evener content roots as read-only
@@ -816,14 +841,22 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// Resolved once: every check below, the pinned location and the
 		// resolved spelling all use this same answer, so a swap in between
 		// cannot slip a different location in.
-		resolved, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			// Not created yet: its resolved spelling is where creating it would
-			// land, from its existing ancestors.
-			resolved = StripDataVolumeAlias(canonicalizeLongestPrefix(root, filepath.EvalSymlinks))
-		}
+		// One not created yet resolves to where creating it would land.
+		resolved := resolveExistingPrefix(root)
 		if slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, resolved) || pathUnder(resolved, w) }) ||
 			carveOutEscapes(resolved, root, masked) {
+			continue
+		}
+		// The checks above compare spellings; on a case-insensitive volume a
+		// mask spelled in another case (~/.config/evener/SKILLS) is the same
+		// directory, so overlap with any mask but Evener's config mask is also
+		// judged by file identity.
+		if slices.ContainsFunc(masked, func(m string) bool {
+			if slices.ContainsFunc(configMasks, func(c string) bool { return sameDir(m, c) }) {
+				return false
+			}
+			return underByIdentity(resolved, m) || underByIdentity(m, resolved)
+		}) {
 			continue
 		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
@@ -883,17 +916,14 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 	var own []string
 	for _, m := range masked {
 		if pathUnder(root, m) {
-			if rm, err := filepath.EvalSymlinks(m); err == nil {
-				own = append(own, rm)
-			}
+			own = append(own, resolveExistingPrefix(m))
 		}
 	}
 	isOwn := func(m string) bool {
 		if slices.Contains(own, m) {
 			return true
 		}
-		rm, err := filepath.EvalSymlinks(m)
-		return err == nil && slices.Contains(own, rm)
+		return slices.Contains(own, resolveExistingPrefix(m))
 	}
 	for _, m := range masked {
 		if !pathUnder(root, m) && isOwn(m) {
@@ -903,12 +933,8 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 			// The mask the root is carved from: the root must resolve to its own
 			// place inside it, so a symlink at or below the mask cannot redirect
 			// the re-grant to the config root or the store's metadata.
-			rm, err := filepath.EvalSymlinks(m)
-			if err != nil {
-				rm = m
-			}
 			rel, err := filepath.Rel(m, root)
-			if err != nil || resolved != filepath.Join(rm, rel) {
+			if err != nil || resolved != filepath.Join(resolveExistingPrefix(m), rel) {
 				return true
 			}
 			continue
@@ -916,7 +942,7 @@ func carveOutEscapes(resolved, root string, masked []string) bool {
 		if pathUnder(resolved, m) {
 			return true
 		}
-		if rm, err := filepath.EvalSymlinks(m); err == nil && pathUnder(resolved, rm) {
+		if pathUnder(resolved, resolveExistingPrefix(m)) {
 			return true
 		}
 	}
