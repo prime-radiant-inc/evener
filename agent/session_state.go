@@ -643,10 +643,16 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		s.mu.Unlock()
 		return
 	}
+	// A wake that ran no turn carries no communicate of its own; the rest it
+	// interrupted already passed these checks at its own settle, output
+	// included, and is checked again from here.
+	resumed := s.resumeQuietRest
+	s.resumeQuietRest = false
 	s.mu.Unlock()
-	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
+	if !resumed && s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
 		return
 	}
+	hadOutput = hadOutput || resumed
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
@@ -668,6 +674,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		s.restAwaiting(generation)
 		return
 	}
+	s.mu.Lock()
+	s.quietRestArmed = generation
+	s.mu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		// The cheap check first, so a timer outliving its session or turn
 		// reads no work state. restAwaiting re-reads queued input and

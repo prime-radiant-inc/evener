@@ -650,6 +650,17 @@ type Session struct {
 	// that turns out to have nothing to deliver runs no turn, so it settles
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
+	// quietRestArmed is the restGeneration of the needs_response rest whose
+	// quiet period was last scheduled; 0 before any. Guarded by s.mu.
+	quietRestArmed uint64
+	// quietRestBeforeInput records that the current input started inside a
+	// needs_response quiet period, which its turn start cancelled. Guarded by
+	// s.mu.
+	quietRestBeforeInput bool
+	// resumeQuietRest tells the drain-loop settle that a wake which ran no
+	// turn left that cancelled rest standing, so the settle arms it again.
+	// Guarded by s.mu.
+	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
