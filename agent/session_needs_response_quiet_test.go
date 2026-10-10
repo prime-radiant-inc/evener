@@ -423,6 +423,7 @@ func TestStatusSettledIsNotAWatchableEventKind(t *testing.T) {
 func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	evs, mu, done := collectEvents(sess)
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -437,6 +438,27 @@ func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
 	}
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("state after a filtered wake = %q, want awaiting kept", got)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("wire state after a filtered wake = %q, want awaiting, as the server keeps it", got)
+	}
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	// The needs_response turn ended its own input once; the filtered wake
+	// ended none and announced nothing (immediate rest emits no settle).
+	inputEnds := 0
+	for _, ev := range *evs {
+		if ev.Kind == events.EventStatusSettled {
+			t.Fatalf("a filtered wake announced a state change: %+v", ev)
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason != "session_closed" {
+			inputEnds++
+		}
+	}
+	if inputEnds != 1 {
+		t.Fatalf("input-ending SESSION_ENDs = %d, want only the needs_response turn's", inputEnds)
 	}
 }
 

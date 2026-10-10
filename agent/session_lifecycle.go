@@ -3126,7 +3126,9 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 }
 
 func (s *Session) finishNotificationNoop() {
-	// No turn ran, so a needs_response rest the wake interrupted still stands.
+	// No turn ran, so a needs_response rest the wake interrupted still stands,
+	// and the drain loop then treats the input as awaiting, holding follow-ups
+	// as that rest did.
 	rest := SessionIdle
 	s.mu.Lock()
 	if s.restBeforeInput == SessionAwaiting {
