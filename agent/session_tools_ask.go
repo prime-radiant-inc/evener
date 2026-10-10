@@ -59,11 +59,12 @@ func (s *Session) hasHumanPartnerToAsk() bool {
 	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
 }
 
-// reportsToParent reports whether this session is a delegate, whose
-// communicate messages go to its parent agent rather than to a human
-// partner. It gates both communicate's wording and update delivery.
+// reportsToParent reports whether this session's communicate messages go to
+// a parent agent rather than a human partner. It is the one predicate for
+// that: communicate's wording and update delivery use it, and the Reporting
+// section's IsSubagent branch is the same predicate.
 func (s *Session) reportsToParent() bool {
-	return s.owningDelegateID != "" || s.isSubagentSession()
+	return s.isSubagentSession()
 }
 
 // askPendingCount returns the number of questions currently pending this turn

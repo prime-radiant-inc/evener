@@ -51,10 +51,6 @@ type toolDeps struct {
 	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
 
-	// reportsToParent words communicate for a delegate, whose messages go to
-	// its parent agent (Session.reportsToParent).
-	reportsToParent bool
-
 	// cmdTimeouts is a live getter for the default and max shell command
 	// timeouts. It reads cfg on every call so cfg mutations are visible;
 	// the values are NOT snapshotted at registration time.
@@ -356,7 +352,6 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
-		reportsToParent:        s.reportsToParent(),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

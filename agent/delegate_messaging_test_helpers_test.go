@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -139,4 +141,17 @@ func newMessagingRoot(t *testing.T, adapter *messagingAdapter) *Session {
 func delegateToolResponse(id, prompt string) llm.Response {
 	args, _ := json.Marshal(map[string]any{"prompt": prompt})
 	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
+}
+
+// writeToolDescriptions renders each tool's description and its parameters'
+// descriptions, parameters sorted by name, for a prompt golden.
+func writeToolDescriptions(golden *strings.Builder, defs ...llm.ToolDefinition) {
+	for _, def := range defs {
+		fmt.Fprintf(golden, "\n## %s\n\n%s\n\n", def.Name, def.Description)
+		props, _ := def.Parameters["properties"].(map[string]any)
+		for _, param := range slices.Sorted(maps.Keys(props)) {
+			description, _ := props[param].(map[string]any)["description"].(string)
+			fmt.Fprintf(golden, "- `%s`: %s\n", param, description)
+		}
+	}
 }
