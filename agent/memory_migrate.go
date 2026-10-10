@@ -250,6 +250,49 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte(out)
 }
 
+// repairMemoryFrontmatter is raw with each top-level description or evidence
+// line quoted (memoryYAMLField) whose value YAML can't read as written, such
+// as an unquoted scalar holding ": " or ending in ":", a mistake easy to make
+// in free text ("like `shop: add Count`"). Only these free-text keys are
+// quoted; quoting tags or updated would change their type. The quoting is
+// kept only when it makes the frontmatter parse; any other page, readable or
+// not, is returned as it is.
+func repairMemoryFrontmatter(raw []byte) []byte {
+	text := string(raw)
+	block, body, ok := splitMemoryFrontmatter(text)
+	if !ok {
+		return raw
+	}
+	if _, err := frontmatter.Parse(text); err == nil {
+		return raw
+	}
+	lines := slices.Collect(strings.Lines(block))
+	quoted := false
+	for i, line := range lines {
+		// Each line's key is read on its own: memoryFrontmatterKeyLines
+		// reads the whole block, which doesn't parse. A top-level key starts
+		// its line, and YAML may quote it or leave space before its colon.
+		keyText, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
+		var key string
+		if !found || strings.TrimLeft(keyText, " \t") != keyText || yaml.Unmarshal([]byte(keyText), &key) != nil || (key != "description" && key != "evidence") {
+			continue
+		}
+		if yaml.Unmarshal([]byte(line), new(any)) == nil {
+			continue // the line reads as written, quoted or not
+		}
+		lines[i] = memoryYAMLField(key, strings.TrimSpace(value))
+		quoted = true
+	}
+	if !quoted {
+		return raw
+	}
+	out := "---\n" + strings.Join(lines, "") + "---\n" + body
+	if _, err := frontmatter.Parse(out); err != nil {
+		return raw
+	}
+	return []byte(out)
+}
+
 // memoryFrontmatterKeyLines maps the 0-based line of each top-level key in a
 // block-style frontmatter mapping to the key as YAML reads it, or is nil when
 // the block is not one.
@@ -386,7 +429,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 		if strings.TrimSpace(source) == "" {
 			source = text
 		}
-		if description := strings.Join(strings.Fields(source), " "); description != "" {
+		if description := collapseWhitespace(source); description != "" {
 			out = append(out, legacyIndexEntry{Links: links, Description: description})
 			seen[links[0]] = true
 		}
