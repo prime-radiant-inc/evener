@@ -900,6 +900,7 @@ async function acceptEntryTranscriptHydration(
       clearEpoch,
       historyGeneration,
       lifetime: fixture.lifetime,
+      now: () => fixture.cache.now(),
       admission: entryWriteAdmissionFor(fixture.cache),
       reconcile: () => {
         const client = wiredClient;

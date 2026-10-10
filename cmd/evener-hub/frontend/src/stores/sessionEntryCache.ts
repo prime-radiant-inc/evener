@@ -656,6 +656,11 @@ export class SessionEntryCache {
     this.#connection.close();
   }
 
+  /** The same clock used for TTL, LRU and metadata written by this cache's owners. */
+  now(): number {
+    return this.#now();
+  }
+
   /**
    * Register one live owner's real demand for its history identity as that
    * identity's retention preference. The returned function removes only this
