@@ -65,10 +65,15 @@ func homeMemoryProjectID(env execenv.ExecutionEnvironment, meta schema.SessionMe
 	}
 	// A local environment confines command working directories to its own
 	// root, which is the resume directory, so the resolver's git fallback runs
-	// from a clone rooted at home. The clone's probe scratch goes with it.
+	// from a clone rooted at home. The clone's probe scratch goes with it. A
+	// sandbox that cannot re-root to home leaves the session unbound rather
+	// than probing home unconfined.
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		rooted := local.WithWorkingDirectory(home)
 		defer func() { _ = rooted.DisposeSessionScratch() }()
+		if rooted.SandboxReRootError() != nil {
+			return ""
+		}
 		env = rooted
 	}
 	project, err := identifier.ResolveProjectWith(home, execenv.NewProjectResolver(env))

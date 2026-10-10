@@ -1726,6 +1726,25 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 	}
 }
 
+// Catches home binding probing a home the resume environment's sandbox
+// refused to re-root to.
+func TestMemoryHomeBindingHonorsSandboxReroot(t *testing.T) {
+	t.Parallel()
+	home, project := memoryGitFixture(t)
+	elsewhere, _ := memoryGitFixture(t)
+	meta := schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: home}}
+	if got := homeMemoryProjectID(execenv.NewLocalExecutionEnvironment(elsewhere), meta); got != project.ID {
+		t.Fatalf("unsandboxed home binding=%q want %q", got, project.ID)
+	}
+	confined := execenv.NewLocalExecutionEnvironment(elsewhere)
+	// An enforced policy that retains no re-root inputs is one
+	// WithWorkingDirectory cannot re-anchor: the clone comes back refused.
+	confined.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, Backend: sandbox.BackendBwrap}
+	if got := homeMemoryProjectID(confined, meta); got != "" {
+		t.Fatalf("refused re-root still bound %q", got)
+	}
+}
+
 // Catches a session saved without a project binding (before project memory
 // shipped) staying personal-only after resume, binding the resume command's
 // cwd instead of its own home, replacing a saved binding, binding while
