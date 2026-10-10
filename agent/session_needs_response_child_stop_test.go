@@ -60,21 +60,14 @@ func (a *childStopAdapter) reportsRead() []string {
 // that turn's end reason decides the rest.
 func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		reportReason string
-		want         SessionState
-	}{
-		{reportReason: "needs_response", want: SessionAwaiting},
-		{reportReason: "done", want: SessionIdle},
-	} {
-		t.Run(tc.reportReason, func(t *testing.T) {
+	for _, reportReason := range []string{"needs_response", "done"} {
+		t.Run(reportReason, func(t *testing.T) {
 			t.Parallel()
 			fixture := newColdStableDelegateFixture(t, "")
-			adapter := &childStopAdapter{childSessionID: fixture.childID, reportReason: tc.reportReason}
+			adapter := &childStopAdapter{childSessionID: fixture.childID, reportReason: reportReason}
 			fixture.client.Register(adapter)
 			fake := agenttest.NewFakeClock()
 			root := restoreSupervisionRoot(t, fixture, fake)
-			serveSupervisionRootWakes(t, root)
 			evs, mu, done := collectEvents(root)
 			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -108,22 +101,17 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 				t.Fatalf("the parent's report turn read %q, want the child's stop report", reports)
 			}
 
-			fake.Advance(needsResponseQuietPeriodDefault - time.Millisecond)
+			if reportReason == "needs_response" {
+				requireRestsAwaitingAfterFreshQuietPeriod(t, root, fake, evs, mu, done)
+				return
+			}
+			fake.Advance(2 * needsResponseQuietPeriodDefault)
 			fake.Drain()
 			if got := root.State(); got != SessionIdle {
-				t.Fatalf("state just before the quiet period ends = %q, want idle", got)
+				t.Fatalf("state after the quiet period = %q, want idle", got)
 			}
-			fake.Advance(time.Millisecond)
-			fake.Drain()
-			if got := root.State(); got != tc.want {
-				t.Fatalf("state once the quiet period ends = %q, want %q", got, tc.want)
-			}
-			wantSettled := 0
-			if tc.want == SessionAwaiting {
-				wantSettled = 1
-			}
-			if got := settledStatesAfterClose(root, evs, mu, done); len(got) != wantSettled {
-				t.Fatalf("status settled events = %v, want %d", got, wantSettled)
+			if got := settledStatesAfterClose(root, evs, mu, done); len(got) != 0 {
+				t.Fatalf("status settled events = %v, want none", got)
 			}
 		})
 	}
