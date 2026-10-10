@@ -68,8 +68,9 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 //
 // Almost any byte can be part of a file name, so a match is rewritten only
 // where the text sets it off as a path: it starts the text or follows one of
-// pathOpeners, and is followed by a separator (a path under root), or ends the
-// text or comes before one of pathClosers (root itself). Anywhere else, such
+// pathOpeners, and is followed by a separator (a path under root, whatever
+// its name starts with), or ends the text or comes before one of pathClosers
+// (root itself). Anywhere else, such
 // as "<root>~old" or "x<root>/page.md", the text is left as it is: a host
 // path left in a message is better than a wrong relative one.
 func scopeRelativeText(root, text string) string {
@@ -90,11 +91,13 @@ func scopeRelativeText(root, text string) string {
 		}
 		under, isUnder := strings.CutPrefix(rest, string(filepath.Separator))
 		switch {
-		case isUnder && !endsPath(under):
-			text = under
-		case endsPath(under):
+		case isUnder && under == "":
 			b.WriteString(".")
 			text = under
+		case isUnder:
+			text = under
+		case endsPath(rest):
+			b.WriteString(".")
 		default:
 			b.WriteString(root)
 		}
@@ -129,7 +132,10 @@ func (s *Session) memoryScopeRoot(scope string) string {
 // fails, the error and any output returned with it name paths relative to the
 // scope root (scopeRelativeText), whichever step failed. An error message is
 // rewritten whole, including any page text it quotes; a successful result is
-// left to the tool, since a read or search returns page text as stored.
+// left to the tool, since a read or search returns page text as stored. A
+// failure to open the memory state directory itself, above every scope, can
+// still name that host directory: it names no page, so there is no relative
+// path for it, and the person fixing the fault needs to see which directory.
 func (s *Session) scopeRelativeMemoryErrors(exec func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error)) func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 	return func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 		out, err := exec(ctx, env, args)

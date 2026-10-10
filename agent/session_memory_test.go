@@ -2138,6 +2138,8 @@ func TestScopeRelativeText(t *testing.T) {
 		root + "+x":                            root + "+x",
 		root + ",x":                            root + ",x",
 		"open " + root + ": permission denied": "open .: permission denied",
+		root + sep + ":page.md":                ":page.md",
+		"wrote to " + root + sep + " page.md":  "wrote to  page.md",
 		"removed " + root + sep:                "removed .",
 		"(" + root + sep + "a.md)":             "(a.md)",
 		"no host path here":                    "no host path here",
