@@ -960,7 +960,7 @@ describe("entry repository: older paging", () => {
     }
   });
 
-  test("a same-connection close/reopen restores later-page rows locally and the next older request carries the stored boundary cursor", async () => {
+  test("a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reopen-${crypto.randomUUID()}` });
     const fixture = installEntryTranscriptFixtureForTests({
       ref: SELECTED,
@@ -1026,18 +1026,24 @@ describe("entry repository: older paging", () => {
       expect(pageCursors).toEqual(["cursor_1", "cursor_2"]);
       await fixture.settled();
 
-      // Close and reopen locally on the SAME connection/binding. The reader is
-      // disposed and re-attached; the certified pages are restored from disk.
+      // Close and reopen on the SAME connection/binding: the reader is disposed
+      // and re-attached. This fixture route bypasses the production local-promotion
+      // (promote) and cached-shell paths, so ensureThread first hydrates a latest
+      // window; the cached older pages and their usable boundary are then retained
+      // from the fixture repository. This test therefore does NOT prove a read-free
+      // reopen. That production property is established by the residency-route tests
+      // (threads.background.test.ts:3772, :861) and Task 1's browser evidence.
       const pageCallsBeforeReopen = pageCalls;
       threadsStore.getState().releaseThread(SELECTED);
       await threadsStore.getState().ensureThread(SELECTED);
       const reopenedEntries = (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
         .flatMap((turn) => turn.items)
         .map((item) => item.position?.entry);
-      // Exact order and full uniqueness: the certified pages are restored from
-      // disk in document order, every row exactly once.
+      // Exact order and full uniqueness: the retained pages are restored in
+      // document order, every row exactly once.
       expect(reopenedEntries).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-      // Restoration was local: the reopen issued no older-page request.
+      // The reopen issued no older-page request: the cached older pages and their
+      // boundary were retained, so the next request continues on the stored cursor.
       expect(pageCalls).toBe(pageCallsBeforeReopen);
 
       // Continue paging across the join: the next older request is a real
