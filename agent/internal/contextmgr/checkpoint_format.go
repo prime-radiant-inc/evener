@@ -82,6 +82,18 @@ func extractCheckpointEarlierSummaries(text string) []string {
 	return summaries
 }
 
+// renderCompactionModelText renders a model-written compaction turn's own text
+// under heading, fenced. It comes first in the turn: a summarizer reads a
+// previous compaction from its head, so the model's text must not sit behind
+// the partner's messages the turn carries. Fencing it keeps its own headings
+// and code fences from being read as the sections that follow.
+func renderCompactionModelText(heading, text string) string {
+	var b strings.Builder
+	b.WriteString(heading + "\n\n")
+	writeMarkdownFence(&b, text)
+	return b.String()
+}
+
 func writeMarkdownFence(b *strings.Builder, text string) {
 	fence := markdownFence(text)
 	b.WriteString(fence)

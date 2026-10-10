@@ -2077,10 +2077,14 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 		return nil, err
 	}
 
-	// The human partner's messages come before the model's text, so a later
-	// checkpoint finds them ahead of anything the model wrote.
+	// The turn is the model's reply, bounded by the provider's output limit,
+	// plus the partner's messages, bounded by maxCheckpointChars; the preserved
+	// recent turns sit outside it. One combined budget would mean truncating
+	// the reply or shedding partner messages below the cap the #4173 ruling
+	// chose for them.
 	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
-		partnerMessagesMarkdown(history, cutoff, cm.resultToolName()) + "## Summary\n" + resp.Text() + "\n[END SUMMARY]"
+		renderCompactionModelText("## Summary", resp.Text()) +
+		partnerMessagesMarkdown(history, cutoff, cm.resultToolName()) + "[END SUMMARY]"
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

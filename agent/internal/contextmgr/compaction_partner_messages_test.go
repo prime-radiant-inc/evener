@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -163,5 +164,38 @@ func TestCompaction_SummaryKeepsPartnerSteeringVerbatim(t *testing.T) {
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 	if strings.Contains(history[0].Message.Text(), "DAEMON_NUDGE_SENTINEL") {
 		t.Fatalf("daemon steering was carried as the partner's message:\n%s", history[0].Message.Text())
+	}
+}
+
+// The model's own text in a compaction turn comes before the partner's
+// messages it carries, so a summarizer that reads a previous compaction from
+// its head sees the model's text however many messages ride beside it.
+func TestCheckpointPred_SummarizerSeesThePredictionBesideManyPartnerMessages(t *testing.T) {
+	var summarizerPrompt string
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("PREDICTED_CONTEXT_SENTINEL")}
+		},
+		func(req llm.Request) llm.Response {
+			summarizerPrompt = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant(emptySummaryReply)}
+		},
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	var history []schema.Turn
+	for i := range 12 {
+		history = append(history,
+			schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d %s", i, strings.Repeat("detail ", 600)))),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")))
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
+	runCheckpointPred(t, cm, &history, 0.0001)
+	if !strings.Contains(summarizerPrompt, "PREDICTED_CONTEXT_SENTINEL") {
+		t.Fatalf("the summarizer did not see the prediction (prompt is %d chars)", len(summarizerPrompt))
 	}
 }
