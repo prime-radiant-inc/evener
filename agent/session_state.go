@@ -586,22 +586,22 @@ func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bo
 	return SessionAwaiting
 }
 
-// recomputeRestoredState reruns deriveRestoredState — the single
-// resume-derivation function (session_tools_ask.go) — for a restored
-// session, now that history, goal restore, and (unless deferred for nested
+// recomputeRestoredState settles a restored session the way the live settle
+// does, now that history, goal restore, and (unless deferred for nested
 // delegate reconstruction) notification/watch-send side effects are all in
 // place. The initial derivation in RestoreSession decided from history
-// alone; this pass settles the way the live settle does once autonomy
-// signals — working children, pending notifications, queued input — are
-// available to check. A pending question rests awaiting regardless. A
+// alone; this pass reruns deriveRestoredState (session_tools_ask.go) once
+// autonomy signals (working children, pending notifications, queued input)
+// are available to check. A pending question rests awaiting regardless. A
 // needs_response rest with autonomy in flight rests idle and is owed, so a
 // later wake that runs no turn arms it once nothing moves the session; with
-// none in flight it rests awaiting. Restored active goals are deliberately not autonomy —
-// they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
-// the same value its one caller (RestoreSessionFromMetaWithConfig) already
-// computed for escapeHistoryWithSessionProvenance, in the same units as
-// s.history at this point: a forked child's inherited prefix must not be
-// decided by this session's own journal (steeringOriginBoundary).
+// none in flight it rests awaiting. Restored active goals are deliberately
+// not autonomy: they are not re-kicked on restore ("loaded but idle").
+// divergenceTurn is the same value its one caller
+// (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at
+// this point: a forked child's inherited prefix must not be decided by this
+// session's own journal (steeringOriginBoundary).
 func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	origins := s.clientMutations.steeringOrigins()

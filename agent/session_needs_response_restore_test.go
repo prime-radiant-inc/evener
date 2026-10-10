@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -17,41 +15,15 @@ import (
 // returns its dir and saved meta for a restore.
 func savedNeedsResponseSession(t *testing.T, before func(*Session)) (string, schema.SessionMeta) {
 	t.Helper()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+	dir, meta, _ := saveAfter(t, []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
-	}})
-	dir := t.TempDir()
-	live, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := live.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatal(err)
-	}
-	before(live)
-	id := live.ID()
-	live.Close()
-	meta, err := schema.LoadSessionMeta(dir, id)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
+	}, func(ctx context.Context, live *Session) {
+		if _, err := live.ProcessInput(ctx, "hello", nil); err != nil {
+			t.Fatal(err)
+		}
+		before(live)
+	})
 	return dir, meta
-}
-
-func restoreNeedsResponseSession(t *testing.T, dir string, meta schema.SessionMeta, cfg RestoreSessionConfig) *Session {
-	t.Helper()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	cfg.StateDir = dir
-	sess, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, cfg)
-	if err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-	return sess
 }
 
 // Restore rests a needs_response turn the way live does: with a job
@@ -62,25 +34,15 @@ func TestRestoredNeedsResponseWithWorkPendingRestsIdle(t *testing.T) {
 	dir, meta := savedNeedsResponseSession(t, func(live *Session) {
 		appendPendingJobNotificationRecord(t, live.jobManager, live.ID())
 	})
-	sess := restoreNeedsResponseSession(t, dir, meta, RestoreSessionConfig{})
-	evs, mu, done := collectEvents(sess)
+	sess := restoreSaved(t, dir, meta, RestoreSessionConfig{})
+	defer sess.Close()
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("restored state with a notification pending = %q, want idle", got)
 	}
-	sess.Close()
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	for _, ev := range *evs {
-		if d, ok := ev.Data.(events.SessionStartData); ok && ev.Kind == events.EventSessionStart {
-			// The wire state of an idle session with work queued is active.
-			if d.State == string(SessionAwaiting) {
-				t.Fatalf("restore announced %q with a notification pending", d.State)
-			}
-			return
-		}
+	// The wire state of an idle session with work queued is active.
+	if got := queuedSessionStart(t, sess).State; got == string(SessionAwaiting) {
+		t.Fatalf("restore announced %q with a notification pending", got)
 	}
-	t.Fatal("restore announced no session start")
 }
 
 // A reply request survives a restart: a session restored onto a
@@ -93,7 +55,7 @@ func TestRestoredNeedsResponseHeldByWorkInFlightStillOwesItsRest(t *testing.T) {
 	fake := agenttest.NewFakeClock()
 	// The settle recompute is deferred so a working child is in place when it
 	// runs, as the root's own restore does once its side effects are back.
-	sess := restoreNeedsResponseSession(t, dir, meta, RestoreSessionConfig{clock: fake, deferRestoreSideEffects: true})
+	sess := restoreSaved(t, dir, meta, RestoreSessionConfig{clock: fake, deferRestoreSideEffects: true})
 	evs, mu, done := collectEvents(sess)
 	child := newTestSessionForState(t)
 	working := &subagent{id: child.ID(), sess: child, running: true}

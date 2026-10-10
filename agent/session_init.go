@@ -1589,11 +1589,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
-	// Settle as the live settle does now that history, goal restore, and
-	// (unless deferred for nested delegate reconstruction) notification and
-	// watch-send side effects are all in place, before the session start
-	// announces the state: a needs_response rest with work still in flight
-	// rests idle.
+	// Settle before the session start announces the state.
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn)
 	}
