@@ -579,11 +579,14 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
     ref: string;
     historyKey?: string;
     model?: ThreadModel;
+    baseline?: string;
     readerRetention?: ReturnType<TranscriptReader["getRetentionSnapshotForTesting"]>;
   };
   dispose(): void;
 } {
   if (entryTranscriptFixtureForTests) throw new Error("an entry transcript fixture is already installed");
+  // The lifetime counter is per-installation bookkeeping, NOT a durable
+  // connection identifier: it resets to 1 each time the fixture is installed.
   const fixture: EntryTranscriptFixtureForTests = { ...options, lifetime: 1, readSequence: 0 };
   entryTranscriptFixtureForTests = fixture;
   return {
@@ -592,6 +595,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
       ref: fixture.ref,
       ...(fixture.historyKey ? { historyKey: fixture.historyKey } : {}),
       ...(fixture.repository?.getSnapshot() ? { model: fixture.repository.getSnapshot() } : {}),
+      ...(fixture.repository ? { baseline: fixture.repository.getBaselineIdentity() } : {}),
       ...(fixture.reader ? { readerRetention: fixture.reader.getRetentionSnapshotForTesting() } : {}),
     }),
     dispose: () => {
@@ -4885,6 +4889,11 @@ function detachClient(): void {
 // folding from a bit the current connection has not re-stamped; a fresh read
 // on the current connection restores folding.
 function invalidateHeldHistoriesForReconnect(): void {
+  // The entry repository's model is not in these maps, so its baseline must be
+  // retired explicitly at the same boundary; otherwise a same-thread reconnect
+  // that reports the same source identifiers would keep the outgoing page
+  // certificates eligible for the new connection.
+  entryTranscriptFixtureForTests?.repository?.beginFreshBaseline();
   const { threads, watchedThreads } = threadsStore.getState();
   for (const [ref, model] of threads) {
     const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
@@ -5520,15 +5529,43 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const capturedCursor = model.olderCursor;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
       const capturedPageGeneration = olderPageGenerations.get(ref) ?? 0;
-      // The entry fixture's repository owns recorded ingestion for its one
-      // selected ref. Where its certified coverage reaches below the current
-      // oldest row, serve the older page locally; a gap or ambiguous frontier
-      // falls through to the real server request below, never presenting as
-      // exhausted history.
       const fixture = entryTranscriptFixtureForTests;
-      if (fixture?.ref === ref && fixture.repository) {
-        const outcome = await fixture.repository.loadOlderPage(TRANSCRIPT_ITEM_PAGE_SIZE, fixture.lifetime);
+      const fixtureState = fixture?.ref === ref ? fixture : undefined;
+      const fixtureRepository = fixtureState?.repository;
+      // The captured request boundary and baseline authority travel with the
+      // request so a reconciliation or item update during flight cannot be
+      // mis-certified on completion.
+      const capturedAuthority = fixtureRepository?.getBaselineIdentity();
+      const capturedBefore = fixtureRepository?.oldestPosition();
+      // The same ownership/epoch/generation guard the server path uses, applied
+      // before any local publication and before issuing a reconciliation.
+      const stillOwned = (): boolean => {
+        const current = threadsStore.getState().threads.get(ref);
+        return (
+          current !== undefined &&
+          wiredClient === client &&
+          readyEpoch === capturedEpoch &&
+          current.ref === capturedRef &&
+          current.olderCursor === capturedCursor &&
+          (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
+          (olderPageGenerations.get(ref) ?? 0) === capturedPageGeneration &&
+          !pendingThreadHydrations.has(ref)
+        );
+      };
+      // The entry fixture's repository owns recorded ingestion for its one
+      // selected ref. Certified local coverage serves the page; an unverified
+      // frontier runs the bounded reconciliation; no local certificate is an
+      // ordinary server continuation.
+      if (fixtureState && fixtureRepository) {
+        const outcome = await fixtureRepository.loadOlderPage(TRANSCRIPT_ITEM_PAGE_SIZE, fixtureState.lifetime);
+        if (outcome.kind === "reconcile") {
+          if (!stillOwned()) return;
+          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          return;
+        }
         if (outcome.kind === "local" || outcome.kind === "exhausted") {
+          if (!stillOwned()) return;
+          olderPageGenerations.set(ref, capturedPageGeneration + 1);
           putThreadModel(ref, outcome.model);
           return;
         }
@@ -5573,11 +5610,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         return;
       olderPageGenerations.set(ref, capturedPageGeneration + 1);
       let accepted = false;
-      if (fixture?.ref === ref && fixture.repository) {
-        accepted = fixture.repository.acceptPage(resp, {
-          lifetime: fixture.lifetime,
-          readId: `fixture-page-${++fixture.readSequence}`,
-          boundary: `fixture-page-boundary-${fixture.readSequence}`,
+      if (fixtureState && fixtureRepository && capturedAuthority !== undefined) {
+        accepted = fixtureRepository.acceptPage(resp, {
+          lifetime: fixtureState.lifetime,
+          readId: `fixture-page-${++fixtureState.readSequence}`,
+          boundary: `fixture-page-boundary-${fixtureState.readSequence}`,
+          authority: capturedAuthority,
+          ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
           requestCursor: capturedCursor,
         });
       }

@@ -10,12 +10,13 @@ import "fake-indexeddb/auto";
 import type {
   AnyNotification,
   ThreadCapabilities,
+  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
@@ -315,8 +316,12 @@ describe("entry repository: older paging", () => {
   };
   const entryHistory = entryHistoryKey(entryIdentity);
 
-  function pageItems(entries: number[], turnId: string): ThreadTurnsListResponse["data"][number]["items"] {
-    return entries.map((entry) => ({
+  function pageItems(entries: number[], turnId: string): ThreadItem[] {
+    return entries.map((entry) => pageItem(entry, turnId));
+  }
+
+  function pageItem(entry: number, turnId: string): ThreadItem {
+    return {
       type: "agentMessage" as const,
       id: `item-${entry}`,
       transcriptKey: `item-${entry}`,
@@ -324,7 +329,65 @@ describe("entry repository: older paging", () => {
       position: { entry, item: 0 },
       version: entry,
       text: `row-${entry}`,
-    }));
+    };
+  }
+
+  function holdOlderWindow() {
+    const original = SessionEntryCache.prototype.getOlderWindow;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let markCalled!: () => void;
+    const called = new Promise<void>((resolve) => {
+      markCalled = resolve;
+    });
+    const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+      this: SessionEntryCache,
+      ...args: Parameters<typeof original>
+    ) {
+      markCalled();
+      return gate.then(() => original.apply(this, args));
+    } as typeof original);
+    return {
+      whenCalled: called,
+      release: () => {
+        releaseGate();
+        spy.mockRestore();
+      },
+    };
+  }
+
+  function certifiedPageCoverage(authority: string, serverCursor: string, readId: string, boundary: string) {
+    return {
+      kind: "page" as const,
+      readId,
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor,
+      requestCursor: "cursor_1",
+      authority,
+      boundary,
+    };
+  }
+
+  function readHandler(authoritative = false) {
+    return (params: { requestGeneration?: number; ref?: string }) => {
+      const response = read("entry-paging-initial", { requestGeneration: params.requestGeneration, length: 8 });
+      response.thread.turns = [
+        {
+          id: "turn_top",
+          itemsView: "full",
+          status: "completed",
+          version: 8,
+          items: pageItems([6, 7, 8], "turn_top"),
+        },
+      ];
+      response.thread.evener.ref = SELECTED;
+      return { ...response, olderCursor: "cursor_1", ...(authoritative ? { authoritative: true } : {}) };
+    };
   }
 
   test("a server page is accepted into the repository, persisted, and keeps the captured cursor for the next request", async () => {
@@ -392,6 +455,193 @@ describe("entry repository: older paging", () => {
       expect(pageCalls).toBe(2);
       const lastPage = fake.calls.filter((call) => call.method === "thread/turns/list").at(-1);
       expect((lastPage?.params as { cursor?: string } | undefined)?.cursor).toBe("cursor_2");
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a cache-ambiguous frontier runs the bounded reconciliation, then pages from the fresh boundary", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconcile-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    fake.on("thread/read", readHandler(true));
+    fake.on("thread/turns/list", () => {
+      pageCalls += 1;
+      return {
+        data: [
+          {
+            id: "turn_old",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([3, 4, 5], "turn_old"),
+          },
+        ],
+        nextCursor: "cursor_2",
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      await lease.ready;
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      for (const [cursor, boundary] of [
+        ["CA", "amb-a"],
+        ["CB", "amb-b"],
+      ] as const) {
+        const outcome = await entryCache.commitBatch({
+          historyKey: entryHistory,
+          clearEpoch: 0,
+          items: [],
+          coverage: certifiedPageCoverage(baseline, cursor, "seed", boundary),
+        });
+        expect(outcome.outcome).toBe("committed");
+      }
+
+      // The ambiguous frontier must reconcile, not issue the ordinary cursor request
+      // the server would accept.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(0);
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2);
+      expect(fixture.inspect().baseline).not.toBe(baseline);
+
+      // Renewed paging uses the fresh boundary through the ordinary request.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+      const lastPage = fake.calls.filter((call) => call.method === "thread/turns/list").at(-1);
+      expect((lastPage?.params as { cursor?: string } | undefined)?.cursor).toBe("cursor_1");
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a last-owner release during a held local lookup leaves the ref absent", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-release-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      const gate = holdOlderWindow();
+      const lookup = threadsStore.getState().loadOlderTurns(SELECTED);
+      await gate.whenCalled;
+      threadsStore.getState().releaseThread(SELECTED);
+      gate.release();
+      await lookup;
+      expect(threadsStore.getState().threads.has(SELECTED)).toBe(false);
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a same-thread reconnect with unchanged source identifiers retires the outgoing page authority", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconnect-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", () => {
+      pageCalls += 1;
+      return {
+        data: [
+          {
+            id: "turn_old",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([3, 4, 5], "turn_old"),
+          },
+        ],
+        nextCursor: "cursor_2",
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      await lease.ready;
+      const baseline1 = fixture.inspect().baseline;
+      if (!baseline1) throw new Error("fixture did not expose a baseline");
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+
+      // Reconnect: a new ready client with the SAME boot generation, epoch and
+      // incarnation, and no authoritative flag on the re-read.
+      const replacement = new FakeClient("ready");
+      replacement.on("thread/read", readHandler());
+      replacement.on("thread/turns/list", () => {
+        pageCalls += 1;
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      });
+      connectionStore.getState().connect(replacement);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await settleBackgroundTranscriptsForTests();
+
+      const baseline2 = fixture.inspect().baseline;
+      expect(baseline2).not.toBe(baseline1);
+
+      // The outgoing page cannot certify the new interval: the next older-page
+      // request is an ordinary server continuation, not a local serve.
+      const beforeCalls = pageCalls;
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(beforeCalls + 1);
     } finally {
       await lease.release();
       await settleBackgroundTranscriptsForTests();

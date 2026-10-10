@@ -211,10 +211,13 @@ Typed client-upgrade and deleted-target rejections remain explained failures.
 The browser's entry repository (an isolated fixture route today, not the
 production path) extends the same reader intent with a persistent cache. It
 mints an opaque *baseline identity* from its tab-local binding lifetime and its
-source revision; the identity changes when an authoritative read or an identity
-change advances the source revision, so a reconnect or replacement begins a new
-baseline while a same-connection reader close/reopen keeps the old one. Callers
-treat it as opaque and never decode it.
+source revision. The identity changes when an authoritative read or an identity
+change advances the source revision, and the store explicitly retires it at a
+connection/reconnect boundary (the same boundary that invalidates held
+histories), because a reconnect can report the same boot generation, epoch and
+incarnation across a gap. A same-connection reader close/reopen keeps the old
+identity. The per-installation lifetime counter is bookkeeping, not a durable
+connection identifier. Callers treat the identity as opaque and never decode it.
 
 Every accepted older page is recorded as a page certificate under
 `page:<readId>:<boundary>`, carrying the captured request cursor (the opaque
@@ -226,11 +229,15 @@ older copy never wins over a newer held item.
 
 The cache's older-window query anchors only certificates belonging to the
 caller's authority, so one connection's baseline can never be stitched onto
-another's chain. A query with no connected certificate, or with an ambiguous
-unconsumed frontier, returns `complete: false, stale: true`; callers must run
-the real server request rather than present that gap as exhausted history, and
-re-certify the returned page through the same acceptance owner. A certified
-chain that ends with no remaining cursor is the only true history end.
+another's chain. A **connected but unverified (ambiguous) frontier** is
+uncertainty: it returns a distinct reconciliation result and the caller runs the
+existing bounded authoritative reconciliation, never an ordinary cursor request
+the server might accept, then re-certifies the fresh boundary. A baseline with
+**no local certificate below the oldest row** is not uncertainty; it is an
+ordinary network continuation and takes the existing server request. Only a
+certified chain that ends with no remaining cursor is true history end. A page
+is certified only when the shared reducer actually merged it, and only under the
+authority captured when the request went out.
 
 This contract is verified against the accepted cache at the store level; the
 production browser cutover that selects this repository for all sessions is a

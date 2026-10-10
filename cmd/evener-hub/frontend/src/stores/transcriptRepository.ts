@@ -159,6 +159,24 @@ export class TranscriptRepository {
     return this.#baselineIdentity;
   }
 
+  /**
+   * Marks a real connection/replacement/reconciliation boundary. The store
+   * calls this when it invalidates held histories for a reconnect, because the
+   * daemon can report the same boot generation, epoch and incarnation across a
+   * gap. Outgoing page certificates then belong to the old baseline and cannot
+   * certify the new interval. Same-connection reader close/reopen does not call
+   * it, so that keeps the token.
+   */
+  beginFreshBaseline(): void {
+    this.#advanceSourceRevision();
+  }
+
+  /** The oldest recorded position this repository holds, or undefined. */
+  oldestPosition(): ThreadItemPosition | undefined {
+    const model = this.#model;
+    return model ? this.#oldestPosition(model) : undefined;
+  }
+
   /** @internal Reports ownership scalars without exposing or copying transcript bodies. */
   getRetentionSnapshotForTesting(): { bindingHasSeedModel: boolean } {
     const binding = this.#binding as TranscriptRepositoryBinding;
@@ -345,16 +363,24 @@ export class TranscriptRepository {
       lifetime: number;
       readId: string;
       boundary: string;
+      authority: string;
       before?: ThreadItemPosition;
       requestCursor?: string;
     },
   ): boolean {
     if (!this.#acceptsLifetime(request.lifetime)) return false;
+    if (request.authority !== this.#baselineIdentity) return false;
     if (response.snapshot && response.snapshot.incarnation !== this.#binding.identity.incarnation) return false;
     const current = this.#model;
     if (!current) return false;
     const before = request.before ?? this.#oldestPosition(current);
     const candidate = mergeOlderItemPage(current, response);
+    // A discarded page leaves the model in place; a defer/invalidate moved the
+    // page into history's pending buckets. Neither establishes a certified
+    // returned range, so neither may carry coverage.
+    if (candidate === current) return false;
+    if (candidate.history?.invalidatedAtGeneration !== undefined) return false;
+    if ((candidate.history?.deferredPages?.length ?? 0) > (current.history?.deferredPages?.length ?? 0)) return false;
     this.#model = candidate;
     this.#boundary++;
     const rows = this.#pageItemRows(response, candidate);
@@ -385,36 +411,54 @@ export class TranscriptRepository {
 
   /**
    * Serve an older page from the certified local cache where this baseline's
-   * coverage permits. `server` means no connected certificate reaches below the
-   * current oldest row, or the frontier is ambiguous: the caller must run the
-   * real server request rather than present the gap as exhausted history.
-   * `exhausted` means the certified chain ended with no older rows.
+   * coverage permits. `reconcile` means the cache holds a connected chain for
+   * this baseline whose frontier is unverified (ambiguous), so the caller must
+   * run the bounded authoritative reconciliation, never an ordinary cursor
+   * request. `server` means the baseline simply has no local certificate below
+   * the current oldest row: the ordinary server continuation is correct.
+   * `exhausted` means the certified chain ended with no older rows. A lookup
+   * that crosses a baseline change or loses its lifetime publishes nothing.
    */
   async loadOlderPage(
     limit: number,
     lifetime: number,
-  ): Promise<{ kind: "local"; model: ThreadModel } | { kind: "exhausted"; model: ThreadModel } | { kind: "server" }> {
+  ): Promise<
+    | { kind: "local"; model: ThreadModel }
+    | { kind: "exhausted"; model: ThreadModel }
+    | { kind: "server" }
+    | { kind: "reconcile" }
+  > {
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     const current = this.#model;
     if (!current) return { kind: "server" };
     const before = this.#oldestPosition(current);
     if (!before) return { kind: "server" };
+    const revisionAtStart = this.#sourceRevision;
     const window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-    if (window.stale) return { kind: "server" };
+    // An authoritative reconciliation during the lookup retires this window's
+    // authority; never publish it into the new baseline.
+    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    // Only a connected-but-unverified chain is genuine uncertainty. Empty
+    // coverage below the oldest row is an ordinary network continuation.
+    if (window.stale) return window.coverage.length > 0 ? { kind: "reconcile" } : { kind: "server" };
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
       // with no server cursor is real history end; a cursor means more history
       // remains on the network.
       if (window.complete && window.serverCursor === undefined) {
-        return { kind: "exhausted", model: { ...current, olderCursor: undefined } };
+        return { kind: "exhausted", model: { ...(this.#model ?? current), olderCursor: undefined } };
       }
       return { kind: "server" };
     }
     const turnIds = this.#turnIDsForRows(window.rows, []);
     const turnMetadata = await this.#readTurnMetadata(turnIds);
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-    const restored = this.#restoreWindow(current, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
+    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    // Merge into the newest model, not the one captured before the awaits, so a
+    // recorded update delivered mid-lookup is never overwritten.
+    const newest = this.#model ?? current;
+    const restored = this.#restoreWindow(newest, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
     if (!restored) return { kind: "server" };
     const model: ThreadModel = window.complete ? { ...restored, olderCursor: window.serverCursor } : restored;
     this.#model = model;

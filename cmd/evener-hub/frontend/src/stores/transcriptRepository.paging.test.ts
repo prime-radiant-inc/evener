@@ -1,12 +1,19 @@
-// Task 2 repository-level paging integration: the baseline identity the cache
-// contract's `authority` needs, page acceptance carrying the captured request
-// cursor, local older-page serving where coverage permits, the stale frontier
-// falling through to the server (never exhaustion), newer-version races and
+// Task 2 repository-level paging integration (fix round): the baseline identity
+// the cache contract's `authority` needs, page acceptance carrying the captured
+// request cursor/authority and honoring the shared reducer's disposition, local
+// older-page serving where coverage permits, uncertainty routed to the bounded
+// reconciliation (never an ordinary cursor request), stale-async protection and
 // held-reader survival through disk eviction.
 import "fake-indexeddb/auto";
-import type { AnyNotification, ThreadItem, ThreadReadResponse, ThreadTurnsListResponse } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  ThreadItem,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
@@ -52,7 +59,13 @@ function itemOf(entry: number, version = entry): ThreadItem {
 
 function readOf(
   entries: number[],
-  opts: { olderCursor?: string; length?: number; authoritative?: boolean } = {},
+  opts: {
+    olderCursor?: string;
+    length?: number;
+    authoritative?: boolean;
+    epoch?: number;
+    bootGeneration?: string;
+  } = {},
 ): ThreadReadResponse {
   const length = opts.length ?? Math.max(...entries, 0);
   return {
@@ -79,8 +92,8 @@ function readOf(
       ],
       evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     },
-    bootGeneration: "1",
-    epoch: 0,
+    bootGeneration: opts.bootGeneration ?? "1",
+    epoch: opts.epoch ?? 0,
     snapshot: { incarnation: identity.incarnation, length },
     overlay: [],
     ...(opts.olderCursor === undefined ? {} : { olderCursor: opts.olderCursor }),
@@ -90,7 +103,14 @@ function readOf(
 
 function pageOf(
   entries: number[],
-  opts: { nextCursor?: string; length?: number; versions?: Record<number, number> } = {},
+  opts: {
+    nextCursor?: string;
+    length?: number;
+    versions?: Record<number, number>;
+    incarnation?: string;
+    bootGeneration?: string;
+    epoch?: number;
+  } = {},
 ): ThreadTurnsListResponse {
   const length = opts.length ?? Math.max(...entries, 0);
   return {
@@ -104,13 +124,13 @@ function pageOf(
       },
     ],
     ...(opts.nextCursor === undefined ? {} : { nextCursor: opts.nextCursor }),
-    bootGeneration: "1",
-    epoch: 0,
-    snapshot: { incarnation: identity.incarnation, length },
+    bootGeneration: opts.bootGeneration ?? "1",
+    epoch: opts.epoch ?? 0,
+    snapshot: { incarnation: opts.incarnation ?? identity.incarnation, length },
   };
 }
 
-function historyUpdate(entry: number, version: number, text: string): AnyNotification {
+function historyUpdate(entry: number, version: number, text: string, length: number): AnyNotification {
   return {
     method: "history/updated",
     params: {
@@ -118,13 +138,13 @@ function historyUpdate(entry: number, version: number, text: string): AnyNotific
       threadId,
       bootGeneration: "1",
       epoch: 0,
-      snapshot: { incarnation: identity.incarnation, length: Math.max(version, entry) },
+      snapshot: { incarnation: identity.incarnation, length },
       items: [{ ...itemOf(entry, version), text }],
     },
   } as AnyNotification;
 }
 
-function repository(cache: SessionEntryCache, lifetime = 1) {
+function repository(cache: SessionEntryCache, lifetime = 1, nowFn: () => number = () => Date.now()) {
   return new TranscriptRepository(cache, {
     ref,
     threadId,
@@ -132,25 +152,115 @@ function repository(cache: SessionEntryCache, lifetime = 1) {
     identity,
     clearEpoch: 0,
     lifetime,
-    now: () => Date.now(),
+    now: nowFn,
   });
 }
 
-function positions(model: import("@evener/appwire-client").ThreadModel | undefined): number[] {
-  return (model?.history?.turns.flatMap((turn) => turn.items) ?? [])
+/** Positions in the model's own turn/item order, never re-sorted. */
+function orderedPositions(model: ThreadModel | undefined): number[] {
+  return (model?.history?.turns ?? [])
+    .flatMap((turn) => turn.items)
     .map((item) => item.position?.entry)
-    .filter((entry): entry is number => entry !== undefined)
-    .sort((left, right) => left - right);
+    .filter((entry): entry is number => entry !== undefined);
 }
 
-function textAt(model: import("@evener/appwire-client").ThreadModel | undefined, entry: number): string | undefined {
-  return (model?.history?.turns.flatMap((turn) => turn.items) ?? []).find((item) => item.position?.entry === entry)
-    ?.text;
-}
-
-function versionAt(model: import("@evener/appwire-client").ThreadModel | undefined, entry: number): number | undefined {
-  return (model?.history?.turns.flatMap((turn) => turn.items) ?? []).find((item) => item.position?.entry === entry)
+function itemVersionAt(model: ThreadModel | undefined, entry: number): number | undefined {
+  return (model?.history?.turns ?? []).flatMap((turn) => turn.items).find((item) => item.position?.entry === entry)
     ?.version;
+}
+
+function holdsPosition(model: ThreadModel | undefined, entry: number): boolean {
+  return orderedPositions(model).includes(entry);
+}
+
+/** Holds the real cache's older-window lookup until released. */
+function holdOlderWindow() {
+  const original = SessionEntryCache.prototype.getOlderWindow;
+  let seen: Awaited<ReturnType<typeof original>> | undefined;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let markCalled!: () => void;
+  const called = new Promise<void>((resolve) => {
+    markCalled = resolve;
+  });
+  const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+    this: SessionEntryCache,
+    ...args: Parameters<typeof original>
+  ) {
+    markCalled();
+    return gate.then(async () => {
+      const result = await original.apply(this, args);
+      seen = result;
+      return result;
+    });
+  } as typeof original);
+  return {
+    whenCalled: called,
+    lastWindow: () => seen,
+    release: () => {
+      releaseGate();
+      spy.mockRestore();
+    },
+  };
+}
+
+/** A page certificate committed straight to the cache (ambiguous frontier setup). */
+async function commitPageCertificate(
+  cache: SessionEntryCache,
+  authority: string,
+  requestCursor: string,
+  serverCursor: string,
+  readId: string,
+  boundary: string,
+) {
+  const outcome = await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "page",
+      readId,
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor,
+      requestCursor,
+      authority,
+      boundary,
+    },
+  });
+  expect(outcome.outcome).toBe("committed");
+}
+
+/** A single certified older page committed straight to the cache. */
+async function commitLocalPage(cache: SessionEntryCache, authority: string) {
+  const outcome = await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [3, 4, 5].map((entry) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version: entry,
+      item: itemOf(entry),
+    })),
+    coverage: {
+      kind: "page",
+      readId: "seed",
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor: "C2",
+      requestCursor: "C1",
+      authority,
+      boundary: "seed-page",
+    },
+  });
+  expect(outcome.outcome).toBe("committed");
 }
 
 afterEach(async () => {
@@ -162,20 +272,14 @@ test("baseline identity is stable across same-connection reads and mints a new o
   fixtures.push(fixture);
   const repo = repository(fixture.cache);
 
-  expect(
-    repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1" }), {
-      lifetime: 1,
-      readId: "r1",
-      boundary: "b1",
-    }),
-  ).toBe(true);
+  expect(repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1" }), { lifetime: 1, readId: "r1", boundary: "b1" })).toBe(
+    true,
+  );
   const first = repo.getBaselineIdentity();
 
-  // A same-connection non-authoritative read keeps one baseline.
   repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1" }), { lifetime: 1, readId: "r2", boundary: "b2" });
   expect(repo.getBaselineIdentity()).toBe(first);
 
-  // An authoritative reconciliation that changes the model mints a new one.
   repo.acceptRead(readOf([5, 6, 7, 8], { olderCursor: "C1", authoritative: true }), {
     lifetime: 1,
     readId: "r3",
@@ -184,7 +288,47 @@ test("baseline identity is stable across same-connection reads and mints a new o
   expect(repo.getBaselineIdentity()).not.toBe(first);
 });
 
-test("acceptPage records the captured request cursor and the baseline authority under rangeId page:<readId>:<boundary>", async () => {
+test("beginFreshBaseline retires the outgoing authority so old certificates cannot certify the new interval", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const outgoing = repo.getBaselineIdentity();
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "p1",
+      authority: outgoing,
+      requestCursor: "C1",
+    }),
+  ).toBe(true);
+  await repo.settled();
+
+  repo.beginFreshBaseline();
+  const fresh = repo.getBaselineIdentity();
+  expect(fresh).not.toBe(outgoing);
+
+  const window = await fixture.cache.getOlderWindow(historyKey, { entry: 6, item: 0 }, 40, fresh);
+  expect(window.stale).toBe(true);
+  expect(window.coverage).toEqual([]);
+  const served = await repo.loadOlderPage(40, 1);
+  expect(served.kind).toBe("server");
+
+  // A page answered for the outgoing baseline cannot be certified into the new one.
+  expect(
+    repo.acceptPage(pageOf([1, 2], { nextCursor: "C3", length: 8 }), {
+      lifetime: 1,
+      readId: "r2",
+      boundary: "p2",
+      authority: outgoing,
+      requestCursor: "C2",
+    }),
+  ).toBe(false);
+  expect(await fixture.cache.getCoverage(historyKey, "page:r2:p2")).toBeUndefined();
+});
+
+test("acceptPage records the captured request cursor, authority and boundary under rangeId page:<readId>:<boundary>", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const repo = repository(fixture.cache);
@@ -196,6 +340,7 @@ test("acceptPage records the captured request cursor and the baseline authority 
       lifetime: 1,
       readId: "read-1",
       boundary: "page-1",
+      authority: baseline,
       requestCursor: "C1",
     }),
   ).toBe(true);
@@ -211,109 +356,237 @@ test("acceptPage records the captured request cursor and the baseline authority 
   expect(cert?.end).toEqual({ entry: 5, item: 0 });
 });
 
-test("several older pages survive close/reopen and are served locally through the same baseline", async () => {
+test("a page whose captured authority is no longer current is rejected without a certificate", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const stale = repo.getBaselineIdentity();
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", authoritative: true, length: 8 }), {
+    lifetime: 1,
+    readId: "r2",
+    boundary: "b2",
+  });
+
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
+      lifetime: 1,
+      readId: "r3",
+      boundary: "p1",
+      authority: stale,
+      requestCursor: "C1",
+    }),
+  ).toBe(false);
+  expect(await fixture.cache.getCoverage(historyKey, "page:r3:p1")).toBeUndefined();
+});
+
+test("discarded, stale-snapshot and foreign-identity pages create no certificate", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+
+  // Stale snapshot: the page's length is below the held watermark, so the shared
+  // reducer discards it.
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 5 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "stale",
+      authority,
+      requestCursor: "C1",
+    }),
+  ).toBe(false);
+  // Older boot generation: the reducer ignores the page.
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8, bootGeneration: "0" }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "oldgen",
+      authority,
+      requestCursor: "C1",
+    }),
+  ).toBe(false);
+  // A page not of this binding's identity is rejected before any certification.
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8, incarnation: "inc-other" }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "foreign",
+      authority,
+      requestCursor: "C1",
+    }),
+  ).toBe(false);
+
+  for (const boundary of ["stale", "oldgen", "foreign"]) {
+    expect(await fixture.cache.getCoverage(historyKey, `page:r1:${boundary}`)).toBeUndefined();
+  }
+});
+
+test("a newer item version and the page's other rows both survive a merge-eligible page", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  // Item 4 is already newer; the update keeps the held snapshot length at 8 so
+  // the page stays merge-eligible.
+  expect(repo.accept(historyUpdate(4, 9, "newer", 8), { lifetime: 1 })).toBe(true);
+  expect(
+    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "p1",
+      authority,
+      requestCursor: "C1",
+    }),
+  ).toBe(true);
+  await repo.settled();
+  expect(itemVersionAt(repo.getSnapshot(), 4)).toBe(9);
+  expect(orderedPositions(repo.getSnapshot())).toEqual([3, 4, 5, 6, 7, 8]);
+});
+
+test("several older pages survive close/reopen, serve locally in order and hand the server cursor across the join", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const first = repository(fixture.cache);
-  first.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
-    lifetime: 1,
-    readId: "r1",
-    boundary: "b1",
-  });
+  first.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = first.getBaselineIdentity();
   first.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
     lifetime: 1,
     readId: "r1",
     boundary: "p1",
+    authority,
     requestCursor: "C1",
   });
   first.acceptPage(pageOf([1, 2], { nextCursor: "C3", length: 8 }), {
     lifetime: 1,
     readId: "r1",
     boundary: "p2",
+    authority,
     requestCursor: "C2",
   });
   await first.settled();
   first.dispose();
 
-  // A fresh repository for the same connection/lifetime re-reads the latest
-  // window and then continues paging from the certified local pages.
+  // A retained reader on a fresh repository for the same connection/lifetime
+  // opens locally, then pages through the certified pages without a network read.
   const reopened = repository(fixture.cache);
+  const reader = reopened.attachReader();
   reopened.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
     lifetime: 1,
     readId: "r2",
     boundary: "b2",
   });
+  const opened = await reader.openLocal(40);
+  expect(orderedPositions(opened.model)).toEqual([6, 7, 8]);
+
   const served = await reopened.loadOlderPage(40, 1);
   expect(served.kind).toBe("local");
   if (served.kind !== "local") return;
-  expect(positions(served.model)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-  expect(served.model.olderCursor).toBe("C3");
-});
+  // Unsorted assertion: the model's own order is the display order.
+  expect(orderedPositions(served.model)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 
-test("a fresh baseline cannot anchor the outgoing connection's pages, and a missing certificate is server work, never exhaustion", async () => {
-  const fixture = createEntryCacheFixture();
-  fixtures.push(fixture);
-  const outgoing = repository(fixture.cache, 1);
-  outgoing.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
-    lifetime: 1,
-    readId: "r1",
-    boundary: "b1",
-  });
-  outgoing.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
-    lifetime: 1,
-    readId: "r1",
-    boundary: "p1",
-    requestCursor: "C1",
-  });
-  await outgoing.settled();
-
-  const replaced = repository(fixture.cache, 2);
-  replaced.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
-    lifetime: 2,
-    readId: "r2",
-    boundary: "b2",
-  });
-  const window = await fixture.cache.getOlderWindow(
+  // Rows below the oldest certified page are a server continuation with the
+  // frontier cursor, not a manufactured end.
+  const again = await reopened.loadOlderPage(40, 1);
+  expect(again.kind).toBe("server");
+  const frontier = await fixture.cache.getOlderWindow(
     historyKey,
-    { entry: 6, item: 0 },
+    { entry: 1, item: 0 },
     40,
-    replaced.getBaselineIdentity(),
+    reopened.getBaselineIdentity(),
   );
-  expect(window.stale).toBe(true);
-  const served = await replaced.loadOlderPage(40, 2);
-  expect(served.kind).toBe("server");
+  expect(frontier.complete).toBe(true);
+  expect(frontier.serverCursor).toBe("C3");
+  reader.dispose();
 });
 
-test("a newer item version beats a page's older copy", async () => {
+test("a connected-but-unverified frontier returns reconcile, not server", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const repo = repository(fixture.cache);
   repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
-  expect(repo.accept(historyUpdate(4, 9, "newer"), { lifetime: 1 })).toBe(true);
-  expect(
-    repo.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
-      lifetime: 1,
-      readId: "r1",
-      boundary: "p1",
-      requestCursor: "C1",
-    }),
-  ).toBe(true);
-  await repo.settled();
-  expect(versionAt(repo.getSnapshot(), 4)).toBe(9);
+  const authority = repo.getBaselineIdentity();
+  // Two page certificates both consumed C1 but claim different successors: the
+  // frontier is ambiguous, not an ordinary continuation.
+  await commitPageCertificate(fixture.cache, authority, "C1", "CA", "r1", "amb-a");
+  await commitPageCertificate(fixture.cache, authority, "C1", "CB", "r1", "amb-b");
+
+  const served = await repo.loadOlderPage(40, 1);
+  expect(served.kind).toBe("reconcile");
 });
 
-test("a retired repository accepts no page", () => {
+test("a recorded update during the local lookup is preserved", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const repo = repository(fixture.cache);
-  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1" }), { lifetime: 1, readId: "r1", boundary: "b1" });
-  repo.invalidate();
-  expect(repo.acceptPage(pageOf([3, 4, 5]), { lifetime: 1, readId: "r1", boundary: "p1", requestCursor: "C1" })).toBe(
-    false,
-  );
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+
+  const gate = holdOlderWindow();
+  const lookup = repo.loadOlderPage(40, 1);
+  await gate.whenCalled;
+  expect(repo.accept(historyUpdate(4, 9, "newer", 8), { lifetime: 1 })).toBe(true);
+  gate.release();
+  const outcome = await lookup;
+  expect(outcome.kind).toBe("local");
+  if (outcome.kind !== "local") return;
+  expect(itemVersionAt(outcome.model, 4)).toBe(9);
+  expect(orderedPositions(outcome.model)).toEqual([3, 4, 5, 6, 7, 8]);
 });
 
-test("an open reader keeps its loaded pages when disk eviction removes the history", async () => {
+test("an authoritative reconciliation during the local lookup retires the old window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+
+  const gate = holdOlderWindow();
+  const lookup = repo.loadOlderPage(40, 1);
+  await gate.whenCalled;
+  repo.acceptRead(readOf([5, 6, 7, 8], { olderCursor: "C9", authoritative: true, length: 9 }), {
+    lifetime: 1,
+    readId: "r-auth",
+    boundary: "b-auth",
+  });
+  gate.release();
+  const outcome = await lookup;
+  expect(outcome.kind).toBe("reconcile");
+  // The obsolete window's rows never entered the replacement model.
+  expect(orderedPositions(repo.getSnapshot())).toEqual([5, 6, 7, 8]);
+  expect(holdsPosition(repo.getSnapshot(), 3)).toBe(false);
+});
+
+test("a disposal during an outstanding lookup publishes nothing", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  const authority = repo.getBaselineIdentity();
+  await commitLocalPage(fixture.cache, authority);
+
+  let publishes = 0;
+  const unsubscribe = repo.subscribe(() => {
+    publishes += 1;
+  });
+  const gate = holdOlderWindow();
+  const lookup = repo.loadOlderPage(40, 1);
+  await gate.whenCalled;
+  repo.dispose();
+  gate.release();
+  const outcome = await lookup;
+  expect(outcome.kind).not.toBe("local");
+  expect(publishes).toBe(0);
+  unsubscribe();
+  expect(repo.getSnapshot()).toBeUndefined();
+});
+
+test("an open reader keeps its loaded rows when disk eviction removes the history", async () => {
   const databaseName = `entry-paging-evict-${crypto.randomUUID()}`;
   const indexedDB = new IDBFactory();
   let now = 1000;
@@ -326,7 +599,8 @@ test("an open reader keeps its loaded pages when disk eviction removes the histo
     now: () => now,
   });
   try {
-    const repo = repository(cache);
+    // Matched clocks: repository metadata and the cache policy share one clock.
+    const repo = repository(cache, 1, () => now);
     repo.acceptRead(readOf([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], { length: 10 }), {
       lifetime: 1,
       readId: "r1",
@@ -335,10 +609,9 @@ test("an open reader keeps its loaded pages when disk eviction removes the histo
     await repo.settled();
     const reader = repo.attachReader();
     const opened = await reader.openLocal(40);
-    expect(positions(opened.model ?? repo.getSnapshot())).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(orderedPositions(opened.model ?? repo.getSnapshot())).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
     const before = await cache.getByteTotals(historyKey);
-    // A later, unrelated live history large enough to force this one out first.
     now = 2000;
     const otherHistoryKey = "other-history";
     const huge = "x".repeat(20_000 - before.historyBytes + 500);
@@ -363,12 +636,12 @@ test("an open reader keeps its loaded pages when disk eviction removes the histo
         },
       ],
     });
-    const evicted = await cache.getLatest(historyKey, 40);
-    expect(evicted).toEqual([]);
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
 
-    // The retained reader still holds its own loaded pages in memory.
-    expect(positions(reader.getSnapshot())).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect(textAt(reader.getSnapshot(), 5)).toBe("row-5");
+    // The retained reader still holds its own loaded rows in memory after the
+    // history's disk rows are gone. This proves ten loaded latest-window rows,
+    // not ten separately loaded pages.
+    expect(orderedPositions(reader.getSnapshot())).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     reader.dispose();
     repo.dispose();
   } finally {
