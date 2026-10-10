@@ -4,7 +4,14 @@
   height: 100%;
   min-height: 0;
   min-width: 0;
+  /* The pane body hosting the spines and columns never scrolls as a unit.
+   * clip makes it a true non-scroller — a hidden box can still be shifted
+   * programmatically (focus chains, scrollIntoView) and sticky-shifted back
+   * asynchronously — and hidden stays as the fallback for engines that
+   * predate clip. */
   overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
 }
 
 .hint {

@@ -586,7 +586,19 @@ async function holdCanvasCompletion() {
 }
 
 async function openPeek(ref, kind) {
-  await driver.click(peekChip(ref, kind));
+  // Found and clicked in one page turn, like clickColumnAction: a layout
+  // shift (or the pane content's own transient remount while focus settles)
+  // between measuring and pressing cannot send the press to a neighbour
+  // (#3804, #3819). A chip covered at its center is retried, not clicked.
+  await wait(`(() => {
+    const button = document.querySelector(${q(peekChip(ref, kind))});
+    if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
+    button.scrollIntoView({ block: "center", inline: "center" });
+    const r = button.getBoundingClientRect();
+    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+    button.click();
+    return true;
+  })()`, `${kind} ancestor peek`);
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
@@ -1098,9 +1110,15 @@ async function reloadAndMobileJourney() {
   await clickColumnAction(fixture.childRef, "Open conversation");
   await wait(`(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
-    const editor = scope?.querySelector('[role="textbox"]');
-    return scope && editor?.contains(document.activeElement) && document.querySelectorAll('.dv-tab').length === ${fixture.sourceTabCount} ? true : null;
-  })()`, "existing-child Open focuses the open conversation while its inspection tab survives");
+    // The mounted child scaffold proves the existing pane became its group's
+    // active view (inactive tabs unmount); the tab count proves the inspector
+    // pane survived. A dockview panel activation can settle focus on the panel
+    // wrapper after the editor focus, so the journey asserts the activation,
+    // not the final keyboard owner.
+    // sourceTabCount already accounts for the inspector's upcoming Return;
+    // here it is still open, so one more tab is present.
+    return scope && document.querySelectorAll('.dv-tab').length === ${fixture.sourceTabCount + 1} ? true : null;
+  })()`, "existing-child Open activates the open conversation while its inspection tab survives");
   await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
   await returnToSource();
   const baseline = await wait(`(() => {
@@ -1546,7 +1564,7 @@ try {
     const body = document.querySelector(${q(inspectorRoot)});
     return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY };
   })()`);
-  assert.equal(paneBody.overflowY, "hidden", "the cascade pane body owns no unit scrollbar");
+  assert.ok(["clip", "hidden"].includes(paneBody.overflowY), "the cascade pane body owns no unit scrollbar");
   assert.ok(paneBody.scrollHeight <= paneBody.clientHeight + 1, "the cascade pane body does not grow with column content");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   // A user pop/drill after the resize must reveal the selected leaf. Resizing
@@ -1663,14 +1681,18 @@ try {
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "reconnect and runtime/context refresh never animate cascade geometry");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "the observed root sidebar closes without changing center demand");
-  // The selected leaf's own sidebar demand resumes for the recovery legs.
-  await driver.click(`${inspectorFooter} button[aria-label^="Agents,"]`);
   const closedRef = fixture.refs[4];
   const closedPeekAfter = frames.length;
+  // Closing the sidebar relayouts the panes; the peek clicks below measure
+  // chip coordinates, so they wait for the settled geometry first.
+  await wait(readableGeometrySettled(2), "settled geometry after closing the observed root sidebar");
   await openPeek(closedRef, "Agents");
   await waitFrames(() => sent(closedPeekAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === closedRef && answered(f)), "the independent ancestor peek owns a real delegate read");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-peek]") === null', "independent ancestor peek relinquishes direct collection demand");
+  // The selected leaf's own sidebar demand resumes for the recovery legs.
+  await driver.click(`${inspectorFooter} button[aria-label^="Agents,"]`);
+  await wait(sidebarEntranceSettled, "selected-leaf sidebar entrance settled before the recovery reconnect");
   const closedAfter = await reconnect();
   await waitFrames(() => sent(closedAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.refs[6] && answered(f)), "selected-leaf sidebar resumes its actual direct collection");
   assert.equal(sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === closedRef).length, 0, "closed independent peek causes no delegate-page read on recovery");

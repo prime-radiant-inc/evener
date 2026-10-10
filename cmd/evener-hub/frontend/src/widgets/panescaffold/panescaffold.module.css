@@ -90,10 +90,15 @@
 
 /* A pane that owns its scrolling internally (the cascade's columns) renders
  * flush: the padded scroll allocation would only add a second, unit-level
- * scroll surface around it. */
+ * scroll surface around it. clip makes the body a true non-scroller, so
+ * focus chains and scrollIntoView cannot shift it programmatically either —
+ * the pane body must never scroll as a unit. hidden is the fallback for
+ * engines that predate clip; dropping the invalid value leaves it. */
 .bodyNoScroll {
   padding: 0;
   overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
 }
 
 .footer {
