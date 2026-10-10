@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -284,11 +285,7 @@ func TestSummarizeToolResult_SearchNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Items []struct {
-			CallID        string `json:"callId"`
-			ArgumentsJSON string `json:"argumentsJson"`
-			Output        string `json:"output"`
-		} `json:"items"`
+		Items []appwire.ThreadItem `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
