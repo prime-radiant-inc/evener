@@ -323,7 +323,12 @@ file tool nor a spawned process can read them:
 
 - **Credential directories and files** (resolved against `$HOME`): `~/.ssh`,
   `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
-  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`.
+  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. When
+  `$XDG_CONFIG_HOME` moves Evener's config root, `$XDG_CONFIG_HOME/evener` is
+  masked as well, since hub configuration and credentials live wherever that root
+  is; removing `~/.config/evener` from the denylist removes both, and removing the
+  relocated root removes that one. A masked path reached through a symlink is
+  masked at its real location too, so neither spelling reads it.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
@@ -410,9 +415,15 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   session scratch as its first entry too: Go records the checksum database's tree
   heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
   module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH (or Go's `$HOME/go` default) stays after it, so GOPATH-mode builds still
-  find the packages already there; `restricted` cannot read it and gets the
-  scratch alone.
+  GOPATH stays after it, so GOPATH-mode builds still find the packages already
+  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
+  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
+  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
+  `$HOME/go`). Evener reads that file rather than running `go env`, which would
+  run whichever go is first on PATH, and any toolchain it downloads, before the
+  sandbox exists. A spawn whose environment gives go no way to find those
+  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
+  does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning

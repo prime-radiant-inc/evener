@@ -39,7 +39,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
 			root := t.TempDir()
-			index := memorySeedPage(t, root, "personal", "fact.md", "opaque-garden-index-71")
+			index := memorySeedPage(t, root, "memory", "fact.md", "opaque-garden-index-71")
 			path := filepath.Join(filepath.Dir(index), "topic.txt")
 			if err := os.WriteFile(path, []byte("opaque-before-72\nopaque-keep-73\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -121,7 +121,7 @@ func TestMemoryContextProjection(t *testing.T) {
 	t.Parallel()
 	root, history := t.TempDir(), t.TempDir()
 	const opaque = "opaque-projection-76"
-	memorySeedPage(t, root, "personal", "fact.md", opaque)
+	memorySeedPage(t, root, "memory", "fact.md", opaque)
 	s := newSession(t, withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root}), withSteps(func(llm.Request) llm.Response { return finalResponse("complete") }))
 	if _, err := s.ProcessInput(context.Background(), "opaque-input-77", nil); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 	for _, scope := range []string{"personal", "project"} {
 		t.Run(scope, func(t *testing.T) {
 			root := t.TempDir()
-			dirs := map[string]string{"personal": "personal", "project": "projects/fixture-project"}
+			dirs := map[string]string{"personal": "memory", "project": "projects/fixture-project/memory"}
 			paths := map[string]string{
 				"personal": memorySeedPage(t, root, dirs["personal"], "fact.md", "opaque-personal-before-701"),
 				"project":  memorySeedPage(t, root, dirs["project"], "fact.md", "opaque-project-before-702"),
@@ -352,7 +352,7 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 func TestMemoryScopeRootRecoveryDeleteLease(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-delete-713")
+	path := memorySeedPage(t, root, "memory", "fact.md", "opaque-delete-713")
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
 	env, err := s.openMemoryEnvironment("personal")
 	if err != nil {
@@ -381,7 +381,7 @@ func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
 	for _, operation := range []string{"read", "index_read"} {
 		t.Run(operation, func(t *testing.T) {
 			root := t.TempDir()
-			path := memorySeedPage(t, root, "personal", "fact.md", "opaque-admitted-old-711")
+			path := memorySeedPage(t, root, "memory", "fact.md", "opaque-admitted-old-711")
 			started, release := make(chan struct{}), make(chan struct{})
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
@@ -462,11 +462,11 @@ func TestMemoryScopeRootRecoveryRetirement(t *testing.T) {
 func TestMemoryContextTransitions(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-first-18")
-	memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-project-19")
+	path := memorySeedPage(t, root, "memory", "fact.md", "opaque-first-18")
+	memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-project-19")
 	var fault atomic.Bool
-	wantState, wantBody := "current", memoryExpectedIndex(t, root, "personal")
-	wantProjectState, wantProjectBody := "current", memoryExpectedIndex(t, root, "projects/fixture-project")
+	wantState, wantBody := "current", memoryExpectedIndex(t, root, "memory")
+	wantProjectState, wantProjectBody := "current", memoryExpectedIndex(t, root, "projects/fixture-project/memory")
 	step := func(req llm.Request) llm.Response {
 		state, body, _ := memoryRequestIndex(t, req, "personal")
 		if state != wantState || body != wantBody {
@@ -522,7 +522,7 @@ func TestMemoryContextTransitions(t *testing.T) {
 	if err := os.WriteFile(path, []byte("opaque-recovered-38"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wantState, wantBody = "current", memoryExpectedIndex(t, root, "personal")
+	wantState, wantBody = "current", memoryExpectedIndex(t, root, "memory")
 	run(6)
 	// Revocation happens on the owner loop between requests, never in a worker.
 	s.cfg.MemoryProjectID = ""
@@ -558,8 +558,8 @@ func TestMemoryContextTransitions(t *testing.T) {
 func TestMemoryContextLifecycle(t *testing.T) {
 	t.Parallel()
 	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-before-fold-48")
-	memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-project-fold-49")
+	path := memorySeedPage(t, root, "memory", "fact.md", "opaque-before-fold-48")
+	memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-project-fold-49")
 	// Topic/log are real fixture files whose opaque bytes must not be preloaded:
 	// the index carries their names and log.md's description, never their bodies.
 	pages := map[string]string{"topic": "opaque-not-preloaded-406", "log.md": "---\ndescription: opaque-log-description\n---\nopaque-not-preloaded-406"}
@@ -568,7 +568,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wantPersonal, wantProject := memoryExpectedIndex(t, root, "personal"), memoryExpectedIndex(t, root, "projects/fixture-project")
+	wantPersonal, wantProject := memoryExpectedIndex(t, root, "memory"), memoryExpectedIndex(t, root, "projects/fixture-project/memory")
 	s := newScriptedSummaryCompactSession(t, "memory-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-fold-58")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: "fixture-project"}))
@@ -611,7 +611,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 	if err := os.WriteFile(path, []byte("opaque-restored-78"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wantRestored := memoryExpectedIndex(t, root, "personal")
+	wantRestored := memoryExpectedIndex(t, root, "memory")
 	meta, err := schema.LoadSessionMeta(history, s.id)
 	if err != nil {
 		t.Fatal(err)
@@ -671,7 +671,7 @@ func TestMemoryContextTrustAndBounds(t *testing.T) {
 	} {
 		raw := tc.raw
 		root := t.TempDir()
-		path := filepath.Join(root, "memory", "personal", "fact.md")
+		path := filepath.Join(root, "memory", "fact.md")
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -679,8 +679,8 @@ func TestMemoryContextTrustAndBounds(t *testing.T) {
 		if err := os.WriteFile(path, page, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-other-scope-88")
-		want, wantOther := memoryExpectedIndex(t, root, "personal"), memoryExpectedIndex(t, root, "projects/fixture-project")
+		memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-other-scope-88")
+		want, wantOther := memoryExpectedIndex(t, root, "memory"), memoryExpectedIndex(t, root, "projects/fixture-project/memory")
 		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}), withSteps(func(req llm.Request) llm.Response {
 			state, body, truncated := memoryRequestIndex(t, req, "personal")
 			if state != "current" || body != want || truncated != tc.truncated || len(body) > 8192 || !utf8.ValidString(body) {
@@ -724,9 +724,9 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	t.Parallel()
 	workspace, project := memoryGitFixture(t)
 	root, history := t.TempDir(), t.TempDir()
-	path := memorySeedPage(t, root, "personal", "fact.md", "opaque-child-start-401")
-	memorySeedPage(t, root, filepath.Join("projects", project.ID), "fact.md", "opaque-child-project-402")
-	want, wantProject := memoryExpectedIndex(t, root, "personal"), memoryExpectedIndex(t, root, filepath.Join("projects", project.ID))
+	path := memorySeedPage(t, root, "memory", "fact.md", "opaque-child-start-401")
+	memorySeedPage(t, root, filepath.Join("projects", project.ID, "memory"), "fact.md", "opaque-child-project-402")
+	want, wantProject := memoryExpectedIndex(t, root, "memory"), memoryExpectedIndex(t, root, filepath.Join("projects", project.ID, "memory"))
 	step := func(req llm.Request) llm.Response {
 		state, body, _ := memoryRequestIndex(t, req, "personal")
 		if state != "current" || body != want {
@@ -769,7 +769,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	if err := os.WriteFile(path, []byte("opaque-child-cold-405"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want = memoryExpectedIndex(t, root, "personal")
+	want = memoryExpectedIndex(t, root, "memory")
 	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step}})
 	sent := (delegateRuntime{owner: s}).send(context.Background(), res.DelegateID, "cold child recall", 0).result
 	if sent.Err != nil {
@@ -787,7 +787,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			root, history := t.TempDir(), t.TempDir()
-			dirs := map[string]string{"personal": "personal", "project": filepath.Join("projects", project.ID)}
+			dirs := map[string]string{"personal": "memory", "project": filepath.Join("projects", project.ID, "memory")}
 			paths := []string{
 				memorySeedPage(t, root, dirs["personal"], "fact.md", "opaque-parent-personal-601"),
 				memorySeedPage(t, root, dirs["project"], "fact.md", "opaque-parent-project-602"),
@@ -905,9 +905,9 @@ func TestMemoryStorageWaitAndRecovery(t *testing.T) {
 	for _, operation := range []string{"setup", "index_read"} {
 		t.Run(operation, func(t *testing.T) {
 			root := t.TempDir()
-			memorySeedPage(t, root, "personal", "fact.md", "opaque-stalled-98")
-			memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-healthy-99")
-			wantStalled, wantHealthy := memoryExpectedIndex(t, root, "personal"), memoryExpectedIndex(t, root, "projects/fixture-project")
+			memorySeedPage(t, root, "memory", "fact.md", "opaque-stalled-98")
+			memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-healthy-99")
+			wantStalled, wantHealthy := memoryExpectedIndex(t, root, "memory"), memoryExpectedIndex(t, root, "projects/fixture-project/memory")
 			clk := agenttest.NewFakeClock()
 			started, release := make(chan struct{}), make(chan struct{})
 			healthyStarted := make(chan struct{}, 1)
@@ -1003,9 +1003,9 @@ func TestMemoryStorageSharedWaitAndClose(t *testing.T) {
 	for _, mode := range []string{"shared-deadline", "cancel", "close-setup", "close-index_read"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
-			memorySeedPage(t, root, "personal", "fact.md", "opaque-held-personal-501")
-			memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-held-project-502")
-			wantPersonal, wantProject := memoryExpectedIndex(t, root, "personal"), memoryExpectedIndex(t, root, "projects/fixture-project")
+			memorySeedPage(t, root, "memory", "fact.md", "opaque-held-personal-501")
+			memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-held-project-502")
+			wantPersonal, wantProject := memoryExpectedIndex(t, root, "memory"), memoryExpectedIndex(t, root, "projects/fixture-project/memory")
 			clk := agenttest.NewFakeClock()
 			started := make(chan string, 2)
 			release := make(chan struct{})
@@ -1163,12 +1163,13 @@ func memorySeedTags(tags ...string) memorySeedOption {
 	return func(f *memorySeedFrontmatter) { f.tags = tags }
 }
 
-// memorySeedPage writes one page into scope with a frontmatter description
-// and a fixed stamp (2026-10-01 unless an option changes it), so its index
-// line is stable, and returns its path.
-func memorySeedPage(t *testing.T, root, scope, name, description string, opts ...memorySeedOption) string {
+// memorySeedPage writes one page into the scope directory dir, relative to
+// the state root, with a frontmatter description and a fixed stamp
+// (2026-10-01 unless an option changes it), so its index line is stable, and
+// returns its path.
+func memorySeedPage(t *testing.T, root, dir, name, description string, opts ...memorySeedOption) string {
 	t.Helper()
-	path := filepath.Join(root, "memory", scope, name)
+	path := filepath.Join(root, dir, name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1187,18 +1188,20 @@ func memorySeedPage(t *testing.T, root, scope, name, description string, opts ..
 	return path
 }
 
-// memoryExpectedIndex is scope's rendered index as the session would project
-// it, read straight from disk.
-func memoryExpectedIndex(t *testing.T, root, scope string) string {
+// memoryExpectedIndex is the rendered index of the scope directory dir,
+// relative to the state root, as the session would project it, read straight
+// from disk.
+func memoryExpectedIndex(t *testing.T, root, dir string) string {
 	t.Helper()
-	content, _, _ := projectMemoryIndex(memoryListedPages(t, root, scope), memoryProjectionCap)
+	content, _, _ := projectMemoryIndex(memoryListedPages(t, root, dir), memoryProjectionCap)
 	return content
 }
 
-// memoryListedPages lists scope's pages straight from disk.
-func memoryListedPages(t *testing.T, root, scope string) []memoryPage {
+// memoryListedPages lists the pages of the scope directory dir, relative to
+// the state root, straight from disk.
+func memoryListedPages(t *testing.T, root, dir string) []memoryPage {
 	t.Helper()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", scope))
+	env, err := execenv.NewConfinedFileEnvironment(root, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1254,9 +1257,9 @@ func TestMemoryDelegateRestore(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			host, history := t.TempDir(), t.TempDir()
-			memorySeedPage(t, host, "personal", "fact.md", "opaque-personal-72")
-			memorySeedPage(t, host, filepath.Join("projects", project.ID), "fact.md", "opaque-project-44")
-			memorySeedPage(t, host, filepath.Join("projects", "different-project"), "fact.md", "opaque-different-53")
+			memorySeedPage(t, host, "memory", "fact.md", "opaque-personal-72")
+			memorySeedPage(t, host, filepath.Join("projects", project.ID, "memory"), "fact.md", "opaque-project-44")
+			memorySeedPage(t, host, filepath.Join("projects", "different-project", "memory"), "fact.md", "opaque-different-53")
 			var accesses, projectAccesses atomic.Int32
 			testCfg := testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true, memoryBeforeIO: func(scope, operation string) error {
 				accesses.Add(1)
@@ -1287,7 +1290,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); !res.IsError {
 				t.Fatal("delegate wrote memory")
 			}
-			if err := os.WriteFile(filepath.Join(host, "memory", "projects", project.ID, "child.txt"), []byte("opaque-child-57"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(host, "projects", project.ID, "memory", "child.txt"), []byte("opaque-child-57"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if res := memoryExec(t, child.sess, "write_file", map[string]any{"file_path": "workspace.txt", "content": "bad"}); !res.IsError {
@@ -1432,7 +1435,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 					t.Fatalf("worktree restore identity=%q cwd=%q", restored.sess.cfg.MemoryProjectID, restored.sess.currentEnv().WorkingDirectory())
 				}
 			}
-			bytes, err := os.ReadFile(filepath.Join(host, "memory", "projects", project.ID, "child.txt"))
+			bytes, err := os.ReadFile(filepath.Join(host, "projects", project.ID, "memory", "child.txt"))
 			if err != nil || string(bytes) != "opaque-child-57" {
 				t.Fatalf("stored child memory changed=%q err=%v", bytes, err)
 			}
@@ -1506,7 +1509,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 			workspace, project := memoryGitFixture(t)
 			root := t.TempDir()
 			const legacy = "- [Cents](cents.md) — opaque-legacy-description\n"
-			memorySeedPage(t, root, "personal", "fact.md", "opaque-delegate-fact-91")
+			memorySeedPage(t, root, "memory", "fact.md", "opaque-delegate-fact-91")
 			writeMemoryPage(t, root, "MEMORY.md", legacy)
 			writeMemoryPage(t, root, "cents.md", "# Cents\n")
 			long := "# Long\n" + strings.Repeat("opaque-long-line-93\n", 300)
@@ -1533,7 +1536,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 					t.Errorf("delegate's model request offers saving through %s", def.Name)
 				}
 			}
-			scope := filepath.Join(root, "memory", "personal")
+			scope := filepath.Join(root, "memory")
 			if raw, err := os.ReadFile(filepath.Join(scope, "MEMORY.md")); err != nil || string(raw) != legacy {
 				t.Errorf("delegate migrated MEMORY.md=%q, %v", raw, err)
 			}
@@ -1692,7 +1695,7 @@ func TestMemoryDelegateFrozenBinding(t *testing.T) {
 func TestMemoryDelegateReadCeilingNoIO(t *testing.T) {
 	t.Parallel()
 	host := t.TempDir()
-	memorySeedPage(t, host, "personal", "fact.md", "opaque-unread-86")
+	memorySeedPage(t, host, "memory", "fact.md", "opaque-unread-86")
 	var calls atomic.Int32
 	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: host, spawn: spawnConfig{deniedToolNames: []string{"memory_read"}}, testOnly: testConfig{memoryBeforeIO: func(string, string) error { calls.Add(1); return nil }}}), withSteps(func(llm.Request) llm.Response { return finalResponse("ordinary work") }))
 	if _, err := s.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
@@ -1711,7 +1714,7 @@ func TestMemoryDelegateReadCeilingNoIO(t *testing.T) {
 func TestMemoryDisableNoIO(t *testing.T) {
 	t.Parallel()
 	host, workspace := t.TempDir(), t.TempDir()
-	decoy := memorySeedPage(t, host, "personal", "fact.md", "opaque-decoy-68")
+	decoy := memorySeedPage(t, host, "memory", "fact.md", "opaque-decoy-68")
 	if err := os.Chmod(decoy, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -1751,7 +1754,7 @@ func TestMemoryDisableNoIO(t *testing.T) {
 	if bytes, err := os.ReadFile(filepath.Join(workspace, "ordinary.txt")); err != nil || string(bytes) != "opaque-ordinary-24" {
 		t.Fatalf("ordinary bytes=%q err=%v", bytes, err)
 	}
-	if _, err := os.Stat(filepath.Join(host, "memory", "projects")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(host, "projects")); !os.IsNotExist(err) {
 		t.Fatalf("disabled project setup=%v", err)
 	}
 }
@@ -1767,7 +1770,7 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-			path := memorySeedPage(t, root, "personal", "fact.md", "opaque-surviving-61")
+			path := memorySeedPage(t, root, "memory", "fact.md", "opaque-surviving-61")
 			seeded, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -1855,8 +1858,8 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 	for _, parentID := range []string{"", "different-project"} {
 		t.Run("parent-"+parentID, func(t *testing.T) {
 			root, history := t.TempDir(), t.TempDir()
-			memorySeedPage(t, root, "personal", "fact.md", "opaque-personal-89")
-			memorySeedPage(t, root, "projects/saved-project", "fact.md", "opaque-old-project-19")
+			memorySeedPage(t, root, "memory", "fact.md", "opaque-personal-89")
+			memorySeedPage(t, root, "projects/saved-project/memory", "fact.md", "opaque-old-project-19")
 			s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "saved-project", StateDir: history}))
 			s.Close()
 			meta, err := schema.LoadSessionMeta(history, s.id)
@@ -1925,7 +1928,7 @@ func TestMemoryResumeAdoptsProjectBinding(t *testing.T) {
 			home, project := memoryGitFixture(t)
 			elsewhere, _ := memoryGitFixture(t)
 			host, history := t.TempDir(), t.TempDir()
-			memorySeedPage(t, host, filepath.Join("projects", project.ID), "fact.md", "opaque-project-61")
+			memorySeedPage(t, host, filepath.Join("projects", project.ID, "memory"), "fact.md", "opaque-project-61")
 			saved := ""
 			if mode == "saved-binding" {
 				saved = "saved-project"
@@ -2008,7 +2011,7 @@ func TestMemoryFreshSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]string{"lesson.md": "---\n" + memoryOwnStamps(a) + "---\n" + body, "nested/unusual name.txt": topic} {
-		got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", path))
+		got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", path))
 		if err != nil || string(got) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, got, err)
 		}
@@ -2051,6 +2054,54 @@ func TestMemoryFreshSession(t *testing.T) {
 	))
 	if _, err := b.ProcessInput(context.Background(), "continue", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Personal memory is the state root's memory directory itself, and project
+// memory sits in the project's own state directory, beside its sessions. Each
+// scope lists only its own pages: the project's sessions and the other
+// projects' memory are no part of either.
+func TestMemoryScopesLiveInTheirStateDirectories(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	for rel, body := range map[string]string{
+		"projects/fixture-project/sessions/s.transcript.jsonl": "{}\n",
+		"projects/other-project/memory/theirs.md":              "---\ndescription: other project\n---\n",
+	} {
+		path := filepath.Join(stateRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+	for scope, want := range map[string]string{
+		"personal": filepath.Join(stateRoot, "memory", "mine.md"),
+		"project":  filepath.Join(stateRoot, "projects", "fixture-project", "memory", "mine.md"),
+	} {
+		if got := s.memoryScopeRoot(scope); got != filepath.Dir(want) {
+			t.Fatalf("%s root=%q want %q", scope, got, filepath.Dir(want))
+		}
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "mine.md", "content": "---\ndescription: " + scope + "\n---\n"}); res.IsError {
+			t.Fatalf("%s write: %s", scope, res.Output)
+		}
+		if _, err := os.Stat(want); err != nil {
+			t.Fatalf("%s page not at %s: %v", scope, want, err)
+		}
+		env, release, err := s.acquireMemoryEnvironment(scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages, err := listMemoryPages(env)
+		release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pages) != 1 || pages[0].Path != "mine.md" {
+			t.Fatalf("%s pages=%+v want only mine.md", scope, pages)
+		}
 	}
 }
 
@@ -2128,7 +2179,7 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 // as it is wherever the match could be part of a longer name.
 func TestScopeRelativeText(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
+	root := filepath.Join(string(filepath.Separator)+"state", "memory")
 	sep := string(filepath.Separator)
 	for in, want := range map[string]string{
 		"wrote 3 bytes to " + root + sep + "dir" + sep + "a.md": "wrote 3 bytes to dir" + sep + "a.md",
@@ -2160,7 +2211,7 @@ func TestMemoryToolErrorsAndTheirOutputAreScopeRelative(t *testing.T) {
 	t.Parallel()
 	stateRoot := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
-	root := filepath.Join(stateRoot, "memory", "projects", "fixture-project")
+	root := filepath.Join(stateRoot, "projects", "fixture-project", "memory")
 	cause := errors.New("opaque cause")
 	exec := s.scopeRelativeMemoryErrors(func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 		return "rg: " + filepath.Join(root, "missing") + ": No such file", fmt.Errorf("searching %q: %w", root, cause)
@@ -2350,7 +2401,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 			if res.IsError {
 				t.Fatal(res.Output)
 			}
-			got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", tc.path))
+			got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", tc.path))
 			if err != nil || string(got) != tc.body {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
@@ -2361,7 +2412,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	got, err := os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "nested", "unusual name.txt"))
+	got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "nested", "unusual name.txt"))
 	if err != nil || string(got) != "opaque-nested-52\n" {
 		t.Fatalf("page=%q err=%v", got, err)
 	}
@@ -2377,7 +2428,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("duplicate edit accepted")
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt"))
+	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "duplicate.txt"))
 	if err != nil || string(got) != "before\nToken\nToken\nafter\n" {
 		t.Fatalf("failed edit changed bytes=%q err=%v", got, err)
 	}
@@ -2385,7 +2436,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt"))
+	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "duplicate.txt"))
 	if err != nil || string(got) != "before\nchanged\nchanged\nafter\n" {
 		t.Fatalf("edit bytes=%q err=%v", got, err)
 	}
@@ -2410,10 +2461,10 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	if _, err := os.Stat(filepath.Join(root, "memory", "projects", "fixture-project", "duplicate.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "projects", "fixture-project", "memory", "duplicate.txt")); !os.IsNotExist(err) {
 		t.Fatalf("delete=%v", err)
 	}
-	got, err = os.ReadFile(filepath.Join(root, "memory", "projects", "fixture-project", "overview.md"))
+	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "overview.md"))
 	if want := "---\n" + memoryOwnStamps(s) + "---\nopaque-index-94\n"; err != nil || string(got) != want {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
@@ -2485,7 +2536,10 @@ func TestMemoryPathAuthority(t *testing.T) {
 		t.Fatalf("outside changed=%q err=%v", got, err)
 	}
 	// A pre-existing symlink in the scope root's relative tail must fail setup.
-	for _, relative := range []string{"memory", "memory/personal", "memory/projects/fixture-project"} {
+	for _, tc := range []struct{ relative, scope string }{
+		{"memory", "personal"}, {"projects", "project"}, {"projects/fixture-project", "project"}, {"projects/fixture-project/memory", "project"},
+	} {
+		relative := tc.relative
 		host := t.TempDir()
 		link := filepath.Join(host, relative)
 		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
@@ -2495,11 +2549,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		other := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, MemoryProjectID: "fixture-project"}))
-		scope := "project"
-		if relative == "memory/personal" {
-			scope = "personal"
-		}
-		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": scope, "file_path": "data", "content": "bad"}); !res.IsError {
+		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": tc.scope, "file_path": "data", "content": "bad"}); !res.IsError {
 			t.Fatalf("symlink root %s accepted", relative)
 		}
 	}
@@ -2565,7 +2615,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 	for _, name := range []string{"memory_read", "memory_search"} {
 		t.Run(name, func(t *testing.T) {
 			host := t.TempDir()
-			wiki := filepath.Join(host, "memory", "personal")
+			wiki := filepath.Join(host, "memory")
 			if err := os.MkdirAll(wiki, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -2687,7 +2737,7 @@ func TestMemoryGenericDelivery(t *testing.T) {
 	var items []appwire.ThreadItem
 	for arm, name := range []string{"memory_read", "memory_search"} {
 		host := t.TempDir()
-		index := filepath.Join(host, "memory", "personal", "large.txt")
+		index := filepath.Join(host, "memory", "large.txt")
 		if err := os.MkdirAll(filepath.Dir(index), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -2830,14 +2880,14 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 func TestMemoryIndexProjection(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	wiki := filepath.Join(root, "memory", "personal")
+	wiki := filepath.Join(root, "memory")
 	if err := os.MkdirAll(wiki, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The shown page sorts first; the long page's line does not fit the
 	// projection, so none of its bytes may appear, even cut.
-	shown := memorySeedPage(t, root, "personal", "a.md", "opaque-shown-48")
-	long := memorySeedPage(t, root, "personal", "b.md", strings.Repeat("x", 8184)+"opaque-"+"三"+"opaque-cut-49")
+	shown := memorySeedPage(t, root, "memory", "a.md", "opaque-shown-48")
+	long := memorySeedPage(t, root, "memory", "b.md", strings.Repeat("x", 8184)+"opaque-"+"三"+"opaque-cut-49")
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 		found := 0
 		for _, msg := range req.Messages {
@@ -2901,11 +2951,11 @@ func TestMemoryAutomaticSetupRecovery(t *testing.T) {
 		for _, operation := range []string{"setup", "index_read", "missing_index"} {
 			t.Run(failingScope+"/"+operation, func(t *testing.T) {
 				root := t.TempDir()
-				dirs := map[string]string{"personal": "personal", "project": "projects/fixture-project"}
+				dirs := map[string]string{"personal": "memory", "project": "projects/fixture-project/memory"}
 				descriptions := map[string]string{"personal": "opaque-personal-retry-47", "project": "opaque-project-retry-93"}
 				bodies := map[string]string{}
 				for scope, dir := range dirs {
-					if err := os.MkdirAll(filepath.Join(root, "memory", dir), 0o700); err != nil {
+					if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
 						t.Fatal(err)
 					}
 					if scope != failingScope || operation != "missing_index" {
@@ -2958,7 +3008,7 @@ func TestMemoryAutomaticSetupRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 				if operation == "missing_index" {
-					if _, err := os.Stat(filepath.Join(root, "memory", dirs[failingScope], "MEMORY.md")); !os.IsNotExist(err) {
+					if _, err := os.Stat(filepath.Join(root, dirs[failingScope], "MEMORY.md")); !os.IsNotExist(err) {
 						t.Fatalf("automatic index creation: %v", err)
 					}
 					memorySeedPage(t, root, dirs[failingScope], "fact.md", descriptions[failingScope])
@@ -3047,7 +3097,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 			if remaining != 0 {
 				t.Fatalf("environments=%d", remaining)
 			}
-			got, err := os.ReadFile(filepath.Join(root, "memory", "personal", "data"))
+			got, err := os.ReadFile(filepath.Join(root, "memory", "data"))
 			if err != nil || string(got) != "opaque-surviving-67" {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
@@ -3144,7 +3194,7 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	wiki := filepath.Join(root, "memory", "personal")
+	wiki := filepath.Join(root, "memory")
 	if err := os.MkdirAll(wiki, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -3152,7 +3202,7 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wiki, "fact.md"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := memoryExpectedIndex(t, root, "personal")
+	want := memoryExpectedIndex(t, root, "memory")
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(func(req llm.Request) llm.Response {
 		for _, msg := range req.Messages {
 			if section, ok := memoryIndexSectionOf(msg.Text(), "personal"); ok {

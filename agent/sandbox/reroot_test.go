@@ -339,10 +339,8 @@ func FuzzReRoot(f *testing.F) {
 			rerooted.Spawned.ReadRoots, rerooted.Spawned.WriteRoots,
 		)
 		for _, r := range roots {
-			for _, m := range rerooted.MaskedPaths {
-				if r == m || pathUnder(r, m) {
-					t.Fatalf("re-rooted grant %q lands at/under masked path %q", r, m)
-				}
+			if rerooted.Masks(r) {
+				t.Fatalf("re-rooted grant %q lands at/under masked path %q", r, rerooted.MaskedPaths)
 			}
 		}
 		// Recompute-not-copy: the file-tool write roots (worktree-only for the seed

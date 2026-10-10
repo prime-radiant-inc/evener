@@ -36,7 +36,7 @@ func (s *sandboxFS) checkWritable(tool, abs string) error {
 	if _, _, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); !ok {
 		return s.deny(tool, abs, denyReasonOutsideWrite)
 	}
-	if s.underMasked(abs) {
+	if s.underMaskedForWrite(abs) {
 		return s.deny(tool, abs, denyReasonMasked)
 	}
 	if s.underProtected(abs) {
