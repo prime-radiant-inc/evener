@@ -3191,7 +3191,20 @@ func refreshModelFacingCaches(s *Session) {
 }
 
 var updatePromptGoldens = flag.Bool("update-prompt", false,
-	"rewrite agent/testdata/memoryprompt from the current memory guidance and tool descriptions")
+	"rewrite agent/testdata/memoryprompt and agent/testdata/messagingprompt from the current guidance and tool descriptions")
+
+// writeToolDescriptions renders each tool's description and its parameters'
+// descriptions, parameters sorted by name, for a prompt golden.
+func writeToolDescriptions(golden *strings.Builder, defs ...llm.ToolDefinition) {
+	for _, def := range defs {
+		fmt.Fprintf(golden, "\n## %s\n\n%s\n\n", def.Name, def.Description)
+		props, _ := def.Parameters["properties"].(map[string]any)
+		for _, param := range slices.Sorted(maps.Keys(props)) {
+			description, _ := props[param].(map[string]any)["description"].(string)
+			fmt.Fprintf(golden, "- `%s`: %s\n", param, description)
+		}
+	}
+}
 
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions and the result
@@ -3269,12 +3282,7 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			golden.WriteString(strings.TrimPrefix(memoryGuidanceHeading, "\n\n") + section + "\n\n# Memory tool descriptions\n")
 			for _, name := range nativeMemoryToolNames {
 				if registered := s.reg.Get(name); registered != nil {
-					fmt.Fprintf(&golden, "\n## %s\n\n%s\n\n", name, registered.Definition.Description)
-					props, _ := registered.Definition.Parameters["properties"].(map[string]any)
-					for _, param := range slices.Sorted(maps.Keys(props)) {
-						description, _ := props[param].(map[string]any)["description"].(string)
-						fmt.Fprintf(&golden, "- `%s`: %s\n", param, description)
-					}
+					writeToolDescriptions(&golden, registered.Definition)
 				}
 			}
 			checkGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,
