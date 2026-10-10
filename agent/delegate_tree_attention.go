@@ -295,8 +295,10 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 }
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
-// projection once its transcript holds no unresolved attention. A resolution
-// can outrun the committed attention run that would otherwise emit the clearing
+// projection, and drops its noted wakes, once its transcript holds no
+// unresolved attention. While a stop is pending the stop's cleanup owns the
+// wakes (it renews their markers' durability first), so the clear leaves them.
+// A resolution can outrun the committed attention run that would otherwise emit the clearing
 // event (acceptDelegateAttention makes the marker durable first, and a
 // later-declined CommitStart leaves the journal's last event at true), and the
 // transcript-driven drive is the only witness of that state, so it reconciles
@@ -332,13 +334,13 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
-	if aggregate == nil || !aggregate.NeedsAttention {
+	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
+	if aggregate == nil || aggregate.PendingStopSeq != 0 || !aggregate.NeedsAttention && len(wakeIDs) == 0 {
 		c.mu.Unlock()
 		return false, nil
 	}
 	transcriptRef := aggregate.Descriptor.TranscriptRef
 	evidenceVersion := c.evidenceVersion
-	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
 	c.mu.Unlock()
 
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
@@ -360,7 +362,7 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef {
+	if aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.Descriptor.TranscriptRef != transcriptRef {
 		c.mu.Unlock()
 		return false, nil
 	}
@@ -369,15 +371,20 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 		c.mu.Unlock()
 		return retry, nil
 	}
-	if _, err := c.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateAttentionChanged,
-		DelegateID: delegateID,
-		AttentionChanged: &delegatestore.DelegateAttentionChanged{
-			NeedsAttention: false,
-		},
-	}); err != nil {
-		c.mu.Unlock()
-		return false, err
+	// The journal fold lowers the flag itself when a delegate closes, so the
+	// event is appended only while it is still raised; the wakes are dropped
+	// either way, or they would block retirement with nothing pending.
+	if aggregate.NeedsAttention {
+		if _, err := c.appendLocked(delegatestore.Event{
+			Kind:       delegatestore.EventDelegateAttentionChanged,
+			DelegateID: delegateID,
+			AttentionChanged: &delegatestore.DelegateAttentionChanged{
+				NeedsAttention: false,
+			},
+		}); err != nil {
+			c.mu.Unlock()
+			return false, err
+		}
 	}
 	c.replaceDelegateAttentionLocked(delegateID, nil)
 	c.evidenceVersion++
@@ -536,24 +543,6 @@ func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggrega
 		attentionIDs:  attentionIDs,
 		runtime:       runtime,
 	}
-}
-
-// forgetConsumedDelegateAttention drops the wake IDs a delegate generation
-// consumed because its settled requests presented them (finishAttentionTurn).
-// No attention reservation reports that consumption, and a consumed ID left
-// among the wakes would make a later Stop try to discard it, a conflicting
-// resolution that leaves the stop outstanding. The needs-attention flag is the
-// finalize tail's to lower, once nothing is pending.
-func (c *delegateTreeController) forgetConsumedDelegateAttention(delegateID string, attentionIDs []string) {
-	if c == nil || delegateID == "" || len(attentionIDs) == 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, attentionID := range attentionIDs {
-		c.forgetDelegateAttentionLocked(delegateID, attentionID)
-	}
-	c.evidenceVersion++
 }
 
 // delegateAttentionWakeIDsLocked returns a copy of delegateID's noted wake IDs.
