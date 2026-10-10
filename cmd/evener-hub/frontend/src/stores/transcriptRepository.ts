@@ -1123,6 +1123,12 @@ export class TranscriptRepository {
       const boundary = `final:${this.#boundary}:${response.snapshot.length}`;
       const finalWrite = { boundary, persisted: false };
       this.#retirementWrite = finalWrite;
+      console.error("RETIRE-DIAGNOSTIC", {
+        sealed: this.#sealed,
+        requestGeneration: response.requestGeneration,
+        issued: this.#model?.history?.issuedGeneration,
+        invalidated: this.#model?.history?.invalidatedAtGeneration,
+      });
       if (
         !this.acceptRead(response, {
           lifetime: this.#binding.lifetime,
@@ -1141,6 +1147,12 @@ export class TranscriptRepository {
       // Settlement can also mean a policy refusal dropped the work. Track this
       // read's commit, not the last-completing (possibly earlier) suffix.
       const persisted = !this.#cacheContinuityLost && finalWrite.persisted;
+      console.error("RETIRE-RESULT", {
+        persisted,
+        recoveryNeeded: this.#recoveryNeeded,
+        continuityLost: this.#cacheContinuityLost,
+        unresolvedEnd,
+      });
       return { kind: this.#recoveryNeeded || unresolvedEnd || !persisted ? "stale" : "saved" };
     })();
     const retirement: Promise<TranscriptRetirementOutcome> = Promise.race([
