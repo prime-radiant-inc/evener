@@ -1207,6 +1207,7 @@ it("ordinary empty source cold-opens and accepts later recorded input without a 
 
 it("ordinary reacquisition on a replacement client cannot reuse the outgoing retirement model", async () => {
   const storage = cache();
+  const commits = vi.spyOn(SessionEntryCache.prototype, "commitBatch");
   const oldClient = connect();
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
@@ -1255,6 +1256,12 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
       clientId: location.origin,
       incarnation: "replacement-incarnation",
     });
+    expect(
+      commits.mock.calls.map(([batch]) => ({
+        historyKey: batch.historyKey,
+        rows: batch.items.map((row) => row.transcriptKey),
+      })),
+    ).toContainEqual({ historyKey: freshKey, rows: ["replacement-client-baseline"] });
     expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual([
       "replacement-client-baseline",
     ]);
