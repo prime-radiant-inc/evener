@@ -19,12 +19,12 @@ import (
 func newMemoryMigrateScope(t *testing.T) (*execenv.LocalExecutionEnvironment, string) {
 	t.Helper()
 	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	env, err := execenv.NewConfinedFileEnvironment(root, "memory")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(env.Cleanup)
-	return env, filepath.Join(root, "memory", "personal")
+	return env, filepath.Join(root, "memory")
 }
 
 func TestSetMemoryFrontmatterField(t *testing.T) {
@@ -378,12 +378,12 @@ func TestMigrateMemoryScopeFindsTheRootIndexInAnyCase(t *testing.T) {
 func TestMigrateMemoryScopeWithNoScopeDirectory(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	env, err := execenv.NewConfinedFileEnvironment(root, "memory")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	if err := os.Remove(filepath.Join(root, "memory", "personal")); err != nil {
+	if err := os.Remove(filepath.Join(root, "memory")); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrateMemoryScope(env); err != nil {

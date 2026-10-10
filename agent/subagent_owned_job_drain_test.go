@@ -276,7 +276,12 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 	}
 }
 
-func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testing.T) {
+// Attention armed at drain return reaches the model in the drain's own
+// continuation turn, alongside the owned shell's completion, and that turn
+// consumes it: no post-drain drive turn shows the model the same item again
+// (#3725). The restored parent drive itself is pinned by
+// TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification.
+func TestSubagentAttentionArmedAtDrainReturnIsConsumedByTheContinuation(t *testing.T) {
 	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	var armOnce sync.Once
@@ -288,18 +293,12 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 		})
 	}
 	fixture.env.releaseJob()
-	select {
-	case <-fixture.freshHandled:
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("notification queued at drain return did not drive after terminal state publication")
-	}
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
 	requests := fixture.adapter.Requests()
-	if len(requests) != 4 {
-		t.Fatalf("provider requests = %d, want exactly one post-drain drive turn", len(requests))
+	if len(requests) < 3 || !requestsContain(requests[2:3], "restore-order-job") {
+		t.Fatalf("drain-return continuation requests = %d, want request 3 to present the attention armed at drain return", len(requests))
 	}
-	if !requestsContain(requests[3:], "restore-order-job") {
-		t.Fatalf("post-drain drive request did not contain the queued notification: %+v", requests[3:])
-	}
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
 }
 
 func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(t *testing.T) {
@@ -481,10 +480,13 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 	resumeSeen := len(requests) >= 3 && requestsContain(requests[2:3], "resume during drain return")
 	plainSeen := len(requests) >= 3 && requestsContain(requests[2:3], "plain send during drain return")
 	secondSeen := len(requests) >= 3 && requestsContain(requests[2:3], "second send during drain return")
-	if len(requests) != 4 || !resumeSeen || !plainSeen || !secondSeen {
+	if len(requests) != 3 || !resumeSeen || !plainSeen || !secondSeen {
 		t.Fatalf("drain-return stable steering requests = count %d resume %t plain %t second %t, want one continuation containing all accepted sends", len(requests), resumeSeen, plainSeen, secondSeen)
 	}
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "drain-return shell attention generation")
+	// The continuation consumed the owned shell's completion attention its
+	// requests carried, so no attention generation follows to show the
+	// model that completion again (#3725).
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
 }
 
 func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T) {
@@ -655,14 +657,17 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	}
 
 	releaseOnce.Do(func() { close(finalizationRelease) })
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "post-finalization attention generation")
+	// One attention generation presents both the owned shell's completion and
+	// the finalization-window attention, and consumes both: no further
+	// generation shows the model either again (#3725).
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "post-finalization attention generation")
 	select {
 	case <-fixture.runDone:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("delegate did not finish after callback restoration")
 	}
 	// The finalize tail re-arms any attention still owed before it closes
-	// done, so the re-armed drive's turn (the fresh notification above) can
+	// done, so the re-armed drive's turn (the attention generation above) can
 	// still be settling when done fires. A resume sent into that window is
 	// refused as target_busy — the send's finalization wait covers only the
 	// finalizing refusal, not a drive in flight — so wait for the child to
@@ -673,6 +678,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 		defer fixture.child.mu.Unlock()
 		return !fixture.child.startBlockedLocked()
 	})
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = nil
 	})
@@ -695,7 +701,6 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
 	enteredFatal := make(chan struct{})
 	releaseFatal := make(chan struct{})
-	stoppedShellHandled := make(chan struct{})
 	var releaseFatalOnce sync.Once
 	t.Cleanup(func() { releaseFatalOnce.Do(func() { close(releaseFatal) }) })
 	adapter := &fakeErrAdapter{
@@ -716,10 +721,6 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 			},
 			func(llm.Request) (llm.Response, error) {
 				return finalResponse("explicit resume succeeded"), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				close(stoppedShellHandled)
-				return finalResponse("stopped shell notification handled"), nil
 			},
 		},
 	}
@@ -837,7 +838,13 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("explicit child resume did not finish")
 	}
-	waitForOwnedJobDrainGeneration(t, child, stoppedShellHandled, "stopped-shell attention generation")
+	// The resume's request presents the stopped shell's notification and its
+	// turn consumes it, so no attention generation follows to show the model
+	// that notification again (#3725).
+	if requests := adapter.Requests(); len(requests) < 3 || !requestsContain(requests[2:3], shellJobID) {
+		t.Fatalf("explicit resume requests = %d, want request 3 to present the stopped shell's notification", len(requests))
+	}
+	requireChildAttentionSettled(t, child, adapter.Requests, 3)
 	child.mu.Lock()
 	resumedStatus := child.status
 	resumedGate := child.fatalRunGated
@@ -1180,6 +1187,34 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	case <-done:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatalf("%s did not finish", description)
+	}
+}
+
+// requireChildAttentionSettled waits for child to let every generation go,
+// then asserts its transcript holds attention, none of it still pending, and
+// that the provider saw exactly wantRequests requests. With nothing pending,
+// nothing can start another generation, so the count is final.
+func requireChildAttentionSettled(t *testing.T, child *subagent, requests func() []llm.Request, wantRequests int) {
+	t.Helper()
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child", func() bool {
+		child.mu.Lock()
+		defer child.mu.Unlock()
+		return !child.startBlockedLocked()
+	})
+	// A fresh read: the session's fold cursor belongs to attentionMu.
+	fold, err := readDelegateAttentionFold(child.sess.TranscriptPath(), child.sess.id)
+	if err != nil {
+		t.Fatalf("fold child attention: %v", err)
+	}
+	if len(fold.order) == 0 {
+		t.Fatal("child transcript holds no attention")
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("child attention still pending = %v, want every presented item consumed", pending)
+	}
+	if got := len(requests()); got != wantRequests {
+		t.Fatalf("provider requests = %d, want %d: no generation re-presents consumed attention", got, wantRequests)
 	}
 }
 

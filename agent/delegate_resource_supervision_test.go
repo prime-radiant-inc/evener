@@ -3941,22 +3941,29 @@ func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStab
 // attention: nothing on the root drives it.
 func warmStableDelegateUnservedRoot(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
 	t.Helper()
-	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "warm retained runtime", 60_000)
-	if outcome.result.Err != nil || outcome.commit == nil {
-		t.Fatalf("warm stable delegate = %#v", outcome)
-	}
-	plans, err := outcome.commit.Complete(true)
-	if err != nil {
-		t.Fatalf("acknowledge warm stable result: %v", err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("execute warm delivery acknowledgement: %v", err)
-	}
+	sendAndAcknowledge(t, root, fixture.delegateID, "warm retained runtime")
 	sub := root.subagents.get(fixture.childID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("warm stable delegate retained no child session %q", fixture.childID)
 	}
 	return sub
+}
+
+// sendAndAcknowledge sends message to the delegate as its parent and
+// acknowledges the result, as the parent's delegate_send does.
+func sendAndAcknowledge(t *testing.T, root *Session, delegateID, message string) {
+	t.Helper()
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), delegateID, message, 60_000)
+	if outcome.result.Err != nil || outcome.commit == nil {
+		t.Fatalf("send %q = %#v", message, outcome)
+	}
+	plans, err := outcome.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge %q: %v", message, err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("execute %q acknowledgement: %v", message, err)
+	}
 }
 
 func armStableSupervisionAttention(t *testing.T, sub *subagent, attentionID, content string) {

@@ -132,12 +132,12 @@ func BenchmarkMemoryIndexRender(b *testing.B) {
 		}
 		b.Run(name, func(b *testing.B) {
 			root := b.TempDir()
-			scope := filepath.Join(root, "memory", "personal")
+			scope := filepath.Join(root, "memory")
 			writeMemoryScalePages(b, scope, tc.pages)
 			if tc.git {
 				writeMemoryScaleGitDir(b, scope, memoryScaleGitFiles)
 			}
-			env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+			env, err := execenv.NewConfinedFileEnvironment(root, "memory")
 			if err != nil {
 				b.Fatal(err)
 			}

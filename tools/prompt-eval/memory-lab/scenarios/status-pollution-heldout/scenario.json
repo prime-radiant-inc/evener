@@ -17,7 +17,7 @@
         },
         {
           "name": "no commit SHAs in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
         },
         {
           "name": "index lines under 200 chars",
@@ -75,7 +75,7 @@
         },
         {
           "name": "no commit SHAs in durable memory",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/{memory,projects/*/memory}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
         },
         {
           "name": "index lines under 200 chars",

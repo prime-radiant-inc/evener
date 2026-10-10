@@ -20,7 +20,7 @@
         },
         {
           "name": "slog decision lives on a short clean page",
-          "run": "perl -e 'PAGE: for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/projects/*/*.md\")) { next if $f =~ /MEMORY\\.md$/ || -s $f > 1200; open F, $f; my $s = 0; while (<F>) { next PAGE if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/; $s = 1 if /slog/ } exit 0 if $s } exit 1'"
+          "run": "perl -e 'PAGE: for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/projects/*/memory/*.md\")) { next if $f =~ /MEMORY\\.md$/ || -s $f > 1200; open F, $f; my $s = 0; while (<F>) { next PAGE if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/; $s = 1 if /slog/ } exit 0 if $s } exit 1'"
         }
       ]
     }

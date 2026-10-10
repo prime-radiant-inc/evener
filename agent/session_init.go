@@ -1589,6 +1589,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
+	// Settle before the session start announces the state.
+	if !restoreCfg.deferRestoreSideEffects {
+		s.recomputeRestoredState(divergenceTurn)
+	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
@@ -1605,12 +1609,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// entry (e.g. a durable steering reminder) was ever appended.
 		TranscriptEntries: len(transcriptEntries),
 	}, promptSources)
-	// Recompute the settle decision now that history, goal restore, and (unless
-	// deferred for nested delegate reconstruction) notification/watch-send side
-	// effects are all in place: a transcript that ended on needs_response
-	// with no autonomy in flight resumes awaiting rather than idle.
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
 		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
 		// would expose them to another session's P3 residue sweep. This is a

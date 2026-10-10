@@ -70,8 +70,8 @@ func memoryPageState(t *testing.T, path string) string {
 func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	scope := filepath.Join(root, "memory", "personal")
-	memorySeedPage(t, root, "personal", "a-own.md", "A's own page")
+	scope := filepath.Join(root, "memory")
+	memorySeedPage(t, root, "memory", "a-own.md", "A's own page")
 	open := func() *Session {
 		return newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	}
@@ -195,7 +195,7 @@ func (c *postWritePausingClock) Now() time.Time {
 // them with the content. finish lets A's tool go on and waits for it.
 func memoryStampRace(t *testing.T, root, page, content, marker string) (finish func()) {
 	t.Helper()
-	clk := newPostWritePausingClock(filepath.Join(root, "memory", "personal", page), marker)
+	clk := newPostWritePausingClock(filepath.Join(root, "memory", page), marker)
 	a := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: clk}))
 	clk.armed.Store(true)
 	done := make(chan error, 1)
@@ -235,7 +235,7 @@ func memoryStampRace(t *testing.T, root, page, content, marker string) (finish f
 func TestMemoryStampDoesNotResurrectAPageDeletedAfterItWasRead(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := filepath.Join(root, "memory", "personal", "fact.md")
+	path := filepath.Join(root, "memory", "fact.md")
 	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	read, err := b.execMemoryRead(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md"})
@@ -257,7 +257,7 @@ func TestMemoryStampDoesNotResurrectAPageDeletedAfterItWasRead(t *testing.T) {
 func TestMemoryStampDoesNotUndoAnEditOfThePageItStamps(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := filepath.Join(root, "memory", "personal", "fact.md")
+	path := filepath.Join(root, "memory", "fact.md")
 	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	if _, err := b.execMemoryEdit(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "A-fact", "new_string": "B-corrected-fact"}); err != nil {

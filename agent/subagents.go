@@ -2026,7 +2026,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	// Remaining attention is re-armed only once the finished generation is
 	// announced and released: a successor generation must not start ahead
-	// of its predecessor's result.
+	// of its predecessor's result. With none remaining, the generation may
+	// have consumed attention it presented (finishAttentionTurn), which no
+	// attention reservation reported, so it lowers the controller's lingering
+	// needs-attention projection itself instead of leaving it for a parent
+	// drive that may never come.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
@@ -2034,6 +2038,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
 			}
+		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {

@@ -75,9 +75,9 @@ func TestMemoryPreservationHistoryCleanup(t *testing.T) {
 	target, survivor := hubtest.SessionID(t), hubtest.SessionID(t)
 	writeSession(t, stateDir, target, project.CanonicalPath)
 	writeSession(t, stateDir, survivor, project.CanonicalPath)
-	// Personal and project memory are pages. Session memory is a directory no
-	// session reads any more; its old index must survive untouched.
-	paths := []string{filepath.Join(root, "memory", "personal", "fact.md"), filepath.Join(root, "memory", "projects", project.ID, "fact.md"), filepath.Join(root, "memory", "sessions", target, "MEMORY.md")}
+	// Project memory lives in the project's state directory, beside the
+	// sessions that project deletion removes; it must survive that deletion.
+	paths := []string{filepath.Join(root, "memory", "fact.md"), filepath.Join(stateDir, "memory", "fact.md")}
 	for _, path := range paths {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
