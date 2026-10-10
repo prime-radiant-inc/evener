@@ -56,14 +56,18 @@ func delegateMemoryProjectID(saved, parent string) string {
 
 // homeMemoryProjectID binds a session saved before project memory the way
 // launch binds a new one, resolving its own home directory rather than
-// wherever the resume was invoked. A home that no longer resolves leaves the
-// session unbound.
+// wherever the resume was invoked. A home that is relative (it meant something
+// only to the process that saved it) or no longer resolves leaves the session
+// unbound.
 func homeMemoryProjectID(env execenv.ExecutionEnvironment, meta schema.SessionMeta) string {
 	home := meta.HomeDir()
+	if !filepath.IsAbs(home) {
+		return ""
+	}
 	// A local environment confines command working directories to its own
 	// root, which is the resume directory, so the resolver's git fallback runs
 	// from a clone rooted at home. The clone's probe scratch goes with it.
-	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok && home != "" {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		rooted := local.WithWorkingDirectory(home)
 		defer func() { _ = rooted.DisposeSessionScratch() }()
 		env = rooted

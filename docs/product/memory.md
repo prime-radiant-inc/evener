@@ -29,13 +29,14 @@ directories, and they can be deleted by hand.
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
 checkout's identity. The binding survives cwd changes, isolated delegates,
-resume and compaction. A session saved without a binding (one created before
-project memory, or whose launch could not resolve its project) binds on resume
-the same way, from its own home: the root it left for a worktree, else its
-working directory, never the directory the resume ran from. The restore
+resume and compaction. A root session saved without a binding (one created
+before project memory, or whose launch could not resolve its project) binds on
+resume the same way, from its own absolute home: the root it left for a
+worktree, else its working directory, never the directory the resume ran from. The restore
 persists that binding, and a saved binding is never replaced. Delegates take
 their parent's binding; a restored delegate saved without one takes its
-parent's, and one saved with a different binding gets none.
+parent's, one saved with a different binding gets none, and one resumed on its
+own stays unbound.
 Project-resolution failure leaves personal memory and ordinary work available
 without guessing another project. Unbound library sessions have no memory
 capability or home fallback. Tests supply fixture roots.

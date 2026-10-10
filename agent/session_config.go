@@ -50,8 +50,8 @@ type SessionConfig struct {
 
 	// MemoryStateRoot is the owning runtime host's binding, never persisted.
 	// An empty state root leaves library sessions without memory access.
-	// MemoryProjectID is bound at launch and persisted. A session saved without
-	// one adopts its own home's binding on resume, never the resume cwd's.
+	// MemoryProjectID is bound at launch and persisted. A root session saved
+	// without one adopts its own home's binding on resume, never the resume cwd's.
 	MemoryStateRoot string `json:"-"`
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`

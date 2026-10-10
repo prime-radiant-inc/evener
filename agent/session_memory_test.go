@@ -1709,11 +1709,12 @@ func TestMemoryResumeBindingMetadataReload(t *testing.T) {
 
 // Catches a session saved without a project binding (before project memory
 // shipped) staying personal-only after resume, binding the resume command's
-// cwd instead of its own home, replacing a saved binding, or binding while
-// memory is off.
+// cwd instead of its own home, replacing a saved binding, binding while
+// memory is off, binding a relative home against the process cwd, or a
+// directly resumed delegate binding itself outside its parent's ceiling.
 func TestMemoryResumeAdoptsProjectBinding(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"unbound", "saved-binding", "disabled", "disabled-on-resume", "no-state-root"} {
+	for _, mode := range []string{"unbound", "saved-binding", "disabled", "disabled-on-resume", "no-state-root", "relative-home", "delegate"} {
 		t.Run(mode, func(t *testing.T) {
 			home, project := memoryGitFixture(t)
 			elsewhere, _ := memoryGitFixture(t)
@@ -1727,6 +1728,17 @@ func TestMemoryResumeAdoptsProjectBinding(t *testing.T) {
 			s.Close()
 			meta, err := schema.LoadSessionMeta(history, s.id)
 			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "relative-home":
+				// A relative path names no home outside the process that wrote it.
+				meta.EnvInfo.WorkingDir = "."
+			case "delegate":
+				meta.IsSubagent = true
+			}
+			// The restore reloads metadata from disk once it owns the session.
+			if err := schema.SaveSessionMeta(history, meta); err != nil {
 				t.Fatal(err)
 			}
 			root := host

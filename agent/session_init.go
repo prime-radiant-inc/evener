@@ -908,7 +908,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
 	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil {
 		cfg.MemoryProjectID = delegateMemoryProjectID(cfg.MemoryProjectID, *ceiling)
-	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory {
+	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {
+		// A delegate's binding comes from its parent, so only a root session
+		// binds from its home; a delegate resumed on its own stays unbound.
 		cfg.MemoryProjectID = homeMemoryProjectID(env, meta)
 	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
