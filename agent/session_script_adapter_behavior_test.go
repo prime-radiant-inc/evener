@@ -13,14 +13,16 @@ func textResponse(text string) llm.Response {
 	return llm.Response{Message: llm.Assistant(text)}
 }
 
+// scriptedText reports with Errorf, not Fatalf, because tests also call it
+// from goroutines of their own.
 func scriptedText(t *testing.T, a *sessionScriptAdapter, sessionID string) string {
 	t.Helper()
 	resp, err := a.Complete(context.Background(), llm.Request{SessionID: sessionID, Model: "m"})
 	if err != nil {
-		t.Fatalf("Complete(%s): %v", sessionID, err)
+		t.Errorf("Complete(%s): %v", sessionID, err)
 	}
 	if resp.Provider != "openai" || resp.Model != "m" {
-		t.Fatalf("Complete(%s) = provider %q model %q, want them filled in", sessionID, resp.Provider, resp.Model)
+		t.Errorf("Complete(%s) = provider %q model %q, want them filled in", sessionID, resp.Provider, resp.Model)
 	}
 	return resp.Message.Text()
 }
@@ -45,8 +47,7 @@ func TestSessionScriptAdapterKeepsAScriptPerSession(t *testing.T) {
 			t.Fatalf("%s call = %q, want %q", call.session, got, call.want)
 		}
 	}
-	a.otherwise = nil
-	if got := scriptedText(t, a, "parent"); got != "done" {
+	if got := scriptedText(t, newSessionScriptAdapter("openai"), "parent"); got != "done" {
 		t.Fatalf("call with nothing scripted = %q, want done", got)
 	}
 }
@@ -64,10 +65,7 @@ func TestSessionScriptAdapterHoldsNoLockDuringAStep(t *testing.T) {
 		}).
 		script("parent", answerStep(textResponse("parent")))
 	childDone := make(chan string, 1)
-	go func() {
-		resp, _ := a.Complete(context.Background(), llm.Request{SessionID: "child"})
-		childDone <- resp.Message.Text()
-	}()
+	go func() { childDone <- scriptedText(t, a, "child") }()
 	<-entered
 	parentDone := make(chan string, 1)
 	go func() { parentDone <- scriptedText(t, a, "parent") }()

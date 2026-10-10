@@ -16,7 +16,8 @@ type sessionStep func(ctx context.Context, req llm.Request) (llm.Response, error
 // its parent's next one. fakeAdapter keeps one script shared by every session
 // and holds its lock while a step runs; use this adapter when sessions must
 // move independently. A session with no script left (or none at all) is
-// answered by otherwise, or a plain "done" when that is nil.
+// answered by otherwise, which says a plain "done" unless the test sets its
+// own before the first call.
 type sessionScriptAdapter struct {
 	name      string
 	otherwise sessionStep
@@ -26,7 +27,11 @@ type sessionScriptAdapter struct {
 }
 
 func newSessionScriptAdapter(name string) *sessionScriptAdapter {
-	return &sessionScriptAdapter{name: name, scripts: map[string][]sessionStep{}}
+	return &sessionScriptAdapter{
+		name:      name,
+		otherwise: answerStep(llm.Response{Message: llm.Assistant("done")}),
+		scripts:   map[string][]sessionStep{},
+	}
 }
 
 // script appends steps to sessionID's script.
@@ -50,12 +55,9 @@ func (a *sessionScriptAdapter) Complete(ctx context.Context, req llm.Request) (l
 		step, a.scripts[req.SessionID] = steps[0], steps[1:]
 	}
 	a.mu.Unlock()
-	resp := llm.Response{Message: llm.Assistant("done")}
-	if step != nil {
-		var err error
-		if resp, err = step(ctx, req); err != nil {
-			return llm.Response{}, err
-		}
+	resp, err := step(ctx, req)
+	if err != nil {
+		return llm.Response{}, err
 	}
 	resp.Provider = a.name
 	if resp.Model == "" {
