@@ -1060,7 +1060,7 @@ it("ordinary invalidating history input automatically reads a fresh baseline bef
       new Promise((resolve) => {
         recoveryStarted = true;
         finish = () => {
-          const fresh = response("local:a", [turn("fresh-baseline", 3)]);
+          const fresh = response("local:a", [turn("fresh-baseline", 2), turn("pending-new-identity", 3)]);
           fresh.epoch = 2;
           fresh.snapshot = { incarnation: "inc-b", length: 4 };
           resolve({ ...fresh, requestGeneration: params.requestGeneration });
@@ -1076,7 +1076,7 @@ it("ordinary invalidating history input automatically reads a fresh baseline bef
         bootGeneration: "1",
         epoch: 2,
         snapshot: { incarnation: "inc-b", length: 4 },
-        items: turn("invalidating-poison", 3).items,
+        items: turn("pending-new-identity", 3).items,
       },
     });
     // Observe the real wake before any settlement helper can drive parked work.
@@ -1086,12 +1086,16 @@ it("ordinary invalidating history input automatically reads a fresh baseline bef
     expect((await storage.getLatest(oldKey, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
     const freshKey = entryHistoryKey({ ...identity, clientId: location.origin, incarnation: "inc-b" });
     expect(await storage.getLatest(freshKey, 10)).toEqual([]);
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("pending-new-identity");
     if (!finish) throw new Error("recovery read was not started");
     finish();
     await settleEntryTranscriptForTests("local:a");
-    expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual(["fresh-baseline"]);
+    expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual([
+      "fresh-baseline",
+      "pending-new-identity",
+    ]);
     expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeUndefined();
-    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("invalidating-poison");
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).toContain("pending-new-identity");
   } finally {
     finish?.();
   }
