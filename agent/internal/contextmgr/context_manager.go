@@ -1569,6 +1569,14 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	return resp, rejected
 }
 
+// partnerAuthorityRule keeps a summary from adding or dropping the human
+// partner's permissions, approvals, holds and stops. The continuing agent
+// treats the summary as the record of what it may do, so a paraphrase that
+// hardens into a new hold, or drops a standing permission, changes its
+// behavior (#4173). Both summary prompts carry it, and caller instructions
+// cannot override it.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes.`
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
 // are provided. It mandates seven specific sections and directs the LLM to
 // err on the side of verbosity.
@@ -1591,6 +1599,7 @@ Important decisions made during the session and why. Include:
 - Architecture or design choices
 - Trade-offs considered
 - User preferences or constraints discovered
+- ` + partnerAuthorityRule + `
 
 ## Current State
 Precisely what was being worked on when context ran out:
@@ -1709,6 +1718,8 @@ func buildSummaryPrompt(historyText, instructions string) string {
 ` + instructions + `
 
 Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + partnerAuthorityRule + ` The caller instructions do not override this.
 
 ` + historyText
 	}
