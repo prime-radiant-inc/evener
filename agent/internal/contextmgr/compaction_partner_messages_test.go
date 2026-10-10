@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -79,7 +78,18 @@ func compactionKinds(history []schema.Turn) []schema.TurnKind {
 	return kinds
 }
 
-func noopEmitFn(events.EventKind, events.EventData) {}
+// runCheckpointPred runs the checkpoint-pred strategy with every layer up to
+// the predictive checkpoint forced, summarizing at summarizeThreshold.
+func runCheckpointPred(t *testing.T, cm *Manager, history *[]schema.Turn, summarizeThreshold float64) {
+	t.Helper()
+	cm.ObservationMaskThreshold = 0.0001
+	cm.ThinkingClearThreshold = 0.0001
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = summarizeThreshold
+	if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), history, 0, noopEmit); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+}
 
 // A summary that drops everything still leaves the human partner's own
 // messages in front of the model, on every path where the summary replaces
@@ -92,22 +102,16 @@ func TestCompaction_SummaryKeepsPartnerMessagesVerbatim(t *testing.T) {
 		{"auto", func(cm *Manager, history *[]schema.Turn) {
 			cm.CheckpointThreshold = 0.0001
 			cm.SummarizeThreshold = 0.0001
-			cm.MaybeCompact(context.Background(), history, 0, noopEmitFn)
+			cm.MaybeCompact(context.Background(), history, 0, noopEmit)
 		}},
 		{"forced", func(cm *Manager, history *[]schema.Turn) {
-			cm.ForceCompact(context.Background(), history, "", noopEmitFn)
+			cm.ForceCompact(context.Background(), history, "", noopEmit)
 		}},
 		{"steered", func(cm *Manager, history *[]schema.Turn) {
-			cm.ForceCompact(context.Background(), history, "Keep only the docs plan.", noopEmitFn)
+			cm.ForceCompact(context.Background(), history, "Keep only the docs plan.", noopEmit)
 		}},
 		{"checkpoint-pred summarize", func(cm *Manager, history *[]schema.Turn) {
-			cm.ObservationMaskThreshold = 0.0001
-			cm.ThinkingClearThreshold = 0.0001
-			cm.CheckpointThreshold = 0.0001
-			cm.SummarizeThreshold = 0.0001
-			if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), history, 0, noopEmitFn); err != nil {
-				t.Fatalf("ManageContext: %v", err)
-			}
+			runCheckpointPred(t, cm, history, 0.0001)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,14 +134,8 @@ func TestCompaction_SummaryKeepsPartnerMessagesVerbatim(t *testing.T) {
 // carries the human partner's messages verbatim.
 func TestCheckpointPred_PredictiveCheckpointKeepsPartnerMessagesVerbatim(t *testing.T) {
 	cm := partnerTestManager("Predicted checkpoint.")
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
-	cm.CheckpointThreshold = 0.0001
-	cm.SummarizeThreshold = 2 // never summarize: the predictive checkpoint stands
 	history := partnerHoldHistory()
-	if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), &history, 0, noopEmitFn); err != nil {
-		t.Fatalf("ManageContext: %v", err)
-	}
+	runCheckpointPred(t, cm, &history, 2) // never summarize: the predictive checkpoint stands
 	requirePartnerHoldInContext(t, history, schema.TurnCheckpoint)
 }
 

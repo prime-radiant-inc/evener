@@ -1041,13 +1041,6 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 
 // --- Deterministic checkpoint (Layer 3) ---
 
-// checkpoint replaces old history with a structured state snapshot.
-// Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
-//
-// The checkpoint is a deterministic extraction — no LLM call. It captures user
-// messages verbatim, agent responses, file/tool metadata, task list, and skills.
-// User messages and agent responses are stored as an interleaved Markdown
-// conversation for readable round-tripping across repeated compactions.
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
 // checkpoint either feeds into the LLM summarizer (which replaces it) or — if
 // the summarizer is unavailable — becomes the sole history the main model sees.
@@ -1057,6 +1050,13 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // compaction turn carries share the same cap.
 const maxCheckpointChars = 60_000
 
+// checkpoint replaces old history with a structured state snapshot.
+// Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
+//
+// The checkpoint is a deterministic extraction — no LLM call. It captures user
+// messages verbatim, agent responses, file/tool metadata, task list, and skills.
+// User messages and agent responses are stored as an interleaved Markdown
+// conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history
@@ -1405,13 +1405,14 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 // shedding can leave behind; it is trimmed by its exact rendered length so the
 // result still honors its size cap instead of keeping an oversized task or
 // dropping it.
+//
+// conversation must already be cleaned (cleanCheckpointConversation), so the
+// pin index and the rendered slice refer to the same entries;
+// renderCheckpointConversation would otherwise drop whitespace-only entries
+// after the pin was chosen, letting the pin land on a vanishing one.
 func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
-	// Clean once so the pin index and the rendered slice refer to the same
-	// entries; renderCheckpointConversation would otherwise drop whitespace-only
-	// entries after the pin was chosen, letting the pin land on a vanishing one.
 	// With no user entry (-1) the pin is inactive and shedding keeps its
 	// oldest-first order.
-	conversation = cleanCheckpointConversation(conversation)
 	pinnedOriginal := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role == "user" })
 	rendered := renderCheckpointConversation(conversation)
 	for len(rendered) > budget && len(conversation) > 1 {
