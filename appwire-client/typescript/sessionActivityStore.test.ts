@@ -1718,6 +1718,10 @@ test.each(["delegates", "jobs", "watches"] as const)(
         "epoch-2",
       ),
     );
+    // The response that revealed the replacement epoch queued one reconciliation
+    // read for delegates, and no other collection crosses here. That read
+    // re-walks the collection on the paced timer.
+    await vi.advanceTimersByTimeAsync(100);
     await activityState(store, () => !store.getSnapshot()[resource].loading);
     expect(store.getSnapshot()[resource].rows).toHaveLength(59);
     expect(store.getSnapshot()[resource].rows).toEqual(
@@ -1726,7 +1730,11 @@ test.each(["delegates", "jobs", "watches"] as const)(
       ],
     );
     expect(store.getSnapshot()[resource].hasMore).toBe(true);
-    expect(cursors).toEqual([undefined, "old-second", undefined, "fresh-second"]);
+    expect(cursors).toEqual(
+      resource === "delegates"
+        ? [undefined, "old-second", undefined, "fresh-second", undefined, "fresh-second"]
+        : [undefined, "old-second", undefined, "fresh-second"],
+    );
   },
 );
 
@@ -2877,7 +2885,10 @@ test("extending the epoch comparison to root reads neither loops nor misses the 
     delegates: [delegateRow({ projectionRevision: 1, status: "failed" })],
   }));
   await store.refresh("delegates");
-  expect(callsTo(client, "evener/thread/delegates/list")).toBe(2);
+  // Nothing announced the replacement, so the read that revealed it queues one
+  // reconciliation read under the epoch it just adopted. That read sees the
+  // same epoch and stops: the demand is bounded by the change, not a loop.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(3);
   expect(store.getSnapshot().delegates.context?.epoch).toBe("epoch-2");
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
 });
@@ -3004,7 +3015,10 @@ test("an epoch replacement after loading multiple pages never seeds the new orde
   epoch = "epoch-2";
   const refreshed = store.refresh("delegates");
   await activityState(store, () => store.getSnapshot().delegates.context?.epoch === "epoch-2");
-  // The walk's continuation runs on the paced timer.
+  // The walk's continuation runs on the paced timer, and the response that
+  // revealed the replacement queued one reconciliation read: it re-walks the
+  // collection, so it steps on the paced timer too.
+  await vi.advanceTimersByTimeAsync(100);
   await vi.advanceTimersByTimeAsync(100);
   await refreshed;
   expect(
@@ -3745,6 +3759,85 @@ test("a resync re-establishes the push gate, so a delegate settling across it st
   expect(row).toMatchObject({ status: "completed", reportPreview: "settled" });
 });
 
+test("a settlement that races the read revealing the replacement epoch is recovered", async () => {
+  const client = pushClient();
+  const reveals = deferred<SessionDelegatesResponse>();
+  let calls = 0;
+  client.on("evener/thread/delegates/list", ({ scope }) => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        context: pushContext(),
+        scope: scope ?? "session",
+        page: { complete: true, issues: [] },
+        delegates: [delegateRow({ status: "running" })],
+      };
+    }
+    if (calls === 2) return reveals.promise;
+    // The reconciliation read runs after the settle, so it serves the report.
+    return {
+      context: pushContext({ epoch: "epoch-2" }),
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [
+        delegateRow({
+          status: "completed",
+          projectionRevision: 2,
+          reportPreview: "settled",
+          reportPreviewTruncated: false,
+        }),
+      ],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("running");
+  // The refresh is the first response to see the replacement, and the delegate
+  // settles before it returns.
+  const refreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 2, status: "completed", reportPreview: "settled" })),
+  );
+  reveals.resolve({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await refreshed;
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row).toMatchObject({ status: "completed", reportPreview: "settled" });
+});
+
+test("a delegates-only observer keeps reading when its ancestor's runtime is released", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  // The supported API: a view that observes delegates without starting the
+  // summary, so its own collection response is what carries the context.
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().context?.availability).toBe("live");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  // The ancestor releases its runtime: the invalidation arrives with no frame,
+  // and nothing else this store observes would reveal the retained context.
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  activityChanged(client, ["delegates"]);
+  await vi.advanceTimersByTimeAsync(0);
+  // Without the read the invalidation would have skipped, nothing this
+  // delegates-only store observes could reveal the retained context.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeGreaterThan(1);
+  await activityState(store, () => store.getSnapshot().context?.availability === "retained");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
@@ -3808,7 +3901,7 @@ test("a context without the capability keeps reading delegates on the invalidati
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
 });
 
-test("an unknown delegate triggers one read, and a delegates invalidation alone triggers none", async () => {
+test("an unknown delegate triggers one read, and a delegates-only store reads on its invalidation", async () => {
   const { client, store } = await pushOwner();
   const before = callsTo(client, "evener/thread/delegates/list");
   client.emitNotification(pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 2 })));
@@ -3820,8 +3913,12 @@ test("an unknown delegate triggers one read, and a delegates invalidation alone 
   );
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
   activityChanged(client, ["delegates"]);
+  // This store observes no other collection, so no other response could reveal
+  // that its ancestor released the runtime: the invalidation has to read.
+  await vi.advanceTimersByTimeAsync(0);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 2);
   await store.refresh("summary");
-  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 1);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before + 2);
 });
 
 test("a count-moving delegate change still refreshes the summary", async () => {

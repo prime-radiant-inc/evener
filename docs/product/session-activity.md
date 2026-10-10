@@ -308,12 +308,17 @@ live context confirms the source again, so a frame racing their re-reads is
 recovered by the invalidation read rather than merged and then cleared. A frame
 that arrives while a sibling announces the replacement merges
 under the announced epoch, and only a row a response served seeds the new epoch's
-ordering. A frame the loaded rows cannot be proved to own waits for the read
-whose row set is final, which places it on the row the id names, drops it when
+ordering. A response that first reveals a replacement nobody announced queues one
+fresh read, because the clear retires the frames it had merged and that response
+alone cannot recount them. A frame the loaded rows cannot be proved to own waits
+for the read whose row set is final, which places it on the row the id names,
+drops it when
 the id turns out to name two, and leaves it waiting while that read does not
 serve it. A source that
-does not advertise the capability, or a retained context
-whose released runtime receives invalidations but no frames, keeps the
+does not advertise the capability, a retained context
+whose released runtime receives invalidations but no frames, or a store that
+observes no collection but delegates (where no other read's response could
+reveal either change) keeps the
 invalidation read. Delegate membership is append-only within a source epoch;
 jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these

@@ -473,6 +473,10 @@ export class SessionActivityStore {
         if (crossing && resource === "delegates" && read.announcedEpoch !== epoch) {
           this.clearDelegates();
           read.announcedEpoch = undefined;
+          // Nothing announced this replacement, so no forced read is already on
+          // its way, and the clear just retired every frame merged under the
+          // retired epoch. Only a fresh read can recount them.
+          read.rootQueued = true;
         }
         read.epoch = epoch;
         // A page cannot cross epochs: its rows extend a retired walk. A root read
@@ -1123,13 +1127,25 @@ export class SessionActivityStore {
     // The no-read merge covers delegate field changes; summary, jobs and
     // watches refresh as today. A resync still refreshes every observed
     // resource, delegates included.
-    const skipDelegates = notification.method === "evener/thread/activity/changed" && this.pushEligible;
+    const skipDelegates =
+      notification.method === "evener/thread/activity/changed" && this.pushEligible && this.otherResourceObserved();
     for (const resource of changed) {
       if (resource === "delegates" && skipDelegates) continue;
       if (this.reads[resource].observers > 0 || this.reads[resource].oneShot) {
         void this.request(resource, "root", notification.method === "evener/thread/resync");
       }
     }
+  }
+  /** Whether a resource other than delegates is being read, so an accepted
+   * response can carry a capability or availability change back to this store.
+   * Suppressing the invalidation-driven delegate read assumes one can: a store
+   * that only observes delegates would otherwise never learn that its ancestor's
+   * runtime was released, since a released runtime sends invalidations and no
+   * frames. */
+  private otherResourceObserved(): boolean {
+    return resources.some(
+      (resource) => resource !== "delegates" && (this.reads[resource].observers > 0 || this.reads[resource].oneShot),
+    );
   }
   private releaseIdle(): void {
     if (
