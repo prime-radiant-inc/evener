@@ -10,7 +10,49 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB, type SessionCacheOpenDiagnostic } from "./sessionCacheIndexedDB";
+import {
+  ENTRY_COVERAGE_STORE,
+  ENTRY_ITEM_STORE,
+  ENTRY_META_STORE,
+  ENTRY_TURN_STORE,
+  upgradeSessionCache,
+} from "./sessionCacheSchema";
 import { bumpCacheEpochRow, holdIndexedDBEvent, neverSettlingFactory } from "./testing/stalledIndexedDB";
+
+it("production schema advances once and fences the old tab", async () => {
+  const factory = new IDBFactory();
+  const oldTab = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open("evener-session-cache", 2);
+    request.onupgradeneeded = () => upgradeSessionCache(request.result);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const changes: Array<number | null> = [];
+  oldTab.onversionchange = (event) => {
+    changes.push(event.newVersion);
+    oldTab.close();
+  };
+  const adapter = new SessionCacheIndexedDB({ indexedDB: factory });
+  try {
+    await adapter.get("local:missing", 1_000);
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = factory.open("evener-session-cache");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    expect(database.version).toBe(3);
+    expect(changes).toEqual([3]);
+    for (const store of [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE]) {
+      expect(database.objectStoreNames.contains(store)).toBe(true);
+    }
+    database.close();
+    await adapter.get("local:missing", 1_000);
+    expect(changes).toEqual([3]);
+  } finally {
+    oldTab.close();
+    adapter.close();
+  }
+});
 
 // These fixtures use millisecond 1_000 as "now", including opens whose expiry
 // sweep has no injected timestamp. Keep the real event-delivery timers.
