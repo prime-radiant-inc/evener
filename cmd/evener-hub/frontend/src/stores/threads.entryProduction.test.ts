@@ -1166,9 +1166,23 @@ it("ordinary failed source refresh preserves only the prior committed rows until
   await settleEntryTranscriptForTests("local:a");
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
   client.on("thread/read", () => {
-    throw new Error("source unavailable");
+    throw new WireError("source unavailable", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
   });
   await expect(threadsStore.getState().refreshThread("local:a")).rejects.toThrow("source unavailable");
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  expect(threadsStore.getState().threads.get("local:a")?.history?.failed).toBeDefined();
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("while-history-failed", 2).items,
+    },
+  });
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
   client.on("thread/read", (params) => ({
