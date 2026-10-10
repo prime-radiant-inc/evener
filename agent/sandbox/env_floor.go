@@ -76,13 +76,38 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 			out = append(out,
 				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
 				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
-				envvars.GoPath.Assignment(filepath.Join(sessionScratch, goPathDirName)),
+				envvars.GoPath.Assignment(sessionGoPath(env, sessionScratch)),
 				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
 				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
 			)
 		}
 	}
 	return out
+}
+
+// sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
+// first, because Go writes the checksum database and `go install` output only to
+// the first entry, then the ambient GOPATH (Go's $HOME/go default when unset) so
+// GOPATH-mode builds still find the packages already there, read-only.
+func sessionGoPath(env []string, sessionScratch string) string {
+	entries := []string{filepath.Join(sessionScratch, goPathDirName)}
+	ambient, home := "", ""
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		switch name {
+		case envvars.GoPath.Name:
+			ambient = val
+		case "HOME":
+			home = val
+		}
+	}
+	switch {
+	case ambient != "":
+		entries = append(entries, ambient)
+	case home != "":
+		entries = append(entries, filepath.Join(home, "go"))
+	}
+	return strings.Join(entries, string(filepath.ListSeparator))
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
@@ -189,7 +214,8 @@ func floorDrops(name string) bool {
 // Verified 2026-08-06 (see env_floor_test.go).
 //
 // GOPATH is included because Go writes the checksum database's tree heads to
-// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so it must be writable too.
+// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so its first entry must be
+// writable too (see sessionGoPath).
 // GOMODCACHE stays set explicitly: an environment value overrides one written to
 // the user's go env file with `go env -w`, which deriving it from GOPATH would not.
 //

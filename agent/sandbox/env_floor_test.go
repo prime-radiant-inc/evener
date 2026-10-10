@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -80,16 +81,29 @@ func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 
 // Go keeps the checksum database's tree heads in $GOPATH/pkg/sumdb, a path
 // GOMODCACHE does not move, and a cold download needs to write there (#4177).
-// GOPATH moves into the session scratch with the other caches, whatever the
-// ambient value was.
-func TestEnvFloorRedirectsGoPathWhenSessionPrivate(t *testing.T) {
+// Go writes only to the first GOPATH entry, so the session scratch goes first and
+// the ambient GOPATH (Go's $HOME/go default when unset) stays after it for
+// GOPATH-mode source lookups.
+func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
-	in := []string{"GOPATH=/home/u/go"}
-	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
-
-	// envValue reads the first GOPATH, so a kept ambient value fails here too.
-	if v, ok := envValue(out, "GOPATH"); !ok || !strings.HasPrefix(v, tmp+"/") {
-		t.Errorf("GOPATH must redirect into the session scratch, got %q (ok=%v)", v, ok)
+	scratchGoPath := tmp + "/gopath"
+	sep := string(filepath.ListSeparator)
+	for _, tc := range []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"ambient", []string{"GOPATH=/custom/a" + sep + "/custom/b", "HOME=/home/u"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
+		{"default", []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
+		{"no home", nil, scratchGoPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ApplyEnvFloor(tc.in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
+			// envValue reads the first GOPATH, so a kept ambient entry fails here too.
+			if v, _ := envValue(out, "GOPATH"); v != tc.want {
+				t.Errorf("GOPATH = %q, want %q", v, tc.want)
+			}
+		})
 	}
 }
 

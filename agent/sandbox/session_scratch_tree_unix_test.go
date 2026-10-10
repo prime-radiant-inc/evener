@@ -351,6 +351,11 @@ func TestScratchTreeOfNamesOnlyANamedSessionsTree(t *testing.T) {
 	if got := scratchTreeOf(disposable.Dir); got != "" {
 		t.Errorf("a disposable scratch under %q must belong to no tree, got %q", lookalike, got)
 	}
+	// Named drives retention: a disposable scratch is removed at its session's
+	// end, whatever its base is called.
+	if disposable.Named() {
+		t.Errorf("a disposable scratch under %q must not report Named", lookalike)
+	}
 
 	named, err := OpenSessionScratch(base, t.TempDir(), "ROOT1", "CHILD1")
 	if err != nil {

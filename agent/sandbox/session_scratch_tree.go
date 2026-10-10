@@ -69,7 +69,7 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
 func (s *SessionScratch) Named() bool {
-	return s != nil && isSessionScratchTree(s.base)
+	return s != nil && scratchTreeOf(s.Dir) != ""
 }
 
 // isSessionScratchTree reports whether dir is named as a root session's scratch

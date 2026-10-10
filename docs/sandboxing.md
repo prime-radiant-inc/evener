@@ -404,10 +404,12 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
   redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
   granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` moves
-  too: Go records the checksum database's tree heads under `$GOPATH/pkg/sumdb`
-  whatever `GOMODCACHE` says, so a cold module or toolchain download needs a
-  writable GOPATH to verify against.
+  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
+  session scratch as its first entry too: Go records the checksum database's tree
+  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
+  module or toolchain download needs it writable. The ambient GOPATH (or Go's
+  `$HOME/go` default) stays after it, so GOPATH-mode builds still find the packages
+  already there.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
