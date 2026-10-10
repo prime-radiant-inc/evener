@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -286,6 +287,100 @@ func TestEvenerContentRootsHonourAUserMaskOnTheRelocatedConfigRoot(t *testing.T)
 	}
 }
 
+// evenerContentFixture is a home whose ~/.config/evener holds a plugin skill,
+// that plugin's hook script, a user skill and a stand-in credential file, for
+// the backend tests that check the carve-out with a real sandbox.
+type evenerContentFixture struct {
+	config, store, skills, plugin     string
+	template, hook, userSkill, secret string
+	metadata, gitConfig               string
+}
+
+// contentRoots are the roots the probe would report for this home.
+func (f evenerContentFixture) contentRoots() []string {
+	return []string{filepath.Join(f.store, "cache"), filepath.Join(f.store, "bundled"), f.skills}
+}
+
+func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
+	t.Helper()
+	f := evenerContentFixture{config: filepath.Join(home, ".config", "evener")}
+	f.store = filepath.Join(f.config, "plugins")
+	f.skills = filepath.Join(f.config, "skills")
+	f.plugin = filepath.Join(f.store, "cache", "mkt", "plugin", "abc")
+	f.template = filepath.Join(f.plugin, "skills", "review", "template.md")
+	f.hook = filepath.Join(f.plugin, "hooks", "start.sh")
+	f.userSkill = filepath.Join(f.skills, "mine", "SKILL.md")
+	f.secret = filepath.Join(f.config, "hub.toml")
+	f.metadata = filepath.Join(f.store, "known_marketplaces.json")
+	f.gitConfig = filepath.Join(f.plugin, ".git", "config")
+	for path, body := range map[string]string{f.gitConfig: "[remote \"origin\"]\n\turl = https://user:token@example.com/p.git\n", f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n", f.metadata: `{"mkt":{"source":{"url":"https://user:token@example.com/m.git"}}}`} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+// writeSymlinkedEvenerContentFixture is writeEvenerContentFixture with
+// ~/.config/evener a symlink to a directory elsewhere (a dotfile-managed
+// config). The fixture's paths are the literal spellings under home, the ones
+// skill discovery advertises.
+func writeSymlinkedEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
+	t.Helper()
+	realConfig := filepath.Join(home, "dotfiles", "evener")
+	if err := os.MkdirAll(realConfig, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	return writeEvenerContentFixture(t, home)
+}
+
+// evenerContentLayouts are the config layouts the backend content tests run.
+var evenerContentLayouts = map[string]func(*testing.T, string) evenerContentFixture{
+	"plain":            writeEvenerContentFixture,
+	"symlinked-config": writeSymlinkedEvenerContentFixture,
+}
+
+// evenerContentScript reads both skills, runs the hook, tries to write into the
+// store and to read the credential file, the store's marketplace metadata and
+// the installed copy's .git/config (a bwrap mask over a file reads as empty,
+// hence the -s), printing a marker for each outcome.
+const evenerContentScript = `set -u
+test "$(cat "$1")" = template && echo SKILL-READ
+test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
+"$3"
+if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
+if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi
+if cat "$5" >/dev/null 2>&1 && test -s "$5"; then echo METADATA-VISIBLE; fi
+if cat "$6" >/dev/null 2>&1 && test -s "$6"; then echo PLUGIN-GIT-VISIBLE; fi`
+
+// scriptCommand is the confined command running evenerContentScript.
+func (f evenerContentFixture) scriptCommand(shell string) []string {
+	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata, f.gitConfig}
+}
+
+func assertEvenerContentOutput(t *testing.T, out string) {
+	t.Helper()
+	for _, want := range []string{"SKILL-READ", "USER-SKILL-READ", "HOOK-RAN"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE", "PLUGIN-GIT-VISIBLE"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
+		}
+	}
+}
+
 // A masked path that is itself a symlink into a content root (~/.ssh pointing at
 // a directory under the skills dir) would make its secrets readable through the
 // carve-out, so that content root is refused.
@@ -458,6 +553,35 @@ func TestEvenerContentRootsRegisterAMissingRootsResolvedSpelling(t *testing.T) {
 	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
 	if rp.Masks(filepath.Join(realHome, ".config", "evener", "plugins", "cache", "new", "SKILL.md")) {
 		t.Errorf("a missing root's resolved spelling must be carved out too: %v", rp.UnmaskedRoots)
+	}
+}
+
+// A mask redirected into an admitted carve-out after resolution (~/.ssh made a
+// link into the skills dir before the next spawn) must stop the carve-out's
+// grant: re-granting the root would expose the mask's target.
+func TestCarveOutIsUnsafeOnceAMaskPointsIntoIt(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	keys := filepath.Join(skills, "mine", "ssh")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Fatalf("skills must be admitted at resolution: %v", rp.UnmaskedRoots)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Fatalf("an intact carve-out must be safe")
+	}
+	if err := os.Symlink(keys, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) {
+		t.Errorf("a carve-out holding a mask's new target must not be granted")
 	}
 }
 
@@ -640,5 +764,105 @@ func TestCarveOutHonoursACaseVariantConfigMaskCreatedLater(t *testing.T) {
 	}
 	if slices.Contains(rp.UnmaskedRoots, skills) && rp.CarveOutIntact(skills) {
 		t.Errorf("an explicit case-variant config mask must keep the skills dir masked once it exists")
+	}
+}
+
+// A mask pointed at a directory above a carve-out after resolution (~/.ssh
+// made a link to ~/.config/evener/plugins) holds the carve-out, so the
+// carve-out is refused until the link goes.
+func TestCarveOutIsUnsafeOnceAMaskPointsAboveIt(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	plugins := filepath.Join(home, ".config", "evener", "plugins")
+	cache := filepath.Join(plugins, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !rp.CarveOutIntact(cache) {
+		t.Fatalf("an intact carve-out must be granted: %v", rp.UnmaskedRoots)
+	}
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(plugins, link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(cache) {
+		t.Errorf("a carve-out under a mask's new target must not be granted")
+	}
+	if !rp.Masks(filepath.Join(cache, "p", "SKILL.md")) {
+		t.Errorf("content under a mask's new target must be masked")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(cache) || rp.Masks(filepath.Join(cache, "p", "SKILL.md")) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// A mask pointed at Evener's config root itself after resolution (~/.ssh made
+// a link to ~/.config/evener) is not Evener's own config mask: the carve-outs
+// under it are refused until the link goes.
+func TestCarveOutIsUnsafeOnceAMaskPointsAtTheConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	config := filepath.Join(home, ".config", "evener")
+	skills := filepath.Join(config, "skills")
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !rp.CarveOutIntact(skills) {
+		t.Fatalf("an intact carve-out must be granted: %v", rp.UnmaskedRoots)
+	}
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(config, link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) || !rp.Masks(filepath.Join(skills, "mine", "SKILL.md")) {
+		t.Errorf("a carve-out under a mask's new target, the config root, must be refused")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// On a case-insensitive volume, a mask pointed after resolution at a
+// directory inside a carve-out spelled in another case is still caught.
+func TestCarveOutIsUnsafeOnceAMaskPointsIntoItInAnotherCase(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine", "ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "SKILLS")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(filepath.Join(home, ".config", "evener", "SKILLS", "mine", "ssh"), link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) {
+		t.Errorf("a mask pointed into the carve-out in another case must refuse it")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
 	}
 }

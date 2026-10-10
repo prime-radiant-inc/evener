@@ -175,7 +175,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -342,31 +342,44 @@ container daemon straight to host root even with `--sandbox-net off` (a read-onl
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
 affect `AF_UNIX`).
 
-**One exception to "the mask wins", for the file tools: Evener's own content.**
-Installed plugins (the plugin store's `cache` and `bundled` directories under
+**One exception to "the mask wins": Evener's own content.** Installed plugins
+(the plugin store's `cache` and `bundled` directories under
 `~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
 sit inside the masked `~/.config/evener` by default, but they hold only content
-the session itself loads, such as the skills whose `base_directory` it hands the
-model. So in every mode (`restricted` included) the file tools read those
-directories, **read-only**, carved out of the mask; spawned processes still see
-them masked. The rest of `~/.config/evener` stays masked: hub configuration,
+the session itself loads: the skills whose `base_directory` it hands the model,
+and the hook scripts of installed plugins it runs. So every mode reads those
+directories, **read-only**, in both layers (`restricted` included), carved out of
+the mask. The rest of `~/.config/evener` stays masked: hub configuration,
 credentials, and the plugin store's metadata (`known_marketplaces.json`, the
 registries and the marketplace clones), which records marketplace URLs that may
 carry a token. Inside the carve-out any `.git` stays masked too (in any letter
 case): a plugin installed by cloning keeps its remote URL, which may carry a
-token, in its installed copy's `.git/config`, and skills never need it. The
-carve-out never writes and never touches the pseudo-filesystem floor. It is cut
-only from Evener's own config mask, and a directory is left masked when it
-contains a masked path or sits under another one (so your own denylist entries,
-inside or above it, win, under any spelling of the same directory, letter case
-included), when a write root overlaps it (it would not stay
-read-only), or when it resolves anywhere but its own place under Evener's config
-mask (a symlink into, or above, a masked directory). The file tools check that
-resolution again when they open the directory, against the directory actually
-opened, so one swapped for a symlink mid-session is refused, and one not
-installed yet is held to where installing it would land. With
-`EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
-masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
+token, in its installed copy's `.git/config`, and skills and hooks never need
+it. Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries
+it finds, at any depth, at each spawn, so a copy cloned during a running command
+is masked from the next spawn on, and a carve-out it cannot inspect fully at
+spawn (over 50,000 entries, or with a directory it cannot list) stays masked for
+spawned processes. The carve-out never writes and never touches the
+pseudo-filesystem floor. It is cut only from Evener's own config mask, and a
+directory is left masked when it contains a masked path or sits under another
+one (so your own denylist entries, inside or above it, win, under any spelling
+of the same directory, letter case included), when a write root overlaps it (it
+would not stay read-only), or when it resolves anywhere but its own place under
+Evener's config mask (a symlink into, or above, a masked directory). Each layer
+checks that resolution again when it opens the directory (the file tools
+against the directory actually opened), so one swapped for a symlink
+mid-session is refused, and one not installed yet is held to where installing
+it would land. Each layer also refuses a carve-out that a mask has since been
+pointed into or above (say `~/.ssh` made a link to the skills directory or to a
+directory inside it), at every spawn and on every file-tool read, and resumes
+once the link is gone. In `restricted`, whose namespace starts empty, bubblewrap
+recreates a carve-out's symlinked spelling (a dotfile-managed
+`~/.config/evener`) as a link to the real directory, and Seatbelt lets each
+link on that spelling be read as metadata (the link, never its target), so the
+`base_directory` a skill advertises works in the shell. With `EVENER_NO_USER_SKILLS=1`, which loads
+no user skills, the skills directory stays masked; installed plugins stay
+readable because their hooks still run. The locations follow `$XDG_CONFIG_HOME`
+the way Evener does.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:
@@ -589,12 +602,13 @@ The grant is tightly bounded:
   normally; it just cannot hand itself filesystem roots.
 - **Read and exec only.** The write surface is unchanged; a hook's own directory
   stays unwritable in every mode.
-- **Spawned layer only.** File tools do not gain a browse grant over the plugin
-  cache, so `restricted` still holds the model's own reads to the worktree.
+- **Spawned layer only.** This grant gives the file tools no browse access to a hook
+  or MCP path.
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
   granted, and a denylisted subtree inside a granted path stays masked — the
   pseudo-filesystem floor and the credential denylist are authoritative over this
-  grant as over every other.
+  grant as over every other, except for Evener's own content (see the denylist
+  section), which is how an installed plugin's hooks run from the plugin store.
 - **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
   or *above* the user's home directory, the session's worktree, or a temp root, or
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,

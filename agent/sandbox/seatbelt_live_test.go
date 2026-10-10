@@ -877,3 +877,39 @@ func TestSeatbeltLiveDenylistBeatsDeveloperToolRoots(t *testing.T) {
 		t.Errorf("the denylist must beat the developer-tools grant, but %q was still readable:\n%s", probeFile, out)
 	}
 }
+
+// TestSeatbeltLiveReadsEvenerContentThroughTheMask: under the real sandbox-exec,
+// every mode reads and runs Evener content carved out of the masked
+// ~/.config/evener, cannot write it, and still cannot read the rest (#4171).
+func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
+	requireLiveSeatbelt(t)
+	// Outside the temp tree, whose metadata restricted mode's platform
+	// defaults let anything read: a symlinked config dir must be traversable
+	// on the carve-out's own grants, as under a real home.
+	shared, err := os.MkdirTemp("/Users/Shared", "evener-content-home-")
+	if err != nil {
+		t.Skipf("no writable /Users/Shared: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shared) })
+	home, err := filepath.EvalSymlinks(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for layout, write := range evenerContentLayouts {
+		fx := write(t, filepath.Join(home, layout))
+		facts := RealProber{}.Probe()
+		facts.Home = filepath.Join(home, layout)
+		facts.EvenerContentRoots = fx.contentRoots()
+		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			t.Run(layout+"/"+mode.String(), func(t *testing.T) {
+				rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{fx.plugin}}, facts, cwd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out, _ := runUnderSeatbelt(t, rp, cwd, fx.scriptCommand("/bin/sh")...)
+				assertEvenerContentOutput(t, out)
+			})
+		}
+	}
+}

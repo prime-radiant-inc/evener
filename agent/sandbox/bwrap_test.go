@@ -446,3 +446,151 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 		})
 	}
 }
+
+// The plugin store is re-bound read-only after the tmpfs that masks
+// ~/.config/evener, so the carve-out wins over the mask (#4171).
+func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			maskIdx := seqIndex(args, "--tmpfs", config)
+			bindIdx := seqIndex(args[maskIdx+1:], "--ro-bind", store, store)
+			if maskIdx < 0 || bindIdx < 0 {
+				t.Fatalf("the store %q must be re-bound read-only after the mask of %q: %v", store, config, args)
+			}
+			if seqIndex(args, "--bind", store, store) >= 0 {
+				t.Errorf("the store must never be bound writable: %v", args)
+			}
+		})
+	}
+}
+
+// Inside the carve-out, an installed copy's .git (where a cloned plugin keeps
+// its remote URL) is masked again after the read-only re-bind.
+func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	gitDir := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			bindIdx := seqIndex(args, "--ro-bind", cache, cache)
+			if bindIdx < 0 || seqIndex(args[bindIdx:], "--tmpfs", gitDir) < 0 {
+				t.Errorf("%q must be masked after the carve-out's re-bind: %v", gitDir, args)
+			}
+		})
+	}
+}
+
+// bwrap masks a .git at any depth inside the carve-out, matching the file
+// tools and Seatbelt. A tree too large to inspect fully at spawn stays masked
+// for spawned processes rather than being re-granted with .git entries unseen.
+func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	deepGit := filepath.Join(skills, "a", "b", "c", "d", "e", ".git")
+	if err := os.MkdirAll(deepGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--tmpfs", deepGit) {
+		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
+	}
+
+	if _, complete := gitDirsUnder(skills, 3); complete {
+		t.Errorf("a tree larger than the walk budget must be reported incomplete, so its root is not re-granted")
+	}
+}
+
+// A subdirectory the walk cannot list may still hide a .git reachable by name,
+// so a root with one is reported incomplete and is not re-granted.
+func TestGitDirsUnderReportsAnUnlistableSubtreeIncomplete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can list any directory")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, "plugin", "hidden")
+	if err := os.MkdirAll(filepath.Join(hidden, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o311); err != nil { // search but no read
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	if _, complete := gitDirsUnder(root, gitWalkBudget); complete {
+		t.Error("a walk that could not list a subdirectory must be reported incomplete")
+	}
+}
+
+// With ~/.config/evener a symlink, the carve-out is listed under both
+// spellings, which resolve to one directory. It is bound once, and its .git
+// masks land after every carve-out bind, so no later bind covers them.
+func TestBuildBwrapArgvMasksGitAfterEveryBindOfASymlinkedCarveOut(t *testing.T) {
+	home := clean(t.TempDir())
+	realConfig := filepath.Join(clean(t.TempDir()), "real-evener")
+	realCache := filepath.Join(realConfig, "plugins", "cache")
+	realGit := filepath.Join(realCache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(realGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "plugins", "cache")}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			binds, lastBind := 0, -1
+			for i := 0; i+2 < len(args); i++ {
+				if args[i] == "--ro-bind" && args[i+1] == realCache && args[i+2] == realCache {
+					binds++
+					lastBind = i
+				}
+			}
+			if binds != 1 {
+				t.Errorf("the carve-out must be bound once, got %d binds: %v", binds, args)
+			}
+			if lastBind < 0 || seqIndex(args[lastBind:], "--tmpfs", realGit) < 0 {
+				t.Errorf("%q must be masked after the carve-out's last bind: %v", realGit, args)
+			}
+		})
+	}
+}

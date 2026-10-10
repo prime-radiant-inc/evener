@@ -253,7 +253,7 @@ func (rp ResolvedPolicy) Masks(path string) bool {
 	}
 	for _, root := range rp.UnmaskedRoots {
 		if pathUnder(path, root) {
-			return insideGitDir(path, root)
+			return insideGitDir(path, root) || rp.maskOverlapsCarveOut(root)
 		}
 	}
 	return true
@@ -820,12 +820,18 @@ func underByIdentity(p, dir string) bool {
 
 // overlapsMaskByIdentity reports whether any of masked, other than the entries
 // standing for Evener's config mask (configMasks, as resolution listed them),
-// is by file identity at, above or inside the directory at. Only those exact
-// entries are exempt: a user's entry naming the same directory in another
-// case is theirs, and wins.
+// is by file identity at, above or inside the directory at, or resolves inside
+// it. Only those exact entries are exempt: a user's entry naming the same
+// directory in another case is theirs, and wins.
 func overlapsMaskByIdentity(masked, configMasks []string, at string) bool {
 	return slices.ContainsFunc(masked, func(m string) bool {
-		return !slices.Contains(configMasks, m) && (underByIdentity(at, m) || underByIdentity(m, at))
+		if slices.Contains(configMasks, m) {
+			return false
+		}
+		// The mask (through any symlink, os.Stat follows it) at or above the
+		// directory, the mask's spelling inside it, or its resolved target
+		// inside it.
+		return underByIdentity(at, m) || underByIdentity(m, at) || underByIdentity(resolveExistingPrefix(m), at)
 	})
 }
 
@@ -942,9 +948,33 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	if !ok || !sameLocation {
 		return false
 	}
-	// A user's mask naming the root in another case, for a directory that did
-	// not exist at resolution, can only be matched by identity now.
-	return !overlapsMaskByIdentity(rp.MaskedPaths, rp.configMasks, at)
+	return !rp.maskOverlapsCarveOut(root)
+}
+
+// maskOverlapsCarveOut reports whether a mask other than Evener's config mask
+// overlaps root's pinned location now, by file identity: a user's mask naming
+// it in another case (for a directory created after resolution), or a mask
+// made a link after resolution that resolves into, onto or above it (~/.ssh
+// linked under the skills dir, or to the plugin store holding the cache).
+// Granting the root would expose that mask. It is judged live, at every grant
+// and every file-tool read inside a carve-out, so the carve-out comes back
+// once the cause goes.
+//
+// It runs on every file-tool check inside a carve-out, so only the masks that
+// can have changed into an overlap are judged by identity: one that is a
+// symlink now, or one whose spelling relates to the carve-out's ignoring case.
+// A plain directory elsewhere cannot overlap it.
+func (rp ResolvedPolicy) maskOverlapsCarveOut(root string) bool {
+	at := rp.carveOutAt[root]
+	lowerAt := strings.ToLower(at)
+	candidates := slices.DeleteFunc(slices.Clone(rp.MaskedPaths), func(m string) bool {
+		if fi, err := os.Lstat(m); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		lowerM := strings.ToLower(m)
+		return !pathUnder(lowerM, lowerAt) && !pathUnder(lowerAt, lowerM)
+	})
+	return overlapsMaskByIdentity(candidates, rp.configMasks, at)
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the
