@@ -29,7 +29,6 @@ import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
-import { deleteSession } from "../shell/rail/actions";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./projectionWork";
@@ -1376,53 +1375,7 @@ describe("cached write seam", () => {
   });
 });
 
-// The gap-rule bed (Task 7; spec, "The two serving paths, the live gap, and
-// its rule"). Positions are explicit so overlap, abut, and disjoint windows
-// are arithmetic, not guesswork: turnAt builds one positioned TurnModel
-// (turnFixture's shape with the entry as the position, so one fixture serves
-// the seed and the read), and windowResponse builds the reconciling read's
-// wire answer through the file's own readResponse builder so the wire shape
-// stays identical.
-
-function turnAt(id: string, entry: number, text = "positioned turn"): TurnModel & Turn {
-  return {
-    id,
-    status: "completed",
-    itemsView: "full",
-    items: [{ id: `item_${id}`, turnId: id, type: "agentMessage", text, position: { entry, item: 0 } }],
-    version: 2,
-  };
-}
-
-// windowResponse builds the reconciling read's wire answer: a fresh window
-// of `count` turns named w<entry> starting at `from`, one positioned item per
-// turn, with no `changes`. The identity matches the seed (incarnation
-// "inc-1", length 40) so the read's disposition is a merge and the gap
-// rule's position arithmetic is the only thing that decides; the ref is the
-// block's own "local:gap", the one every scenario drives.
-function windowResponse(from: number, count: number, cursor: string): ThreadReadResponse {
-  const turns: Turn[] = [];
-  for (let at = 0; at < count; at += 1) turns.push(turnAt(`w${from + at}`, from + at));
-  return readResponse("local:gap", { olderCursor: cursor, turns });
-}
-
-// seedPositionedRecord seeds a record holding three turns — turn_p2 at entry
-// 10 (page 2), turn_p1 at entry 20 (page 1), turn_w at entry 30 (the window's
-// newest) — with `olderCursor: "cur-deep"`, so the captured anchor is
-// `{ entry: 30 }`. Seeding goes through a throwaway adapter over the same
-// global database the module adapter reads (cacheRecord's reader pattern), so
-// the bed installs nothing on the singleton seam.
-async function seedPositionedRecord(ref: string, overrides: { turns?: TurnModel[] } = {}): Promise<void> {
-  const adapter = new SessionCacheIndexedDB();
-  try {
-    await seedCache(adapter, ref, {
-      turns: overrides.turns ?? [turnAt("turn_p2", 10), turnAt("turn_p1", 20), turnAt("turn_w", 30)],
-      olderCursor: "cur-deep",
-    });
-  } finally {
-    adapter.close();
-  }
-}
+// Parked-read helpers remain for the surviving legacy cached-shell tests.
 
 // The reload bed's parked read: whichever deferred read a fixture parks — the
 // shell's own, the stale-snapshot retry's, or the hand-driven failure
@@ -1447,125 +1400,6 @@ function resolveReloadRead(response: ThreadReadResponse): void {
   resolve(
     pendingReloadGeneration === undefined ? response : { ...response, requestGeneration: pendingReloadGeneration },
   );
-}
-
-// reloadWithDeferredRead: the shell publishes from the seeded record, the
-// reconciling read arms and stays parked, and the scenario resolves it.
-async function reloadWithDeferredRead(ref: string): Promise<{ resolveRead: (response: ThreadReadResponse) => void }> {
-  const fake = connectFakeClient();
-  let markArmed: () => void = () => {};
-  const armed = new Promise<void>((resolve) => {
-    markArmed = resolve;
-  });
-  fake.on("thread/read", (params) => {
-    markArmed();
-    return parkReloadRead(params);
-  });
-  const pending = threadsStore.getState().ensureThread(ref);
-  void pending.catch(() => {}); // the fixture owns the claim's failure modes
-  await nextModelPublished(ref);
-  await armed;
-  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
-    throw new Error(`reloadWithDeferredRead: ${ref} must publish as a cached shell`);
-  }
-  if (pendingReloadResolve === undefined) throw new Error("reloadWithDeferredRead: the read must stay parked");
-  return { resolveRead: resolveReloadRead };
-}
-
-// reloadWithStaleSnapshot does the same but the first read — the one the
-// shell armed with its heldSnapshot — rejects with the hub's
-// TranscriptItemCursorStale, and the retry the store issues without it stays
-// parked. calls() answers the recorded thread/read params array so
-// heldSnapshot assertions read the actual wire request.
-async function reloadWithStaleSnapshot(ref: string): Promise<{
-  resolveRetry: (response: ThreadReadResponse) => void;
-  calls: () => Array<MethodTypes["thread/read"]["params"]>;
-}> {
-  const fake = connectFakeClient();
-  let markRetryArmed: () => void = () => {};
-  const retryArmed = new Promise<void>((resolve) => {
-    markRetryArmed = resolve;
-  });
-  fake.on("thread/read", (params) => {
-    if (params.heldSnapshot !== undefined) {
-      throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
-    }
-    markRetryArmed();
-    return parkReloadRead(params);
-  });
-  const pending = threadsStore.getState().ensureThread(ref);
-  void pending.catch(() => {}); // the fixture owns the claim's failure modes
-  await nextModelPublished(ref);
-  await retryArmed;
-  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
-    throw new Error(`reloadWithStaleSnapshot: ${ref} must publish as a cached shell`);
-  }
-  if (pendingReloadResolve === undefined) throw new Error("reloadWithStaleSnapshot: the retry must stay parked");
-  return {
-    resolveRetry: resolveReloadRead,
-    calls: () =>
-      fake.calls
-        .filter((call) => call.method === "thread/read")
-        .map((call) => call.params as MethodTypes["thread/read"]["params"]),
-  };
-}
-
-// reloadWithFailedFirstRead arms the spec's failed-first-read reload (scenario
-// 7's fold cases): the shell publishes, its reconciling read rejects as a
-// transport failure, and the retry the store schedules stays undriven — the
-// scenario folds its live history/updated onto the shell in the gap, the one
-// moment a fold is genuinely live. (A fold emitted while a read is in flight
-// is buffered for the publish and then cleared by the response cut, which
-// already contains every notification the wire delivered before it — a
-// scripted response that omits it is a shape the real daemon cannot produce.)
-// The scenario drives the parked retry by hand through the file's injected
-// scheduler and resolves it through resolveReloadRead.
-async function reloadWithFailedFirstRead(ref: string): Promise<void> {
-  const fake = connectFakeClient();
-  let reads = 0;
-  fake.on("thread/read", (params) => {
-    reads += 1;
-    if (reads === 1) {
-      notifyReadArmed();
-      return Promise.reject(new Error("transport: read failed"));
-    }
-    notifyReadArmed();
-    return parkReloadRead(params);
-  });
-  const pending = threadsStore.getState().ensureThread(ref);
-  void pending.catch(() => {}); // the fixture owns the claim's failure modes
-  await nextModelPublished(ref);
-  await awaitReadArmed(); // the failing read is armed
-  // The rejection's own await chain must settle before the caller folds: the
-  // pending hydration leaves the map inside that catch (a frame buffered
-  // meanwhile would be dropped with it), and the hand-driven retry is what
-  // the scheduler records. Microtask drain, the file's cut-window idiom.
-  for (let at = 0; at < 20 && scheduledHydrationRetries.length === 0; at += 1) await Promise.resolve();
-  if (scheduledHydrationRetries.length === 0) {
-    throw new Error("reloadWithFailedFirstRead: the failed read must schedule its retry");
-  }
-  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
-    throw new Error(`reloadWithFailedFirstRead: ${ref} must still be a cached shell`);
-  }
-}
-
-// settleReload awaits the reload's publication: the store bumps the ref's
-// hydrations counter exactly once per successful publish
-// (publishThreadHydration), so the bump is the deterministic witness that the
-// reconciling read's model is on the store — whichever fixture drove the read
-// (the parked one, the stale-snapshot retry, or the hand-driven failure
-// retry, whose own ensureThread promise already rejected). Called as the
-// next statement after the read resolves, before the publish's microtask
-// chain can run.
-async function settleReload(ref: string): Promise<void> {
-  const before = threadsStore.getState().hydrations.get(ref) ?? 0;
-  await new Promise<void>((resolve) => {
-    const unsubscribe = threadsStore.subscribe((state) => {
-      if ((state.hydrations.get(ref) ?? 0) <= before) return;
-      unsubscribe();
-      resolve();
-    });
-  });
 }
 
 // The live gap rule's default-blob cases are individually mapped below.
@@ -1609,46 +1443,6 @@ function olderPageResponse(overrides: { turns?: Turn[]; nextCursor?: string } = 
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: 40 },
   };
-}
-
-// seedScrollbackRecord seeds the volume case's record: the window the prior
-// session ended on (entries 30-32) plus the two older pages it paged in —
-// page 1 at 20-22, page 2 at 10-12 — with olderCursor "cur-page-3", the
-// boundary below the deepest held page. Seeding goes through a throwaway
-// adapter over the same global database the module adapter reads
-// (seedPositionedRecord's pattern), so the bed installs nothing on the
-// singleton seam.
-async function seedScrollbackRecord(ref: string): Promise<void> {
-  const adapter = new SessionCacheIndexedDB();
-  try {
-    await seedCache(adapter, ref, {
-      turns: [
-        turnAt("turn_p2a", 10),
-        turnAt("turn_p2b", 11),
-        turnAt("turn_p2c", 12),
-        turnAt("turn_p1a", 20),
-        turnAt("turn_p1b", 21),
-        turnAt("turn_p1c", 22),
-        turnAt("turn_wa", 30),
-        turnAt("turn_wb", 31),
-        turnAt("turn_wc", 32),
-      ],
-      olderCursor: "cur-page-3",
-    });
-  } finally {
-    adapter.close();
-  }
-}
-
-// The settled window the reconciling read answers with: three turns entirely
-// above the record's newest held item (entry 32), so the gap rule replaces
-// and the response's cursor "cur-settled" becomes the model's — the cursor
-// scroll-back continues from once the shell is gone.
-function settledWindowResponse(ref: string): ThreadReadResponse {
-  return readResponse(ref, {
-    turns: [turnAt("turn_s0", 40), turnAt("turn_s1", 41), turnAt("turn_s2", 42)],
-    olderCursor: "cur-settled",
-  });
 }
 
 // The scroll-back volume case now uses real entry paging and currentness.
