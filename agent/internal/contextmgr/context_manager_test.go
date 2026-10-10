@@ -3114,9 +3114,8 @@ var updateSummaryPromptGoldens = flag.Bool("update-prompt", false,
 // (agent/testdata/memoryprompt is the same): the golden pins the whole prompt
 // as reviewed output, so a wording change shows up as a reviewed diff instead
 // of a sentence-level assertion; behavior that depends on the prompt's
-// structure is pinned separately (TestSummaryPromptSectionsComeFromThePrompt,
-// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary). Regenerate after
-// an intended wording change with
+// structure is pinned separately (TestSummaryPromptSectionsComeFromThePrompt).
+// Regenerate after an intended wording change with
 //
 //	go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt
 //

@@ -1655,7 +1655,10 @@ func promptSectionNames(prompt string) []string {
 // would not show the quotes are faithful or complete (a reply can say "None."
 // and drop them), and rejecting a summary for lacking it would discard
 // everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
-// pins that one filled section is accepted).
+// pins that one filled section is accepted). The guarantee that the human
+// partner's permissions and holds survive compaction does not rest on this
+// check or on the model: by ruling on #4173, the summary turn carries the
+// partner's messages verbatim beside the reply (#4241).
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {
@@ -1724,10 +1727,10 @@ func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
-## CALLER INSTRUCTIONS (these take precedence)
+## CALLER INSTRUCTIONS (these take precedence over the general guidance)
 ` + instructions + `
 
-Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win, except over the rule on your human partner's permissions and holds. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
 
 ` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
