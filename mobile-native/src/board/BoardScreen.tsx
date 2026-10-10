@@ -1673,8 +1673,8 @@ function shownRowKey(ref: string, archived: boolean): string {
 
 /** The Board's shown rows by ref and tier: each ref keeps its first
  * unarchived copy and its first archived copy, in screen order. The map
- * keeps its identity while no row, state or tier changes, so the row menu's
- * host (and an open menu) changes only when one does. */
+ * keeps its identity while no row, state, blue dot or tier changes, so the
+ * row menu's host (and an open menu) changes only when one does. */
 function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
 	const byKey = new Map<string, ShownRow>();
 	for (const shown of rows) {
