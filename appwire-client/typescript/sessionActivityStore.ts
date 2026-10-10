@@ -641,7 +641,7 @@ export class SessionActivityStore {
   private noteContext(context: SessionActivityContext): void {
     const next = context.reportPreview === true && context.availability === "live";
     if (this.pushEligible && !next && (this.reads.delegates.observers > 0 || this.reads.delegates.oneShot)) {
-      void this.request("delegates", "root");
+      this.reconcileDelegates();
     }
     this.pushEligible = next;
     // A source replacement is visible only in a response, and the delegate
@@ -668,8 +668,17 @@ export class SessionActivityStore {
    * eligible context suppresses the invalidation-driven delegate read. */
   private retireDelegates(): void {
     this.clearDelegates();
+    this.reconcileDelegates();
+  }
+  /** Reconcile the observed delegates after a source or gate change. A
+   * permanent read refusal stops the ordinary automatic reads, but a changed
+   * condition is a new one: clear it so this recovery attempt is really made
+   * (and, refused again, it is recorded again instead of retried in a loop). */
+  private reconcileDelegates(): void {
     const delegates = this.reads.delegates;
-    if (delegates.observers > 0 || delegates.oneShot) void this.request("delegates", "root");
+    if (delegates.observers === 0 && !delegates.oneShot) return;
+    this.change("delegates", { permanent: false });
+    void this.request("delegates", "root");
   }
   /** Record the merge order a loaded delegate row has reached: a frame is
    * admitted over it only by a strictly greater revision, and latestActivityAt
@@ -1050,14 +1059,21 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     worktree: frame.worktree,
   };
 }
+/** time.RFC3339Nano, the layout internal/appprojector parses activity
+ * timestamps with: Date.parse is looser, so a value only it accepts must not
+ * advance the stored activity. */
+const activityTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+function activityMillis(value: string): number {
+  return activityTimestamp.test(value) ? Date.parse(value) : Number.NaN;
+}
 /** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
  * wins, a blank current loses to any non-blank candidate, and otherwise the
  * candidate wins only when both values parse and it is strictly later. */
 function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
   if (!candidate || candidate.trim() === "") return false;
   if (!current || current.trim() === "") return true;
-  const candidateMs = Date.parse(candidate);
-  const currentMs = Date.parse(current);
+  const candidateMs = activityMillis(candidate);
+  const currentMs = activityMillis(current);
   return !Number.isNaN(candidateMs) && !Number.isNaN(currentMs) && candidateMs > currentMs;
 }
 /** The projector's join for one delegate: `incomingWins` picks the snapshot

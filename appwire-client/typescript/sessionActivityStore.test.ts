@@ -3011,6 +3011,65 @@ test("a sibling collection catching up to the epoch keeps the current delegate o
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
 });
 
+test("a timestamp only Date.parse accepts never wins the activity move", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 5, latestActivityAt: "2026-01-01T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  // JS parses this one and the projector's RFC3339Nano does not, so it must not
+  // advance the stored timestamp.
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 3, status: "running", latestActivityAt: "2026-01-02 00:00:00" })),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-01-01T00:00:00Z");
+});
+
+test("a gate change reconciles delegates parked by a permanent read refusal", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext(),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  client.on("evener/thread/delegates/list", () => {
+    throw new WireError("refused", -32602, { evenerErrorInfo: "actionUnavailable" });
+  });
+  await store.refresh("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.permanent);
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ availability: "retained" }),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  const before = callsTo(client, "evener/thread/delegates/list");
+  activityChanged(client, ["summary"]);
+  // The gate turning ineligible is a new condition, so the parked resource is
+  // reconciled rather than skipped for the rest of the store's life.
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.rows[0]?.status === "failed" && !store.getSnapshot().delegates.loading,
+  );
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeGreaterThan(before);
+});
+
 test("an unparseable activity never displaces a parseable one", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
