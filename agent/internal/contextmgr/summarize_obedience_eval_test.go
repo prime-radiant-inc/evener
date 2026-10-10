@@ -383,10 +383,14 @@ func turnsFromText(t *testing.T, text string) []schema.Turn {
 
 // summaryText extracts the text content from the first TurnSummary in the
 // result slice returned by summarizeWithLLMSteered.
+// summaryText returns what the summarizer model wrote in a compaction's
+// summary turn. The turn also carries the human partner's messages verbatim
+// (partnerMessagesMarkdown); that carry is left out so the evals score the
+// model's summary, not a copy of their input.
 func summaryText(turns []schema.Turn) string {
 	for _, t := range turns {
 		if t.Kind == schema.TurnSummary {
-			return t.Message.Text()
+			return withoutMarkdownSection(t.Message.Text(), checkpointConversationHeading)
 		}
 	}
 	return ""
