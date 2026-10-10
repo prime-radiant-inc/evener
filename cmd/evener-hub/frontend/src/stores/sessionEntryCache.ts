@@ -361,6 +361,10 @@ function legacySupersededByProbe(
   probes: readonly TranscriptCoverageRow[],
   chain: readonly TranscriptCoverageRow[],
 ): boolean {
+  // Only a certificate with no authority at all is the pre-authority legacy
+  // format. A current position-only page explicitly omits its request cursor
+  // but still carries an authority, so it must never be silently superseded.
+  if (cert.authority !== undefined) return false;
   if (cert.requestCursor !== undefined) return false;
   if (chain.some((row) => row.requestCursor !== undefined && row.requestCursor === cert.serverCursor)) return false;
   const bottom = certificateBottom(cert);
@@ -1457,9 +1461,11 @@ export class SessionEntryCache {
       // connection/read lifetimes must not be certified: anchoring would pick
       // one authority's certificate by position and could present another
       // authority's live chain as exhausted. Only the caller that knows the
-      // current lifetime may scope the continuation.
+      // current lifetime may scope the continuation. An omitted authority is
+      // itself a distinct value, so a mix of defined and undefined authorities
+      // is also ambiguous.
       if (authority === undefined) {
-        const authorities = new Set(allRanges.filter((row) => row.authority !== undefined).map((row) => row.authority));
+        const authorities = new Set(allRanges.map((row) => row.authority));
         if (authorities.size > 1) {
           await complete;
           return { rows: [], coverage: [], complete: false, stale: true };

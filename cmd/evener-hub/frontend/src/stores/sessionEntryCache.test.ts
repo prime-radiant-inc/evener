@@ -2716,6 +2716,98 @@ it("marks competing successors of one consumed certificate unverified (C3)", asy
   expect(window.serverCursor).toBeUndefined();
 });
 
+// Ruling 1: a current position-only certificate carries an authority, so a probe
+// must not silently supersede it. Only a certificate with neither a request
+// cursor nor an authority is the legacy deeper-range case.
+it("does not supersede a position-only certificate that carries an authority (B2)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-b2";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 35, item: 0 },
+    start: { entry: 21, item: 0 },
+    end: { entry: 30, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C1",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C2",
+    boundary: "e",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 35,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C9",
+    boundary: "u",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 35, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+// Ruling 2: an omitted authority counts as its own distinct value, so a store
+// that mixes an authority-less old terminal with a current authority must not be
+// certified by position.
+it("counts an omitted authority as its own value when no filter is given (C2b)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c2b";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const mixed = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(mixed.complete).toBe(false);
+  expect(mixed.stale).toBe(true);
+  expect(mixed.serverCursor).toBeUndefined();
+  await expect(cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2")).resolves.toMatchObject({
+    serverCursor: "C3",
+  });
+});
+
 function identityFor(sessionId: string) {
   return { clientId: "c", hostId: "h", sessionId, incarnation: "i" };
 }
