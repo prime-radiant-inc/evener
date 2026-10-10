@@ -3555,6 +3555,65 @@ test("a frame admitted by a page the collection continues past is not attributed
   expect(twins()).toEqual(["running", "running"]);
 });
 
+test("a page that completes the collection places a buffered frame", async () => {
+  const client = pushClient();
+  let first = true;
+  const second = deferred<SessionDelegatesResponse>();
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) =>
+    first
+      ? { context: pushContext(), scope: scope ?? "session", page: { complete: true, issues: [] }, delegates: [] }
+      : cursor
+        ? second.promise
+        : {
+            context: pushContext(),
+            scope: scope ?? "session",
+            page: { complete: false, issues: [], nextCursor: "next" },
+            delegates: [],
+          },
+  );
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.complete && store.getSnapshot().delegates.rows.length === 0,
+  );
+  first = false;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 5, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  // The collection is read to its end after the frame was buffered: that page is
+  // what proves the id has no second row, so the frame is placed there.
+  second.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ delegateId: "delegate-2", status: "running" })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
+test("a comma fraction does not order against the projector's timestamps", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ latestActivityAt: "2026-01-01T00:00:00.500Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ projectionRevision: 2, status: "completed", latestActivityAt: "2026-01-01T00:00:01,500Z" }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-01-01T00:00:00.500Z");
+});
+
 test("a live context that becomes retained reconciles the observed delegates", async () => {
   const client = pushClient();
   const store = owner(client);

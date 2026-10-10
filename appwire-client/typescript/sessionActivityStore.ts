@@ -578,13 +578,14 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          // A reconciled read whose row set is final is the one place a buffered
-          // frame can be placed: a bounded refresh stops at the displayed
-          // boundary with a page that is not itself complete, while a fresh root
-          // read that will be paged further is not final yet. Then an id the read
-          // serves once takes its frame and an id it serves twice never can.
-          if (resource === "delegates")
-            this.settleBufferedFrames(reconciled && (reachedBoundary || page.page.complete));
+          // A read whose row set is final is the one place a buffered frame can
+          // be placed: the page served the whole collection (a continuation
+          // reaches that end too), or a bounded refresh reached the displayed
+          // boundary. A page the collection continues past is not final yet.
+          // Then an id the read serves once takes its frame and an id it serves
+          // twice never can.
+          const settleDelegates = (page.page.complete && issues.length === 0) || (reconciled && reachedBoundary);
+          if (resource === "delegates") this.settleBufferedFrames(settleDelegates);
           if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           if (dropped()) continue;
@@ -735,10 +736,15 @@ export class SessionActivityStore {
     this.change("delegates", { permanent: false });
     void this.request("delegates", "root");
   }
-  /** Record the merge order a loaded delegate row has reached. */
-  private recordAppliedDelegate(row: SessionDelegate): void {
+  /** Record the merge order a loaded delegate row has reached. A row a read
+   * served carries the epoch of that response, not the announced one: a read
+   * still in flight for the epoch being replaced is stamped with the journal its
+   * revisions came from, so it cannot seed the replacement's ordering with an
+   * inflated old-epoch revision and leave retired rows displayed. A frame is
+   * stamped with the announced epoch -- see `delegateEpoch`. */
+  private recordAppliedDelegate(row: SessionDelegate, epoch: string | undefined): void {
     this.appliedDelegates.set(rowIdentity("delegates", row), {
-      epoch: this.delegateEpoch(),
+      epoch,
       revision: revisionOf(row.projectionRevision),
     });
   }
@@ -802,7 +808,7 @@ export class SessionActivityStore {
     if (merged === current) return;
     const next = rows.slice();
     next[index] = merged;
-    this.recordAppliedDelegate(merged);
+    this.recordAppliedDelegate(merged, this.delegateEpoch());
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
   /** Hold the latest frame for an id no single loaded row can take, until a
@@ -893,7 +899,7 @@ export class SessionActivityStore {
         const candidate = joinDelegateState(row, existing ?? row, revisionOf(row.projectionRevision) >= applied);
         merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
       }
-      this.recordAppliedDelegate(merged);
+      this.recordAppliedDelegate(merged, this.reads.delegates.epoch);
       return merged;
     });
   }
@@ -931,7 +937,7 @@ export class SessionActivityStore {
       if (merged === current) continue;
       if (!settledRows) settledRows = rows.slice();
       settledRows[index] = merged;
-      this.recordAppliedDelegate(merged);
+      this.recordAppliedDelegate(merged, this.delegateEpoch());
     }
     if (!settledRows) return;
     this.publish({ delegates: { ...this.state.delegates, rows: settledRows } });
@@ -1158,7 +1164,13 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     reasoningEffort: frame.reasoningEffort,
     runStartedAt: frame.runStartedAt,
     runEndedAt: frame.runEndedAt,
-    latestActivityAt: frame.latestActivityAt,
+    // The projector parses RFC3339Nano, so a value its reader could never return
+    // must not enter the row: unorderable, it would stick there and drift from
+    // what the read path can produce.
+    latestActivityAt:
+      frame.latestActivityAt !== undefined && activityInstant(frame.latestActivityAt)
+        ? frame.latestActivityAt
+        : undefined,
     usage: frame.usage,
     worktree: frame.worktree,
   };
@@ -1166,7 +1178,7 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
 /** time.RFC3339Nano, the layout internal/appprojector parses activity
  * timestamps with. Date.parse is looser and keeps only milliseconds, so the
  * comparison tests this shape and reads the fraction itself. */
-const activityTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:[.,](\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
+const activityTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
 /** The whole seconds since the epoch (offset applied) and the fractional
  * nanoseconds of an RFC3339Nano activity timestamp, or null when the value is
  * not one -- so a value only Date.parse accepts never orders against a real

@@ -164,9 +164,10 @@ under-invalidating a count. Revisit only against a measured win.
    the first page the read returns and is adopted. Clear the seen-unknown set on
    session replacement and dispose so it cannot grow for the store's lifetime.
    Keep the latest frame per such a delegate id (bounded the same way) and place
-   it when a **reconciled** read lands, not when a page reports itself complete:
-   a bounded root refresh stops at the displayed boundary with a page that is not
-   itself complete, so the joined row set is what proves an id admitted. An id
+   it when a read's row set is **final**, never from a single page's own
+   completeness: a bounded root refresh reaches the displayed boundary with a
+   page that is not itself complete, and a page that serves the whole collection
+   ends it (a `loadMore` continuation or a paced refetch). An id
    the read serves once takes the buffered frame by the same join and an older
    page cannot leave a running row behind; an id the read serves twice can never
    be attributed, so its frame is dropped rather than written into the wrong
