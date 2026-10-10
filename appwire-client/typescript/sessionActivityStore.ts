@@ -778,7 +778,10 @@ export class SessionActivityStore {
     // Re-inserting moves the id to the end, so eviction drops the coldest id
     // rather than one a frame just refreshed.
     if (buffered) this.bufferedUnknownDelegates.delete(frame.delegateId);
-    this.bufferedUnknownDelegates.set(frame.delegateId, buffered ? mergeDelegateFrames(buffered, frame) : frame);
+    this.bufferedUnknownDelegates.set(
+      frame.delegateId,
+      boundedDelegateFrame(buffered ? mergeDelegateFrames(buffered, frame) : frame),
+    );
     if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
       const oldest = this.bufferedUnknownDelegates.keys().next();
       if (!oldest.done) {
@@ -1153,6 +1156,20 @@ function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
  * real frame, and two unset rows compare equal. */
 function revisionOf(value: number | undefined): number {
   return typeof value === "number" && !Number.isNaN(value) ? value : 0;
+}
+/** The frame fields a row merge can apply. The raw report payload and its
+ * companions are not part of the row, and a buffered frame waits for a read to
+ * admit the row, so keeping them would let 128 buffered entries hold unbounded
+ * bytes -- the entry cap bounds ids, not memory. */
+function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
+  const {
+    message: _message,
+    structuredResult: _structuredResult,
+    warnings: _warnings,
+    diagnostics: _diagnostics,
+    ...bounded
+  } = frame;
+  return bounded;
 }
 /** The projector's join for two frame snapshots of one delegate: the strictly
  * greater revision supplies the fields, latestActivityAt is the independent
