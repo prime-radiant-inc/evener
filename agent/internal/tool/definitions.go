@@ -737,11 +737,13 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 const ObserverReporting = "Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`."
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
-// messages go to its parent agent.
-const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. A valid call has visible text in `message` or `output.message`. " +
+// messages go to its parent agent. It names no output fields: a delegate
+// started with result_schema gets that schema as its output parameter
+// (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
+const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
-	"Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For an update, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data your parent needs."
+	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: end_turn=false sends an update its parent receives,

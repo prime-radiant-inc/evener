@@ -139,7 +139,17 @@ func newMessagingRoot(t *testing.T, adapter *messagingAdapter) *Session {
 
 // delegateToolResponse is a model turn that starts one delegate with prompt.
 func delegateToolResponse(id, prompt string) llm.Response {
-	args, _ := json.Marshal(map[string]any{"prompt": prompt})
+	return delegateToolCall(id, map[string]any{"prompt": prompt})
+}
+
+// delegateToolResponseWithResultSchema starts one delegate whose final
+// report must match resultSchema.
+func delegateToolResponseWithResultSchema(id, prompt string, resultSchema map[string]any) llm.Response {
+	return delegateToolCall(id, map[string]any{"prompt": prompt, "result_schema": resultSchema})
+}
+
+func delegateToolCall(id string, arguments map[string]any) llm.Response {
+	args, _ := json.Marshal(arguments)
 	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 

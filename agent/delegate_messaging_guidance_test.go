@@ -25,14 +25,26 @@ import (
 // and read the diff.
 func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	t.Parallel()
-	adapter := newMessagingAdapter("GOLDEN-CHILD")
+	adapter := newMessagingAdapter("GOLDEN-CHILD", "SCHEMA-CHILD")
+	// A result_schema replaces communicate's output parameter, so the
+	// delegate's wording must hold for any output shape, not only the
+	// default envelope.
+	verdictSchema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"verdict": map[string]any{"type": "string", "description": "pass or fail"}},
+		"required":   []any{"verdict"},
+	}
 	adapter.script("root",
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("create", "GOLDEN-CHILD: report the repository name.")
 		},
+		func(llm.Request) llm.Response {
+			return delegateToolResponseWithResultSchema("create-schema", "SCHEMA-CHILD: say whether the build passes.", verdictSchema)
+		},
 		func(llm.Request) llm.Response { return finalResponse("root done") },
 	)
 	adapter.script("GOLDEN-CHILD", func(llm.Request) llm.Response { return finalResponse("evener") })
+	adapter.script("SCHEMA-CHILD", func(llm.Request) llm.Response { return finalResponse("pass") })
 	root := newMessagingRoot(t, adapter)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -42,6 +54,7 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	}
 	rootRequest := adapter.waitForRequests(t, "root", 1)[0]
 	delegateRequest := adapter.waitForRequests(t, "GOLDEN-CHILD", 1)[0]
+	schemaDelegateRequest := adapter.waitForRequests(t, "SCHEMA-CHILD", 1)[0]
 
 	// The delegate gets communicate worded for its parent; the root keeps the
 	// wording for its human partner.
@@ -73,6 +86,7 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 	}{
 		{"root", rootRequest, observerTools},
 		{"delegate", delegateRequest, nil},
+		{"delegate-result-schema", schemaDelegateRequest, nil},
 	} {
 		checkGolden(t, filepath.Join("testdata", "messagingprompt", tc.name+".md"), messagingGuidanceGolden(t, tc.req, tc.extra), *updatePromptGoldens,
 			"Regenerate with `go test ./agent -run 'TestDelegateMessagingGuidanceGoldens$' -count=1 -update-prompt` and read the diff.")
