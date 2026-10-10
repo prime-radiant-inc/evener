@@ -352,44 +352,23 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	}
 }
 
-type releaseAdapter struct {
-	name    string
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-func (a *releaseAdapter) Name() string { return a.name }
-
-func (a *releaseAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	a.once.Do(func() { close(a.started) })
-	select {
-	case <-a.release:
-		resp := finalResponse("child done")
-		resp.Provider = a.name
-		if resp.Model == "" {
-			resp.Model = req.Model
-		}
-		return resp, nil
-	case <-ctx.Done():
-		return llm.Response{}, ctx.Err()
-	}
-}
-
-func (a *releaseAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	_ = ctx
-	_ = req
-	return nil, llm.ErrStreamUnsupported
-}
-
 func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &releaseAdapter{
-		name:    "openai",
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+	// Every call waits for release; only its own context ends it early, so
+	// a run cancelled with its parent's context fails instead of finishing.
+	started, release := make(chan struct{}), make(chan struct{})
+	var startedOnce sync.Once
+	adapter := newSessionScriptAdapter("openai")
+	adapter.otherwise = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
+		startedOnce.Do(func() { close(started) })
+		select {
+		case <-release:
+			return finalResponse("child done"), nil
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
+		}
 	}
 	c.Register(adapter)
 
@@ -415,7 +394,7 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	agentID := spawned.AgentID
 
 	select {
-	case <-adapter.started:
+	case <-started:
 	// TRIPWIRE: the subagent's adapter call is scripted in-process with no
 	// real I/O, so it normally reaches Complete and closes started in well
 	// under a second; 30s only fires on a genuine hang.
@@ -424,7 +403,7 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	}
 
 	cancel()
-	close(adapter.release)
+	close(release)
 
 	runResult := waitForRuntimeSubagent(t, sess, agentID)
 	if !runResult.Success {
