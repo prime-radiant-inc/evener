@@ -1555,7 +1555,9 @@ generation holds a live binding), so the marker cannot conflict with a reserved
 generation. A failed turn leaves its covered
 IDs pending; attention appended after the generation's last request was built
 stays pending and starts its own attention generation; a turn outside a lease
-covers nothing.
+covers nothing. No attention reservation reports this consumption, so when the
+generation lets go with nothing left pending it lowers the delegate's
+needs-attention projection itself.
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.

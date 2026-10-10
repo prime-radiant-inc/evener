@@ -145,6 +145,49 @@ func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T)
 	}
 }
 
+// A generation that consumed the attention it presented lowers the
+// delegate's needs-attention mark itself when it lets go: no attention
+// reservation ran to report the consumption, and the parent may never drive
+// the child again to reconcile it. Nothing on this root drives the child.
+func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDrive(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm") },
+		func(llm.Request) llm.Response {
+			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:unserved", "gate job finished: exit 0")
+			return communicateResponse(false, "running gates")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "gate job finished") {
+				t.Errorf("second request of the turn did not present the attention")
+			}
+			return finalResponse("gates passed")
+		},
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	if got := supervisionRequestCount(fixture.adapter); got != 3 {
+		t.Fatalf("provider requests = %d, want 3", got)
+	}
+	if resolution, _ := childAttentionResolution(t, sub, "attention:unserved"); resolution != delegateAttentionConsumed {
+		t.Fatalf("attention resolution = %q, want consumed", resolution)
+	}
+	// The finalize tail clears the mark after the run reads as quiesced.
+	controller := root.delegateController
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		aggregate := controller.durable[fixture.delegateID]
+		return aggregate != nil && !aggregate.NeedsAttention
+	})
+}
+
 // attentionRunStarts counts the fixture delegate's generations its journal
 // records as started by attention.
 func attentionRunStarts(t *testing.T, fixture coldStableDelegateFixture) int {

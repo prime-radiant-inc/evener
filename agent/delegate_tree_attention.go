@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -305,46 +306,68 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 // transcript is not an empty one: the fold is read strictly (as the bootstrap
 // reconcile does) so an unreadable child keeps its flag and retries instead of
 // having attention silently discarded. The fold read runs outside the
-// controller lock, so the update revalidates the transcript reference and the
-// evidence version it started from: an attention opened or a transcript
-// rotated during the read keeps its flag and wake, and the next pass retries.
+// controller lock, so the update revalidates the transcript reference, the
+// evidence version and the delegate's wake set it started from: an attention
+// opened or a transcript rotated during the read keeps its flag and wake, and
+// the next pass retries. An evidence change that left the wake set alone is
+// unrelated controller activity (the finished generation's own announcement),
+// so the clear re-reads the fold and tries again rather than strand a flag no
+// later pass may lower.
 func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) error {
 	if c == nil || delegateID == "" {
 		return nil
 	}
+	for {
+		retry, err := c.tryClearResolvedDelegateAttention(delegateID)
+		if err != nil || !retry {
+			return err
+		}
+	}
+}
+
+// tryClearResolvedDelegateAttention is one clearResolvedDelegateAttention
+// pass. It reports retry when the evidence version moved during the fold read
+// but the delegate's wake set did not.
+func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID string) (retry bool, err error) {
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
 	if aggregate == nil || !aggregate.NeedsAttention {
 		c.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	transcriptRef := aggregate.Descriptor.TranscriptRef
 	evidenceVersion := c.evidenceVersion
+	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
 	c.mu.Unlock()
 
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
 	if err != nil {
-		return err
+		return false, err
 	}
 	fold, err := readExistingDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(fold.pendingIDs()) != 0 {
-		return nil
+		return false, nil
 	}
 
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef || c.evidenceVersion != evidenceVersion {
+	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef {
 		c.mu.Unlock()
-		return nil
+		return false, nil
+	}
+	if c.evidenceVersion != evidenceVersion {
+		retry = maps.Equal(c.delegateAttentionWakeIDsLocked(delegateID), wakeIDs)
+		c.mu.Unlock()
+		return retry, nil
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,
@@ -354,14 +377,14 @@ func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID strin
 		},
 	}); err != nil {
 		c.mu.Unlock()
-		return err
+		return false, err
 	}
 	c.replaceDelegateAttentionLocked(delegateID, nil)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(delegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
-	return nil
+	return false, nil
 }
 
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {
@@ -513,6 +536,14 @@ func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggrega
 		attentionIDs:  attentionIDs,
 		runtime:       runtime,
 	}
+}
+
+// delegateAttentionWakeIDsLocked returns a copy of delegateID's noted wake IDs.
+func (c *delegateTreeController) delegateAttentionWakeIDsLocked(delegateID string) map[string]struct{} {
+	if state := c.attention[delegateID]; state != nil {
+		return maps.Clone(state.wakeIDs)
+	}
+	return nil
 }
 
 func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID string, attentionIDs []string) {
