@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 const (
@@ -237,11 +238,14 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				matches[i] = execenv.OneLinePath(match)
 			}
 			result := strings.Join(matches, "\n")
+			// Notes about the result follow its paths after a blank line
+			// (searchresult.WithNotes), so a reader never counts one as a path.
+			var notes []string
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).
 			if len(matches) == 0 && excluded > 0 {
-				result = fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded)
+				notes = append(notes, fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded))
 			}
 			if truncatedAt > 0 {
 				// Silent truncation is the same enemy: the matches collected
@@ -251,12 +255,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				// The cap counts candidate matches, before the dotfile/
 				// gitignore exclusion above drops any of them, so the number
 				// of paths actually shown can be smaller than the cap itself.
-				note := fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
-				if result == "" {
-					result = note
-				} else {
-					result += "\n\n" + note
-				}
+				notes = append(notes, fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt))
+			}
+			if len(notes) > 0 {
+				return searchresult.WithNotes(result, notes...), nil
 			}
 			return result, nil
 		},

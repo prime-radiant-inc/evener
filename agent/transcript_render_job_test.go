@@ -865,3 +865,37 @@ func TestJobResultBodyNumbersSeveralEarlierResults(t *testing.T) {
 		"earlier result 2 of 2", "status=stopped", "OUT-2",
 		"latest result:", "OUT-3")
 }
+
+// An update a delegate_send reply carries ahead of its result settled
+// nothing, so its block in the transcript claims no status (an empty field
+// reads "(none)", as job_id and transcript_ref do): the metadata line says it
+// is an update and its message follows.
+func TestJobResultBodyRendersAnEarlierUpdateWithoutAStatus(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(delegateSendResultFrom(sendMessageResult{
+		DelegateID: "dlg_1",
+		Type:       delegateResourceType,
+		Action:     "completed",
+		Status:     "completed",
+		Output:     "done",
+		Earlier:    []delegatestore.TerminalPacket{{Kind: delegatestore.PacketUpdate, Message: json.RawMessage(`"which table?"`)}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := jobResultBody(string(raw))
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	want := "job_id=dlg_1 status=completed transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 type=delegate action=completed running_in_background=false truncated=false\n" +
+		"earlier result 1 of 1, not delivered before:\n" +
+		"job_id=dlg_1 status=(none) transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 type=delegate action=update running_in_background=false truncated=false\n" +
+		"which table?\n" +
+		"latest result:\n" +
+		"done\n"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
+	}
+}

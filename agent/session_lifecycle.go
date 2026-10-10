@@ -2030,7 +2030,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", false, errors.New("session is closed")
 	}
 	s.restBeforeInput = s.state
-	s.quietRestBeforeInput = s.quietRestArmed != 0 && s.restStillPendingLocked(s.quietRestArmed)
+	// The generation match is what keeps a rest owed only until the next turn
+	// or settle: a turn that accepted needs_response and then failed or was
+	// interrupted before its settle leaves the end reason set but owes nothing.
+	s.quietRestBeforeInput = s.restOwedGeneration != 0 && s.restStillPendingLocked(s.restOwedGeneration)
 	s.endReasonBeforeInput = s.comm.endReason
 	// A resume the last settle never consumed (it returned early for a
 	// pending question, or the drain loop returned before settling) must not

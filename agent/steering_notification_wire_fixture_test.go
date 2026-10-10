@@ -22,6 +22,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -221,6 +222,17 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 			turn: notificationWireAttention(
 				delegateQuietAttentionID(delegateLease{delegateID: "dlg_1", generation: 1}),
 				delegateQuietAttentionContent(delegateLease{delegateID: "dlg_1", generation: 1}, wireFixtureStart.Add(time.Minute)),
+			),
+		},
+		{
+			name: "delegate-update",
+			note: "A named subagent's mid-work update, communicate(end_turn=false): kind update, and the body is its message with \"<\" escaped.",
+			turn: notificationWireAttention(
+				delegateAttentionID(delegatestore.UpdateDeliveryID("dlg_1", 7)),
+				notificationWireBarePacketFrame(t, "dlg_1", "Fix race in tree settle", delegatestore.TerminalPacket{
+					Kind:    delegatestore.PacketUpdate,
+					Message: json.RawMessage(`"Which table holds the drain cursor: tree_state or drain_log? I need it before I add the index for seq < head."`),
+				}),
 			),
 		},
 		{

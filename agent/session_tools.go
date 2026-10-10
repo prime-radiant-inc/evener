@@ -1522,9 +1522,6 @@ func (s *Session) rebuildToolDefsCache() {
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
 			}
-			if s.memorySaveInstructionsEnabled() {
-				defs[i].Description += " " + memoryReportReminder
-			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.

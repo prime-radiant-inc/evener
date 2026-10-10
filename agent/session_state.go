@@ -649,9 +649,16 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	hadOutput = hadOutput || s.resumeQuietRest
 	s.resumeQuietRest = false
 	s.mu.Unlock()
-	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse {
+	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse || !hadOutput {
 		return
 	}
+	// From here the turn owes its human partner a rest, even when queued
+	// input, steering, a goal kick or work in flight holds it idle for now: a
+	// later wake that runs no turn settles again and arms it once nothing
+	// moves the session. hadOutput is true from here on.
+	s.mu.Lock()
+	s.restOwedGeneration = generation
+	s.mu.Unlock()
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
@@ -673,9 +680,6 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 		s.restAwaiting(generation)
 		return
 	}
-	s.mu.Lock()
-	s.quietRestArmed = generation
-	s.mu.Unlock()
 	s.sclock().AfterFunc(delay, func() {
 		// The cheap check first, so a timer outliving its session or turn
 		// reads no work state. restAwaiting re-reads queued input and

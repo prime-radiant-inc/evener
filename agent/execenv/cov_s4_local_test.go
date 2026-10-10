@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/fuzz/fault"
 )
@@ -243,9 +244,9 @@ func TestGrepFallback_MaxResultsCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || lines[3] != grepTruncationNote(3) {
-		t.Fatalf("maxResults cap = %d lines, want 3 then the truncation note: %q", len(lines), out)
+	entries, notes := searchresult.Split(out)
+	if lines := strings.Split(entries, "\n"); len(lines) != 3 || notes != grepTruncationNote(3) {
+		t.Fatalf("maxResults cap: got %q, want 3 lines then the truncation note", out)
 	}
 }
 
@@ -342,6 +343,20 @@ func TestFilteredEnvWithPolicy_CoreOnly(t *testing.T) {
 	}
 	if m["X"] != "1" {
 		t.Fatal("CoreOnly should include extras")
+	}
+}
+
+// A spawned go must read the same go env file the sandbox probe read at session
+// start: GOENV names it, and otherwise it sits under the user config directory,
+// which XDG_CONFIG_HOME moves. Core-only environments keep both.
+func TestFilteredEnvWithPolicy_CoreOnlyKeepsGoEnvFileLocation(t *testing.T) {
+	t.Setenv("GOENV", "/custom/go/env")
+	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	m := envToMap(filteredEnvWithPolicy(EnvPolicyCoreOnly, nil))
+	for name, want := range map[string]string{"GOENV": "/custom/go/env", "XDG_CONFIG_HOME": "/custom/config"} {
+		if m[name] != want {
+			t.Errorf("CoreOnly must keep %s=%q, got %q", name, want, m[name])
+		}
 	}
 }
 
