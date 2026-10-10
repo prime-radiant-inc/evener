@@ -1288,14 +1288,14 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "child-disabled" || mode == "project-adopted" {
-				childMeta.Config.DisableMemory = mode == "child-disabled"
-				if mode == "project-adopted" {
-					childMeta.Config.MemoryProjectID = ""
-				}
-				if err := schema.SaveSessionMeta(history, childMeta); err != nil {
-					t.Fatal(err)
-				}
+			switch mode {
+			case "child-disabled":
+				childMeta.Config.DisableMemory = true
+			case "project-adopted":
+				childMeta.Config.MemoryProjectID = ""
+			}
+			if err := schema.SaveSessionMeta(history, childMeta); err != nil {
+				t.Fatal(err)
 			}
 			s.Close()
 			meta, err := schema.LoadSessionMeta(history, s.id)
@@ -1323,6 +1323,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 				r.reg.Remove("memory_read")
 				refreshModelFacingCaches(r)
 			}
+			// project-adopted also spawns a fresh child, which takes the second step.
 			finished := func(llm.Request) llm.Response { return finalResponse("restored child finished") }
 			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{finished, finished}})
 			accesses.Store(0)
