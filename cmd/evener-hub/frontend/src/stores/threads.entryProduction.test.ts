@@ -9,6 +9,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { deleteSession } from "../shell/rail/actions";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -24,7 +25,6 @@ import {
   clearCachedSessions,
   countCachedSessions,
   installEntryTranscriptFixtureForTests,
-  markCacheSessionsDeleted,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   settleEntryTranscriptForTests,
@@ -514,7 +514,13 @@ it("ordinary deletion removes bound histories and durably refuses the captured p
     }),
   ).toMatchObject({ outcome: "committed" });
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
-  markCacheSessionsDeleted(["local:a"]);
+  client.on("evener/session/delete", () => ({
+    deleted: ["a"],
+    skipped: [],
+    navigation: { generation_id: "generation-test", targets: [] },
+  }));
+  await deleteSession(client, "local:a");
+  expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
   await settleProjectionWorkForTests();
   expect(await storage.getLatest(key, 10)).toEqual([]);
   expect(await storage.getHistoryGeneration(key)).toBe(1);
@@ -1120,8 +1126,11 @@ it("ordinary suppression-only acquisition still cold-reads but never caches unti
   const client = connect();
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
-  expect(client.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(0);
+  const coldReads = client.calls.filter((call) => call.method === "thread/read");
+  expect(coldReads).toHaveLength(1);
+  expect(coldReads[0]?.params).not.toHaveProperty("heldSnapshot");
   expect(threadsStore.getState().threads.has("local:a")).toBe(true);
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).toContain("recorded");
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
   expect(await storage.getLatest(key, 10)).toEqual([]);
   await threadsStore.getState().ensureThread("local:a");
@@ -1147,4 +1156,25 @@ it("ordinary suppression-only acquisition still cold-reads but never caches unti
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+});
+
+it("ordinary failed source refresh preserves only the prior committed rows until a successful baseline", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  client.on("thread/read", () => {
+    throw new Error("source unavailable");
+  });
+  await expect(threadsStore.getState().refreshThread("local:a")).rejects.toThrow("source unavailable");
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  client.on("thread/read", (params) => ({
+    ...response("local:a", [turn("recovered-source", 2)]),
+    requestGeneration: params.requestGeneration,
+  }));
+  await threadsStore.getState().refreshThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("recovered-source");
 });
