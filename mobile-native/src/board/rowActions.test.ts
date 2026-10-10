@@ -41,8 +41,8 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			unarchived,
 			["pin", "stop", "shutDown", "archive", "rename"],
 		],
-		["a finished one", row({ state: "awaiting" }), "finished", unarchived, ["pin", "shutDown", "archive"]],
-		["one seen since", row({ state: "idle" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
+		["an idle one", row({ state: "idle" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
+		["one needing your reply", row({ state: "awaiting" }), "needsYou", unarchived, ["pin", "shutDown", "archive"]],
 		[
 			"one asking a question",
 			row({ state: "awaiting", ask_pending: true }),
@@ -81,13 +81,7 @@ describe("swipes (spec 7.3)", () => {
 			unarchived,
 			{ leading: "archive", trailing: ["stop", "pin", "more"] },
 		],
-		[
-			"a finished one",
-			row({ state: "awaiting" }),
-			"finished",
-			unarchived,
-			{ leading: "archive", trailing: ["pin", "more"] },
-		],
+		["an idle one", row({ state: "idle" }), "idle", unarchived, { leading: "archive", trailing: ["pin", "more"] }],
 		[
 			"one working on another host",
 			row({ ...remote }),
