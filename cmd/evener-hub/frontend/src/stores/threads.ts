@@ -3252,7 +3252,8 @@ function isStorageTimeout(error: unknown): boolean {
 // transaction) are absent on purpose. An AbortError cannot stand in for a
 // record judgment: the outbox adapter races a transaction's body against its
 // completion, so a body that throws rejects with its own error before the
-// abort it causes is reported.
+// abort it causes is reported, and IDBConnection rejects an open whose schema
+// upgrade threw with IDBUpgradeError, not the abort.
 const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
   "QuotaExceededError",
   "SecurityError",
