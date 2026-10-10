@@ -324,7 +324,10 @@ file tool nor a spawned process can read them:
 
 - **Credential directories and files** (resolved against `$HOME`): `~/.ssh`,
   `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
-  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`.
+  `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. When
+  `$XDG_CONFIG_HOME` moves Evener's config root, `$XDG_CONFIG_HOME/evener` is
+  masked as well, since hub configuration and credentials live wherever that root
+  is; removing `~/.config/evener` from the denylist removes both.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
@@ -347,9 +350,12 @@ directories, **read-only**, in both layers (`restricted` included), carved out o
 the mask. The rest of `~/.config/evener` stays masked: hub configuration,
 credentials, and the plugin store's metadata (`known_marketplaces.json`, the
 registries and the marketplace clones), which records marketplace URLs that may
-carry a token. The carve-out never writes, never touches the pseudo-filesystem
-floor, and is refused for a directory that contains a masked path, so adding a
-path inside it to the denylist keeps it masked. The locations follow
+carry a token. The carve-out never writes and never touches the pseudo-filesystem
+floor. It is cut only from Evener's own config mask, and a directory is left
+masked when it contains a masked path or sits under another one (so your own
+denylist entries, inside or above it, win), when a write root overlaps it (it
+would not stay read-only), or when it resolves through a symlink into another
+masked directory. The locations follow
 `$XDG_CONFIG_HOME` the way Evener does. Inside the carve-out, any `.git` stays
 masked too: a plugin installed by cloning keeps its remote URL, which may carry a
 token, in its installed copy's `.git/config`, and skills and hooks never need it.

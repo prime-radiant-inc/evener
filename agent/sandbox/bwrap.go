@@ -203,7 +203,8 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// directory) are re-bound read-only on top of it. Like the masks, they are
 	// bound at their symlink-resolved real path, where the mask landed.
 	for _, r := range rp.UnmaskedRoots {
-		if resolved, err := bwrapEvalSymlinks(r); err == nil {
+		// Checked again here: a symlink can appear after resolution.
+		if resolved, err := bwrapEvalSymlinks(r); err == nil && !carveOutEscapes(resolved, r, rp.MaskedPaths) {
 			add("--ro-bind", resolved, resolved)
 		}
 	}
@@ -352,7 +353,11 @@ func maskHandledByNamespace(path string) bool {
 
 // gitDirsDepth bounds the search for .git entries below a carve-out root. An
 // installed plugin copy sits at cache/<marketplace>/<plugin>/<version>, so its
-// .git is four levels down; a user skill's is two.
+// .git is four levels down; a user skill's is two. Nothing an install makes is
+// deeper: git never tracks a nested .git, plugin clones are made without
+// --recurse-submodules (internal/plugins/git.go), and a subdirectory plugin is a
+// copy taken from below its clone's .git. Symlinks are not followed: the bind
+// exposes a symlink's target only where that target is already visible.
 const gitDirsDepth = 4
 
 // gitDirsUnder returns the .git entries (directories or gitdir files) within

@@ -102,23 +102,25 @@ func TestEvenerContentRootsRefuseRootsThatWouldUnmaskSecrets(t *testing.T) {
 	}
 }
 
-// The probe names the installed plugins (the store's cache and bundled
-// directories, not its marketplace metadata) and the user skills directory
-// where Evener puts them: under $XDG_CONFIG_HOME/evener, else ~/.config/evener.
-func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
+// The probe finds Evener's config root (under $XDG_CONFIG_HOME, else
+// ~/.config) and, inside it, the installed plugins (the store's cache and
+// bundled directories, not its marketplace metadata) and the user skills.
+func TestProbeFindsEvenerConfigAndContentRoots(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		env  map[string]string
-		want []string
+		root string
 	}{
-		{"default", nil, []string{"/Users/tester/.config/evener/plugins/cache", "/Users/tester/.config/evener/plugins/bundled", "/Users/tester/.config/evener/skills"}},
-		{"XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "/xdg"}, []string{"/xdg/evener/plugins/cache", "/xdg/evener/plugins/bundled", "/xdg/evener/skills"}},
+		{"default", nil, "/Users/tester/.config/evener"},
+		{"XDG_CONFIG_HOME", map[string]string{"XDG_CONFIG_HOME": "/xdg"}, "/xdg/evener"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := probeEvenerContentRoots(stubProbeSystem{env: tc.env}); !slices.Equal(got, tc.want) {
-				t.Errorf("probeEvenerContentRoots = %v, want %v", got, tc.want)
+			facts := probeHost(stubProbeSystem{env: tc.env})
+			want := []string{tc.root + "/plugins/cache", tc.root + "/plugins/bundled", tc.root + "/skills"}
+			if facts.EvenerConfigRoot != tc.root || !slices.Equal(facts.EvenerContentRoots, want) {
+				t.Errorf("probe = %q %v, want %q %v", facts.EvenerConfigRoot, facts.EvenerContentRoots, tc.root, want)
 			}
 		})
 	}
@@ -190,5 +192,76 @@ func assertEvenerContentOutput(t *testing.T, out string) {
 		if strings.Contains(out, bad) {
 			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
 		}
+	}
+}
+
+// When XDG_CONFIG_HOME moves Evener's config root, the mask follows it (the
+// credentials live there), and the carve-out is cut from that mask instead.
+func TestEvenerConfigRootIsMaskedWhereverItLives(t *testing.T) {
+	root := mainRepo(t)
+	host := bwrapHost()
+	host.EvenerConfigRoot = "/xdg/evener"
+	host.EvenerContentRoots = []string{"/xdg/evener/plugins/cache", "/xdg/evener/plugins/bundled", "/xdg/evener/skills"}
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, host, root)
+		if !rp.Masks("/xdg/evener/hub.toml") || !rp.Masks("/xdg/evener/plugins/known_marketplaces.json") {
+			t.Errorf("%v: the relocated config root must be masked: %v", mode, rp.MaskedPaths)
+		}
+		if rp.Masks("/xdg/evener/plugins/cache/mkt/p/abc/SKILL.md") || !rp.FileToolCanRead("/xdg/evener/skills/mine/SKILL.md") {
+			t.Errorf("%v: the carve-out must apply inside the relocated config root: %v", mode, rp.UnmaskedRoots)
+		}
+	}
+}
+
+// A content root the session could write through (inside the worktree, say)
+// would not stay read-only, so it is refused and stays masked.
+func TestEvenerContentRootsUnderAWriteRootAreRefused(t *testing.T) {
+	root := mainRepo(t)
+	host := bwrapHost()
+	config := filepath.Join(root, ".xdg", "evener")
+	host.EvenerConfigRoot = config
+	host.EvenerContentRoots = []string{filepath.Join(config, "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a content root under a write root must be refused, got %v", rp.UnmaskedRoots)
+	}
+	if !rp.Masks(filepath.Join(config, "plugins", "cache", "x")) {
+		t.Errorf("the refused content root must stay masked")
+	}
+}
+
+// The carve-out cuts only Evener's own config mask. A denylist entry the user
+// added above it (masking all of ~/.config) keeps the content masked.
+func TestEvenerContentRootsHonourAUserMaskAboveThem(t *testing.T) {
+	root := mainRepo(t)
+	host, store, _ := contentHost()
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{"~/.config"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 || !rp.Masks(filepath.Join(store, "cache", "x")) {
+		t.Errorf("a user mask above the content roots must keep them masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// A content root that resolves, through a symlink, into another masked
+// directory is refused: re-granting it would expose that directory.
+func TestEvenerContentRootsRefuseASymlinkIntoAnotherMask(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(filepath.Join(ssh, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(config, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ssh, filepath.Join(config, "plugins")); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{filepath.Join(config, "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a content root resolving into ~/.ssh must be refused, got %v", rp.UnmaskedRoots)
 	}
 }

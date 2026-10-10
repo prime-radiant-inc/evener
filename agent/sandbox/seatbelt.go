@@ -266,6 +266,11 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 	var grants, gitDenials []string
 	for i, r := range rp.UnmaskedRoots {
+		// Re-granted at its canonical path, so refused if that path escapes
+		// into another mask (a symlink can appear after resolution).
+		if carveOutEscapes(ps.canon(r), r, rp.MaskedPaths) {
+			continue
+		}
 		for _, k := range ps.defineBothSpellings(fmt.Sprintf("UNMASKED_%d", i), r) {
 			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
 			gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.git(/|$)")))`)
