@@ -990,3 +990,107 @@ func TestApplyRejectsNilAggregateWalkedBySubtreeEvents(t *testing.T) {
 		})
 	}
 }
+
+func updatePostedEvent(id string, generation uint64, message string) Event {
+	return Event{
+		Kind:         EventDelegateUpdatePosted,
+		DelegateID:   id,
+		UpdatePosted: &UpdatePosted{Generation: generation, Message: message},
+	}
+}
+
+// A running generation's updates queue in the delegate's own delivery FIFO,
+// in the order posted and ahead of the report the generation settles, each
+// under an id its journal sequence makes unique.
+func TestApplyUpdatePostedQueuesAheadOfTheGenerationReport(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_parent", ""),
+		createdEvent("dlg_alpha", "dlg_parent"),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		updatePostedEvent("dlg_alpha", 1, "first question"),
+		updatePostedEvent("dlg_alpha", 1, "second question"),
+		preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+	)
+
+	got := state["dlg_alpha"].PendingDeliveries
+	want := []PendingDelivery{
+		{DeliveryID: "dlg_alpha/update/4", Generation: 1, OwnerDelegateID: "dlg_parent", Packet: TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"first question"`)}},
+		{DeliveryID: "dlg_alpha/update/5", Generation: 1, OwnerDelegateID: "dlg_parent", Packet: TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"second question"`)}},
+	}
+	if len(got) != 3 || !reflect.DeepEqual(got[:2], want) || got[2].DeliveryID != "dlg_alpha/delivery/1" {
+		t.Fatalf("pending deliveries = %#v, want both updates in order, then the report", got)
+	}
+	if UpdateDeliveryID("dlg_alpha", 4) != "dlg_alpha/update/4" {
+		t.Fatalf("UpdateDeliveryID = %q", UpdateDeliveryID("dlg_alpha", 4))
+	}
+	// An update is never the generation's outcome.
+	if latest := state["dlg_alpha"].LatestPacket; latest == nil || latest.Kind != PacketReported {
+		t.Fatalf("latest packet = %#v, want the report", latest)
+	}
+}
+
+// An acknowledged update leaves the queue like any head.
+func TestApplyUpdatePostedIsAcknowledgedAsTheHead(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		updatePostedEvent("dlg_alpha", 1, "question"),
+		Event{Kind: EventDelegateDeliveryAcknowledged, DelegateID: "dlg_alpha", DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "dlg_alpha/update/3"}},
+	)
+	if got := state["dlg_alpha"].PendingDeliveries; len(got) != 0 {
+		t.Fatalf("pending deliveries = %#v, want the acknowledged update gone", got)
+	}
+}
+
+// Only the open, running generation posts updates: nothing can land behind
+// its report, under a stop, or for a generation that is over.
+func TestApplyUpdatePostedRefusesOutsideTheRunningGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix []Event
+		event  Event
+	}{
+		{"no run", []Event{createdEvent("dlg_alpha", "")}, updatePostedEvent("dlg_alpha", 1, "q")},
+		{"stale generation", []Event{
+			createdEvent("dlg_alpha", ""),
+			startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+			preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+			finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+			startedEvent("dlg_alpha", 2, TriggerOwnerInput),
+		}, updatePostedEvent("dlg_alpha", 1, "q")},
+		{"settling", []Event{
+			createdEvent("dlg_alpha", ""),
+			startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+			preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		}, updatePostedEvent("dlg_alpha", 1, "q")},
+		{"stopping", []Event{
+			createdEvent("dlg_alpha", ""),
+			startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+			stopRequestedEvent("dlg_alpha"),
+		}, updatePostedEvent("dlg_alpha", 1, "q")},
+		{"empty message", []Event{
+			createdEvent("dlg_alpha", ""),
+			startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		}, updatePostedEvent("dlg_alpha", 1, "  ")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := applyEvents(t, tc.prefix...)
+			before := stateJSON(t, state)
+			event := tc.event
+			event.Seq = uint64(len(tc.prefix) + 1)
+			if err := Apply(state, event); err == nil {
+				t.Fatal("Apply accepted the update")
+			}
+			if got := stateJSON(t, state); got != before {
+				t.Fatalf("refused update changed state:\n got %s\nwant %s", got, before)
+			}
+		})
+	}
+	t.Run("zero sequence", func(t *testing.T) {
+		state := applyEvents(t, createdEvent("dlg_alpha", ""), startedEvent("dlg_alpha", 1, TriggerOwnerInput))
+		if err := Apply(state, updatePostedEvent("dlg_alpha", 1, "q")); err == nil {
+			t.Fatal("Apply accepted an update with no sequence to name it by")
+		}
+	})
+}

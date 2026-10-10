@@ -16,6 +16,7 @@ const (
 	EventDelegateSubtreeStopCompleted EventKind = "delegate_subtree_stop_completed"
 	EventDelegateDeliveryAcknowledged EventKind = "delegate_delivery_acknowledged"
 	EventDelegateAttentionChanged     EventKind = "delegate_attention_changed"
+	EventDelegateUpdatePosted         EventKind = "delegate_update_posted"
 )
 
 type Event struct {
@@ -33,6 +34,7 @@ type Event struct {
 	SubtreeStopCompleted *SubtreeStopCompleted     `json:"subtree_stop_completed,omitempty"`
 	DeliveryAcknowledged *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
 	AttentionChanged     *DelegateAttentionChanged `json:"attention_changed,omitempty"`
+	UpdatePosted         *UpdatePosted             `json:"update_posted,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -85,6 +87,15 @@ type DeliveryAcknowledged struct {
 
 type DelegateAttentionChanged struct {
 	NeedsAttention bool `json:"needs_attention"`
+}
+
+// UpdatePosted is a running generation's mid-work message to its owner, its
+// communicate(end_turn=false). The fold queues it as a pending delivery
+// behind the delegate's earlier deliveries and ahead of the report the same
+// generation settles.
+type UpdatePosted struct {
+	Generation uint64 `json:"generation"`
+	Message    string `json:"message"`
 }
 
 type versionRecord struct {

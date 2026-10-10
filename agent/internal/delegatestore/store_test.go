@@ -518,3 +518,52 @@ func mustReadFile(t *testing.T, path string) []byte {
 	}
 	return raw
 }
+
+func TestCloneEventUpdatePostedIsolated(t *testing.T) {
+	original := Event{
+		Kind:         EventDelegateUpdatePosted,
+		DelegateID:   "dlg_alpha",
+		UpdatePosted: &UpdatePosted{Generation: 1, Message: "question"},
+	}
+	clone := cloneEvent(original)
+	if clone.UpdatePosted == original.UpdatePosted {
+		t.Fatal("clone aliased UpdatePosted payload")
+	}
+	clone.UpdatePosted.Message = "changed"
+	if original.UpdatePosted.Message != "question" {
+		t.Fatal("mutating clone changed original UpdatePosted payload")
+	}
+}
+
+// An update survives the journal: written, reopened and folded, it is the
+// same pending delivery under the same id.
+func TestStoreRoundTripsUpdatePosted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	appended, _, err := store.AppendBatch(make(State), []Event{
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		updatePostedEvent("dlg_alpha", 1, "which table?"),
+	})
+	if closeErr := store.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	events, err := ReadEvents(path)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	state, err := Fold(events)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	pending := state["dlg_alpha"].PendingDeliveries
+	if len(pending) != 1 || pending[0].DeliveryID != UpdateDeliveryID("dlg_alpha", appended[2].Seq) || pending[0].Packet.Kind != PacketUpdate || string(pending[0].Packet.Message) != `"which table?"` {
+		t.Fatalf("folded pending deliveries = %#v", pending)
+	}
+}

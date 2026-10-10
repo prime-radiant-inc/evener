@@ -1189,6 +1189,12 @@ cannot reuse it. It is never a control handle.
   next head.
 - Only the head pending delivery may be dispatched. Acknowledging that exact
   head removes it and returns the delivery plan for the next head, if any.
+- A running generation's update (delegate_update_posted, its
+  communicate(end_turn=false)) joins the same per-delegate queue as the
+  pending delivery `<delegate_id>/update/<event seq>` with packet kind
+  `update`. The generation's updates are therefore dispatched in the order
+  posted and ahead of the report its finish appends. Only the open, running
+  generation may post one.
 - Restart begins with the oldest unacknowledged packet and advances through the
   same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
@@ -1282,6 +1288,7 @@ Required event kinds are:
 - delegate_resumability_closed;
 - delegate_subtree_stop_requested;
 - delegate_subtree_stop_completed; and
+- delegate_update_posted;
 - delegate_delivery_acknowledged.
 
 No event kind exists for a delegate activation JobRecord, current/latest job
