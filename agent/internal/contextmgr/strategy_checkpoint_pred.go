@@ -108,12 +108,18 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	}
 
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
+	// folded is the history before a deterministic fallback checkpoint this
+	// pass, which the summary completing that fold reads the partner's
+	// messages from (summarizeFold). A predictive checkpoint carries them
+	// whole itself, so it needs none.
+	var folded []schema.Turn
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
+			folded = *history
 			*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 			// The fallback already worked, so this is an informational
 			// context notice, coded for clients to show only at their most
@@ -150,7 +156,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
+		result, err := s.cm.summarizeFold(ctx, *history, s.cm.PreserveRecentTurns, "", folded)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {

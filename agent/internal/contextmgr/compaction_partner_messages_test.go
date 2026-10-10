@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -233,5 +234,80 @@ func TestForceCompact_CarryReadsTheHistoryTheCheckpointFolded(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")))
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
+
+// Legacy checkpoint markup the summarizer quotes is the model's text: a later
+// compaction never carries it as the partner's message.
+func TestForceCompact_ModelQuotedMarkupIsNotThePartnersMessage(t *testing.T) {
+	quoting := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("## Progress\nthe old format looked like " +
+			`<user_messages>["MODEL_QUOTED_USER"]</user_messages>`)}
+	}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{quoting, quoting}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("more work")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	for _, entry := range extractMarkdownConversation(history[0].Message.Text()) {
+		if strings.Contains(entry.Text, "MODEL_QUOTED_USER") {
+			t.Fatalf("markup the model quoted was carried as the partner's message:\n%s", history[0].Message.Text())
+		}
+	}
+}
+
+// When checkpoint-pred's prediction fails, its deterministic fallback sheds
+// under its own budget like any checkpoint, and the summary after it still
+// reads the partner's messages from the history that checkpoint folded.
+func TestCheckpointPred_FallbackSummaryReadsTheHistoryTheCheckpointFolded(t *testing.T) {
+	calls := 0
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		calls++
+		switch calls {
+		case 1: // the first compaction's summary: large
+			return llm.Response{Message: llm.Assistant("## Progress\n" + strings.Repeat("earlier work ", 2000))}, nil
+		case 2: // the prediction fails
+			return llm.Response{}, errors.New("prediction unavailable")
+		default:
+			return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+		}
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	history = append(history,
+		schema.NewTurn(schema.TurnUserInput, llm.User(partnerHold)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding")))
+	for i := range 8 {
+		history = append(history,
+			schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("step %d %s", i, strings.Repeat("detail ", 700)))),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")))
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")))
+	runCheckpointPred(t, cm, &history, 0.0001)
+	if calls != 3 {
+		t.Fatalf("model calls = %d, want summary, failed prediction, summary", calls)
+	}
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }
