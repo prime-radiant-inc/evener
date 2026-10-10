@@ -57,7 +57,7 @@ function fixture(files) {
 
 function rewrite(root) {
   try {
-    return { status: 0, output: execFileSync(process.execPath, [script, "--root", root], { encoding: "utf8" }) };
+    return { status: 0, output: execFileSync(process.execPath, [script, "--root", root], { encoding: "utf8", stdio: "pipe" }) };
   } catch (error) {
     return { status: error.status, output: `${error.stdout ?? ""}${error.stderr ?? ""}` };
   }
