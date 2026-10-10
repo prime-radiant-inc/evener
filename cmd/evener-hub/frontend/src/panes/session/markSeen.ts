@@ -53,9 +53,18 @@ export function useMarkSessionSeenOnOpen(ref: string): void {
       const summary = selectSessionSummary(ref, navigationStore.getState());
       if (!summary) return;
       awaitingRow = false;
+      // The read can outlast the moment it was taken for: a page hidden
+      // meanwhile marks nothing (showing it again marks afresh), and the mark
+      // goes through the connection that is ready now, or waits for one.
       const send = (seenThrough: number | undefined) => {
         if (disposed || seenThrough === undefined) return;
-        client.request("evener/session/seen/set", { sessions: [{ ref, seenThrough }] }).catch(() => {});
+        if (document.visibilityState !== "visible") return;
+        const current = connectionStore.getState();
+        if (current.state !== "ready" || !current.client) {
+          awaitingRow = true;
+          return;
+        }
+        current.client.request("evener/session/seen/set", { sessions: [{ ref, seenThrough }] }).catch(() => {});
       };
       // An older hub sends no seen_through, so its motion can't be compared.
       if (summary.seen_through === undefined) {

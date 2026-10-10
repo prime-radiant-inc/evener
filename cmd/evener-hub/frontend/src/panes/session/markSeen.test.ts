@@ -246,6 +246,7 @@ test("a pane closed while its read is out sends nothing", async () => {
   let answer: (value: never) => void = () => {};
   fake.on(ACTIVITY_READ, () => new Promise<never>((resolve) => (answer = resolve)));
   const pane = renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
   pane.unmount();
   answer(activityFor(Date.parse(SEEN_MARK) + 60_000) as never);
   await settle();
@@ -270,4 +271,47 @@ test("a session with nothing new since its seen mark sends nothing", async () =>
   renderHook(() => useMarkSessionSeenOnOpen(REF));
   await settle();
   expect(marks(quiet)).toEqual([]);
+});
+
+test("a page hidden while the read is out marks nothing until it is shown again", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  let answer: (value: never) => void = () => {};
+  let reads = 0;
+  fake.on(ACTIVITY_READ, () => {
+    reads += 1;
+    if (reads === 1) return new Promise<never>((resolve) => (answer = resolve));
+    return activityFor(moved) as never;
+  });
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  setVisibility("hidden");
+  answer(activityFor(moved) as never);
+  await settle();
+  expect(marks(fake)).toEqual([]);
+  setVisibility("visible");
+  await settle();
+  expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
+
+test("a connection replaced while the read is out marks through the new one", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const first = connectFake();
+  let answer: (value: never) => void = () => {};
+  first.on(ACTIVITY_READ, () => new Promise<never>((resolve) => (answer = resolve)));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  const second = new FakeClient("ready");
+  second.on(SEEN_SET, () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+  act(() => connectionStore.getState().connect(second));
+  answer(activityFor(moved) as never);
+  await settle();
+  expect(marks(first)).toEqual([]);
+  expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
 });
