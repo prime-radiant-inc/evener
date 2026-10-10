@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/lineend"
 )
 
 const skillFrontmatterDelimiter = "---\n"
@@ -27,7 +28,7 @@ var utf8BOM = []byte{0xef, 0xbb, 0xbf}
 // the returned bytes never carry the BOM into the parse and a CRLF source
 // reads like any other.
 func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
-	data = []byte(frontmatter.NormalizeLineEndings(string(bytes.TrimPrefix(data, utf8BOM))))
+	data = []byte(lineend.Normalize(string(bytes.TrimPrefix(data, utf8BOM))))
 	if bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
 		return data, false
 	}

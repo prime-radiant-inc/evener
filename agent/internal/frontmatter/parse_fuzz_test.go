@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
@@ -48,13 +49,14 @@ func FuzzFrontmatterParse(f *testing.F) {
 			return
 		}
 
-		// Framing contract: an unframed document is returned verbatim with nil
-		// Meta; a framed one splits Body exactly at the inner boundary.
+		// Framing contract: an unframed document is returned with its line
+		// endings normalized and nil Meta; a framed one splits Body exactly at
+		// the inner boundary.
 		const delim = "---\n"
-		raw = NormalizeLineEndings(raw)
+		raw = lineend.Normalize(raw)
 		if idx := indexAfter(raw); idx < 0 {
 			if doc.Meta != nil || doc.Body != raw {
-				t.Fatalf("unframed document not returned verbatim:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
+				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
 			}
 		} else {
 			wantBody := raw[len(delim)+idx+len(delim):]

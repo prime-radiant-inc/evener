@@ -1822,6 +1822,22 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 					}
 				}
 			}
+			// A page's own text is never rewritten, even where it quotes a host path.
+			quoted := "see " + filepath.Join(root, "quoted.md") + "\n"
+			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "quoting.txt", "content": quoted}); res.IsError {
+				t.Fatal(res.Output)
+			}
+			for _, call := range []struct {
+				tool string
+				args map[string]any
+			}{
+				{"memory_read", map[string]any{"scope": scope, "file_path": "quoting.txt"}},
+				{"memory_search", map[string]any{"scope": scope, "pattern": "quoted"}},
+			} {
+				if res := memoryExec(t, s, call.tool, call.args); res.IsError || !strings.Contains(res.Output, strings.TrimSuffix(quoted, "\n")) {
+					t.Fatalf("%s rewrote page text: %+v", call.tool, res)
+				}
+			}
 		})
 	}
 }

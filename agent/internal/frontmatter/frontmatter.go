@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"primeradiant.com/evener/agent/internal/lineend"
 )
 
 // Document holds the parsed frontmatter metadata and the remaining Markdown body.
@@ -16,23 +17,13 @@ type Document struct {
 
 const delimiter = "---\n"
 
-// lineEndings turns each "\r\n" and lone "\r" line ending into "\n".
-var lineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
-
-// NormalizeLineEndings is text with each line ending ("\r\n", a lone "\r")
-// turned into "\n", the text Split reads.
-func NormalizeLineEndings(text string) string {
-	return lineEndings.Replace(text)
-}
-
 // Split cuts raw into its frontmatter block and the body after the closing
 // delimiter, the first line that is exactly "---". It reads raw with its line
-// endings normalized (NormalizeLineEndings), so a document saved with CRLF
-// line endings has the same frontmatter, and block and body end their lines
-// in "\n". ok is false, with body set to all of the normalized raw, when raw
-// has no complete frontmatter.
+// endings normalized (lineend.Normalize), so a CRLF document has the same
+// frontmatter, and block and body end their lines in "\n". ok is false, with
+// body set to all of the normalized raw, when raw has no complete frontmatter.
 func Split(raw string) (block, body string, ok bool) {
-	raw = NormalizeLineEndings(raw)
+	raw = lineend.Normalize(raw)
 	rest, found := strings.CutPrefix(raw, delimiter)
 	if !found {
 		return "", raw, false
