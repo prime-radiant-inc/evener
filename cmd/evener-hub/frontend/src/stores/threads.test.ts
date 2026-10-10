@@ -60,7 +60,12 @@ import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
-import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import {
+  blockedUpgradeRequest,
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  neverSettlingRequest,
+} from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -14176,6 +14181,36 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     expect(await reader.listOutbox("ref_a")).toEqual([]);
     reader.close();
+  });
+
+  // Another tab still holding the previous schema blocks the outbox's upgrade,
+  // and the adapter refuses the open at once rather than wait. That refusal is
+  // the storage's, not the send's, so the send goes out directly.
+  test("a send whose outbox upgrade another tab blocks still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-blocked";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? blockedUpgradeRequest() : open(name, version),
+      );
+    try {
+      await threadsStore.getState().send("ref_a", "sent while the upgrade is blocked");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 
   // The fallback send's RPC is its only transport, so a failure on the wire

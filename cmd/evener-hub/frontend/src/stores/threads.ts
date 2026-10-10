@@ -78,6 +78,7 @@ import {
 } from "./mutationOutbox";
 import {
   MutationOutboxIndexedDB,
+  MutationStorageError,
   MutationStorageTimeoutError,
   type RetargetedMutations,
 } from "./mutationOutboxIndexedDB";
@@ -3251,12 +3252,14 @@ const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 // Whether an outbox operation failed because storage did, not because of what
-// it was asked to write: the watchdog's timeout or a storage refusal. Only
-// these earn the send fallback and the storage-blocked reconcile record; the
-// outbox's own validation errors keep their ordinary meaning. Matched by name
-// because DOMExceptions from another realm fail instanceof.
+// it was asked to write: the adapter's own storage errors (a timeout, a
+// refused, blocked or superseded open) or a storage refusal IndexedDB raised.
+// Only these earn the send fallback and the storage-blocked reconcile record;
+// the outbox's own validation errors keep their ordinary meaning. IndexedDB's
+// are matched by name because DOMExceptions from another realm fail
+// instanceof.
 function isStorageFailure(error: unknown): boolean {
-  if (isStorageTimeout(error)) return true;
+  if (error instanceof MutationStorageError) return true;
   const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
   return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
 }
