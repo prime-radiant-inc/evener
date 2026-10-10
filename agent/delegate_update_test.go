@@ -599,6 +599,98 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	}
 }
 
+// A sibling's report to a coordinator draining its workers gets no turn of its
+// own: reports wait for the generation's end. Only a later update wakes the
+// coordinator, and that turn carries the report along with it.
+func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+	coordinatorIdle, updateGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseUpdate := sync.OnceFunc(func() { close(updateGate) })
+	defer releaseUpdate()
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	defer releaseReport()
+	presented := make(chan string, 1)
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report the cursor table.") },
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("b", "WORKER-B: ask your parent which table holds the drain cursor.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on both workers") },
+		func(req llm.Request) llm.Response {
+			presented <- messagesText(req.Messages)
+			return finalResponse("told worker b")
+		},
+	)
+	adapter.script("WORKER-A",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+			return finalResponse("SIBLING_REPORT: drain_cursor")
+		},
+	)
+	adapter.script("WORKER-B",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, updateGate, "the sibling's report to land")
+			return updateResponse("upd", "SIBLING_UPDATE: which table holds the drain cursor?")
+		},
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
+			return finalResponse("worker b done")
+		},
+	)
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 3)
+	var coordinator *Session
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
+		children := root.subagents.sessions()
+		if len(children) != 1 || children[0].State() != SessionIdle {
+			return false
+		}
+		coordinator = children[0]
+		return true
+	})
+	close(coordinatorIdle)
+	coordinator.mu.Lock()
+	path, sessionID := transcriptPath(coordinator.stateDir, coordinator.id), coordinator.id
+	coordinator.mu.Unlock()
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the sibling's report to reach the coordinator", func() bool {
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		return err == nil && len(fold.pendingIDs()) == 1
+	})
+	if coordinator.hasPendingDelegateUpdateAttention() {
+		t.Fatal("the coordinator's drain counts the sibling's report as an update")
+	}
+	releaseUpdate()
+	select {
+	case text := <-presented:
+		releaseReport()
+		if !strings.Contains(text, "SIBLING_UPDATE") {
+			t.Fatalf("the coordinator's first drain turn was not woken by the update:\n%s", text)
+		}
+		if !strings.Contains(text, "SIBLING_REPORT") {
+			t.Fatalf("the update's turn does not carry the sibling's report:\n%s", text)
+		}
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the draining coordinator was never woken by the update")
+	}
+}
+
 // A coordinator that is mid-run when its worker's update arrives sees it at
 // its own next model boundary, and its own generation consumes the update it
 // saw, so no successor generation is started for it.

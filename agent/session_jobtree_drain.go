@@ -1089,17 +1089,22 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// admission. The steer is consumed before the run re-enters this drain,
 		// so the early return does not spin.
 		//
-		// A queued notification (or root attention) already runs a turn whose
-		// model request binds the steering with the lease context, so the gate
-		// below consumes it and the long-standing notification/steering merge is
-		// preserved; only the no-other-driver case returns early.
-		if s.hasPendingStableSteering() && s.peekNotifications() == 0 && !s.pendingRootDelegateAttention() {
-			return lastResult, nil
-		}
+		// A queued notification (or root attention, or a delegate's update)
+		// already runs a turn whose model request binds the steering with the
+		// lease context, so the gate below consumes it and the long-standing
+		// notification/steering merge is preserved; only the no-other-driver
+		// case returns early.
+		//
 		// Parked attention does not drive the rung: a Stop's park defers it,
 		// and the notification turn would only stand down at the admission
-		// gate and spin the drain loop at full rate.
-		if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() {
+		// gate and spin the drain loop at full rate. A delegate's update to
+		// this delegate does drive it (hasPendingDelegateUpdateAttention), and
+		// the turn that presents it consumes it.
+		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasPendingDelegateUpdateAttention()
+		if s.hasPendingStableSteering() && !notificationTurnOwed {
+			return lastResult, nil
+		}
+		if notificationTurnOwed {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has

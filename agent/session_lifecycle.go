@@ -2937,6 +2937,10 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	}
 	hasSteering := s.hasPendingSteering()
 	hasRootAttention := s.hasPendingRootDelegateAttention()
+	// A delegate parked in its finalization drain is woken for its own
+	// delegates' updates (hasPendingDelegateUpdateAttention); the update is
+	// already in its transcript, so the turn's model request carries it.
+	hasDelegateUpdate := s.hasPendingDelegateUpdateAttention()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
@@ -2946,7 +2950,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// defers the attention, and a turn carrying nothing deliverable runs
 	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
 	// and unpark re-arms them.
-	if len(jobNotifs) == 0 && !hasSteering && (!hasRootAttention || s.rootAttentionRailParked()) {
+	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}

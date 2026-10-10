@@ -1393,6 +1393,11 @@ Rules:
 - Attention renders only in its owner's turns. A parent drives an idle child so
   that child processes its own shell/watch attention; the parent renders only
   its own shells and direct delegates. There is no forwarded delegate JobRecord.
+- A delegate whose turn has ended while its generation waits on its own
+  delegates is idle, and an update from one of them wakes it: the wait runs a
+  turn that presents the update and consumes it, so no further generation
+  starts for it. A report from one of them waits for the generation to end,
+  when the next attention generation takes it with everything else pending.
 - Receiver transcripts are the sole durable attention authority. Attention is
   appended and fsynced by exact private ID before a process-local wake. A
   successful notification turn appends and fsyncs the matching consumed marker;

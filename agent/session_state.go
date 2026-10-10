@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -180,6 +182,32 @@ func (s *Session) hasPendingStableDelegateAttention() bool {
 // there.
 func (s *Session) hasPendingStableSteering() bool {
 	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
+}
+
+// hasPendingDelegateUpdateAttention reports whether this session's own
+// delegate generation holds an update from one of its delegates that no turn
+// has consumed. A delegate run parked in its finalization drain reads this to
+// run a turn for it: a parent waiting on its delegates is idle, and an update
+// wakes an idle parent, so a delegate's mid-work question is not hidden until
+// that delegate finishes. A child's report waits for the generation's end,
+// where the next attention generation takes it with everything else pending.
+// The root's attention has its own rail, so this is always false there. A
+// failed transcript read reads as no update: the drain keeps waiting, and the
+// generation's end still delivers the attention.
+func (s *Session) hasPendingDelegateUpdateAttention() bool {
+	if s == nil || s.owningDelegateID == "" {
+		return false
+	}
+	ids, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return false
+	}
+	for _, attentionID := range ids {
+		if deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID("")); ok && delegatestore.IsUpdateDeliveryID(deliveryID) {
+			return true
+		}
+	}
+	return false
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
