@@ -1,4 +1,4 @@
-import type { ThreadReadResponse } from "@evener/appwire-client";
+import type { OverlayItem, ThreadReadResponse } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -110,5 +110,99 @@ for (const bufferedVersion of [0, 2]) {
     const recorded = threadsStore.getState().threads.get(ref)?.history?.turns[0]?.items[0];
     expect(recorded?.version).toBe(bufferedVersion === 2 ? 2 : 1);
     expect(recorded?.text).toBe(bufferedVersion === 2 ? "buffered version" : "read version one");
+  });
+}
+
+for (const authority of ["absent", "absent-with-delta", "response-owned", "recorded-covered"] as const) {
+  test(`ordinary opening accepts only an uncovered missing pre-cut overlay slot, authority ${authority}`, async () => {
+    const fake = new FakeClient("ready");
+    const read = deferred<ThreadReadResponse>();
+    let generation: number | undefined;
+    let readEntered = false;
+    const response = currentRead(ref);
+    response.thread.turns = [];
+    response.overlay = [];
+    response.snapshot = { incarnation: "inc-1", length: 0 };
+    delete response.olderCursor;
+    const slot: OverlayItem = {
+      key: "stream:pre-cut-overlay:agentMessage",
+      kind: "stream",
+      streamId: "pre-cut-overlay",
+      roundId: "round_pre_cut_overlay",
+      turnId: "turn_pre_cut_overlay",
+      item: {
+        id: "item_pre_cut_overlay",
+        turnId: "turn_pre_cut_overlay",
+        type: "agentMessage",
+        text: "buffered overlay body",
+      },
+    };
+    if (authority === "response-owned") {
+      response.overlay = [{ ...slot, item: { ...slot.item, text: "response overlay body" } }];
+    } else if (authority === "recorded-covered") {
+      response.snapshot = { incarnation: "inc-1", length: 1 };
+      response.thread.turns = [
+        {
+          id: "turn_pre_cut_overlay",
+          status: "completed",
+          itemsView: "full",
+          version: 1,
+          items: [
+            {
+              id: "item_recorded_overlay",
+              turnId: "turn_pre_cut_overlay",
+              roundId: "round_pre_cut_overlay",
+              type: "agentMessage",
+              text: "recorded overlay body",
+              transcriptKey: "entry:0/item:0",
+              position: { entry: 0, item: 0 },
+              version: 1,
+            },
+          ],
+        },
+      ];
+    }
+    fake.on("thread/read", (params) => {
+      generation = params.requestGeneration;
+      readEntered = true;
+      return read.promise;
+    });
+    fake.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(fake);
+    const opening = threadsStore.getState().ensureThread(ref);
+    await vi.waitFor(() => expect(readEntered).toBe(true));
+    await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1));
+    fake.emitNotification({ method: "overlay/upserted", params: { ref, threadId: response.thread.id, item: slot } });
+    expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(1);
+    if (authority === "absent-with-delta" || authority === "response-owned") {
+      fake.emitNotification({
+        method: "overlay/delta",
+        params: { ref, threadId: response.thread.id, key: slot.key, field: "text", delta: " after delta" },
+      });
+      expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(2);
+    }
+    response.requestGeneration = generation;
+    read.resolve(response);
+    await opening;
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
+    const model = threadsStore.getState().threads.get(ref);
+    if (authority === "recorded-covered") {
+      expect(model?.overlay).not.toHaveProperty(slot.key);
+      expect(model?.history?.turns[0]?.items[0]).toMatchObject({ text: "recorded overlay body", version: 1 });
+      expect(JSON.stringify(model)).not.toContain("buffered overlay body");
+    } else {
+      expect(model?.overlay?.[slot.key]?.item).toMatchObject({
+        text:
+          authority === "response-owned"
+            ? "response overlay body"
+            : authority === "absent-with-delta"
+              ? "buffered overlay body after delta"
+              : "buffered overlay body",
+      });
+      expect(JSON.stringify(model)).not.toContain(
+        authority === "response-owned" ? "buffered overlay body" : "response overlay body",
+      );
+    }
   });
 }

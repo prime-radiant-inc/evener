@@ -1349,9 +1349,10 @@ async function acceptEntryTranscriptHydration(
     readId: `fixture-read-${++fixture.readSequence}`,
     boundary: `fixture-boundary-${fixture.readSequence}`,
   });
-  for (const update of hydration.fixtureNotifications) {
-    repository.acceptBeforeReadCut(update.notification, { lifetime: fixture.lifetime });
-  }
+  repository.acceptBeforeReadCut(
+    hydration.fixtureNotifications.map((update) => update.notification),
+    { lifetime: fixture.lifetime },
+  );
 }
 
 // Dispose the entry route's reader, publication subscription and repository
@@ -3056,8 +3057,9 @@ async function hydrateAndSubscribe(
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
   // recorded item/turn versions can preserve newer content outside its window,
-  // and a higher queue revision can supersede its queue. Unversioned live input
-  // at or before the cut is already represented by the response.
+  // and a higher queue revision can supersede its queue. Missing overlay slots
+  // can be enriched under recorded coverage, never replacing response-owned
+  // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = usesEntryTranscripts(ref) ? pending.notifications.slice() : [];
   applyHydrationResponseCut(pending, ref, model);
   return { model, response, fixtureNotifications, ...(discardHeldHistory ? { discardHeldHistory: true } : {}) };

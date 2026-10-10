@@ -657,19 +657,32 @@ export class TranscriptRepository {
   }
 
   /**
-   * A read already represents input at its response cut. Only comparable
-   * versions can establish that buffered input contains something newer:
-   * recorded history uses the shared source/item/turn version merge, and queues
-   * have an explicit revision. Unversioned live input cannot supersede the read.
+   * Versioned pre-cut input uses the shared recorded merge or queue revision.
+   * An unversioned overlay may enrich a slot absent from the adopted read, but
+   * cannot replace or append to a response-owned slot. Capture that authority
+   * once for the whole cut, so a missing upsert and its deltas stay together.
+   * The shared reducer prunes any overlay the versioned recorded history covers.
    */
-  acceptBeforeReadCut(notification: AnyNotification, context: { lifetime: number }): boolean {
-    if (notification.method === "history/updated") return this.accept(notification, context);
-    if (
-      notification.method === "thread/queueChanged" &&
-      notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
-    )
-      return this.accept(notification, context);
-    return false;
+  acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+    const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
+    for (const notification of notifications) {
+      if (notification.method === "history/updated") {
+        this.accept(notification, context);
+      } else if (
+        notification.method === "thread/queueChanged" &&
+        notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
+      ) {
+        this.accept(notification, context);
+      } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
+        this.accept(notification, context);
+      } else if (
+        notification.method === "overlay/delta" &&
+        !responseOverlayKeys.has(notification.params.key) &&
+        this.#model?.overlay?.[notification.params.key]
+      ) {
+        this.accept(notification, context);
+      }
+    }
   }
 
   /** Accept a notification only when the captured authority still matches this repository. */
