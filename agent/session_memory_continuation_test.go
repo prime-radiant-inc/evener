@@ -90,10 +90,10 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 					t.Fatal("full history lost its context boundary")
 				}
 			}
-			for name, sentinel := range map[string]string{"memory_personal": "opaque-memory-personal-3730", "memory_project": "opaque-memory-project-3730"} {
+			for scope, sentinel := range map[string]string{"personal": "opaque-memory-personal-3730", "project": "opaque-memory-project-3730"} {
 				count := 0
 				for _, msg := range req.Messages {
-					if msg.Name == name && strings.Contains(msg.Text(), sentinel) {
+					if section, ok := memoryIndexSectionOf(msg.Text(), scope); ok && strings.Contains(section.Content, sentinel) {
 						if msg.Role != llm.RoleUser {
 							t.Fatalf("memory role=%s, want user", msg.Role)
 						}
@@ -101,7 +101,7 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 					}
 				}
 				if count != 1 {
-					t.Fatalf("request carries %d %s projections, want 1", count, name)
+					t.Fatalf("request carries %d %s projections, want 1", count, scope)
 				}
 			}
 			if !requestMessagesContainText(req.Messages, "opaque-current-input-3730") {

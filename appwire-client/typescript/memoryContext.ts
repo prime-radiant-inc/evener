@@ -1,15 +1,15 @@
 // The automatic memory refresh's structured payload, shared by the web and
-// native clients. The daemon records each refresh as a systemMessage with the
-// typed eventKind "memory-context" whose Text is the model-facing envelope
-// (core framing plus a Go-quoted index). A current daemon also attaches the
-// decoded observation on raw.memoryContext; this module validates that shape
-// for the renderers and the grouping rule. No React, no platform access, so
+// native clients. The daemon records each refresh as one model-facing message
+// and projects one systemMessage per section of it, with the typed eventKind
+// "memory-context" and Text the recorded section. An index section also
+// carries the decoded observation on raw.memoryContext; this module validates
+// that shape for the renderers and the grouping rule. No React, no platform access, so
 // both clients consume the same validation rather than maintaining two
 // decoders.
 //
 // The shape is a frozen incoming contract:
 //   raw = { memoryContext: { scope, state, truncated, content } }
-// scope is personal|project|session, state is
+// scope is personal|project, state is
 // current|missing|revoked|unavailable, truncated a boolean, and content the
 // decoded index (empty for a current observation with nothing recorded). A raw
 // that does not match stays undecoded: the renderer falls back to the complete
@@ -21,8 +21,7 @@ export const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 /** The collapsed heading both clients show for a refresh. */
 export const MEMORY_CONTEXT_LABEL = "Refreshed my memory";
 
-// "session" stays so transcripts from earlier builds keep their scope label.
-export const MEMORY_CONTEXT_SCOPES = ["personal", "project", "session"] as const;
+export const MEMORY_CONTEXT_SCOPES = ["personal", "project"] as const;
 export type MemoryContextScope = (typeof MEMORY_CONTEXT_SCOPES)[number];
 
 export const MEMORY_CONTEXT_STATES = ["current", "missing", "revoked", "unavailable"] as const;
@@ -64,7 +63,6 @@ export function parseMemoryContext(raw: unknown): MemoryContextObservation | und
 const SCOPE_LABELS: Record<MemoryContextScope, string> = {
   personal: "Personal memory",
   project: "Project memory",
-  session: "Session memory",
 };
 
 /** The scope's display name, the same words on the collapsed meta line. */
