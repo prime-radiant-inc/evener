@@ -463,7 +463,7 @@ function canonicalThreadOwnerActive(ref: string): boolean {
 }
 
 function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): void {
-  const fixture = entryTranscriptFixtureForTests;
+  const fixture = entryTranscriptRoute(ref);
   if (fixture?.ref === ref && fixture.retirement) {
     fixture.repository?.dispose();
     fixture.unsubscribeRepository?.();
@@ -472,6 +472,7 @@ function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): vo
     fixture.reader = undefined;
     fixture.repository = undefined;
     fixture.retirement = undefined;
+    if (productionEntryRoutes.get(ref) === fixture) productionEntryRoutes.delete(ref);
     fixture.lifetime++;
     noteEntryRouteRetirement(ref);
     finalReleaseOwners.delete(ref);
@@ -598,7 +599,7 @@ export interface EntryTranscriptFixtureOptionsForTests {
   hostId: string;
 }
 
-interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsForTests {
+interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   repository?: TranscriptRepository;
   reader?: TranscriptReader;
   unsubscribeRepository?: () => void;
@@ -618,7 +619,7 @@ interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsFo
   historyGeneration?: number;
 }
 
-let entryTranscriptFixtureForTests: EntryTranscriptFixtureForTests | undefined;
+let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
 
 /** Installs a single selected-session route for an isolated browser fixture only. */
 export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFixtureOptionsForTests): {
@@ -638,7 +639,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
   if (entryTranscriptFixtureForTests) throw new Error("an entry transcript fixture is already installed");
   // The lifetime counter is per-installation bookkeeping, NOT a durable
   // connection identifier: it resets to 1 each time the fixture is installed.
-  const fixture: EntryTranscriptFixtureForTests = { ...options, lifetime: 1, readSequence: 0 };
+  const fixture: EntryTranscriptRoute = { ...options, lifetime: 1, readSequence: 0 };
   entryTranscriptFixtureForTests = fixture;
   return {
     settled: () => fixture.repository?.settled() ?? Promise.resolve(),
@@ -664,12 +665,42 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
   };
 }
 
-function isEntryTranscriptFixtureRef(ref: string): boolean {
-  return entryTranscriptFixtureForTests?.ref === ref;
+const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
+
+// The only legacy selection left is the explicit old-adapter test seam. An
+// ordinary browser always selects entry ingestion, even before its first read.
+function usesEntryTranscripts(ref: string): boolean {
+  if (entryTranscriptFixtureForTests) return entryTranscriptFixtureForTests.ref === ref;
+  return sessionCacheAdapterOverride === undefined;
 }
 
-function isEntryTranscriptFixtureBackgroundOnly(ref: string): boolean {
-  return isEntryTranscriptFixtureRef(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
+function entryTranscriptRoute(ref: string): EntryTranscriptRoute | undefined {
+  if (entryTranscriptFixtureForTests?.ref === ref) return entryTranscriptFixtureForTests;
+  if (!usesEntryTranscripts(ref)) return undefined;
+  let route = productionEntryRoutes.get(ref);
+  if (!route) {
+    route = {
+      ref,
+      cache: currentEntryCache(),
+      clientId: location.origin,
+      hostId: "local",
+      lifetime: 1,
+      readSequence: 0,
+    };
+    productionEntryRoutes.set(ref, route);
+  }
+  return route;
+}
+
+function entryTranscriptRoutes(): EntryTranscriptRoute[] {
+  return [
+    ...productionEntryRoutes.values(),
+    ...(entryTranscriptFixtureForTests ? [entryTranscriptFixtureForTests] : []),
+  ];
+}
+
+function isEntryTranscriptBackgroundOnly(ref: string): boolean {
+  return usesEntryTranscripts(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
 }
 
 // Opening tokens, monotonic across the tab. The pane paints the
@@ -730,16 +761,16 @@ function clearEntryTranscriptLocalOpening(ref: string): void {
 // recorded ingestion, so its accepted updates (not a parallel legacy reduce)
 // are what the renderer follows. The store model stays pruned only while the
 // ref is genuinely background-only; an attached reader means a real holder.
-function publishEntryTranscriptFixtureModel(ref: string): void {
-  const fixture = entryTranscriptFixtureForTests;
+function publishEntryTranscriptModel(ref: string): void {
+  const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
   const snapshot = fixture?.repository?.getSnapshot();
   if (!snapshot) return;
-  putThreadModel(ref, isEntryTranscriptFixtureBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
+  putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
 }
 
-async function openEntryTranscriptFixture(ref: string): Promise<void> {
-  const fixture = entryTranscriptFixtureForTests;
+async function openEntryTranscript(ref: string): Promise<void> {
+  const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   try {
@@ -748,8 +779,8 @@ async function openEntryTranscriptFixture(ref: string): Promise<void> {
     // the repository model, so continued UI changes are repository-owned rather
     // than supplied by the parallel legacy reducer. The explicit openLocal result
     // below is one such publication; this is the subscription that outlives it.
-    fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
-    publishEntryTranscriptFixtureModel(ref);
+    fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
+    publishEntryTranscriptModel(ref);
     const result = await fixture.reader.openLocal(200);
     if (result.model) putThreadModel(ref, result.model);
   } finally {
@@ -757,20 +788,20 @@ async function openEntryTranscriptFixture(ref: string): Promise<void> {
   }
 }
 
-function releaseEntryTranscriptFixtureReader(ref: string): void {
-  const fixture = entryTranscriptFixtureForTests;
+function releaseEntryTranscriptReader(ref: string): void {
+  const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = threadsStore.getState().threads.get(ref);
-  if (model && isEntryTranscriptFixtureBackgroundOnly(ref)) {
+  if (model && isEntryTranscriptBackgroundOnly(ref)) {
     putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
 }
 
 function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetirementOutcome> | undefined {
-  const fixture = entryTranscriptFixtureForTests;
+  const fixture = entryTranscriptRoute(ref);
   const repository = fixture?.ref === ref ? fixture.repository : undefined;
   if (!fixture || !repository || canonicalThreadOwnerActive(ref)) return undefined;
   if (fixture.retirement) return fixture.retirement;
@@ -796,7 +827,7 @@ function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetireme
 }
 
 async function runEntryHistoryRequest<T>(
-  fixture: EntryTranscriptFixtureForTests,
+  fixture: EntryTranscriptRoute,
   signal: AbortSignal | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
@@ -837,7 +868,7 @@ async function acceptEntryTranscriptHydration(
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
 ): Promise<void> {
-  const fixture = entryTranscriptFixtureForTests;
+  const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || pending.client !== wiredClient || pending.epoch !== readyEpoch) return;
   const response = hydration.response;
   const identity: TranscriptResolvedIdentity = {
@@ -846,7 +877,16 @@ async function acceptEntryTranscriptHydration(
     sessionId: response.thread.sessionId,
     incarnation: response.snapshot?.incarnation ?? "",
   };
+  // Host qualification comes from the resolved response, never the opaque
+  // requested ref. The same-origin hub is the durable client namespace.
+  if (productionEntryRoutes.get(ref) === fixture) {
+    const resolvedRef = response.thread.evener.ref;
+    const separator = resolvedRef.indexOf(":");
+    identity.hostId = separator < 0 ? "local" : resolvedRef.slice(0, separator);
+    fixture.hostId = identity.hostId;
+  }
   const historyKey = entryHistoryKey(identity);
+  const historyChanged = fixture.historyKey !== undefined && fixture.historyKey !== historyKey;
   fixture.historyKey = historyKey;
   // The source response was issued before this point. Capture the acquisition's
   // retirement claim AND the route it currently owns, then read the durable
@@ -857,9 +897,14 @@ async function acceptEntryTranscriptHydration(
   const claimedRetirement = pending.entryRetirement ?? entryRouteRetirements.get(ref) ?? 0;
   const claimedRepository = fixture.repository;
   const authorities = await readEntryRouteAuthorities(fixture, historyKey);
-  if (entryTranscriptFixtureForTests !== fixture || pending.client !== wiredClient || pending.epoch !== readyEpoch) {
+  if (entryTranscriptRoute(ref) !== fixture || pending.client !== wiredClient || pending.epoch !== readyEpoch) {
     return;
   }
+  if (
+    productionEntryRoutes.get(ref) === fixture &&
+    (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref))
+  )
+    return;
   const state = threadsStore.getState();
   const retired =
     state.deletedRefs.has(ref) ||
@@ -882,6 +927,7 @@ async function acceptEntryTranscriptHydration(
   if (
     !fixture.repository ||
     threadChanged ||
+    historyChanged ||
     fixture.clearEpoch !== clearEpoch ||
     fixture.historyGeneration !== historyGeneration
   ) {
@@ -906,7 +952,16 @@ async function acceptEntryTranscriptHydration(
         const client = wiredClient;
         if (!client || client.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
         fixture.repository?.beginFreshBaseline();
-        void refreshTrackedThread(client, readyEpoch, ref, true).catch(() => {
+        void refreshTrackedThread(
+          client,
+          readyEpoch,
+          ref,
+          true,
+          false,
+          undefined,
+          undefined,
+          hydrationIntentFor(ref),
+        ).catch(() => {
           // The owned hydration lifecycle schedules transport recovery.
         });
       },
@@ -938,7 +993,7 @@ async function acceptEntryTranscriptHydration(
     });
   }
   const repository = fixture.repository;
-  fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
+  fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     readId: `fixture-read-${++fixture.readSequence}`,
@@ -950,10 +1005,10 @@ async function acceptEntryTranscriptHydration(
 }
 
 // Dispose the entry route's reader, publication subscription and repository
-// together. `openEntryTranscriptFixture` uses `??=`, so leaving a disposed
+// together. `openEntryTranscript` uses `??=`, so leaving a disposed
 // reader or a subscription bound to the old repository installed would let a
 // later open reuse them.
-function retireEntryTranscriptRoute(fixture: EntryTranscriptFixtureForTests): void {
+function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   fixture.reader?.dispose();
   fixture.reader = undefined;
   fixture.unsubscribeRepository?.();
@@ -966,7 +1021,7 @@ function retireEntryTranscriptRoute(fixture: EntryTranscriptFixtureForTests): vo
 // lookup deadline, with a storage-failure fallback: a held or failed durable
 // read must not delay or reject an otherwise successful source hydration.
 async function readEntryRouteAuthorities(
-  fixture: EntryTranscriptFixtureForTests,
+  fixture: EntryTranscriptRoute,
   historyKey: string,
 ): Promise<{ clearEpoch: number; historyGeneration: number } | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2627,7 +2682,7 @@ async function hydrateAndSubscribe(
   // also needs the accepted input itself: the repository merges it under its
   // own version and coverage authority, preserving input absent from a stale
   // response and applying overlays after the recorded baseline.
-  const fixtureNotifications = isEntryTranscriptFixtureRef(ref) ? pending.notifications.slice() : [];
+  const fixtureNotifications = usesEntryTranscripts(ref) ? pending.notifications.slice() : [];
   applyHydrationResponseCut(pending, ref, model);
   return { model, response, fixtureNotifications };
 }
@@ -3921,7 +3976,7 @@ function beginWatchedHydration(
 function bufferPendingNotification(ref: string, pending: PendingThreadHydration, notification: AnyNotification): void {
   const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
   const update = { sequence, now: Date.now(), notification, bytes: encodedPayloadBytes(notification) };
-  if (!isEntryTranscriptFixtureRef(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0) {
+  if (!usesEntryTranscripts(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
       pending.backgroundInvalidated = true;
       transcriptResidency().revoke(ref, "gap");
@@ -3964,13 +4019,11 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   }
 
   const live = threadsStore.getState().threads.get(ref);
-  const { model: hydrated, appliedAt } = replayHydrationNotifications(
-    preserveLiveActiveTurn(model, live),
-    pending.notifications,
-  );
-  const backgroundModel = isEntryTranscriptFixtureBackgroundOnly(ref)
-    ? pruneBackgroundHistoryBodies(hydrated)
-    : hydrated;
+  const repositoryModel = productionEntryRoutes.get(ref)?.repository?.getSnapshot();
+  const { model: hydrated, appliedAt } = repositoryModel
+    ? { model: repositoryModel, appliedAt: pending.notifications.map((update) => update.now) }
+    : replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
+  const backgroundModel = isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(hydrated) : hydrated;
   retirePendingHydration(ref, pending, pendingThreadHydrations);
   currentAdmissions.set(ref, {
     capabilities: hydrated.capabilities,
@@ -3981,7 +4034,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   });
   currentAppliedSequences.set(ref, currentAppliedSequences.get(ref) ?? 0);
   if (
-    !isEntryTranscriptFixtureRef(ref) &&
+    !usesEntryTranscripts(ref) &&
     residencyIfCreated &&
     !residencyIfCreated.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0, true)
   )
@@ -4020,9 +4073,14 @@ async function publishAndReconcileThreadHydration(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<ThreadModel | null> {
+  const productionEntry = productionEntryRoutes.has(ref);
+  if (productionEntry) {
+    if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
+    await acceptEntryTranscriptHydration(ref, pending, hydration);
+  }
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
-  await acceptEntryTranscriptHydration(ref, pending, hydration);
+  if (!productionEntry) await acceptEntryTranscriptHydration(ref, pending, hydration);
   threadsStore.setState((state) => {
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
@@ -4342,10 +4400,10 @@ function handleNotification(n: AnyNotification): void {
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
-      const fixture = entryTranscriptFixtureForTests;
+      const fixture = entryTranscriptRoute(ref);
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
         if (fixture.repository.accept(n, { lifetime: fixture.lifetime }) && !fixture.unsubscribeRepository) {
-          publishEntryTranscriptFixtureModel(ref);
+          publishEntryTranscriptModel(ref);
         }
       }
     }
@@ -4359,7 +4417,7 @@ function handleNotification(n: AnyNotification): void {
       if (pending && targetsPendingHydration(n, pending)) continue;
       const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
       const update = { sequence, now, notification: n, bytes: encodedPayloadBytes(n) };
-      if (!isEntryTranscriptFixtureRef(ref) && transcriptResidency().accept(ref, update)) residencySkipped.add(ref);
+      if (!usesEntryTranscripts(ref) && transcriptResidency().accept(ref, update)) residencySkipped.add(ref);
       currentAppliedSequences.set(ref, sequence);
     }
   }
@@ -4407,7 +4465,7 @@ function handleNotification(n: AnyNotification): void {
     route && (n.method === "history/updated" || n.method.startsWith("overlay/"))
       ? new Set(
           ("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])]).filter((ref) =>
-            isEntryTranscriptFixtureRef(ref),
+            usesEntryTranscripts(ref),
           ),
         )
       : EMPTY_PENDING_REFS;
@@ -4428,7 +4486,7 @@ function handleNotification(n: AnyNotification): void {
     let projected: Map<string, ThreadModel> | undefined;
     for (const ref of changedThreads) {
       const model = nextThreads.get(ref);
-      if (!model || !isEntryTranscriptFixtureBackgroundOnly(ref)) continue;
+      if (!model || !isEntryTranscriptBackgroundOnly(ref)) continue;
       projected ??= new Map(nextThreads);
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
@@ -4439,7 +4497,7 @@ function handleNotification(n: AnyNotification): void {
     let projected: Map<string, ThreadModel> | undefined;
     for (const ref of changedWatchedThreads) {
       const model = nextWatchedThreads.get(ref);
-      if (!model || !isEntryTranscriptFixtureRef(ref)) continue;
+      if (!model || !usesEntryTranscripts(ref)) continue;
       projected ??= new Map(nextWatchedThreads);
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
@@ -4454,7 +4512,7 @@ function handleNotification(n: AnyNotification): void {
       const model = nextThreads.get(ref);
       if (
         model &&
-        !isEntryTranscriptFixtureRef(ref) &&
+        !usesEntryTranscripts(ref) &&
         !residencyIfCreated.published(ref, model, currentAppliedSequences.get(ref) ?? 0)
       ) {
         refused.add(ref);
@@ -4571,7 +4629,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
-  putWatchedThreadModel(ref, isEntryTranscriptFixtureRef(ref) ? pruneBackgroundHistoryBodies(model) : model);
+  putWatchedThreadModel(ref, usesEntryTranscripts(ref) ? pruneBackgroundHistoryBodies(model) : model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -4751,7 +4809,7 @@ async function refreshTrackedThread(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<number | undefined> {
-  if (intent !== "background" || isEntryTranscriptFixtureRef(ref))
+  if (intent !== "background" || entryTranscriptFixtureForTests?.ref === ref)
     return refreshTrackedThreadNow(
       client,
       epoch,
@@ -4763,7 +4821,9 @@ async function refreshTrackedThread(
       intent,
     );
   let attempt: number | undefined;
-  await transcriptResidency().scheduleHydration(ref, intent, async (signal) => {
+  const residency = transcriptResidency();
+  residency.connection(readyEpoch, wiredClient?.state === "ready");
+  await residency.scheduleHydration(ref, intent, async (signal) => {
     attempt = await refreshTrackedThreadNow(
       client,
       epoch,
@@ -5132,7 +5192,7 @@ function invalidateHeldHistoriesForReconnect(): void {
   // retired explicitly at the same boundary; otherwise a same-thread reconnect
   // that reports the same source identifiers would keep the outgoing page
   // certificates eligible for the new connection.
-  entryTranscriptFixtureForTests?.repository?.beginFreshBaseline();
+  for (const route of entryTranscriptRoutes()) route.repository?.beginFreshBaseline();
   const { threads, watchedThreads } = threadsStore.getState();
   for (const [ref, model] of threads) {
     const next = invalidateResumeOnlyForReconnect(model.history ? invalidateHistory(model) : model);
@@ -5320,12 +5380,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (isEntryTranscriptFixtureRef(ref)) await openEntryTranscriptFixture(ref);
+      if (usesEntryTranscripts(ref)) await openEntryTranscript(ref);
       return;
     }
 
     const claimEpoch = readyEpoch;
-    const promoted = isEntryTranscriptFixtureRef(ref) ? false : await transcriptResidency().promote(ref);
+    const promoted = usesEntryTranscripts(ref) ? false : await transcriptResidency().promote(ref);
     if (promoted) return;
 
     // The claim's hydration epoch, observed when the pane claimed the ref —
@@ -5349,7 +5409,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // arms; a joiner sees the shell (threads.has) or the hydration
     // (inflightHydrates) and joins that instead.
     let cachedBase: ThreadModel | undefined;
-    if (!isEntryTranscriptFixtureRef(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+    if (!usesEntryTranscripts(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
       const found = await joinCacheLookup(ref);
       const state = threadsStore.getState();
       // The creator rechecks after the await: a pane that released while the
@@ -5444,7 +5504,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
-            if (isEntryTranscriptFixtureRef(ref)) await openEntryTranscriptFixture(ref);
+            if (usesEntryTranscripts(ref)) await openEntryTranscript(ref);
             return;
           }
         } catch (err) {
@@ -5518,7 +5578,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async releaseThreadAndWait(ref) {
     threadsStore.getState().releaseThread(ref);
-    return entryTranscriptFixtureForTests?.ref === ref ? entryTranscriptFixtureForTests.retirement : undefined;
+    return entryTranscriptRoute(ref)?.retirement;
   },
 
   releaseThread(ref) {
@@ -5534,13 +5594,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
-      releaseEntryTranscriptFixtureReader(ref);
+      releaseEntryTranscriptReader(ref);
       retireCanonicalThreadIfUnowned(ref);
       return retirement;
     }
     syncThreadSubscription(ref);
     releaseSubagentRows(ref);
-    releaseEntryTranscriptFixtureReader(ref);
+    releaseEntryTranscriptReader(ref);
     if (canonicalThreadOwnerActive(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -5780,7 +5840,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const capturedCursor = model.olderCursor;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
       const capturedPageGeneration = olderPageGenerations.get(ref) ?? 0;
-      const fixture = entryTranscriptFixtureForTests;
+      const fixture = entryTranscriptRoute(ref);
       const fixtureState = fixture?.ref === ref ? fixture : undefined;
       const fixtureRepository = fixtureState?.repository;
       // The captured request boundary and baseline authority travel with the
@@ -5821,7 +5881,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // returned, and the background-only route (no attached reader
             // subscription) still receives the model here.
             olderPageGenerations.set(ref, capturedPageGeneration + 1);
-            publishEntryTranscriptFixtureModel(ref);
+            publishEntryTranscriptModel(ref);
           },
         );
         if (outcome.kind === "reconcile") {
@@ -6348,7 +6408,7 @@ function cancelCacheWrite(ref: string): void {
 }
 
 function scheduleCacheWrite(ref: string): void {
-  if (isEntryTranscriptFixtureRef(ref)) return;
+  if (usesEntryTranscripts(ref)) return;
   if (finalReleaseCuts.has(ref)) return;
   const existing = cacheWriteSchedules.get(ref);
   if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
@@ -6401,7 +6461,7 @@ function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
 }
 
 function writeCacheRecord(ref: string, model: ThreadModel): Promise<void> {
-  if (isEntryTranscriptFixtureRef(ref)) return Promise.resolve();
+  if (usesEntryTranscripts(ref)) return Promise.resolve();
   if (!cacheWriteGatesPass(ref, model)) return Promise.resolve();
   if (oversizeMemo.has(ref)) return Promise.resolve(); // memoized per ref, scoped to the model's lifetime
   const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
@@ -6750,7 +6810,7 @@ function transcriptResidency(): TranscriptResidency {
 }
 
 function syncTranscriptResidencyOwners(ref: string): void {
-  const fixtureRoute = isEntryTranscriptFixtureRef(ref);
+  const fixtureRoute = usesEntryTranscripts(ref);
   if (!fixtureRoute) {
     const residency = residencyIfCreated ?? transcriptResidency();
     residency.connection(readyEpoch, wiredClient?.state === "ready");
@@ -6773,7 +6833,7 @@ export async function settleBackgroundTranscriptsForTests(): Promise<void> {
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */
 export async function settleEntryTranscriptForTests(ref: string): Promise<void> {
   await trackedHydrationCompletions.get(ref);
-  if (entryTranscriptFixtureForTests?.ref === ref) await entryTranscriptFixtureForTests.repository?.settled();
+  await entryTranscriptRoute(ref)?.repository?.settled();
 }
 
 export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnapshot {
@@ -6927,6 +6987,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  for (const route of productionEntryRoutes.values()) retireEntryTranscriptRoute(route);
+  productionEntryRoutes.clear();
   productionEntryCache?.close();
   productionEntryCache = undefined;
   residencyIfCreated?.dispose();

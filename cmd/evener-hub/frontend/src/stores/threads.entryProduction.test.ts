@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetThreadsStoreForTests();
-  connectionStore.getState().connect(null);
+  connectionStore.setState({ client: null, state: "idle" });
   for (const cache of caches.splice(0)) cache.close();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -75,6 +75,7 @@ function response(ref = "local:a", turns = [turn("recorded")]): ThreadReadRespon
       evener: {
         ref,
         instanceId: "thread-a",
+        queue: { revision: 0 },
         capabilities: {
           send: true,
           steer: true,
@@ -104,7 +105,7 @@ function connect(read = response()): FakeClient {
 
 it("production cache writes and reopens keyed entries on the real database", async () => {
   const first = cache();
-  const item = turn("disk-row").items[0];
+  const item = turn("disk-row").items?.[0];
   expect(item).toBeDefined();
   if (!item) throw new Error("missing fixture item");
   expect(
@@ -152,7 +153,7 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
         threadId: "thread-a",
         bootGeneration: "1",
         epoch: 1,
-        snapshot: latest.snapshot,
+        snapshot: { incarnation: "inc-a", length: 3 },
         turns: [turn("recovered", 2, "r".repeat(300))],
         items: turn("recovered", 2, "r".repeat(300)).items,
       },
@@ -214,7 +215,7 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   let pages = 0;
   client.on("thread/turns/list", () => {
     pages += 1;
-    return { turns: [turn("older", 1)], bootGeneration: "1", epoch: 1, snapshot: latest.snapshot };
+    return { data: [turn("older", 1)], bootGeneration: "1", epoch: 1, snapshot: latest.snapshot };
   });
   const lease = acquireBackgroundThread(ref);
   await lease.ready;
@@ -260,5 +261,8 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   threadsStore.getState().releaseThread(ref);
   expect(await lease.release()).toEqual({ kind: "saved" });
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
-  expect(await factory.databases()).toEqual([{ name: SESSION_CACHE_DATABASE_NAME, version: 3 }]);
+  expect(await factory.databases()).toEqual([
+    { name: "evener-mutation-outbox", version: 3 },
+    { name: SESSION_CACHE_DATABASE_NAME, version: 3 },
+  ]);
 });
