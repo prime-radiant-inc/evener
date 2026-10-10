@@ -1122,6 +1122,13 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
 			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
 
+		case schema.TurnSteering:
+			// Steering the human partner sent during a turn is their message
+			// too; daemon nudges are not.
+			if text := t.Message.Text(); isPartnerSteering(t) && text != "" {
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			}
+
 		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if text == "" {
@@ -1580,6 +1587,10 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 // what survives.
 const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
 
+// permissionsSection is the default summary's leading section, where the
+// summary quotes the human partner's permissions and holds.
+const permissionsSection = "Permissions and Holds"
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
 // are provided. It mandates eight specific sections, permissions and holds
 // first, and directs the LLM to err on the side of verbosity.
@@ -1587,7 +1598,7 @@ var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. 
 
 Your summary MUST include ALL of the following sections, in this order:
 
-## Permissions and Holds
+## ` + permissionsSection + `
 ` + partnerAuthorityRule + `
 
 ## Conversation Timeline
@@ -1671,14 +1682,17 @@ func checkSummaryReply(reply, instructions string) error {
 	// Once a section heading appears, any later line is content — subheadings,
 	// bold labels and "#3978" lines included — except another section heading
 	// and the summary's own framing markers.
+	// The permissions section restates the human partner's own words, so
+	// content there alone carries none of the folded work: a reply that is
+	// only "## Permissions and Holds\nNone." is no summary.
 	inSection := false
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
-		if rest, ok := summarySectionHeading(line); ok {
-			if isSummaryContent(rest) {
+		if section, rest, ok := summarySectionHeading(line); ok {
+			inSection = !strings.EqualFold(section, permissionsSection)
+			if inSection && isSummaryContent(rest) {
 				return nil
 			}
-			inSection = true
 			continue
 		}
 		if inSection && isSummaryContent(line) {
@@ -1696,28 +1710,29 @@ func isSummaryContent(text string) bool {
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
-// summary sections, and returns any text after the name on the same line:
+// summary sections, and returns the section name as written and any text after
+// it on the same line:
 // "## Progress", "### progress", "**Progress**", "## Progress: fixed it",
 // "**Progress:** fixed it". It needs heading markup: a bare "Progress" is
 // prose, and "#3978" (no space after the #) is not a heading.
-func summarySectionHeading(line string) (string, bool) {
+func summarySectionHeading(line string) (section, rest string, ok bool) {
 	body := line
 	switch {
 	case strings.HasPrefix(line, "#"):
 		body = strings.TrimLeft(line, "#")
 		if !strings.HasPrefix(body, " ") {
-			return "", false
+			return "", "", false
 		}
 	case !strings.HasPrefix(line, "**"):
-		return "", false
+		return "", "", false
 	}
 	body = strings.ReplaceAll(body, "**", "")
 	name, rest, _ := strings.Cut(body, ":")
 	name = strings.TrimSpace(name)
 	if !slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
-		return "", false
+		return "", "", false
 	}
-	return strings.TrimSpace(rest), true
+	return name, strings.TrimSpace(rest), true
 }
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
@@ -1741,7 +1756,9 @@ Follow the caller instructions above when deciding what to preserve verbatim and
 }
 
 // isPartnerSteering reports whether a steering turn is the human partner's own
-// message, sent during a turn, rather than a daemon nudge.
+// message, sent during a turn, rather than a daemon nudge. The checkpoint's
+// collector and the summarizer's "User:" label both use it, so they agree on
+// whose words a steer is.
 func isPartnerSteering(t schema.Turn) bool {
 	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
 }

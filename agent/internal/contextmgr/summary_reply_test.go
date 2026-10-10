@@ -53,6 +53,10 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		"same-line end":      "## Progress: [END SUMMARY]",
 		"same-line start":    "**Progress:** [CONTEXT SUMMARY]",
 		"other heading only": "## Notes\nFixed the auth bug.",
+		// The permissions section restates the partner's own words; on its
+		// own it carries none of the folded work.
+		"permissions only":      "## Permissions and Holds\nNone.",
+		"permissions same-line": "**Permissions and Holds:** none given",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
@@ -187,5 +191,40 @@ func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "User: PARTNER_STEER_SENTINEL") || !strings.Contains(prompt, "System: DAEMON_NUDGE_SENTINEL") {
 		t.Fatalf("steering labels wrong in the summarizer input:\n%s", prompt)
+	}
+}
+
+// On the production path the checkpoint folds history before the summarizer
+// runs, so steering the human partner sent must survive the checkpoint to
+// reach the summarizer at all.
+func TestForceCompact_PartnerSteeringReachesTheSummarizer(t *testing.T) {
+	var prompt string
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			prompt = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\nDone")}
+		},
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	userSteer := schema.NewTurn(schema.TurnSteering, llm.User("PARTNER_STEER_SENTINEL"))
+	userSteer.SteeringSource = events.SteeringSourceUser
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		userSteer,
+		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("more work")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {})
+	if !strings.Contains(prompt, "PARTNER_STEER_SENTINEL") {
+		t.Fatalf("the partner's steering did not survive the checkpoint to reach the summarizer:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "DAEMON_NUDGE_SENTINEL") {
+		t.Fatalf("a daemon nudge was carried as the partner's message:\n%s", prompt)
 	}
 }
