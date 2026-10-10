@@ -231,3 +231,39 @@ func TestFileToolsNeverWriteACarveOutThroughAWritableAlias(t *testing.T) {
 		t.Errorf("nothing may be written into the carve-out: %v", err)
 	}
 }
+
+// A read grant inside a carve-out never becomes an anchor of its own: reads
+// there anchor at the validated carve-out root, so redirecting the carve-out
+// after resolution cannot steer them elsewhere.
+func TestFileToolsAnchorAReadGrantInsideACarveOutAtTheCarveOut(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	config := filepath.Join(home, ".config", "evener")
+	cache := filepath.Join(config, "plugins", "cache")
+	elsewhere := filepath.Join(home, "elsewhere")
+	for _, dir := range []string{worktree, filepath.Join(cache, "mkt"), filepath.Join(elsewhere, "mkt")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, "mkt", "private.txt"), []byte("not granted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{cache}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{filepath.Join(cache, "mkt")}}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := os.Rename(cache, cache+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, cache); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	_, err = env.ReadFile(filepath.Join(cache, "mkt", "private.txt"), nil, nil)
+	mustDenied(t, err, "read_file through a read grant inside a carve-out redirected after resolution")
+}

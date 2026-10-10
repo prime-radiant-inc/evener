@@ -462,14 +462,18 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
-	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, rp)
-	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
-	// Spawned processes keep the whole mask: the backends grant a read root at
-	// its canonical path at every spawn and do not re-check a carve-out, so a
-	// carve-out swapped for a symlink would widen their grant. Only the file
-	// tools, which re-validate where they open a root, get the carve-out.
+	// Read roots are filtered against the whole mask, carve-outs included: a
+	// read grant inside a carve-out would become a file-tool anchor of its own
+	// that the carve-out's open-time checks never see, and the carve-out root
+	// itself covers it. Spawned processes keep the whole mask too: the
+	// backends grant a read root at its canonical path at every spawn and do
+	// not re-check a carve-out, so a carve-out swapped for a symlink would
+	// widen their grant. Only the file tools, which re-validate where they
+	// open a carve-out root, get the carve-out.
 	wholeMask := rp
 	wholeMask.UnmaskedRoots = nil
+	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, wholeMask)
+	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
 
@@ -778,14 +782,10 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 }
 
 // sameDir reports whether a and b name the same directory: the same spelling,
-// or the same symlink-resolved location.
+// or the same symlink-resolved location (for one not created yet, where
+// creating it would land).
 func sameDir(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, aerr := filepath.EvalSymlinks(a)
-	rb, berr := filepath.EvalSymlinks(b)
-	return aerr == nil && berr == nil && ra == rb
+	return a == b || resolveExistingPrefix(a) == resolveExistingPrefix(b)
 }
 
 // unmaskedContentRoots admits the host's Evener content roots as read-only

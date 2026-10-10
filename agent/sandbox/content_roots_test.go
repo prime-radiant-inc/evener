@@ -537,3 +537,29 @@ func TestEvenerContentRootsBeforeTheConfigDirExistsUnderASymlinkedHome(t *testin
 		}
 	}
 }
+
+// Denylisting the real location of a symlinked config root that does not
+// exist yet is the user's boundary too: content installed there later stays
+// masked under both spellings.
+func TestEvenerContentRootsHonourAnExplicitMaskOfAMissingRealConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	realHome := clean(t.TempDir())
+	linkHome := filepath.Join(clean(t.TempDir()), "home-link")
+	if err := os.Symlink(realHome, linkHome); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(linkHome, ".config", "evener", "plugins", "cache")
+	host := bwrapHost()
+	host.Home = linkHome
+	host.EvenerContentRoots = []string{cache}
+	realConfig := filepath.Join(realHome, ".config", "evener")
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{realConfig}}, host, root)
+	if err := os.MkdirAll(filepath.Join(realConfig, "plugins", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(cache, "p", "SKILL.md"), filepath.Join(realConfig, "plugins", "cache", "p", "SKILL.md")} {
+		if !rp.Masks(p) {
+			t.Errorf("%s must stay masked under an explicit mask of the real config root: %v", p, rp.UnmaskedRoots)
+		}
+	}
+}
