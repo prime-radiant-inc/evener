@@ -1816,7 +1816,18 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 	}
 	for _, packet := range res.Earlier {
 		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, TranscriptRef: res.TranscriptRef}
-		completeStableDelegateSendResult(&earlier, packet)
+		if packet.Kind == delegatestore.PacketUpdate {
+			// A mid-work update the reply carries ahead of the newest result
+			// settles nothing: it is the delegate's message and no more.
+			earlier.Action = "update"
+			message, err := delegateUpdateMessage(packet)
+			if err != nil {
+				message = err.Error()
+			}
+			earlier.Output = message
+		} else {
+			completeStableDelegateSendResult(&earlier, packet)
+		}
 		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
 	}
 	return out
