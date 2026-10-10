@@ -20,12 +20,6 @@ export function AlertsPage() {
 					value={preferences.questions}
 					onChange={toggle("questions")}
 				/>
-				<SwitchRow
-					label="A session finishes"
-					sub="Finished results always land in Finished on the Board"
-					value={preferences.finished}
-					onChange={toggle("finished")}
-				/>
 			</Group>
 			<Group>
 				<SwitchRow

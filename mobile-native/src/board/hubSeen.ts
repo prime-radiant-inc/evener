@@ -1,6 +1,6 @@
 // The hub's seen marker on the phone (S4). A row that carries a readable
-// turn_ended_at is the hub's to decide: it is Finished while the hub says
-// unseen. Marks this phone makes go to the hub through
+// turn_ended_at is the hub's to decide: it carries the blue dot while the hub
+// says unseen. Marks this phone makes go to the hub through
 // evener/session/seen/set and show at once through a pending map until the
 // hub's rows catch up. A mark reads a session through a turn end or, on a hub
 // that sends seen_through, its last motion. A row without a readable

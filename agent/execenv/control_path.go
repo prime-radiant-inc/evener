@@ -31,12 +31,13 @@ func QuoteControlPath(p string) string {
 	return strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
 }
 
-// grepOutputPath is how a grep result line names the file at rel: rel as it
-// is, or, when rel holds a control character, quoted (QuoteControlPath), so a
-// newline in a name never splits a result line.
-func grepOutputPath(rel string) string {
-	if PathHasControl(rel) {
-		return QuoteControlPath(rel)
+// OneLinePath is how a tool's output names the path p on a line of its own
+// (a grep result, a glob match, a directory entry): p as it is, or, when p
+// holds a control character, quoted (QuoteControlPath), so a newline in a
+// name never splits a line and every tool names such a file the same way.
+func OneLinePath(p string) string {
+	if PathHasControl(p) {
+		return QuoteControlPath(p)
 	}
-	return rel
+	return p
 }

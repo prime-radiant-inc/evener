@@ -25,8 +25,7 @@ describe("state marks pair shape with color (spec 13.1)", () => {
 		expect(markFor("working", false)).toMatchObject({ name: "circle.fill", tint: "alive", size: 8 });
 	});
 
-	it("draws nothing for finished, idle and shut-down rows: a finished row's dot is the row's unseen dot", () => {
-		expect(markFor("finished", false)).toBeNull();
+	it("draws nothing for idle and shut-down rows: an idle row's dot is the row's unseen dot", () => {
 		expect(markFor("idle", false)).toBeNull();
 		expect(markFor("shutDown", false)).toBeNull();
 	});
