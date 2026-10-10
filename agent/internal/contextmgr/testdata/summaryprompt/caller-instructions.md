@@ -1,6 +1,6 @@
 You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
-## CALLER INSTRUCTIONS (these take precedence over the general guidance)
+## CALLER INSTRUCTIONS (these take precedence over the general guidance, never over your human partner's permissions and holds)
 CALLER_INSTRUCTIONS_SENTINEL
 
 Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win, except over the rule on your human partner's permissions and holds. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
