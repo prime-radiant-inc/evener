@@ -96,7 +96,7 @@ native:agent:./plugin:FuzzDiscoverEvenerwideFrontmatter
 native:.:./internal/credentials:FuzzCredentialsStoreDecode
 native:agent:./plugin:FuzzPluginLoad
 native:agent:./transcript:FuzzTranscriptWriterRoundTrip
-native:agent:.:FuzzTranscriptRangeSpec
+native:agent:.:FuzzTranscriptRangeSpec:./internal/turnwindow
 native:agent:./doctor:FuzzParseRunbook
 native:agent:./transcript:FuzzToolFailureRule
 native:agent:./transcript:FuzzFailureCounterAttribution

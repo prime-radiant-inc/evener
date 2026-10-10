@@ -12,7 +12,12 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import type { MutationOutboxOpenDiagnostic } from "./mutationOutboxIndexedDB";
-import { MutationOutboxIndexedDB, MutationStorageTimeoutError, warnOpenDiagnostic } from "./mutationOutboxIndexedDB";
+import {
+  MutationOutboxIndexedDB,
+  MutationStorageError,
+  MutationStorageTimeoutError,
+  warnOpenDiagnostic,
+} from "./mutationOutboxIndexedDB";
 import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedDB";
 
 const DATABASE_NAME = "evener-mutation-outbox";
@@ -199,7 +204,8 @@ test("a blocked upgrade request records the blocked path", async () => {
     path: "open-blocked",
     versionchangeTransaction: false,
   });
-  expect(await failure).toBeInstanceOf(Error);
+  // Branded as the storage's own failure, so a send can fall back past it.
+  expect(await failure).toBeInstanceOf(MutationStorageError);
   older.close();
   storage.close();
 });

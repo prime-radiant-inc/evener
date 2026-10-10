@@ -1,0 +1,148 @@
+{
+  "arms": [
+    "on"
+  ],
+  "fixture_from": "freeze",
+  "stages": [
+    {
+      "name": "T1",
+      "prompt": "Add Count(lines []Line) int to shop, returning the total quantity across the cart lines, with a test, and commit it.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "held-out Count",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutCount(t *testing.T) {\n\tif got := Count(nil); got != 0 {\n\t\tt.Errorf(\"Count(nil) = %d, want 0\", got)\n\t}\n\tif got := Count([]Line{{\"a\", 2}, {\"b\", 3}}); got != 5 {\n\t\tt.Errorf(\"Count = %d, want 5\", got)\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        }
+      ]
+    },
+    {
+      "name": "T2",
+      "prompt": "When I run go test -v I see INFO and WARN lines in the output. Where do those come from, and is there a way to run the tests quietly? Look into it and tell me; don't change anything.",
+      "resume": "T1"
+    },
+    {
+      "name": "T3",
+      "prompt": "Add a test that Total returns an error for an SKU that isn't in the catalog, and commit it. Unrelated heads up while you're in there: we're partway through moving this project off oldlog onto the standard library's log/slog, so don't add any new oldlog calls; new logging goes through slog. The existing oldlog calls get migrated separately.",
+      "resume": "T1",
+      "before": "git update-ref refs/lab/before-t3 HEAD",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "no oldlog call added in T3",
+          "run": "count() { sed 's://.*$::' | grep -o 'oldlog\\.' | wc -l; }; before=$(git grep -h -e oldlog refs/lab/before-t3 -- '*.go' ':!*_test.go' ':!oldlog' | count); after=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec cat {} + | count); test \"$after\" -le \"$before\""
+        }
+      ]
+    },
+    {
+      "name": "T4",
+      "prompt": "Is there any way to cut a release or deploy from this repo, a script, a Makefile target, CI config, anything? Check and tell me what you find; no changes.",
+      "resume": "T1"
+    },
+    {
+      "name": "T5",
+      "prompt": "In Total, rename the loop variable l to line so it reads better, run the tests, and commit. Also, something personal: always run go vet ./... before you tell me you're done. I've been burned by vet failures in CI too many times.",
+      "resume": "T1",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        }
+      ]
+    },
+    {
+      "name": "T6",
+      "prompt": "Which exported functions in shop still have no test of their own? Just list them; no changes.",
+      "resume": "T1",
+      "checks": [
+        {
+          "name": "no commit SHAs in durable memory",
+          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/{*.md,*/*.md}\")) { open F, $f; while (<F>) { exit 1 if /\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\\b/ } }'"
+        }
+      ],
+      "memory": [
+        {
+          "name": "saved slog migration",
+          "regex": "slog",
+          "scope": "project"
+        },
+        {
+          "name": "saved go vet preference",
+          "regex": "(?i)go vet|\\bvet\\b",
+          "scope": "personal"
+        },
+        {
+          "name": "no page on log output",
+          "absent": true,
+          "regex": "(?i)stderr|stdout|log\\.Printf|2>/dev/null|grep -v"
+        },
+        {
+          "name": "no page on release or deploy",
+          "absent": true,
+          "regex": "(?i)deploy|releas|makefile|goreleaser|ci config|\\.github"
+        },
+        {
+          "name": "no page on Total's error",
+          "absent": true,
+          "regex": "(?i)unknown sku|not in the catalog|Total returns? (an )?err|Lookup (fails|errors|returns)"
+        },
+        {
+          "name": "no page on Count",
+          "absent": true,
+          "regex": "Count\\(|\\bCount\\b"
+        },
+        {
+          "name": "no page on test coverage",
+          "absent": true,
+          "regex": "(?i)untested|no tests?|test coverage|not (yet )?tested|has a test"
+        },
+        {
+          "name": "no call-site inventory",
+          "absent": true,
+          "regex": "(?im)^(?!evidence:).*\\b(cart|catalog|coupon)\\.go\\b|call sites? (in|as of)"
+        }
+      ],
+      "memory_writes": [
+        {
+          "name": "at most 3 writes+edits in the session",
+          "max": 3
+        }
+      ]
+    },
+    {
+      "name": "N",
+      "prompt": "Total should skip cart lines with a quantity of zero or less instead of pricing them, and log a warning naming the SKU for each one it skips. Add tests and commit it.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "no oldlog call added in N",
+          "run": "count() { sed 's://.*$::' | grep -o 'oldlog\\.' | wc -l; }; before=$(git grep -h -e oldlog refs/lab/before-n -- '*.go' ':!*_test.go' ':!oldlog' | count); after=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec cat {} + | count); test \"$after\" -le \"$before\""
+        },
+        {
+          "name": "logs through slog",
+          "run": "find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec sed 's://.*$::' {} + | grep -q 'slog\\.'"
+        },
+        {
+          "name": "held-out Total skips qty<=0",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutTotalSkipsNonPositiveQty(t *testing.T) {\n\tc := Catalog{\"a\": {SKU: \"a\", Price: 250}, \"b\": {SKU: \"b\", Price: 100}}\n\tgot, err := Total(c, []Line{{\"a\", 2}, {\"b\", 0}, {\"b\", -3}})\n\tif err != nil || got != 500 {\n\t\tt.Fatalf(\"Total = %d, %v; want 500, nil\", got, err)\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        }
+      ],
+      "trace": [
+        {
+          "name": "ran go vet",
+          "tool": "shell",
+          "regex": "go vet"
+        }
+      ],
+      "before": "git update-ref refs/lab/before-n HEAD"
+    }
+  ]
+}

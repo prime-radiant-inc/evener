@@ -121,15 +121,12 @@ describe("coalescing (spec 13.3)", () => {
 		expect(alerts.getSnapshot().banner).toBeNull();
 	});
 
-	it("never combines a notice or a finished result with sessions that need you", () => {
+	it("never combines a notice with sessions that need you", () => {
 		const { alerts } = center();
-		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, finished: true });
 		alerts.offer(session("a"));
 		alerts.offer(hostOffline);
 		expect(shown(alerts)).toEqual(["host:paradise-park"]);
 		alerts.offer(session("b"));
-		expect(shown(alerts)).toEqual(["b"]);
-		alerts.offer(session("c", "finished"));
 		expect(shown(alerts)).toEqual(["b"]);
 	});
 });
@@ -141,7 +138,6 @@ describe("what alerts at all", () => {
 		alerts.offer(session("a", "failed"));
 		alerts.offer(session("b", "question"));
 		alerts.offer(session("c", "approval"));
-		alerts.offer(session("d", "finished"));
 		alerts.offer(session("n", "needsYou"));
 		expect(alerts.getSnapshot().banner).toBeNull();
 		alerts.offer(session("e", "warning"));
@@ -149,17 +145,7 @@ describe("what alerts at all", () => {
 		expect(shown(alerts)).toEqual(["e", "f"]);
 	});
 
-	it("shows a finished result only when turned on, and never buzzes for it", () => {
-		const { alerts, haptics } = center();
-		alerts.offer(session("a", "finished"));
-		expect(alerts.getSnapshot().banner).toBeNull();
-		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, finished: true });
-		alerts.offer(session("a", "finished"));
-		expect(shown(alerts)).toEqual(["a"]);
-		expect(haptics).toEqual([]);
-	});
-
-	it("tells you a session you started opened elsewhere, whatever the finished setting, and opens it on a tap", () => {
+	it("tells you a session you started opened elsewhere, and opens it on a tap", () => {
 		const { alerts, haptics } = center();
 		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
 		expect(shown(alerts)).toEqual(["a"]);
@@ -440,17 +426,6 @@ describe("held while you read or type (spec 13.3)", () => {
 		expect(shown(alerts)).toEqual(["a"]);
 	});
 
-	it("drops a finished result instead of holding it", () => {
-		const { alerts } = center();
-		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, finished: true });
-		const release = alerts.hold("quiet");
-		alerts.offer(session("a", "finished"));
-		expect(alerts.getSnapshot().held).toBe(0);
-		release();
-		vi.advanceTimersByTime(RELEASE_MS);
-		expect(alerts.getSnapshot().banner).toBeNull();
-	});
-
 	it("lets go of held alerts about the session you land on", () => {
 		const { alerts } = center();
 		const release = alerts.hold("quiet");
@@ -566,10 +541,9 @@ describe("the order Next serves first (spec 8.3)", () => {
 		expect(alerts.getSnapshot().recent).toEqual(["b", "c", "a"]);
 	});
 
-	it("never counts a finished result", () => {
+	it("never counts a session you started", () => {
 		const { alerts } = center();
-		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, finished: true });
-		alerts.offer(session("a", "finished"));
+		alerts.offer(session("a", "started"));
 		expect(alerts.getSnapshot().recent).toEqual([]);
 	});
 

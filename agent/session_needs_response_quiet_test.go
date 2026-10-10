@@ -416,3 +416,282 @@ func TestStatusSettledIsNotAWatchableEventKind(t *testing.T) {
 		}
 	}
 }
+
+// A notification wake the session filters out (nothing deliverable) runs no
+// turn, so it leaves a needs_response rest where it was: still awaiting, as
+// the server's stored state and restore say.
+func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after the needs_response turn = %q, want awaiting", got)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after a filtered wake = %q, want awaiting kept", got)
+	}
+	if got := sess.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("wire state after a filtered wake = %q, want awaiting, as the server keeps it", got)
+	}
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	// The needs_response turn ended its own input once; the filtered wake
+	// ended none and announced nothing (immediate rest emits no settle).
+	inputEnds := 0
+	for _, ev := range *evs {
+		if ev.Kind == events.EventStatusSettled {
+			t.Fatalf("a filtered wake announced a state change: %+v", ev)
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason != "session_closed" {
+			inputEnds++
+		}
+	}
+	if inputEnds != 1 {
+		t.Fatalf("input-ending SESSION_ENDs = %d, want only the needs_response turn's", inputEnds)
+	}
+}
+
+// A filtered wake over an idle session leaves it idle.
+func TestFilteredWakeKeepsAnIdleRest(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("done", "done") }))
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after a filtered wake = %q, want idle", got)
+	}
+}
+
+// A filtered wake inside the quiet period runs no turn, so the rest it
+// interrupted still stands: the session waits a fresh quiet period from the
+// wake, then rests awaiting and announces it.
+func TestFilteredWakeInsideTheQuietPeriodStillRestsAwaiting(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state right after the filtered wake = %q, want idle", got)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault - time.Millisecond)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state just before the fresh quiet period ends = %q, want idle", got)
+	}
+	fake.Advance(time.Millisecond)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state once the fresh quiet period ends = %q, want awaiting", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
+		t.Fatalf("status settled events = %v, want one awaiting", got)
+	}
+}
+
+// A real turn inside the quiet period a filtered wake re-armed still cancels
+// it: only a wake that runs no turn keeps the rest.
+func TestTurnAfterAFilteredWakeInsideTheQuietPeriodNeverArms(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t,
+		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+		func(llm.Request) llm.Response { return endReasonResponse("got it", "") },
+	)
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	if _, err := sess.ProcessInput(ctx, "blue", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle: the turn moved past the question", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
+
+// A filtered wake after the quiet period has rested the session awaiting
+// keeps it there and announces nothing more.
+func TestFilteredWakeAfterTheQuietPeriodStaysAwaiting(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state after a filtered wake = %q, want awaiting kept", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
+		t.Fatalf("status settled events = %v, want only the first rest's awaiting", got)
+	}
+}
+
+// A filtered wake on a session that has never scheduled a quiet period
+// re-arms nothing: there was no rest to interrupt.
+func TestFilteredWakeOnAFreshSessionStaysIdle(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t)
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after a filtered wake = %q, want idle", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
+
+// A stale notification queued during the needs_response turn runs inline in
+// the same input and is filtered out: it runs no turn, so the input still
+// ends on needs_response and rests awaiting after the quiet period.
+func TestFilteredWakeInsideTheNeedsResponseInputStillRestsAwaiting(t *testing.T) {
+	t.Parallel()
+	var sess *Session
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response {
+		sess.enqueueJobNotification(jobNotification{WatchSend: &watchSendToken{ChildSessionID: "gone"}})
+		return endReasonResponse("which?", "needs_response")
+	})
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state once the quiet period ends = %q, want awaiting", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 1 || got[0] != string(SessionAwaiting) {
+		t.Fatalf("status settled events = %v, want one awaiting", got)
+	}
+}
+
+// A real turn inside the quiet period that ends the wait, then a filtered
+// wake, leaves the session idle: the wake has no rest of its own to resume.
+func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t,
+		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
+		func(llm.Request) llm.Response { return endReasonResponse("got it", "done") },
+	)
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	if _, err := sess.ProcessInput(ctx, "blue", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle: the second turn moved past the question", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
+
+// The rest a filtered wake re-arms still waits on work in flight: a wake
+// whose notification could not be recorded puts it back in the queue and
+// runs no turn, so the session stays idle past the fresh quiet period.
+func TestFilteredWakeThatRequeuesWorkInsideTheQuietPeriodStaysIdle(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fake := agenttest.NewFakeClock()
+	sess := newSession(t, withDir(dir), withClock(fake), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+	appendFails := context.WithValue(ctx, sessionLifecycleFaultsKey{}, map[string]error{"append_notification": errors.New("append failed")})
+	if _, err := sess.ProcessInputKind(appendFails, "", nil, EntryNotification); err != nil {
+		t.Fatalf("refused wake: %v", err)
+	}
+	if sess.peekNotifications() == 0 {
+		t.Fatal("the refused wake's notification was not requeued")
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle while the requeued notification waits", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}

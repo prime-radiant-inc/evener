@@ -1422,7 +1422,7 @@
       "turnId": "turn_1",
       "toolName": "doctor_evener",
       "callId": "call_doctor_evener",
-      "output": "{\n  \"session_id\": \"02wMz5Txv5aIxgf9yVdd0N\",\n  \"result_tool\": \"communicate\",\n  \"turns_total\": 1,\n  \"turns_rendered\": 1,\n  \"elided\": 0,\n  \"turns\": [\n    {\n      \"index\": 1,\n      \"kind\": \"ASSISTANT\",\n      \"role\": \"assistant\",\n      \"text\": \"The settle race comes from the drain running after settle reads the tree.\"\n    }\n  ]\n}",
+      "output": "{\n  \"session_id\": \"02wMz5Txv5aIxgf9yVdd0N\",\n  \"result_tool\": \"communicate\",\n  \"turns_total\": 1,\n  \"turns_rendered\": 1,\n  \"elided\": 0,\n  \"turns\": [\n    {\n      \"turn\": 0,\n      \"kind\": \"ASSISTANT\",\n      \"role\": \"assistant\",\n      \"text\": \"The settle race comes from the drain running after settle reads the tree.\"\n    }\n  ]\n}",
       "status": "completed",
       "completedAt": 1790625602000
     },

@@ -8,7 +8,13 @@
 // - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
 
-import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  type MethodTypes,
+  type Thread,
+  type ThreadCapabilities,
+  type ThreadReadResponse,
+  WireError,
+} from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
@@ -1002,7 +1008,9 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   expect(message.textContent).toBe("next draft");
 });
 
-test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
+// A refused durable write sends directly; the paused write keeps that send in
+// flight while focus moves, and the daemon's refusal is what the person sees.
+test("ordinary Send retains draft and reports a refused send without late focus theft", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   let failCommit: (() => void) | undefined;
@@ -1011,9 +1019,12 @@ test("ordinary Send retains draft and reports local failure without late focus t
   });
   const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
     await failure;
-    throw new Error("focus proof storage failure");
+    throw new DOMException("storage full", "QuotaExceededError");
   });
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  fake.on("turn/start", () => {
+    throw new WireError("focus proof send refusal", -32000);
+  });
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
@@ -1028,15 +1039,13 @@ test("ordinary Send retains draft and reports local failure without late focus t
     await user.click(elsewhere);
     await act(async () => failCommit?.());
     await waitFor(() =>
-      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain(
-        "focus proof storage failure",
-      ),
+      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain("focus proof send refusal"),
     );
     await flushPendingTurnsProjectionForTests();
     expect(message.textContent).toBe("kf");
     expect(readDraft("ref_a")).toBe("kf");
     expect(send.disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     expect(document.activeElement).toBe(elsewhere);
   } finally {
     failCommit?.();
