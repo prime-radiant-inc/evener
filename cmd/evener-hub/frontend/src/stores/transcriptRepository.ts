@@ -92,6 +92,15 @@ function commitCarriesCoverage(coverage: EntryCoverageInput, reach: AbandonedCov
   return coverage.representedSnapshot >= reach.snapshot;
 }
 
+/** Whether `inner` lies within `outer`, so a reconciliation for `outer` answers it. */
+function reachWithin(outer: AbandonedCoverage, inner: AbandonedCoverage): boolean {
+  if (inner.start !== null && inner.end !== null) {
+    if (outer.start === null || outer.end === null) return false;
+    return comparePosition(outer.start, inner.start) <= 0 && comparePosition(outer.end, inner.end) >= 0;
+  }
+  return outer.snapshot >= inner.snapshot;
+}
+
 /**
  * The real body identities a batch retains in memory, keyed by the row/turn
  * object so a body shared between the pending map and its batch, or between a
@@ -235,6 +244,11 @@ export class TranscriptRepository {
   // reconsidered through the ordinary accept path.
   #reconcileArmed = false;
   #reconcileCancel: (() => void) | undefined;
+  // The abandoned reach a reconciliation was last requested for. Re-feeding the
+  // same rejected content does not request another: only a wider obligation (or
+  // one re-broken after a covering commit cleared it) arms afresh, so repeated
+  // callback/read feedback is not a repair loop.
+  #reconciledReach: AbandonedCoverage | undefined;
   // Accepted writes from a repository with no reader demand wait for the single
   // shared background slot instead of issuing immediately. Each carries the
   // bodies it retains and a settlement promise so `settled()` joins it.
@@ -909,7 +923,10 @@ export class TranscriptRepository {
     this.#pending.clear();
     this.#cancelRetry();
     this.#abandonBackgroundAccepts("cancelled");
-    this.#releaseHandoffOverlay();
+    // The invalidated repository keeps its model, and the model's display turns
+    // still carry the ended handoff payload, so the charge (and the overlay
+    // registration) stays with it until disposal. Releasing here would leave a
+    // retained body with no charge or inventory entry.
   }
 
   dispose(): void {
@@ -1303,6 +1320,7 @@ export class TranscriptRepository {
             commitCarriesCoverage(batch.coverage, abandoned.reach)
           ) {
             this.#recoveryAbandoned = undefined;
+            this.#reconciledReach = undefined;
           }
         }
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
@@ -1367,15 +1385,20 @@ export class TranscriptRepository {
     return Promise.resolve();
   }
 
-  // Arm one paced reconciliation after an overflow. It never re-arms itself, so
-  // an unchanged live delta or a repeated open cannot become a repair loop;
-  // changed eligible content is reconsidered through the ordinary accept path.
+  // Arm one paced reconciliation after an overflow. It does not arm again for an
+  // abandoned reach it already requested (re-feeding the same rejected content),
+  // so repeated callback/read feedback is not a repair loop; a wider obligation
+  // arms afresh, and changed eligible content is reconsidered through the
+  // ordinary accept path.
   #scheduleReconcile(): void {
     if (this.#reconcileArmed || this.#disposed || this.#invalidated) return;
+    const reach = this.#recoveryAbandoned?.reach;
+    if (reach && this.#reconciledReach && reachWithin(this.#reconciledReach, reach)) return;
     this.#reconcileArmed = true;
     const fire = () => {
       this.#reconcileArmed = false;
       this.#reconcileCancel = undefined;
+      this.#reconciledReach = this.#recoveryAbandoned?.reach;
       // A real request: the repository asks its owner for an authoritative read.
       this.#binding.reconcile?.();
       this.#scheduleRetry();

@@ -1421,13 +1421,99 @@ it("charges and inventories an over-budget ended handoff body through the real m
   expect(admission.retainedBytes).toBe(0);
 });
 
-// Task 3f N3: invalidation releases an ended handoff body's charge, so it must
-// also drop that body from the model it keeps; otherwise the model retains a
-// body with no charge or inventory entry.
-it("drops ended handoff bodies from the model when their charge is released on invalidation", async () => {
+// Task 3f B1: invalidation keeps the model, whose display turns still carry the
+// ended handoff payload, so the charge and the inventory entry must stay with it
+// until disposal. Deleting the overlay key alone is not proof of release.
+it("keeps the ended handoff charge while the invalidated model retains its payload", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const admission = new EntryWriteAdmission(8_000);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  const key = "stream:round-9/1:agentMessage";
+  const endedText = "z".repeat(3_000);
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key,
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "round-9",
+          streamId: "round-9/1",
+          item: {
+            type: "agentMessage",
+            id: "item-ended",
+            turnId: "turn_1",
+            roundId: "round-9",
+            text: endedText,
+          },
+        },
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "round-9" } } as unknown as AnyNotification, {
+    lifetime: 1,
+  });
+  expect(owner.getSnapshot()?.overlay?.[key]).toBeDefined();
+  expect(admission.retainedBytes).toBeGreaterThan(0);
+  // The ended payload is retained in the display projection, not only the overlay.
+  expect(JSON.stringify(owner.getSnapshot()?.turns)).toContain(endedText);
+
+  owner.invalidate();
+  // The invalidated repository keeps the model and its payload, so its charge and
+  // inventory entry stay too: nothing is retained uncharged.
+  expect(JSON.stringify(owner.getSnapshot()?.turns)).toContain(endedText);
+  expect(owner.retainedInventoryForTesting().handoffOverlayBodies).toHaveLength(1);
+  expect(admission.retainedBytes).toBeGreaterThan(0);
+  expect(admission.isRetained(owner.getSnapshot()?.overlay?.[key] as object)).toBe(true);
+
+  owner.dispose();
+  // Disposal drops the model, so the payload and its charge go together.
+  expect(owner.getSnapshot()).toBeUndefined();
+  expect(owner.retainedInventoryForTesting().handoffOverlayBodies).toHaveLength(0);
+  expect(admission.retainedBytes).toBe(0);
+});
+
+// Task 3f B2: bytes retained beyond the bound must still constrain ordinary
+// admission, and releasing them restores the room exactly, including after
+// unrelated charged bodies are released.
+it("counts forced over-limit retention against ordinary admission", () => {
+  const admission = new EntryWriteAdmission(200);
+  const owner = {};
+  const charged = {};
+  const forced = {};
+  const ordinary = {};
+  // An unrelated ordinary body takes part of the budget.
+  expect(admission.retain([{ key: charged, bytes: 120 }], owner, "writing")).toBe(true);
+  // A forced retention that does not fit is retained and reported over the limit.
+  expect(admission.retain([{ key: forced, bytes: 100 }], owner, "ended", true)).toBe(true);
+  expect(admission.retainedBytes).toBe(220);
+  // An otherwise-fitting ordinary body is refused while the forced bytes stand.
+  expect(admission.retain([{ key: ordinary, bytes: 50 }], owner, "writing")).toBe(false);
+  expect(admission.isRetained(ordinary)).toBe(false);
+  // Releasing the unrelated charged body restores ordinary admission exactly.
+  admission.release([{ key: charged, bytes: 120 }], owner);
+  expect(admission.retainedBytes).toBe(100);
+  expect(admission.retain([{ key: ordinary, bytes: 50 }], owner, "writing")).toBe(true);
+  expect(admission.retainedBytes).toBe(150);
+  admission.release([{ key: forced, bytes: 100 }], owner);
+  admission.release([{ key: ordinary, bytes: 50 }], owner);
+  expect(admission.retainedBytes).toBe(0);
+});
+
+// Task 3f B2 (repository): an over-limit ended body refuses an ordinary write that
+// would otherwise fit, and releasing the ended body restores admission.
+it("refuses an otherwise-fitting ordinary write while a forced over-limit ended body stands", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(2_500);
   const owner = repository(fixture.cache, 1, undefined, undefined, admission);
   owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
   await owner.settled();
@@ -1460,13 +1546,84 @@ it("drops ended handoff bodies from the model when their charge is released on i
   owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "round-9" } } as unknown as AnyNotification, {
     lifetime: 1,
   });
-  expect(owner.getSnapshot()?.overlay?.[key]).toBeDefined();
-  expect(admission.retainedBytes).toBeGreaterThan(0);
+  expect(admission.retainedBytes).toBeGreaterThan(admission.limit);
 
-  owner.invalidate();
-  expect(owner.getSnapshot()?.overlay?.[key]).toBeUndefined();
-  expect(owner.retainedInventoryForTesting().handoffOverlayBodies).toHaveLength(0);
+  const reader = owner.attachReader();
+  // An ordinary recorded suffix that fits the configured limit is refused while
+  // the forced ended bytes stand. Its notification leaves the ended overlay in
+  // place (a read response would replace it).
+  owner.accept(historyNotification("ordinary", 2, 2), { lifetime: 1 });
+  await Promise.resolve();
+  expect(await keysInCache(fixture.cache)).not.toContain("item-ordinary");
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+
+  // Releasing the forced ended body (an overlay reset drops it) restores the room.
+  owner.accept(
+    { method: "overlay/reset", params: { ref, threadId, streamId: "round-9/1" } } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
   expect(admission.retainedBytes).toBe(0);
+  owner.acceptRead(readItems("recovered", 3, [item("base", 1), bigItem("recovered", 3, 200)]), {
+    lifetime: 1,
+    readId: "read-recovered",
+    boundary: "boundary-recovered",
+  });
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-recovered"));
+  reader.dispose();
+  owner.dispose();
+});
+
+// Task 3f B3: the late-predecessor invariant stays reachable under the
+// controller's foreground ruling. A held ordinary foreground predecessor never
+// takes the background slot, so a no-reader successor issues and is abandoned
+// while A is held; A's later successful completion must not clear it.
+it("does not clear a failed disposition when a held foreground predecessor commit completes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // A is an ordinary foreground read held before storage. It covers snapshot 2
+  // only, so its completion cannot carry successor B's later reach.
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const commits = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    if (batch.items.some((row) => row.transcriptKey === "item-alpha")) await gate.promise;
+    if (batch.items.some((row) => row.transcriptKey === "item-beta")) {
+      return { outcome: "failed", error: new Error("simulated abort B") };
+    }
+    return realCommit(batch);
+  });
+  owner.acceptRead(readItems("alpha", 2, [item("base", 1), item("alpha", 2)]), {
+    lifetime: 1,
+    readId: "read-alpha",
+    boundary: "boundary-alpha",
+  });
+  await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+
+  // Dispose only the reader; the repository stays live. A never took the
+  // background slot, so B issues through the background drain while A is held.
+  reader.dispose();
+  owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
+  // Event-loop barrier: B's failed-outcome handler has recorded its abandonment.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Release A: a successful predecessor completion whose coverage stops at
+  // snapshot 2. It must not clear B's abandoned reach.
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  commits.mockRestore();
   owner.dispose();
 });
 
@@ -1933,6 +2090,27 @@ it("does not start a repair loop for repeated opens, unchanged deltas or a re-ov
   });
   await Promise.resolve();
   expect(scheduled.length).toBe(armedAfterOverflow + 1);
+
+  // Fire the feedback callback, then feed the SAME rejected authoritative content
+  // back under unchanged capacity. A reconciliation already requested for this
+  // reach is not requested again, so repeated callback/read feedback does not
+  // keep scheduling recovery.
+  scheduled.at(-1)!.fire();
+  expect(reconciles).toBe(2);
+  const armedAfterFeedback = scheduled.length;
+  owner.acceptRead(readItems("overflow2", 4, [item("base", 1), bigItem("overflow2", 4, 1_000)]), {
+    lifetime: 1,
+    readId: "read-overflow2-again",
+    boundary: "boundary-overflow2-again",
+  });
+  await Promise.resolve();
+  owner.acceptRead(readItems("overflow2", 4, [item("base", 1), bigItem("overflow2", 4, 1_000)]), {
+    lifetime: 1,
+    readId: "read-overflow2-again2",
+    boundary: "boundary-overflow2-again2",
+  });
+  await Promise.resolve();
+  expect(scheduled.length).toBe(armedAfterFeedback);
 
   // Release the held occupier so the recovery read can commit and settle.
   held.resolve({ outcome: "committed", coverage: "extended", encodedBytes: 0 });

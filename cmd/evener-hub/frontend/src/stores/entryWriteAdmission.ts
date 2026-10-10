@@ -103,6 +103,11 @@ export class EntryWriteAdmission {
    * `force`, a retention that cannot be refused (a preserved ended handoff body
    * the model keeps for display) is charged beyond the bound rather than
    * silently dropped, so the reported aggregate stays honest.
+   *
+   * A plain reservation also accounts for bytes already held beyond the bound:
+   * forced retention reduces the room an ordinary batch may take, so a body
+   * retained over the limit cannot hide an ordinary batch from the bound, and
+   * releasing the forced bytes restores the room exactly.
    */
   retain(bodies: readonly EntryRetainedBody[], owner: object, kind: EntryWorkKind, force = false): boolean {
     const fresh = new Map<object, number>();
@@ -113,8 +118,8 @@ export class EntryWriteAdmission {
     for (const bytes of fresh.values()) needed += bytes;
     let overLimit = false;
     if (needed > 0) {
-      if (this.#budget.reserve(needed)) {
-        // Charged to the bounded aggregate.
+      if (this.#budget.used + this.#overage + needed <= this.#budget.limit) {
+        this.#budget.reserve(needed);
       } else if (force) {
         this.#overage += needed;
         overLimit = true;
