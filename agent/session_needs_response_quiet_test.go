@@ -655,3 +655,43 @@ func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
 		t.Fatalf("status settled events = %v, want none", got)
 	}
 }
+
+// The rest a filtered wake re-arms still waits on work in flight: a wake
+// whose notification could not be recorded puts it back in the queue and
+// runs no turn, so the session stays idle past the fresh quiet period.
+func TestFilteredWakeThatRequeuesWorkInsideTheQuietPeriodStaysIdle(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fake := agenttest.NewFakeClock()
+	sess := newSession(t, withDir(dir), withClock(fake), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault / 2)
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+	appendFails := context.WithValue(ctx, sessionLifecycleFaultsKey{}, map[string]error{"append_notification": errors.New("append failed")})
+	if _, err := sess.ProcessInputKind(appendFails, "", nil, EntryNotification); err != nil {
+		t.Fatalf("refused wake: %v", err)
+	}
+	if sess.peekNotifications() == 0 {
+		t.Fatal("the refused wake's notification was not requeued")
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle while the requeued notification waits", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
