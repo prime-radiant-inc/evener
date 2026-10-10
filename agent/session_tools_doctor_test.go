@@ -2,17 +2,23 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -552,5 +558,77 @@ func TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets(t *testing.T)
 	}
 	if paths.ProjectID != filepath.Base(bucketA) {
 		t.Errorf("project_id = %q, want sibling bucket dir name %q", paths.ProjectID, filepath.Base(bucketA))
+	}
+}
+
+// TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript pins one coordinate
+// system for both transcript readers. doctor_evener's transcript rows carry
+// read_transcript's turn numbers, its range selects by them, and an entry
+// read_transcript omits (here a notice) carries no turn number. A number read
+// in one tool and passed to the other names the same turn.
+func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	sid := doctorTestSID(t)
+	tw, err := transcript.NewWriter(transcriptPath(bucket, sid), transcript.Header{SessionID: sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first ask")),
+		{Kind: schema.TurnNotice, Notice: &schema.NoticeInfo{
+			Kind:       schema.NoticeToolRepair,
+			ToolRepair: &schema.ToolRepairNotice{ToolName: "shell", CallID: "call_shell_1", Changes: []string{"drop_unknown:timeout:dropped timeout"}},
+		}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("the reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second ask")),
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, bucket, findMetaSpec{id: sid, name: "coordinates", updated: time.Now().UTC()})
+
+	whole, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range whole.Turns {
+		number := "-"
+		if row.Turn != nil {
+			number = strconv.Itoa(*row.Turn)
+		}
+		got = append(got, number+" "+row.Text)
+	}
+	want := []string{"0 first ask", "- ", "1 the reply", "2 second ask"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("doctor rows = %q, want %q", got, want)
+	}
+	if whole.TurnsTotal != 3 || whole.TurnsRendered != 3 || whole.Elided != 0 {
+		t.Fatalf("doctor counts total/rendered/elided = %d/%d/%d, want 3/3/0", whole.TurnsTotal, whole.TurnsRendered, whole.Elided)
+	}
+
+	deps := &toolDeps{stateDir: bucket, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	for _, row := range whole.Turns {
+		if row.Turn == nil {
+			continue
+		}
+		window := fmt.Sprintf("%d-%d", *row.Turn, *row.Turn)
+		narrowed, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{Range: window})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(narrowed.Turns) == 0 || narrowed.Turns[0].Turn == nil || *narrowed.Turns[0].Turn != *row.Turn || narrowed.TurnsRendered != 1 {
+			t.Fatalf("doctor range %s = %+v, want turn %d first and alone among turns", window, narrowed.Turns, *row.Turn)
+		}
+		env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"transcript_ref": "local:" + sid, "range": window}))
+		content, _ := env["content"].(string)
+		if !strings.Contains(content, fmt.Sprintf("## Turn %d ", *row.Turn)) || !strings.Contains(content, row.Text) {
+			t.Errorf("read_transcript range %s does not show doctor's turn %d (%q):\n%s", window, *row.Turn, row.Text, content)
+		}
 	}
 }

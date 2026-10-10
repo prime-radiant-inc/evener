@@ -4,7 +4,8 @@ import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { refParam } from "../../shell/routing";
+import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -25,7 +26,8 @@ import {
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
-import { type CascadeScope, deriveCascadePath, type SessionZoomParams } from "./intent";
+import { cascadeOrigin } from "./inspectionOrigin";
+import { type CascadeScope, deriveCascadePath, firstReadableIndex, type SessionZoomParams } from "./intent";
 import styles from "./zoom.module.css";
 
 const CLASS = {
@@ -36,6 +38,15 @@ const CLASS = {
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
 };
+
+function CascadePathButton({ paneId, scope }: { paneId: string; scope: CascadeScope }) {
+  const title = useScopeTitle(scope.requestedRef, scope.title);
+  return (
+    <Button variant="quiet" size="xs" onClick={() => popAgentCascade(paneId, scope.requestedRef)}>
+      {title}
+    </Button>
+  );
+}
 
 function ScopeConversation({
   pane,
@@ -181,7 +192,11 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const lifetime = conversationPaneLifetime(pane);
   const path = deriveCascadePath(params, snapshot?.context ?? null);
   const scopes = mobile ? path.scopes.slice(-1) : path.scopes;
-  const firstReadable = Math.max(0, scopes.length - 2);
+  // Don't repeat the origin conversation: the inspector was opened from it,
+  // so its pane is already on screen. While that origin pane stays live,
+  // firstReadableIndex collapses the immediate parent that would duplicate it.
+  const origin = cascadeOrigin(pane);
+  const firstReadable = firstReadableIndex(scopes, origin && refParam(origin.params));
   const returnAction = (
     <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
       Return to previous view
@@ -212,14 +227,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         {mobile && returnAction}
         <nav className={CLASS.path} aria-label="Agent path">
           {path.scopes.map((scope) => (
-            <Button
-              key={scope.requestedRef}
-              variant="quiet"
-              size="xs"
-              onClick={() => popAgentCascade(paneId, scope.requestedRef)}
-            >
-              {scope.title}
-            </Button>
+            <CascadePathButton key={scope.requestedRef} paneId={paneId} scope={scope} />
           ))}
         </nav>
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}

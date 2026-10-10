@@ -9,13 +9,15 @@ interface IDBConnectionOptions {
   // The cache sweeps expired rows before installing a connection. The outbox
   // installs immediately; neither adapter closes a healthy connection per call.
   prepare?: (database: IDBDatabase) => Promise<void>;
+  // Each adapter brands its own failures, so a caller can tell the storage
+  // failing from anything else it might throw.
   errors: {
-    open: string;
-    superseded: string;
+    open: () => Error;
+    superseded: () => Error;
     timeout: () => Error;
     // The outbox rejects blocked opens immediately. The cache only reports
     // them and keeps waiting for success or its open watchdog.
-    blocked?: string;
+    blocked?: () => Error;
   };
   reportDiagnostic: (path: OpenDiagnosticPath, versionchangeTransaction: boolean) => void;
   reportOpenError?: (error: Error) => void;
@@ -64,6 +66,17 @@ export function tryAbortTransaction(transaction: IDBTransaction): boolean {
   }
 }
 
+// An adapter's own schema upgrade threw: a bug in the adapter, never storage
+// failing. The engine answers a throwing upgradeneeded handler by aborting the
+// versionchange transaction, and the open then fails with a bare AbortError
+// that reads exactly like storage aborting it; this names the real cause.
+export class IDBUpgradeError extends Error {
+  constructor(cause: unknown) {
+    super("IndexedDB schema upgrade failed", { cause });
+    this.name = "IDBUpgradeError";
+  }
+}
+
 export class IDBConnection {
   readonly #options: IDBConnectionOptions;
   #database: IDBDatabase | undefined;
@@ -101,6 +114,7 @@ export class IDBConnection {
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = options.indexedDB.open(options.databaseName, options.databaseVersion);
       let abandoned = false;
+      let upgradeFailure: IDBUpgradeError | undefined;
       const fail = (error: unknown) => {
         abandoned = true;
         clearTimeout(timer);
@@ -120,7 +134,13 @@ export class IDBConnection {
           if (abandoned || this.#databasePromise !== opening) {
             options.reportDiagnostic("upgrade-abandoned", Boolean(request.transaction));
           }
-          options.upgrade(request.result);
+          try {
+            options.upgrade(request.result);
+          } catch (error) {
+            // Rethrow so the engine aborts the half-built schema.
+            upgradeFailure = new IDBUpgradeError(error);
+            throw error;
+          }
         },
         { once: true },
       );
@@ -132,7 +152,7 @@ export class IDBConnection {
             if (!abandoned && this.#databasePromise === opening) return false;
             clearTimeout(timer);
             database.close();
-            reject(new Error(options.errors.superseded));
+            reject(options.errors.superseded());
             return true;
           };
           if (superseded()) return;
@@ -171,7 +191,7 @@ export class IDBConnection {
         "error",
         () => {
           if (abandoned) return;
-          const error = request.error ?? new Error(options.errors.open);
+          const error = upgradeFailure ?? request.error ?? options.errors.open();
           options.reportOpenError?.(error);
           fail(error);
         },
@@ -181,7 +201,7 @@ export class IDBConnection {
         "blocked",
         () => {
           options.reportDiagnostic("open-blocked", Boolean(request.transaction));
-          if (options.errors.blocked !== undefined) fail(new Error(options.errors.blocked));
+          if (options.errors.blocked !== undefined) fail(options.errors.blocked());
         },
         { once: true },
       );

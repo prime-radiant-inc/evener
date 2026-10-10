@@ -1011,6 +1011,58 @@ func TestRead_ExpandTurn(t *testing.T) {
 	}
 }
 
+// TestRead_ExpandTurnWithoutRangeRendersOnlyThatTurn pins expand_turn's
+// window: without an explicit range the markdown shows Turn N alone, not the
+// default last-40 window around it, and the meta reports that one-turn window.
+func TestRead_ExpandTurnWithoutRangeRendersOnlyThatTurn(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "02wMz5Txv733WHFsVy66ST"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "expand alone", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(2),
+	}))
+	content, _ := env["content"].(string)
+	if !strings.Contains(content, "## Turn 2 ") {
+		t.Fatalf("expanded read is missing Turn 2:\n%s", content)
+	}
+	for _, other := range []int{0, 1, 3, 4} {
+		if strings.Contains(content, fmt.Sprintf("## Turn %d ", other)) {
+			t.Errorf("expand_turn=2 without range also rendered Turn %d:\n%s", other, content)
+		}
+	}
+	meta := readMetaMap(t, env)
+	if meta["range"] != "2-2" || meta["turns_rendered"] != float64(1) || meta["turns_total"] != float64(5) {
+		t.Errorf("meta = %v, want range 2-2 with 1 of 5 turns rendered", meta)
+	}
+}
+
+// TestRead_ExpandTurnWithMalformedRangeRendersTheDefault pins the fallback a
+// malformed range gets alongside expand_turn: the default window the warning
+// names, not the expansion-only window an omitted range gets.
+func TestRead_ExpandTurnWithMalformedRangeRendersTheDefault(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "02wMz5Txv733WHFsVy66SU"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "expand malformed", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(2),
+		"range":          "not-a-range",
+	}))
+	meta := readMetaMap(t, env)
+	if meta["range"] != "last:40" || meta["turns_rendered"] != float64(5) || meta["range_warning"] == nil {
+		t.Errorf("meta = %v, want the warned default window last:40 over all 5 turns", meta)
+	}
+}
+
 // --- TestRead_MetaTrimmed ---
 
 // TestRead_MetaTrimmed verifies the marshaled markdown meta has the required

@@ -26,6 +26,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
 	}
 	for _, registered := range tools {
+		registered.Exec = s.scopeRelativeMemoryErrors(registered.Exec)
 		if err := reg.Register(registered); err != nil {
 			return err
 		}
@@ -58,6 +59,109 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	}
 	return env, forwarded, release, nil
 }
+
+// scopeRelativeText is text with root, a scope's host directory, named "."
+// and each path under it named relative to it, the way the memory tools take
+// paths. The shared executors run on host paths (memoryFileArgs), so their
+// summaries and errors name them, and a model that copied one back would be
+// refused.
+//
+// Almost any byte can be part of a file name, so a match is rewritten only
+// where the text sets it off as a path: it starts the text or follows one of
+// pathOpeners, and is followed by a separator (a path under root, whatever
+// its name starts with), or ends the text or comes before one of pathClosers
+// (root itself). Anywhere else, such
+// as "<root>~old" or "x<root>/page.md", the text is left as it is: a host
+// path left in a message is better than a wrong relative one.
+func scopeRelativeText(root, text string) string {
+	if root == "" || !strings.Contains(text, root) {
+		return text
+	}
+	var b strings.Builder
+	for {
+		before, rest, found := strings.Cut(text, root)
+		b.WriteString(before)
+		if !found {
+			return b.String()
+		}
+		text = rest
+		if before != "" && !strings.ContainsRune(pathOpeners, rune(before[len(before)-1])) {
+			b.WriteString(root)
+			continue
+		}
+		under, isUnder := strings.CutPrefix(rest, string(filepath.Separator))
+		switch {
+		case isUnder && under == "":
+			b.WriteString(".")
+			text = under
+		case isUnder:
+			text = under
+		case endsPath(rest):
+			b.WriteString(".")
+		default:
+			b.WriteString(root)
+		}
+	}
+}
+
+// pathOpeners and pathClosers are the bytes that set a path off in a tool's
+// summary or error: whitespace, quotes, brackets, and the colon that ends the
+// path in "open <path>: <reason>".
+const (
+	pathOpeners = " \t\n\"'`(["
+	pathClosers = " \t\n\"'`)]:"
+)
+
+// endsPath reports whether rest, the text after a path, starts with what ends
+// one.
+func endsPath(rest string) bool {
+	return rest == "" || strings.ContainsRune(pathClosers, rune(rest[0]))
+}
+
+// memoryScopeRoot is the host directory of scope, the working directory of
+// its memory environment, or "" when the scope is not bound.
+func (s *Session) memoryScopeRoot(scope string) string {
+	relative, err := s.memoryScopeBinding(scope)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(s.cfg.MemoryStateRoot, relative)
+}
+
+// scopeRelativeMemoryErrors wraps a memory tool's executor so that, when it
+// fails, the error and any output returned with it name paths relative to the
+// scope root (scopeRelativeText), whichever step failed. An error message is
+// rewritten whole, including any page text it quotes; a successful result is
+// left to the tool, since a read or search returns page text as stored. A
+// failure to open the memory state directory itself, above every scope, can
+// still name that host directory: it names no page, so there is no relative
+// path for it, and the person fixing the fault needs to see which directory.
+func (s *Session) scopeRelativeMemoryErrors(exec func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error)) func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+	return func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		out, err := exec(ctx, env, args)
+		if err == nil {
+			return out, nil
+		}
+		root := s.memoryScopeRoot(stringArg(args, "scope"))
+		if text, ok := out.(string); ok {
+			out = scopeRelativeText(root, text)
+		}
+		if message := scopeRelativeText(root, err.Error()); message != err.Error() {
+			err = memoryPathError{err: err, message: message}
+		}
+		return out, err
+	}
+}
+
+// memoryPathError is a memory tool's error with scope-relative paths in its
+// message; errors.Is and errors.As still see the original.
+type memoryPathError struct {
+	err     error
+	message string
+}
+
+func (e memoryPathError) Error() string { return e.message }
+func (e memoryPathError) Unwrap() error { return e.err }
 
 // errMemoryIndexGenerated refuses a write, edit or delete of the index.
 var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
@@ -139,9 +243,14 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 		stamped, notes = s.stampMemoryPage(listed, raw)
 		return stamped
 	}
+	// Only the executor's own summary is rewritten; a page's bytes never pass
+	// through here.
 	out, err := write(env, forwarded, stamp)
 	if err != nil {
 		return out, err
+	}
+	if text, ok := out.(string); ok {
+		out = scopeRelativeText(env.WorkingDirectory(), text)
 	}
 	if operation == "write" {
 		listed = listedMemoryPagePath(env, filepath.ToSlash(file))
@@ -175,11 +284,12 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
 }
 
-// memoryGardeningSkillAvailable reports whether the session can load the
-// gardening-memory skill: use_skill is callable and the skill is advertised
-// to the model.
+// memoryGardeningSkillAvailable reports whether the session can load and
+// follow the gardening-memory skill: it can save memory (the skill fixes pages
+// with the save tools, which no delegate has), use_skill is callable and the
+// skill is advertised to the model.
 func (s *Session) memoryGardeningSkillAvailable() bool {
-	if !s.canInstructTool("use_skill") {
+	if !s.memorySaveInstructionsEnabled() || !s.canInstructTool("use_skill") {
 		return false
 	}
 	for _, descriptor := range s.skills.ModelEntries() {

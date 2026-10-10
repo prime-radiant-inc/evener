@@ -115,7 +115,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		IsSubagent:               s.depth > 0,
+		IsSubagent:               s.isSubagentSession(),
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
 		MemoryRead:               read,
