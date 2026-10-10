@@ -318,6 +318,32 @@ func backendlessSandboxHost(t *testing.T) sandbox.HostFacts {
 	return sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true}
 }
 
+// A fresh session's sandbox is provisioned before NewSession picks the session's
+// ID, so provisioning picks it: the scratch EnableSandbox mints must sit in the
+// session's own tree, where archiving the session finds it.
+func TestProvisionSandboxNamesTheFreshSessionsScratch(t *testing.T) {
+	t.Setenv("TMPDIR", resolvedTempDir(t))
+	facts := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}
+	worktree := t.TempDir()
+	cfg := agent.SessionConfig{}
+	if err := configureSandbox(&cfg, "restricted", "on"); err != nil {
+		t.Fatalf("configureSandbox(restricted): %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { _ = env.DisposeSessionScratch() })
+
+	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+		t.Fatalf("provisionSandboxWithHost(restricted): %v", err)
+	}
+	if cfg.SessionID == "" {
+		t.Fatal("provisioning a fresh session left SessionConfig.SessionID empty, so NewSession picks an ID the scratch is not named after")
+	}
+	want := filepath.Join("evener-scratch-"+cfg.SessionID, cfg.SessionID)
+	if got := env.SessionScratchDir(); !strings.HasSuffix(got, want) {
+		t.Errorf("session scratch = %q, want it at %s in the system temp dir", got, want)
+	}
+}
+
 // TestLaunchProvisioningFailureLeavesNoScratch pins why the provisioning-failure
 // return in run and serve disposes nothing: there is nothing there to dispose. A
 // session scratch appears in exactly two ways -- EnableSandbox provisions one for

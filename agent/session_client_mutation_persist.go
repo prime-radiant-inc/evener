@@ -366,6 +366,22 @@ func validateClientMutationSnapshot(snapshot clientMutationSnapshot, sessionID s
 		if record.ExecutionState == "" {
 			return fmt.Errorf("client mutation %q has no execution state", id)
 		}
+		seenCommands := make(map[string]bool, len(record.CommandPreparations))
+		for _, prepared := range record.CommandPreparations {
+			if prepared.Name == "" || seenCommands[prepared.Name] {
+				return fmt.Errorf("client mutation %q has invalid command preparation name %q", id, prepared.Name)
+			}
+			seenCommands[prepared.Name] = true
+			switch prepared.State {
+			case "in_progress", "uncertain":
+				if prepared.Body != "" {
+					return fmt.Errorf("client mutation %q has command body without completed evidence", id)
+				}
+			case "completed":
+			default:
+				return fmt.Errorf("client mutation %q has invalid command preparation state %q", id, prepared.State)
+			}
+		}
 		switch record.OperationState {
 		case clientMutationOperationInFlight, clientMutationOperationApplied, clientMutationOperationTerminal:
 			if record.Rejection != nil {

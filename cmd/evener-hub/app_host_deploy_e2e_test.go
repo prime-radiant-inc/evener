@@ -3,7 +3,9 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -177,59 +179,37 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	t.Helper()
 
 	host := newHostSSH(t, dest, user)
-	hostDir := home + "/" + dirName
+	// Both machines need a writable ancestor for catalog previews, while the
+	// run-unique project paths themselves exist only on the host.
+	hostDir := path.Join("/tmp", dirName)
 	runTarget := hostDir + "/bin/evener"
 
 	// The test creates the host directory itself, because the deploy path needs
 	// the target's parent to exist (deployTarget probes `test -d`). bin/ holds
 	// the run target; the other two are the private hub's config and state. The
-	// name carries a per-run token, and an existing path is refused HERE, before
-	// anything is created: `mkdir -p` on a name that is already there would adopt
-	// a directory this run did not make, and the cleanup would then delete
-	// whatever was already inside it.
-	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
-		t.Fatalf("host %s already has %s; the deploy check creates and removes this directory itself, so it must not adopt an existing one", host.target, hostDir)
-	}
-	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
-	// The criterion is a host with NO evener at the run target. The directory is
-	// new this run, so nothing can already sit at the target; the assertion is
-	// kept so the precondition is proven rather than assumed.
-	if _, err := host.run("test -e " + shellquote.RemoteWord(runTarget)); err == nil {
-		t.Fatalf("host %s already has %s at the start of the case; the deploy case needs a run target with no evener", host.target, runTarget)
-	}
+	// atomic directory claim refuses existing paths and proves this run owns it.
+	host.prepareDeployDir(hostDir)
 
 	// The private hub.toml keeps the launched host hub on its own port and state
 	// root, so it never touches the host's real hub (its 9180 listener, its
 	// lock, or its state).
-	host.writeFile(hostDir+"/"+hostDeployToml, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, hostDir+"/state")))
+	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
 
 	// The host's own install, if it has one, must come out of this unchanged.
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
 
 	t.Cleanup(func() {
-		stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml)
-		// hostDir is this run's own: the per-run token makes it unique and the
-		// existence check above refused to proceed if anything was already there,
-		// so this removes only what the case created. A failure is reported, not
-		// logged away — a leftover directory must not pass as a clean run.
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-		}
-		if installHash == "" {
-			// The host had no install here when the case began. Skipping the check
-			// would let the case create one and still pass, which is the violation
-			// the assertion exists to catch, so assert it is still absent.
-			if got := host.sha256IfFile(installPath); got != "" {
-				t.Errorf("the deploy created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
-			}
-			return
-		}
-		if got := host.sha256IfFile(installPath); got != installHash {
-			t.Errorf("the host's own install %s changed during the deploy case (sha256 %s -> %s); the deploy must write only to the test-owned %s", installPath, installHash, got, runTarget)
-		}
+		cleanupHostDeploy(t, host, hostDir, addr, installPath, installHash)
 	})
 
+	// The controller's real SSH calls set private roots before remote startup,
+	// including bootstrap and the stdio bridge, without changing the host login.
+	sshDir := hostDeploySSHWrapper(t, hostDir)
+	t.Setenv("PATH", sshDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := host.output(`printf '%s' "$HOME"`); got != hostDir+"/home" {
+		t.Fatalf("remote SSH HOME = %q, want the private %q before Evener startup", got, hostDir+"/home")
+	}
 	stack := startDeployStack(t, provider, hubBin, deployArgs...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeployAttachTimeout+2*time.Minute)
@@ -290,6 +270,146 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	if !slices.Contains(lc.LaunchFlags, "api-log") {
 		t.Fatalf("the deployed binary at %s reports launch_flags %v, want one containing %q", runTarget, lc.LaunchFlags, "api-log")
 	}
+	assertHostDeployCatalogs(ctx, t, host, client, hostName, hostDir)
+}
+
+func assertHostDeployCatalogs(ctx context.Context, t *testing.T, host *hostSSH, client *appwire.Client, hostName, hostDir string) {
+	t.Helper()
+	token := hostDeployRunID()
+	alpha := hostDir + "/catalog alpha"
+	beta := hostDir + "/catalog beta"
+	alphaName := "e2e-alpha-" + token
+	betaName := "e2e-beta-" + token
+	controllerName := "e2e-controller-" + token
+	host.prepareCatalogProject(alpha, alphaName, "OPAQUE_ALPHA_"+token)
+	host.prepareCatalogProject(beta, betaName, "OPAQUE_BETA_"+token)
+	controllerCWD := t.TempDir()
+	writeSlashCatalogProjectCommand(t, controllerCWD, controllerName, "OPAQUE_CONTROLLER_"+token)
+	writeSlashCatalogSkill(t, filepath.Join(controllerCWD, "skills"), controllerName, controllerName, "OPAQUE_CONTROLLER_"+token)
+	direct, err := client.SpawnSlashCatalog(ctx, appwire.SpawnSlashCatalogParams{CWD: controllerCWD, Harness: "evener"})
+	if err != nil {
+		t.Fatalf("controller project catalog: %v", err)
+	}
+	assertDeployCatalogProject(t, direct, controllerName, "OPAQUE_CONTROLLER_"+token, alphaName, betaName)
+
+	for _, tc := range []struct {
+		cwd         string
+		name        string
+		description string
+		excluded    string
+	}{
+		{alpha, alphaName, "OPAQUE_ALPHA_" + token, betaName},
+		{beta, betaName, "OPAQUE_BETA_" + token, alphaName},
+		{alpha, alphaName, "OPAQUE_ALPHA_" + token, betaName},
+	} {
+		if _, err := os.Lstat(tc.cwd); !os.IsNotExist(err) {
+			t.Fatalf("remote catalog provenance requires a host-only cwd %q: %v. Use an SSH target with a separate project filesystem; localhost sharing the controller's filesystem cannot satisfy this check.", tc.cwd, err)
+		}
+		params := appwire.SpawnSlashCatalogParams{CWD: tc.cwd, Harness: "evener"}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := forwardHostMethod(ctx, client, hostName, appwire.MethodEvenerSpawnSlashCatalog, encoded)
+		if err != nil {
+			t.Fatalf("forwarded project catalog %q: %v", tc.cwd, err)
+		}
+		var forwarded appwire.SpawnSlashCatalogResponse
+		if err := json.Unmarshal(raw, &forwarded); err != nil {
+			t.Fatalf("decode forwarded project catalog: %v", err)
+		}
+		assertDeployCatalogProject(t, forwarded, tc.name, tc.description, tc.excluded, controllerName)
+		direct, err := client.SpawnSlashCatalog(ctx, params)
+		if err != nil {
+			t.Fatalf("direct controller catalog for host-only cwd %q: %v", tc.cwd, err)
+		}
+		assertDeployCatalogExcludes(t, direct, alphaName, betaName, controllerName)
+		t.Logf("catalog provenance: %s sees project command and skill %q at %q; the other project and controller entries are excluded, and the direct controller call sees neither remote entry", hostName, tc.name, tc.cwd)
+	}
+}
+
+func assertDeployCatalogProject(t *testing.T, catalog appwire.SpawnSlashCatalogResponse, name, description string, excluded ...string) {
+	t.Helper()
+	command := slashCatalogCommandByName(t, catalog, name)
+	if command.Source != "project" || command.Description != description {
+		t.Fatalf("project command %q source=%q description=%q, want project/%q", name, command.Source, command.Description, description)
+	}
+	found := false
+	for _, entry := range catalog.Skills {
+		if entry.Name == name {
+			found = true
+			if entry.Description != description || !entry.Available || !entry.UserInvocable || entry.DisableModelInvocation {
+				t.Fatalf("project skill %q has unexpected descriptor: %+v", name, entry)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("project skill %q missing from catalog", name)
+	}
+	assertDeployCatalogExcludes(t, catalog, excluded...)
+}
+
+func assertDeployCatalogExcludes(t *testing.T, catalog appwire.SpawnSlashCatalogResponse, names ...string) {
+	t.Helper()
+	for _, command := range catalog.Commands {
+		if slices.Contains(names, command.Name) {
+			t.Errorf("command %q leaked from another catalog scope", command.Name)
+		}
+	}
+	for _, entry := range catalog.Skills {
+		if slices.Contains(names, entry.Name) {
+			t.Errorf("skill %q leaked from another catalog scope", entry.Name)
+		}
+	}
+}
+
+func hostDeployConfig(hostDir, addr string) []byte {
+	stateRoot := hostDir + "/state"
+	return []byte(fmt.Sprintf(`addr = %q
+hub_state_root = %q
+run_dir = %q
+state_glob = %q
+past_index_db = %q
+plugin_auto_upgrade = false
+`, addr, stateRoot, stateRoot+"/run", stateRoot+"/projects/*", stateRoot+"/index.db"))
+}
+
+func hostDeployRemoteEnvironment(hostDir string) string {
+	home := hostDir + "/home"
+	return fmt.Sprintf("export HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s; unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG EVENER_STATE_DIR; ",
+		shellquote.RemoteWord(home), shellquote.RemoteWord(home+"/config"), shellquote.RemoteWord(home+"/state"), shellquote.RemoteWord(home+"/cache"))
+}
+
+// hostDeploySSHWrapper supplies the remote environment at the process boundary.
+// It forwards options, stdin, stdout, stderr and exit status to the real ssh.
+// The runner terminates local options with --, then names the destination and
+// remote command words, which OpenSSH joins with spaces for the remote shell.
+func hostDeploySSHWrapper(t *testing.T, hostDir string) string {
+	t.Helper()
+	ssh, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!%s
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  if [[ ${args[i]} == -- && $((i+2)) -lt ${#args[@]} ]]; then
+    remote=%s"${args[*]:i+2}"
+    exec %s "${args[@]:0:i+2}" "$remote"
+  fi
+done
+printf 'private SSH fixture requires -- destination command\n' >&2
+exit 2
+`, bash, shellquote.RemoteWord(hostDeployRemoteEnvironment(hostDir)), shellquote.RemoteWord(ssh))
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // hostTarget probes the host's uname and maps it to GOOS/GOARCH exactly as the
@@ -464,8 +584,9 @@ func binaryVersion(bin string) (string, error) {
 // from the manager's own dialing. It is how the test creates and removes its
 // private directory and how it reads the deployed binary's contract.
 type hostSSH struct {
-	t      *testing.T
-	target string
+	t           *testing.T
+	target      string
+	execCommand func(context.Context, string) *exec.Cmd
 }
 
 func newHostSSH(t *testing.T, dest, user string) *hostSSH {
@@ -481,12 +602,19 @@ func (h *hostSSH) argv(script string) []string {
 	return []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", h.target, script}
 }
 
+func (h *hostSSH) command(ctx context.Context, script string) *exec.Cmd {
+	if h.execCommand != nil {
+		return h.execCommand(ctx, script)
+	}
+	return exec.CommandContext(ctx, "ssh", h.argv(script)...)
+}
+
 // run runs one remote script and returns its combined output. A non-nil error
 // is the remote command's own failure (including its exit status).
 func (h *hostSSH) run(script string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeploySSHTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", h.argv(script)...)
+	cmd := h.command(ctx, script)
 	return cmd.CombinedOutput()
 }
 
@@ -499,8 +627,48 @@ func (h *hostSSH) run(script string) ([]byte, error) {
 func (h *hostSSH) runStdout(script string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeploySSHTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", h.argv(script)...)
-	return cmd.Output()
+	cmd := h.command(ctx, script)
+	out, err := cmd.Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return out, fmt.Errorf("%w: %s", err, exitErr.Stderr)
+	}
+	return out, err
+}
+
+func (h *hostSSH) prepareDeployDir(hostDir string) {
+	h.t.Helper()
+	// mkdir without -p is the claim itself, not a separate absence probe.
+	if out, err := h.run("mkdir -m 700 " + shellquote.RemoteWord(hostDir)); err != nil {
+		h.t.Fatalf("claim private directory %s on host %s: %v: %s; an existing or unproved directory must not be adopted", hostDir, h.target, err, out)
+	}
+	h.mustRun("mkdir " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
+	runTarget := hostDir + "/bin/evener"
+	q := shellquote.RemoteWord(runTarget)
+	if out, err := h.run("[ ! -e " + q + " ] && [ ! -L " + q + " ]"); err != nil {
+		h.t.Fatalf("host %s already has %s at the start of the case or its absence is unproved; the deploy case needs a run target with no evener: %v: %s", h.target, runTarget, err, out)
+	}
+}
+
+func cleanupHostDeploy(t *testing.T, host *hostSSH, hostDir, addr, installPath, installHash string) {
+	t.Helper()
+	if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml) {
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+	} else {
+		t.Logf("retaining private directory %s on host %s because shutdown is unproved", hostDir, host.target)
+	}
+	runTarget := hostDir + "/bin/evener"
+	if installHash == "" {
+		if got := host.sha256IfFile(installPath); got != "" {
+			t.Errorf("the deploy created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
+		}
+		return
+	}
+	if got := host.sha256IfFile(installPath); got != installHash {
+		t.Errorf("the host's own install %s changed during the deploy case (sha256 %s -> %s); the deploy must write only to the test-owned %s", installPath, installHash, got, runTarget)
+	}
 }
 
 // output runs one remote script and returns its trimmed stdout, failing the
@@ -538,10 +706,26 @@ func (h *hostSSH) writeFile(path string, content []byte) {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeploySSHTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", h.argv("cat > "+shellquote.RemoteWord(path))...)
+	cmd := h.command(ctx, "cat > "+shellquote.RemoteWord(path))
 	cmd.Stdin = bytes.NewReader(content)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("write %s on host %s: %v: %s", path, h.target, err, out)
+	}
+}
+
+func (h *hostSSH) prepareCatalogProject(cwd, name, description string) {
+	h.t.Helper()
+	staged := h.t.TempDir()
+	writeSlashCatalogProjectCommand(h.t, staged, name, description)
+	writeSlashCatalogSkill(h.t, filepath.Join(staged, "skills"), name, name, description)
+	for _, relative := range []string{".evener/commands/" + name + ".md", "skills/" + name + "/SKILL.md"} {
+		content, err := os.ReadFile(filepath.Join(staged, relative))
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		dest := cwd + "/" + relative
+		h.mustRun("mkdir -p " + shellquote.RemoteWord(path.Dir(dest)))
+		h.writeFile(dest, content)
 	}
 }
 
@@ -584,15 +768,21 @@ type launchContract struct {
 // shasum.
 func (h *hostSSH) sha256IfFile(path string) string {
 	q := shellquote.RemoteWord(path)
-	script := fmt.Sprintf("if [ -f %s ]; then if command -v sha256sum >/dev/null 2>&1; then sha256sum %s; else shasum -a 256 %s; fi; fi", q, q, q)
-	out, err := h.run(script)
+	const absent = "EVENER_HOST_FILE_ABSENT"
+	script := fmt.Sprintf("if [ -f %s ]; then if command -v sha256sum >/dev/null 2>&1; then sha256sum %s; else shasum -a 256 %s; fi; elif [ ! -e %s ] && [ ! -L %s ]; then echo %s; else echo 'hash target is not a regular file' >&2; exit 1; fi", q, q, q, q, q, absent)
+	out, err := h.runStdout(script)
 	if err != nil {
-		h.t.Logf("hash %s on host %s: %v: %s", path, h.target, err, out)
+		h.t.Fatalf("hash %s on host %s: %v: %s", path, h.target, err, out)
+	}
+	if strings.TrimSpace(string(out)) == absent {
 		return ""
 	}
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) == 0 {
-		return ""
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		h.t.Fatalf("hash %s on host %s returned no valid SHA-256 or proved absence: %q", path, h.target, out)
+	}
+	if _, err := hex.DecodeString(fields[0]); err != nil {
+		h.t.Fatalf("hash %s on host %s returned an invalid SHA-256: %q", path, h.target, out)
 	}
 	return fields[0]
 }
@@ -604,12 +794,14 @@ func (h *hostSSH) sha256IfFile(path string) string {
 // can only ever target this test's own hub. A kill that fails, or a listener
 // that outlives the wait, is reported rather than logged away — a silent cleanup
 // failure would leave a hub running from a directory the test then removes.
-func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
+// Only true permits the caller to remove that directory.
+func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) bool {
 	t.Helper()
 	port := addr[strings.LastIndex(addr, ":")+1:]
 	kill := hostHubKillCommand(addr, configPath)
 	if err := host.tryRun(kill); err != nil {
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
+		return false
 	}
 	probe := sshconn.ListenerProbeRemote(port)
 	deadline := time.Now().Add(10 * time.Second)
@@ -621,11 +813,12 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
 		// directory a still-running hub serves from. The timeout below reports the
 		// unproven cleanup.
 		if out, err := host.runStdout(probe); err == nil && hostListenerProbeAbsent(out) {
-			return
+			return true
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Errorf("the deploy check's host hub still holds %s after 10s; it may be serving from the directory this test is about to remove", addr)
+	t.Errorf("the deploy check's host hub shutdown on %s is unproved after 10s; retaining its private directory", addr)
+	return false
 }
 
 // hostListenerProbeAbsent reports whether out — the answer of the shared

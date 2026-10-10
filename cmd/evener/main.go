@@ -36,6 +36,7 @@ type runCLIFlags struct {
 	workDir                     *string
 	systemPrompt                *string
 	stateDir                    *string
+	disableMemory               *bool
 	resume                      *string
 	resumeWith                  *string
 	resumeLast                  *bool
@@ -276,6 +277,7 @@ func mainWithDeps(deps mainDeps) {
 		visionModel:                 *flags.visionModel,
 		workDir:                     *flags.workDir,
 		stateDir:                    *flags.stateDir,
+		disableMemory:               *flags.disableMemory,
 		systemPrompt:                *flags.systemPrompt,
 		systemPromptAppend:          []string(flags.systemPromptAppend),
 		maxRounds:                   *flags.maxRounds,
@@ -331,6 +333,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
 	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
 	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
+	flags.disableMemory = fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	flags.resume = fs.String("resume", "", "resume a previous session by `id`")
 	flags.resumeWith = fs.String("resume-with", "", "start a new prompt using a previous session's `id` as context")
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")

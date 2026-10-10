@@ -7,24 +7,33 @@ import type {
   NavigationReadResponse,
   NavigationSessionLocation,
   NavigationSessionSummary,
+  NavigationSnapshot,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
+import { flushSync } from "react-dom";
 
 // Session-title queries in this file target navigation, so keep them scoped to
 // the rail rather than matching the same session in workspace content.
 const rail = () => within(screen.getByTestId("rail"));
 
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { MotionProvider } from "../motion";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
+import { openDocBeside } from "../panes/doc/openDoc";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { installJobLogRangeGeometry } from "../panes/transcript/JobLogTestUtils";
+import { enterAgentCascade, openCascadeConversation, returnFromAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../panes/zoom/intent";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -37,15 +46,31 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
-import { activityContext, activityDelegate, activitySummary } from "../stores/sessionActivityTestUtils";
+import {
+  activityContext,
+  activityDelegate,
+  activityDetailsThread,
+  answerActivityRead,
+} from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
+import { resetThreadsStoreForTests } from "../stores/threads";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
+import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
+import { resetDockChunkForTests } from "./DockRegion";
 import { paletteStore } from "./palette/paletteController";
-import { navigate } from "./routing";
-import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { conversationPaneLifetime } from "./paneLifetime";
+import { navigate, refParam } from "./routing";
+import {
+  documentPaneState,
+  getDockviewApi,
+  type OpenPaneRecord,
+  recordDocumentPaneState,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same
@@ -192,7 +217,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
@@ -499,6 +524,115 @@ async function saveRealSessionPanelLayout(): Promise<void> {
   resetWorkspaceStoreForTests();
 }
 
+// The zoom system promotes a session pane into a cascade by retyping it in
+// place (panes/zoom/actions.ts) - same pane id, same slot - so this is the
+// exact main a saved layout restores. Edges are the saved cascade path.
+function retypeMainToCascade(
+  sourceRef: string,
+  leafRef: string,
+  edges: { ownerRef: string; childRef: string; delegateId: string }[] = [],
+): void {
+  const main = workspaceStore.getState().mainPane();
+  if (!main) throw new Error("no main pane to zoom");
+  if (
+    !workspaceStore.getState().retypePane(main, "sessionZoom", {
+      ref: leafRef,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges,
+    })
+  ) {
+    throw new Error("cascade promotion failed");
+  }
+}
+
+// The cascade flavor of the saveReal*Layout helpers above: a real saved
+// layout whose main is a cascade zoomed on local:session-a with a
+// sessionTasks panel beside it, plus the saved pane ids for the restore
+// assertions.
+async function saveRealCascadeLayout(): Promise<{ cascadeId?: string; secondaryId?: string }> {
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    retypeMainToCascade("local:session-a", "local:child", [
+      { ownerRef: "local:session-a", childRef: "local:child", delegateId: "edge-child" },
+    ]);
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+  const cascadeId = workspaceStore.getState().mainPane()?.id;
+  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id;
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+  return { cascadeId, secondaryId };
+}
+
+async function saveRealSecondaryCascadeLayout(ref = "local:session-a") {
+  window.history.pushState({}, "", `/s/${ref}`);
+  installLocationForRoute(ref);
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(getDockviewApi()?.panels).toHaveLength(ref === "local:child" ? 2 : 1));
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  const source = paneFor(ref);
+  if (!mainId || !source || source.type !== "session") throw new Error("Expected real routed conversations");
+  let cascadeId = "";
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:neighbor" }, { slot: "secondary" });
+    cascadeId = enterAgentCascade(
+      activityDelegate({
+        ownerRef: ref,
+        childRef: ref === "local:child" ? "local:grandchild" : "local:child",
+        delegateId: "edge-child",
+      }),
+      source.id,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  await waitFor(() => expect(getDockviewApi()?.panels).toHaveLength(ref === "local:child" ? 4 : 3));
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+  return { mainId, sourceId: source.id, cascadeId, secondaryId };
+}
+
+function heldRouteLocation(ref: string) {
+  const client = navClient();
+  const finishes: (() => void)[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "location" || params.ref !== ref) return navigationRead(params);
+    return new Promise<NavigationReadResponse>((resolve) => {
+      finishes.push(() => {
+        const owner = ref === "local:child" ? "local:owner" : ref;
+        const response = wireSnapshot(
+          params,
+          { session: { ...TREE_SESSION, ref, session_id: ref, kind: owner === ref ? "session" : "subagent" } },
+          '"test"',
+        );
+        (response.data as NavigationSnapshot).metadata = {
+          generation_id: "generation_test",
+          revision: 1,
+          ref,
+          top_level_ref: owner,
+          top_level: owner === ref,
+          tier: "current",
+        };
+        resolve(response);
+      });
+    });
+  });
+  return {
+    client,
+    release: () => {
+      if (finishes.length === 0) throw new Error("No actual location request to release");
+      for (const finish of finishes.splice(0)) finish();
+    },
+  };
+}
+
 async function saveLegacyNestedMainLayout(): Promise<void> {
   workspaceStore.getState().openPane("session", { ref: "local:child" });
   const { unmount } = render(<DockHost />);
@@ -511,6 +645,283 @@ async function saveLegacyNestedMainLayout(): Promise<void> {
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
   resetWorkspaceStoreForTests();
 }
+
+// Literal route/restore oracle, not parseZoomParams/deriveCascadePath or a
+// comparison solely against whatever saveLayout happened to serialize.
+const ORDERING_CASCADE: SessionZoomParams = {
+  ref: "local:step-6",
+  source: { type: "session", params: { ref: "local:root" } },
+  edges: [
+    { ownerRef: "local:root", childRef: "local:step-1", delegateId: "edge-local:step-1" },
+    { ownerRef: "local:step-1", childRef: "local:step-2", delegateId: "edge-local:step-2" },
+    { ownerRef: "local:step-2", childRef: "local:step-3", delegateId: "edge-local:step-3" },
+    { ownerRef: "local:step-3", childRef: "local:step-4", delegateId: "edge-local:step-4" },
+    { ownerRef: "local:step-4", childRef: "local:step-5", delegateId: "edge-local:step-5" },
+    { ownerRef: "local:step-5", childRef: "local:step-6", delegateId: "edge-local:step-6" },
+  ],
+};
+const ORDERING_SAVED_PANES = [
+  { id: "pane_session_1", type: "sessionZoom", params: ORDERING_CASCADE, slot: "main" },
+  { id: "pane_session_2", type: "session", params: { ref: "local:neighbor" }, slot: "secondary" },
+];
+
+function orderingClient() {
+  const ancestry = ["local:root", "local:step-1", "local:step-2", "local:step-3", "local:step-4", "local:step-5"];
+  const client = cascadeClient((ref) => {
+    const index = ref === "local:step-6" ? 6 : ancestry.indexOf(ref);
+    return cascadeContext(ref, index > 0 ? ancestry.slice(0, index) : []);
+  });
+  client.on("evener/navigation/read", navigationRead);
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
+    sourceId: "fake",
+    features: ALL_FEATURES_OFF,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
+  }));
+  return client;
+}
+
+// Prepare legacy in-place intent using real retype, pane registration,
+// Dockview, and DockHost's synchronous final-save flush. No fabricated layout.
+async function saveOrderingCascade(): Promise<void> {
+  const client = orderingClient();
+  connectionStore.getState().connect(client);
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "local:root" });
+  const view = await act(async () =>
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <DockHost />
+        </MotionProvider>
+      </ClientProvider>,
+    ),
+  );
+  await screen.findByRole("heading", { name: "local:root" });
+  await act(async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:neighbor" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(sourceId);
+  });
+  await act(async () => {
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    if (!source) throw new Error("Missing legacy cascade source pane");
+    expect(workspaceStore.getState().retypePane(source, "sessionZoom", ORDERING_CASCADE)).toBe(true);
+  });
+  await screen.findByRole("button", { name: "Return to previous view" });
+  expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+  view.unmount();
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Missing real six-edge saved layout");
+  expect(JSON.parse(raw).panels.pane_session_1.params).toEqual({
+    paneType: "sessionZoom",
+    paneParams: ORDERING_CASCADE,
+  });
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  resetNavigationStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
+}
+
+test.each([
+  { order: "completed-placement-before-restoration", routeRef: "local:root" },
+  { order: "restoration-before-location", routeRef: "local:root" },
+  { order: "cached-location-with-warm-host", routeRef: "local:root" },
+  { order: "completed-placement-before-restoration", routeRef: "local:different-root" },
+  { order: "restoration-before-location", routeRef: "local:different-root" },
+  { order: "cached-location-with-warm-host", routeRef: "local:different-root" },
+] as const)("startup $order respects route $routeRef against a saved six-edge cascade", async ({ order, routeRef }) => {
+  await saveOrderingCascade();
+  const client = orderingClient();
+  const reply = deferred<void>();
+  const requested = deferred<void>();
+  const restored = deferred<void>();
+  const witnesses: { event: string; panes?: unknown; focusedPaneId?: string | null }[] = [];
+  const unsubscribeWorkspace = workspaceStore.subscribe((state, previous) => {
+    if (state.panes === previous.panes) return;
+    witnesses.push({ event: "workspace", panes: state.panes, focusedPaneId: state.focusedPaneId });
+    if (state.mainPane()?.type === "sessionZoom") {
+      witnesses.push({ event: "restored" });
+      restored.resolve();
+    }
+  });
+  const unsubscribeNavigation = navigationStore.subscribe((state) => {
+    const location = state.resources.get(keyID({ kind: "location", ref: routeRef }));
+    if (location?.data && !location.loading && !location.stale && !witnesses.some((w) => w.event === "location-ready"))
+      witnesses.push({ event: "location-ready" });
+  });
+  class StartupStorage extends MemoryStorage {
+    override getItem(key: string): string | null {
+      if (key === LAYOUT_KEY) {
+        witnesses.push({ event: "layout-read", panes: workspaceStore.getState().panes });
+      }
+      return super.getItem(key);
+    }
+  }
+  // Copy the exact saved bytes into the observed external storage root.
+  const saved = localStorage.getItem(LAYOUT_KEY);
+  if (saved === null) throw new Error("Missing saved startup fixture");
+  const storage = new StartupStorage();
+  storage.setItem(LAYOUT_KEY, saved);
+  installLocalStorage(storage);
+  client.on("evener/navigation/read", async (params) => {
+    if (params.resource === "location" && params.ref === routeRef) {
+      requested.resolve();
+      await reply.promise;
+    }
+    return navigationRead(params);
+  });
+  function PlacementCommitWitness() {
+    // Child passive effects precede this parent effect. With the real fresh
+    // lazy payload still suspended, AppShell has completed its route effect,
+    // while DockHost has not yet mounted or read storage. This observes only.
+    useEffect(() => {
+      if (order !== "completed-placement-before-restoration") return;
+      const location = navigationStore.getState().resources.get(keyID({ kind: "location", ref: routeRef }));
+      expect(location?.data).toMatchObject({ ref: routeRef, top_level_ref: routeRef, top_level: true });
+      expect(location?.loading).toBe(false);
+      expect(location?.stale).toBe(false);
+      expect(workspaceStore.getState().panes).toEqual([
+        { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
+      ]);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()).toBeNull();
+      expect(witnesses.some((w) => w.event === "layout-read" || w.event === "restored")).toBe(false);
+      witnesses.push({ event: "placement-commit" });
+    }, []);
+    return <AppShell client={client} />;
+  }
+  try {
+    const initialized = await client.connect();
+    initNavigation(client, initialized);
+    window.history.pushState({}, "", `/s/${encodeURIComponent(routeRef)}`);
+    if (order !== "restoration-before-location") {
+      reply.resolve();
+      // A real cached server location, not installLocation or a workspace seed.
+      await navigationStore.getState().lookupLocation(routeRef);
+    }
+    if (order === "completed-placement-before-restoration") resetDockChunkForTests();
+    await act(async () => render(<PlacementCommitWitness />));
+    await restored.promise;
+    if (order === "restoration-before-location") {
+      await requested.promise;
+      expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
+      await act(async () => {
+        reply.resolve();
+        // Joins the actual in-flight server read and its store publication.
+        await navigationStore.getState().lookupLocation(routeRef);
+      });
+    }
+    const events = witnesses.map((witness) => witness.event);
+    expect(events.indexOf("location-ready")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("layout-read")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("restored")).toBeGreaterThan(events.indexOf("layout-read"));
+    if (order !== "restoration-before-location") {
+      expect(events.indexOf("location-ready")).toBeLessThan(events.indexOf("layout-read"));
+      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([
+        { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
+      ]);
+      if (order === "completed-placement-before-restoration") {
+        expect(events.indexOf("placement-commit")).toBeGreaterThan(events.indexOf("location-ready"));
+        expect(events.indexOf("placement-commit")).toBeLessThan(events.indexOf("layout-read"));
+      } else {
+        expect(events).not.toContain("placement-commit");
+      }
+    } else {
+      expect(events.indexOf("restored")).toBeLessThan(events.indexOf("location-ready"));
+      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([]);
+    }
+    if (routeRef === "local:different-root") {
+      expect(workspaceStore.getState().panes).toEqual([
+        { id: "pane_session_3", type: "session", params: { ref: "local:different-root" }, slot: "main" },
+      ]);
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_3");
+      expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+      expect(await screen.findByRole("heading", { name: "local:different-root" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/s/local%3Adifferent-root");
+    } else {
+      expect(workspaceStore.getState().panes, `Startup witnesses: ${JSON.stringify(witnesses)}`).toEqual(
+        ORDERING_SAVED_PANES,
+      );
+      expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
+      expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
+      expect(await screen.findByRole("button", { name: "Return to previous view" })).toBeTruthy();
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+        "local:step-5",
+        "local:step-6",
+      ]);
+      expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"))).toEqual([
+        "local:root",
+        "local:step-1",
+        "local:step-2",
+        "local:step-3",
+        "local:step-4",
+      ]);
+      expect(screen.getByRole("heading", { name: "local:neighbor" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/s/local%3Aroot");
+    }
+  } finally {
+    reply.resolve();
+    unsubscribeWorkspace();
+    unsubscribeNavigation();
+    cleanup();
+    resetActivitySidebarStoreForTests();
+    resetNavigationStoreForTests();
+    resetThreadsStoreForTests();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
+});
+
+test("a real session URL wins over an Activity-only saved layout", async () => {
+  const client = navClient();
+  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/unsubscribe", () => ({}));
+  client.on("evener/thread/activity/read", answerActivityRead);
+  connectionStore.getState().connect(client);
+  const retired = workspaceStore.getState().openPane("session", { ref: "local:saved" });
+  const saved = render(
+    <ClientProvider client={client}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(document.querySelector('[data-pane-scaffold="session:local:saved"]')).toBeTruthy());
+  saved.unmount();
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) throw new Error("Expected a real saved Dockview layout");
+  const layout = JSON.parse(raw) as { panels: Record<string, { params?: unknown }> };
+  const pane = layout.panels[retired];
+  if (!pane) throw new Error(`Missing saved pane ${retired}`);
+  pane.params = { paneType: "sessionActivity", paneParams: { ref: "local:saved" } };
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  window.history.pushState({}, "", "/s/local:routed");
+  installLocationForRoute("local:routed");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes).toEqual([
+      expect.objectContaining({ type: "session", params: { ref: "local:routed" }, slot: "main" }),
+    ]),
+  );
+  expect(document.querySelector('[data-pane-scaffold="session:local:routed"]')).toBeTruthy();
+  expect(screen.queryByText("No session open")).toBeNull();
+  expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+  const methods = client.calls.map((call) => call.method);
+  for (const mutation of [
+    "evener/session/delete",
+    "evener/project/delete",
+    "evener/archive/set",
+    "thread/shutdown",
+    "evener/thread/forceStop",
+  ]) {
+    expect(methods).not.toContain(mutation);
+  }
+});
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
@@ -1857,12 +2268,12 @@ test("a focused aside-ref session panel does not invalidate a top-level route", 
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:sub1" }, { slot: "secondary" });
-    workspaceStore.getState().openPane("sessionActivity", { ref: "local:sub1" }, { slot: "secondary" });
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:sub1" }, { slot: "secondary" });
   });
 
   await waitFor(() =>
     expect(workspaceStore.getState().focusedPaneId).toBe(
-      workspaceStore.getState().panes.find((pane) => pane.type === "sessionActivity")?.id,
+      workspaceStore.getState().panes.find((pane) => pane.type === "sessionDetails")?.id,
     ),
   );
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
@@ -1899,6 +2310,167 @@ test("a deferred deep link beats a restored active session panel", async () => {
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
+
+test("a deferred deep link preserves a restored cascade main and its neighbors", async () => {
+  const { cascadeId, secondaryId } = await saveRealCascadeLayout();
+
+  // Phase 2: reload the same deep link with the location read still in
+  // flight - the boot shape a loaded machine produces. The restored cascade
+  // must survive the route's late placement instead of being replaced by a
+  // plain pane of the same session (which discarded every neighboring pane
+  // with it).
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("sessionZoom"));
+  act(() => installLocationForRoute("local:session-a"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.id).toBe(cascadeId));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([cascadeId, secondaryId]);
+  // The placement must not steal focus either: the saved layout's focus (the
+  // sessionTasks pane, last focused before the save) is part of the work the
+  // deferred route placement preserves.
+  expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
+});
+
+test("deferred location preserves a restored secondary inspector and its real center", async () => {
+  const { mainId, cascadeId, secondaryId } = await saveRealSecondaryCascadeLayout();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  const held = heldRouteLocation("local:session-a");
+  window.history.pushState({}, "", "/s/local:session-a");
+  await act(async () => {
+    render(<AppShell client={held.client} />);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:session-a" }))?.loading).toBe(
+    true,
+  );
+  await act(async () => held.release());
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.id).toBe(mainId));
+  expect(workspaceStore.getState().mainPane()?.type).toBe("session");
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, secondaryId, cascadeId]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  act(() => returnFromAgentCascade(cascadeId));
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, secondaryId]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+});
+
+test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {
+  const { mainId, cascadeId } = await saveRealSecondaryCascadeLayout("local:owner");
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  installLocationForRoute("local:owner");
+  const held = heldRouteLocation("local:child");
+  window.history.pushState({}, "", "/s/local:owner");
+  await act(async () => render(<AppShell client={held.client} />));
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  await act(async () => openCascadeConversation(cascadeId, "local:child"));
+  const child = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:child");
+  if (!child) throw new Error("Missing explicit ordinary child conversation");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+  await act(async () => workspaceStore.getState().focusPane(cascadeId));
+  await act(async () => navigate("/s/local:child"));
+  expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:child" }))?.loading).toBe(true);
+  await act(async () => held.release());
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    id: mainId,
+    type: "session",
+    params: { ref: "local:owner" },
+  });
+  expect(workspaceStore.getState().panes).toContain(child);
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "session" && refParam(pane.params) === "local:child"),
+  ).toHaveLength(1);
+  expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+  expect(window.location.pathname).toBe("/s/local:child");
+});
+
+test.each([
+  { ref: "local:session-a", deferred: false },
+  { ref: "local:child", deferred: false },
+  { ref: "local:child", deferred: true },
+])("secondary inspector boot keeps actual $ref conversations with deferred=$deferred", async ({ ref, deferred }) => {
+  const { mainId, sourceId, cascadeId, secondaryId } = await saveRealSecondaryCascadeLayout(ref);
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v3" });
+  if (!deferred) installLocationForRoute(ref);
+  const held = deferred ? heldRouteLocation(ref) : null;
+  window.history.pushState({}, "", `/s/${ref}`);
+  await act(async () => {
+    render(<AppShell client={held?.client ?? navClient()} />);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  if (held) await act(async () => held.release());
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    id: mainId,
+    type: "session",
+    params: { ref: ref === "local:child" ? "local:owner" : ref },
+  });
+  expect(paneFor(ref)?.id).toBe(sourceId);
+  expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual(
+    ref === "local:child" ? [mainId, sourceId, secondaryId, cascadeId] : [mainId, secondaryId, cascadeId],
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  const source = paneFor(ref);
+  if (!source) throw new Error("Missing restored source");
+  const lifetime = conversationPaneLifetime(source);
+  act(() => returnFromAgentCascade(cascadeId));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  expect(paneFor(ref)).toBe(source);
+  expect(conversationPaneLifetime(source)).toBe(lifetime);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === secondaryId)).toBe(true);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === cascadeId)).toBe(false);
+});
+
+test.each(["transcript", "fallback"] as const)(
+  "a settled route preserves focus for %s inspection and its explicit child conversation",
+  async (originKind) => {
+    window.history.pushState({}, "", "/s/local:session-a");
+    installLocationForRoute("local:session-a");
+    render(<AppShell client={new FakeClient("ready")} />);
+    await screen.findByText(/loading transcript/i);
+    const main = workspaceStore.getState().mainPane();
+    if (main?.type !== "session") throw new Error("Expected real route session");
+    let inspectorId = "";
+    await act(async () => {
+      const originId = workspaceStore
+        .getState()
+        .openPane(
+          "transcript",
+          { ref: originKind === "transcript" ? "local:outside" : "job:outside" },
+          { slot: "secondary" },
+        );
+      inspectorId = enterAgentCascade(
+        activityDelegate({ ownerRef: "local:outside", childRef: "local:inspected", delegateId: "edge-outside" }),
+        originId,
+      );
+    });
+    expect(workspaceStore.getState().mainPane()).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === inspectorId)?.slot).toBe("secondary");
+    await act(async () => openCascadeConversation(inspectorId, "local:inspected"));
+    const child = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:inspected");
+    if (!child) throw new Error("Expected explicit full child conversation");
+    expect(workspaceStore.getState().mainPane()).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(child.id);
+    expect(window.location.pathname).toBe("/s/local:session-a");
+    for (const pathname of ["/thread/local:session-a", "/s/local:session-a"]) {
+      await act(async () => navigate(pathname));
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(main.id));
+      expect(workspaceStore.getState().mainPane()).toBe(main);
+      expect(window.location.pathname).toBe(pathname);
+      await act(async () => workspaceStore.getState().focusPane(inspectorId));
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+    }
+  },
+);
 
 test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
@@ -1991,6 +2563,380 @@ test("a focused non-panel pane is re-focused to the routed nested session", asyn
   });
 
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(childId));
+});
+
+const focusFileReference = {
+  path: "docs/focus.md",
+  cwd: "/tmp/project",
+  readTarget: "/tmp/project/docs/focus.md",
+  provenance: "relative",
+} as const;
+
+async function settledDocumentRoute(ref: string): Promise<void> {
+  // Script only the HTTP boundary. AppShell, DockHost, opener and workspace
+  // remain real, including the route effect's post-open publications.
+  vi.stubGlobal("fetch", async () => new Response("# Focus document", { headers: { "Content-Type": "text/plain" } }));
+  window.history.pushState({}, "", `/s/${ref}`);
+  installLocationForRoute(ref);
+  await act(async () => render(<AppShell client={new FakeClient("ready")} />));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(ref)?.id));
+}
+
+test("filename open retains focus after a cold location resolves for an already placed source", async () => {
+  const ref = "local:session-a";
+  vi.stubGlobal("fetch", async () => new Response("# Focus document", { headers: { "Content-Type": "text/plain" } }));
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+  // The browser fixture opens its source before mounting AppShell, then the
+  // real location request resolves after the shell has armed its pending route.
+  const sourceId = workspaceStore.getState().openPane("session", { ref });
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () => render(<AppShell client={navClient()} />));
+  await waitFor(() =>
+    expect(
+      [...navigationStore.getState().resources.values()].find(
+        (resource) => resource.key.kind === "location" && resource.key.ref === ref,
+      )?.data,
+    ).toMatchObject({ ref, top_level: true }),
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+
+  await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(ref)}`);
+});
+
+test.each(["local:session-a", "local:child"])(
+  "filename open retains document focus and exact promoted source on settled %s route",
+  async (ref) => {
+    await settledDocumentRoute(ref);
+    const source = paneFor(ref);
+    if (!source) throw new Error("routed source missing");
+    const retainedPanes = [...workspaceStore.getState().panes];
+
+    await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+    const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    expect(doc).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+    expect(workspaceStore.getState().mainPane()).toBe(source);
+    expect(source.slot).toBe("main");
+    expect(doc?.slot).toBe("secondary");
+    expect(doc?.params).toEqual({ session: ref, path: "docs/focus.md", kind: "file" });
+    if (!doc) throw new Error("document missing");
+    expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+    for (const pane of retainedPanes) expect(workspaceStore.getState().panes).toContain(pane);
+    expect(window.location.pathname).toBe(`/s/${ref}`);
+  },
+);
+
+test("initial filename open survives a synchronous workspace commit before its binding is published", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  // A native filename listener can trigger an external-store consumer commit
+  // during openPane, before openDocBeside records the new document's binding.
+  // Force that real React commit rather than batching both publications in act.
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type === "doc" && !documentPaneState(focused)) flushSync(() => {});
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+});
+
+test("initial filename open retains focus through a reference-only document binding publication", async () => {
+  const ref = "local:session-a";
+  await settledDocumentRoute(ref);
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  // DocPane's layout hydration can publish a reference before the opener's
+  // exact owner is available. Exercise that canonical workspace publication
+  // during the real opener, with a real synchronous AppShell commit.
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type === "doc" && !documentPaneState(focused)) {
+      recordDocumentPaneState(focused, { reference: focusFileReference, origin: undefined, reopen: 0 });
+      flushSync(() => {});
+    }
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () => openDocBeside({ session: ref, reference: focusFileReference, sourcePaneId: source.id }));
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 0 });
+});
+
+test.each([
+  { name: "nested session", route: "local:child", session: "local:child" },
+  { name: "secondary delegate transcript", route: "local:session-a", session: "local:sub1" },
+])("reference-only publication retains the promoted $name before its exact owner arrives", async (fixture) => {
+  await settledDocumentRoute(fixture.route);
+  let source = paneFor(fixture.session);
+  if (fixture.session === "local:sub1") {
+    let sourceId = "";
+    act(() => {
+      sourceId = workspaceStore
+        .getState()
+        .openPane("transcript", { ref: fixture.session, parentRef: fixture.route }, { slot: "secondary" });
+    });
+    source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  }
+  if (!source) throw new Error("source missing");
+  const exactSource = source;
+  let intermediateDocument: OpenPaneRecord | undefined;
+  const unsubscribe = workspaceStore.subscribe((state) => {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (focused?.type !== "doc" || documentPaneState(focused)) return;
+    intermediateDocument = focused;
+    recordDocumentPaneState(focused, { reference: focusFileReference, origin: undefined, reopen: 0 });
+    flushSync(() => {});
+    expect(workspaceStore.getState().focusedPaneId).toBe(focused.id);
+    expect(workspaceStore.getState().mainPane()).toBe(exactSource);
+    expect(documentPaneState(focused)?.origin).toBeUndefined();
+  });
+  onTestFinished(unsubscribe);
+
+  await act(async () =>
+    openDocBeside({ session: fixture.session, reference: focusFileReference, sourcePaneId: exactSource.id }),
+  );
+
+  expect(intermediateDocument).toBeDefined();
+  if (!intermediateDocument) throw new Error("intermediate document missing");
+  expect(workspaceStore.getState().focusedPaneId).toBe(intermediateDocument.id);
+  expect(workspaceStore.getState().mainPane()).toBe(exactSource);
+  expect(documentPaneState(intermediateDocument)).toEqual({
+    reference: focusFileReference,
+    origin: exactSource,
+    reopen: 0,
+  });
+});
+
+test.each(["local:session-a", "local:child"])(
+  "a reference-only generic document still yields focus to the settled %s route",
+  async (ref) => {
+    await settledDocumentRoute(ref);
+    const source = paneFor(ref);
+    if (!source) throw new Error("source missing");
+    let doc: OpenPaneRecord | undefined;
+    await act(async () => {
+      const id = workspaceStore.getState().openPane("doc", {
+        session: ref,
+        path: focusFileReference.path,
+        kind: "file",
+      });
+      doc = workspaceStore.getState().panes.find((pane) => pane.id === id);
+      if (!doc) throw new Error("document missing");
+      recordDocumentPaneState(doc, { reference: focusFileReference, origin: undefined, reopen: 0 });
+      flushSync(() => {});
+    });
+
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(source.id));
+    if (!doc) throw new Error("document missing");
+    expect(documentPaneState(doc)?.origin).toBeUndefined();
+  },
+);
+
+test("same-pane filename reopen keeps document selection and increments its retained read generation", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("document missing");
+  act(() => workspaceStore.getState().focusPane(source.id));
+
+  await act(async () =>
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([doc]);
+  expect(documentPaneState(doc)).toEqual({ reference: focusFileReference, origin: source, reopen: 1 });
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+});
+
+test.each([
+  { name: "secondary delegate session", type: "session", params: { ref: "local:sub1" }, session: "local:sub1" },
+  {
+    name: "same-ref read-only transcript",
+    type: "transcript",
+    params: { ref: "local:session-a", parentRef: "local:session-a" },
+    session: "local:session-a",
+  },
+  {
+    name: "delegate transcript",
+    type: "transcript",
+    params: { ref: "local:sub1", parentRef: "local:session-a" },
+    session: "local:sub1",
+  },
+  {
+    name: "job transcript",
+    type: "transcript",
+    params: { ref: "job:job_focus", parentRef: "local:session-a" },
+    session: "local:session-a",
+  },
+] as const)("filename open from $name keeps that exact source main and the document selected", async (fixture) => {
+  await settledDocumentRoute("local:session-a");
+  const routedSource = workspaceStore.getState().mainPane();
+  let sourceId = "";
+  act(() => {
+    sourceId = workspaceStore.getState().openPane(fixture.type, fixture.params, { slot: "secondary" });
+  });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("secondary source missing");
+
+  await act(async () =>
+    openDocBeside({ session: fixture.session, reference: focusFileReference, sourcePaneId: sourceId }),
+  );
+
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(routedSource?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes).toContain(routedSource);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+  expect(doc.params).toEqual({ session: fixture.session, path: "docs/focus.md", kind: "file" });
+});
+
+test("settled location refresh and reconnect retain filename document focus and owner", async () => {
+  await settledDocumentRoute("local:child");
+  const source = paneFor("local:child");
+  if (!source) throw new Error("child source missing");
+  await act(async () =>
+    openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+
+  await act(async () => {
+    connectionStore.setState({ state: "reconnecting" });
+    installLocationForRoute("local:child");
+  });
+  await act(async () => {
+    connectionStore.setState({ state: "ready" });
+    installLocationForRoute("local:child");
+  });
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(source);
+});
+
+test.each(["missing origin", "replaced origin", "session mismatch", "path mismatch", "unpromoted origin"])(
+  "settled route rejects a filename document with %s",
+  async (invalidBinding) => {
+    await settledDocumentRoute("local:session-a");
+    const source = workspaceStore.getState().mainPane();
+    if (!source) throw new Error("source missing");
+    await act(async () => {
+      openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id });
+      const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+      if (!doc) throw new Error("document missing");
+      if (invalidBinding === "missing origin") workspaceStore.getState().closePane(source.id);
+      if (invalidBinding === "replaced origin") {
+        workspaceStore.setState({
+          panes: workspaceStore.getState().panes.map((pane) => (pane === source ? { ...pane } : pane)),
+        });
+      }
+      if (invalidBinding === "session mismatch" || invalidBinding === "path mismatch") {
+        doc.params = {
+          session: invalidBinding === "session mismatch" ? "local:other" : "local:session-a",
+          path: invalidBinding === "path mismatch" ? "docs/other.md" : "docs/focus.md",
+          kind: "file",
+        };
+        workspaceStore.setState({ panes: [...workspaceStore.getState().panes] });
+      }
+      if (invalidBinding === "unpromoted origin") {
+        const otherId = workspaceStore.getState().openPane("session", { ref: "local:other" });
+        workspaceStore.getState().promotePane(otherId);
+        workspaceStore.getState().focusPane(doc.id);
+      }
+    });
+
+    await waitFor(() => {
+      expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+    });
+  },
+);
+
+test.each(["/thread/local:child", "/s/local:next", "/settings/general"])(
+  "explicit popstate navigation to %s overrides filename source promotion",
+  async (pathname) => {
+    await settledDocumentRoute("local:child");
+    const source = paneFor("local:child");
+    if (!source) throw new Error("source missing");
+    await act(async () => {
+      openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: source.id });
+      window.history.pushState({}, "", pathname);
+      if (pathname === "/s/local:next") installLocationForRoute("local:next");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    await waitFor(() => {
+      if (pathname === "/thread/local:child") {
+        expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+        expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+      } else {
+        expect(workspaceStore.getState().mainPane()?.type).toBe(
+          pathname.startsWith("/settings") ? "settings" : "session",
+        );
+        expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+      }
+    });
+  },
+);
+
+test("cold route placement overrides a previously bound filename document", async () => {
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+  openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: sourceId });
+  await settledDocumentRoute("local:child");
+
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+});
+
+test("reset with reused pane IDs does not resurrect a filename document's runtime owner", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("source missing");
+  await act(async () => {
+    openDocBeside({ session: "local:session-a", reference: focusFileReference, sourcePaneId: source.id });
+    resetWorkspaceStoreForTests();
+    workspaceStore.getState().openPane("session", { ref: "local:session-a" });
+    workspaceStore.getState().openPane("doc", { session: "local:session-a", path: "docs/focus.md", kind: "file" });
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id));
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("restored document missing");
+  expect(documentPaneState(doc)?.origin).toBeUndefined();
 });
 
 test("successful Spawn navigation replaces Spawn with the created session and clears old secondary panes", async () => {
@@ -2437,6 +3383,61 @@ function installMobileViewport(): void {
     })),
   );
 }
+
+test.each(["phone", "desktop"])(
+  "%s keeps an opened child focused after the already placed parent location settles",
+  async (host) => {
+    if (host === "phone") {
+      vi.stubGlobal("innerWidth", 390);
+      installMobileViewport();
+    }
+    let releaseLocation = () => {};
+    const locationReady = new Promise<void>((resolve) => {
+      releaseLocation = resolve;
+    });
+    const client = navClient();
+    client.on("evener/navigation/read", async (params) => {
+      if (params.resource === "location" && params.ref === "local:owner") await locationReady;
+      return navigationRead(params);
+    });
+    client.on("thread/read", ({ ref }) => activityDetailsThread(ref, { name: ref }));
+    client.on("thread/unsubscribe", () => ({}));
+    client.on("evener/thread/activity/read", answerActivityRead);
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+      </>,
+    );
+    await screen.findByText("No session open");
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "local:owner" });
+      navigate("/s/local%3Aowner");
+    });
+    await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() =>
+      expect(client.calls).toContainEqual(
+        expect.objectContaining({
+          method: "evener/navigation/read",
+          params: expect.objectContaining({ resource: "location", ref: "local:owner" }),
+        }),
+      ),
+    );
+    await act(async () => {
+      releaseLocation();
+      await navigationStore.getState().lookupLocation("local:owner");
+    });
+    const owner = workspaceStore.getState().mainPane();
+    expect(owner?.params).toEqual({ ref: "local:owner" });
+    await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+  },
+);
 
 // Back from a child opened on phone uses StackHost's own history. The walk
 // below covers children opened on desktop, where the host swap discards it.
@@ -3998,6 +4999,44 @@ test("live-next focuses the session pane even when the URL already matches", asy
   expect(focused?.type).toBe("session");
 });
 
+// The same URL-equal press against a CASCADE main: the placement seam now
+// preserves a cascade whose session source is the pressed ref (and must keep
+// preserving it - and never steal focus on its own, or a restored layout's
+// saved focus would not survive boot placement), but the live chord's own
+// contract is that the press always ends with the session pane focused. A
+// preserved cascade keeps the pane id, so the guarantee has to reach it too.
+test("live-previous focuses a preserved cascade main when the URL already matches", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await rail().findByText("Live B");
+
+  // The URL names B with B's plain session pane in main, then the zoom
+  // system's in-place retype turns that pane into a cascade on the same
+  // source - the exact main a saved layout restores.
+  await user.click(rail().getByText("Live B"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
+  });
+  act(() => {
+    retypeMainToCascade("local:live-b", "local:live-child");
+  });
+
+  // A secondary panel holds focus while the URL still names B.
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+
+  // URL-equal press: previous from the panel targets the LAST live row (B),
+  // whose URL the route already holds. The cascade must survive the press
+  // AND take focus.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.type).toBe("sessionZoom");
+  expect(state.focusedPaneId).toBe(state.mainPane()?.id);
+});
+
 // Round 8, low 1: a COMPLETED demand's dedupe key must leave the in-flight
 // set. After an invalidation (not a generation change) re-stales the live
 // pages, the same page+direction demand must be issuable again instead of
@@ -4364,6 +5403,7 @@ test.each([
 ])(
   "desktop Activity drill keeps grandchild focus from $source with retained ref-only observer=$retained",
   async ({ retained, source }) => {
+    onTestFinished(installJobLogRangeGeometry());
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 500 });
     onTestFinished(() => {
@@ -4435,7 +5475,10 @@ test.each([
         },
       };
     });
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", (params) => ({
+      ...answerActivityRead(params),
+      context: context(params.ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref }) => ({
       context: context(ref),
       scope: "session",
@@ -4466,7 +5509,14 @@ test.each([
       throw new Error("retained metadata unavailable");
     });
     client.on("evener/jobs/output", () => ({
-      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0, truncated: false },
+      data: {
+        offsetBytes: 0,
+        bytesReturned: 23,
+        totalBytes: 23,
+        retainedStartBytes: 0,
+        encoding: "utf8",
+        data: "retained-history-output",
+      },
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;
@@ -4485,6 +5535,11 @@ test.each([
             )
           : workspaceStore.getState().focusedPaneId;
       const sourcePane = () => workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+      const original = sourcePane();
+      if (!original) throw new Error("Missing original Activity source");
+      const lifetime = conversationPaneLifetime(original);
+      let inspectorId = "";
+      const inspectorPane = () => workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
       act(() => {
         historyPane = workspaceStore
           .getState()
@@ -4507,11 +5562,14 @@ test.each([
       const observer = await sidebar.findByRole("button", { name: first });
       await act(async () => fireEvent.click(observer));
       await waitFor(() => {
-        const pane = sourcePane();
-        expect(pane?.id).toBe(sourceId);
+        const pane = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
         expect(pane?.type).toBe("sessionZoom");
+        expect(pane?.slot).toBe("secondary");
+        expect(pane?.id).not.toBe(sourceId);
+        inspectorId = pane?.id ?? "";
         expect((pane?.params as { ref?: string })?.ref).toBe(source === "nested" ? "local:grandchild" : "local:child");
-        expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+        expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+        expect(sourcePane()).toBe(original);
       });
       expect(window.location.pathname).toBe(`/s/${routeRef}`);
       if (source !== "nested") {
@@ -4523,11 +5581,17 @@ test.each([
         await act(async () => fireEvent.click(grandchild));
       }
       await screen.findByText("report-local:grandchild");
-      expect(sourcePane()?.id).toBe(sourceId);
-      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
-      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
-      expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("local:owner");
-      expect(within(screen.getByTestId("cascade-spine")).queryByText("report-local:owner")).toBeNull();
+      expect(sourcePane()).toBe(original);
+      expect(conversationPaneLifetime(original)).toBe(lifetime);
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+      // The nested source's own pane (local:child) is the immediate parent of
+      // the drilled leaf, so it collapses to a spine beside its owner spine.
+      const spines = screen.getAllByTestId("cascade-spine");
+      expect(spines.map((spine) => spine.getAttribute("data-scope-ref"))).toEqual(
+        source === "nested" ? ["local:owner", "local:child"] : ["local:owner"],
+      );
+      for (const spine of spines) expect(within(spine).queryByText("report-local:owner")).toBeNull();
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
       expect(
         workspaceStore
@@ -4544,14 +5608,16 @@ test.each([
         const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
         expect(focused?.type).toBe("session");
         expect(focused?.params).toEqual({ ref: "local:grandchild" });
-        expect(sourcePane()?.type).toBe("sessionZoom");
-        expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
+        expect(sourcePane()).toBe(original);
+        expect(inspectorPane()?.type).toBe("sessionZoom");
+        expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
       });
-      act(() => workspaceStore.getState().focusPane(sourceId ?? ""));
+      act(() => workspaceStore.getState().focusPane(inspectorId));
       await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:owner" })));
-      expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
-      expect(sourcePane()?.type).toBe("sessionZoom");
-      expect((sourcePane()?.params as { ref?: string })?.ref).toBe("local:owner");
+      expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+      expect(sourcePane()).toBe(original);
+      expect(inspectorPane()?.type).toBe("sessionZoom");
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:owner");
       const rootColumn = screen.getByTestId("cascade-column");
       expect(await within(rootColumn).findByText("report-local:owner")).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));

@@ -1,6 +1,9 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import memoryCalls from "../../agent/testdata/toolwire/memory.json?raw";
+import { hydrateThread } from "./reducer";
+import { wireThread } from "./testing/notifications";
 import { toolWireStep } from "./testing/toolWireFixtures";
 import {
   MAX_OUTPUT_TAIL_CUTS,
@@ -11,8 +14,38 @@ import {
   skillContext,
   webFetchResult,
 } from "./toolEvidence";
+import type { ThreadItem } from "./types.gen";
 
 // Every case reads what the daemon actually sends (agent/testdata/toolwire).
+
+test.each(["memory_read", "memory_search"])(
+  "keeps real %s output and artifact recovery in generic evidence",
+  (name) => {
+    // TestMemoryGenericDelivery records real session rounds in the toolwire format.
+    const fixture = JSON.parse(memoryCalls) as { cwd: string; items: ThreadItem[] };
+    const model = hydrateThread(
+      {
+        thread: wireThread("ref-memory", {
+          cwd: fixture.cwd,
+          turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: fixture.items }],
+        }),
+      },
+      "ref-memory",
+      0,
+    );
+    const steps = model.turns.flatMap((turn) => turn.items);
+    const step = steps.find((item) => item.callId === `call_${name}`);
+    const recovery = steps.find((item) => item.callId === `call_${name}_recovery`);
+    expect(step?.toolName).toBe(name);
+    expect(step?.output).toContain("opaque-delivery-001-");
+    expect(step?.output).not.toContain("opaque-delivery-020-");
+    const ref = step?.output?.match(/artifact:[a-zA-Z0-9]+/)?.[0];
+    expect(ref).toBeDefined();
+    expect(JSON.parse(recovery?.argumentsJSON ?? "{}").transcript_ref).toBe(ref);
+    expect(recovery?.output).toContain("opaque-delivery-020-");
+    expect(prettyJSON(step?.output ?? "")).toBeUndefined();
+  },
+);
 
 test("splits a command's output from the exit footer the shell tool ends it with", () => {
   expect(shellOutput(toolWireStep("call_shell").output ?? "")).toEqual({ text: "package agent", exitCode: 0 });

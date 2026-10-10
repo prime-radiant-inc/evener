@@ -3,11 +3,19 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cloneElement, type ReactElement } from "react";
+import { cloneElement } from "react";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { alertRequests, flatListCalls, pressable, render, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	flatListCalls,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { takeQuote } from "../session/pendingQuote";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -110,7 +118,6 @@ let client: FakeClient;
 let memory: DocumentMemory;
 // The memory's clock: the phone's, unless a test moves it.
 let clockOffset = 0;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -125,6 +132,7 @@ const threadRead = (status: string): ThreadReadResponse =>
 	({
 		thread: {
 			id: "thread-fix",
+			cwd: "/work/a",
 			status: { type: status },
 			modelProvider: "glm",
 			evener: { ref: "local:fix", instanceId: "instance-fix", capabilities: {}, queue: { revision: 1 } },
@@ -147,7 +155,10 @@ beforeEach(() => {
 	served = { [PATH]: { body: PLAN } };
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
-		const answer = served[url.searchParams.get("path") ?? ""] ?? { status: 404, body: "not found" };
+		const answer = served[(url.searchParams.get("path") ?? "").replace(/^\/work\/a\//, "")] ?? {
+			status: 404,
+			body: "not found",
+		};
 		return new Response(answer.body, {
 			status: answer.status ?? 200,
 			headers: { "Content-Type": "text/plain; charset=utf-8", ...answer.headers },
@@ -157,6 +168,7 @@ beforeEach(() => {
 	client.on("thread/read", () => threadRead("idle"));
 	harness.connection = {
 		profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }],
+		activeProfile: { id: "studio" },
 		state: "ready",
 		client,
 	};
@@ -173,22 +185,16 @@ beforeEach(() => {
 	};
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function navigationDouble() {
 	const options: NativeStackNavigationOptions[] = [];
 	return {
 		options,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => options.push(next)),
+		setParams: vi.fn(),
 		navigate: vi.fn(),
 		goBack: vi.fn(),
 		pop: vi.fn(),
@@ -204,6 +210,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path,
+		reference: { path, cwd: "/work/a", readTarget: `/work/a/${path}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		...extra,
 	};
@@ -211,7 +218,6 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = s
 		<ReaderScreen route={{ key: "reader-1", name: "Reader", params } as never} navigation={navigation as never} />
 	);
 	const tree = render(element);
-	trees.push(tree);
 	await flush();
 	// Renders again, as a change in the navigation state would.
 	const rerender = async () => {
@@ -260,14 +266,8 @@ describe("comments (Task 16)", () => {
 		...over,
 	});
 
-	function mountSheet(element: ReactElement) {
-		const tree = render(element);
-		trees.push(tree);
-		return tree;
-	}
-
 	function commentSheet(params = commentParams()) {
-		return mountSheet(
+		return render(
 			<CommentSheet
 				route={{ key: "comment", name: "CommentSheet", params } as never}
 				navigation={sheetNavigation as never}
@@ -283,7 +283,7 @@ describe("comments (Task 16)", () => {
 			sessionTitle: "Fix race",
 			...over,
 		};
-		return mountSheet(
+		return render(
 			<CommentsSheet
 				route={{ key: "comments", name: "CommentsSheet", params } as never}
 				navigation={sheetNavigation as never}
@@ -295,6 +295,11 @@ describe("comments (Task 16)", () => {
 		const field = tree.root.find((node) => String(node.type) === "TextInput");
 		act(() => field.props.onChangeText(text));
 	}
+
+	it("lets a drag of the comment sheet put the keyboard away", () => {
+		const tree = commentSheet();
+		expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	});
 
 	it("opens the block's four actions on a long press, and highlights that block while it's open", async () => {
 		const { tree } = await mount();

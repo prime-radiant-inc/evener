@@ -1,5 +1,6 @@
-// Two shared tool-body shapes, reused across several per-tool descriptors
-// (fsTools.tsx, shellTool.tsx) rather than duplicated per file. Ground truth
+// Shared tool-body shapes, reused across several per-tool descriptors
+// (fsTools.tsx, shellTool.tsx, editTools.tsx, memoryTools.tsx) rather than
+// duplicated per file. Ground truth
 // (see protocol/toolCallText.ts's own header): a tool call's ItemModel carries
 // output text, input args, error text, and optional direct producer state in
 // item.raw.
@@ -10,8 +11,9 @@
 // item.raw only when its producer state is stable and materially improves the
 // display.
 
-import { clip, tailFold, tailSlice } from "@evener/appwire-client";
-import { CodeBlock } from "../../../../widgets";
+import { clip, editDiffText, parseArgs, str, tailFold, tailSlice } from "@evener/appwire-client";
+import { CodeBlock, DiffBlock } from "../../../../widgets";
+import type { ToolRenderProps } from "../toolRenderers";
 
 interface OutputBodyProps {
   item: { output?: string };
@@ -44,4 +46,24 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   if (output === "") return null;
   const text = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
   return <CodeBlock text={text} copyLabel="Copy output" />;
+}
+
+// EditFileBody synthesizes an edit's diff from its old_string/new_string
+// input args: the wire carries no diff of its own for edit_file or
+// memory_edit, both of which share this shape.
+export function EditFileBody({ item }: ToolRenderProps) {
+  const args = parseArgs(item.argumentsJSON);
+  const path = str(args, "file_path") ?? str(args, "path") ?? "";
+  const oldString = str(args, "old_string") ?? "";
+  const newString = str(args, "new_string") ?? "";
+  return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
+}
+
+// WriteFileBody renders a plain confirmation string ("wrote N bytes to X" —
+// or a memory delete's "Removed or already absent: X"); an empty output
+// renders nothing.
+export function WriteFileBody({ item }: ToolRenderProps) {
+  const output = item.output ?? "";
+  if (output === "") return null;
+  return <div>{output}</div>;
 }

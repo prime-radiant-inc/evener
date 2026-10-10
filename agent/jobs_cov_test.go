@@ -170,15 +170,15 @@ func TestReadOutputWindowLivePath(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	// Live running path — read tail (beforeBytes <= 0 reads tail).
-	win, err := jm.readOutputWindow(rec.JobID, 0, 100)
-	if err != nil {
+	win, found, err := jm.readOutputPage(rec.JobID, nil, 100)
+	if err != nil || !found {
 		t.Fatalf("readOutputWindow live: %v", err)
 	}
-	if win.total != int64(len(output)) {
-		t.Fatalf("total = %d, want %d", win.total, len(output))
+	if win.TotalBytes != int64(len(output)) {
+		t.Fatalf("total = %d, want %d", win.TotalBytes, len(output))
 	}
-	if !strings.Contains(win.content, "line three") {
-		t.Fatalf("content = %q, want last line", win.content)
+	if !strings.Contains(string(win.Content), "line three") {
+		t.Fatalf("content = %q, want last line", win.Content)
 	}
 }
 
@@ -196,15 +196,15 @@ func TestReadOutputWindowStorePath(t *testing.T) {
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
-	win, err := jm.readOutputWindow(rec.JobID, 0, 100)
-	if err != nil {
+	win, found, err := jm.readOutputPage(rec.JobID, nil, 100)
+	if err != nil || !found {
 		t.Fatalf("readOutputWindow store: %v", err)
 	}
-	if !strings.Contains(win.content, "stored line two") {
-		t.Fatalf("content = %q", win.content)
+	if !strings.Contains(string(win.Content), "stored line two") {
+		t.Fatalf("content = %q", win.Content)
 	}
-	if win.total != int64(len(output)) {
-		t.Fatalf("total = %d, want %d", win.total, len(output))
+	if win.TotalBytes != int64(len(output)) {
+		t.Fatalf("total = %d, want %d", win.TotalBytes, len(output))
 	}
 }
 
@@ -212,9 +212,9 @@ func TestReadOutputWindowStorePath(t *testing.T) {
 func TestReadOutputWindowNotFound(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	_, err := jm.readOutputWindow("job_missing", 0, 100)
-	if err == nil {
-		t.Fatal("missing job should error")
+	_, found, err := jm.readOutputPage("job_missing", nil, 100)
+	if err != nil || found {
+		t.Fatalf("missing job found=%v err=%v, want false nil", found, err)
 	}
 }
 
@@ -328,37 +328,27 @@ func TestAbandonRunningJob(t *testing.T) {
 	jm.abandonRunningJob("job_nonexistent")
 }
 
-// TestValidatedOutputStatsForRecordMismatch covers the metadata mismatch error
-// path (jobs.go:2180-2181).
-func TestValidatedOutputStatsForRecordMismatch(t *testing.T) {
+// TestReadClosedJobOutputChecksTheRecordTotal covers the record-total check: a
+// terminal record that disagrees is refused, a matching one reads, and a
+// running record skips the check.
+func TestReadClosedJobOutputChecksTheRecordTotal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 	if err := os.WriteFile(logPath, []byte("hello world\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Create a record with a mismatched OutputBytes.
 	rec := &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 999}
-	_, _, err := validatedOutputStatsForRecord(logPath, rec)
-	if err == nil {
-		t.Fatal("mismatched OutputBytes should error")
+	_, _, _, err := readClosedJobOutput(logPath, rec, 1024, false)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched OutputBytes: err = %v, want mismatch message", err)
 	}
-	if !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("error = %v, want mismatch message", err)
-	}
-	// Matching record should succeed.
 	rec.OutputBytes = int64(len("hello world\n"))
-	total, _, err := validatedOutputStatsForRecord(logPath, rec)
-	if err != nil {
-		t.Fatalf("matching record: %v", err)
+	if _, total, _, err := readClosedJobOutput(logPath, rec, 1024, false); err != nil || total != rec.OutputBytes {
+		t.Fatalf("matching record: total %d, %v", total, err)
 	}
-	if total != int64(len("hello world\n")) {
-		t.Fatalf("total = %d, want %d", total, len("hello world\n"))
-	}
-	// Non-terminal record skips the mismatch check.
-	rec2 := &jobstore.JobRecord{Status: jobstore.StatusRunning, OutputBytes: 999}
-	_, _, err = validatedOutputStatsForRecord(logPath, rec2)
-	if err != nil {
-		t.Fatalf("non-terminal record should skip mismatch check: %v", err)
+	running := &jobstore.JobRecord{Status: jobstore.StatusRunning, OutputBytes: 999}
+	if _, _, _, err := readClosedJobOutput(logPath, running, 1024, false); err != nil {
+		t.Fatalf("non-terminal record should skip the total check: %v", err)
 	}
 }

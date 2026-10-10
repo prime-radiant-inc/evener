@@ -93,7 +93,7 @@ func FuzzCxjsGrepReaderLimit(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data, pat []byte, patSel uint8, limitBytes, maxMatches, maxLineBytes int) {
 		// Bound the numeric knobs so the fuzzer can't drive gigantic allocations
 		// or plateau on identical huge budgets. grepReaderLimit's callers
-		// (GrepLimitLineBytes / GrepFileLimitAt) guarantee limitBytes >= 1 before
+		// (GrepLimitLineBytes / GrepOutputFileLimitFromFile) guarantee limitBytes >= 1 before
 		// reaching it, so the harness honors that precondition. maxMatches and
 		// maxLineBytes still span their guard values (0, negative, > limit).
 		limitBytes = cxjs_boundInt(limitBytes, 1, 1<<16)

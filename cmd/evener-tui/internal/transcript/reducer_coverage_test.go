@@ -244,6 +244,20 @@ func TestSubagentRunFromToolItemWithRaw(t *testing.T) {
 	}
 }
 
+// A delegate_send reply whose wait carried earlier results (#3906) keeps
+// describing the newest result's run: its earlier_results ride along
+// untouched, so the send's row reads the same delegate, status and ref.
+func TestSubagentRunFromToolItemIgnoresEarlierResults(t *testing.T) {
+	run := subagentRunFromToolItem(appwire.ThreadItem{
+		ToolName: "delegate_send",
+		Raw: []byte(`{"delegate_id":"dlg_1","type":"delegate","status":"completed","running_in_background":false,"action":"completed","transcript_ref":"local:child","output":"second",` +
+			`"earlier_results":[{"delegate_id":"dlg_1","type":"delegate","status":"failed","reason":"boom","running_in_background":false,"action":"completed","transcript_ref":"local:child","output":"first"}]}`),
+	})
+	if run.DelegateID != "dlg_1" || run.Status != "completed" || run.Reason != "" || run.TranscriptRef != "local:child" {
+		t.Fatalf("run = %+v, want the newest result's delegate, status and ref", run)
+	}
+}
+
 func TestSubagentRunFromToolItemFallsBackToTotalBytes(t *testing.T) {
 	run := subagentRunFromToolItem(appwire.ThreadItem{
 		Raw: []byte(`{"type":"shell","total_bytes":2048}`),

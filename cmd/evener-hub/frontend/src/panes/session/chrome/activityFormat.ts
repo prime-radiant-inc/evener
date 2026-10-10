@@ -21,10 +21,17 @@ export function delegateName(delegate: ActivityDelegate): string {
   );
 }
 
-export function activityActionLabel(summary: SessionActivitySummary | null | undefined): string {
-  return summary?.delegates.known && summary.jobs.known
-    ? `Activity · ${summary.delegates.active + summary.jobs.active} active`
-    : "Activity";
+/** "Overview · N active": subagents running at every depth (the subtree
+ * count, useSubagentCounts) plus the session's own running jobs, once both
+ * are known. */
+export function activityActionLabel(
+  summary: SessionActivitySummary | null | undefined,
+  subagents: SessionActivitySummary["delegates"] | null,
+  label: "Activity" | "Overview" = "Activity",
+): string {
+  return subagents?.known && summary?.jobs.known
+    ? `${label} · ${subagents.active + summary.jobs.active} active`
+    : label;
 }
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null

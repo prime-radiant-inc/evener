@@ -2,7 +2,6 @@ import type { ThreadModel } from "@evener/appwire-client";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { EmptyState, PaneScaffold } from "../../widgets";
-import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
@@ -41,8 +40,6 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   const body =
     kind === "tasks" ? (
       <TasksPanelBody sessionRef={ref} model={model} />
-    ) : kind === "activity" ? (
-      <ActivityPanelBody sessionRef={ref} model={model} />
     ) : (
       <DetailsPaneBody sessionRef={ref} model={model} />
     );

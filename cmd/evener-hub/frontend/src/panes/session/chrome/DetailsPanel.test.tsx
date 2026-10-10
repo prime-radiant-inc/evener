@@ -1,11 +1,7 @@
 import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { buildCommands, type PaletteRunContext } from "../../../shell/palette/commands";
-import { registerPane } from "../../../shell/paneRegistry";
-import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { afterEach, expect, test, vi } from "vitest";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { DetailsPanel } from "./DetailsPanel";
@@ -86,25 +82,6 @@ function sessionRowValue(label: string): string {
   if (!row) throw new Error(`no inspector row for label "${label}"`);
   return row.textContent ?? "";
 }
-
-function PaneFixture() {
-  return <div>pane</div>;
-}
-
-beforeAll(() => {
-  // Test-only pane registration (RailRow.test.tsx's pattern): the workspace
-  // store's togglePane refuses an unregistered type, and the palette's
-  // "Toggle session details" command opens a sessionDetails pane.
-  registerPane<{ ref: string }>({
-    id: "sessionDetails",
-    title: () => "Session details",
-    component: lazy(() => Promise.resolve({ default: PaneFixture })),
-  });
-});
-
-beforeEach(() => {
-  resetWorkspaceStoreForTests();
-});
 
 afterEach(() => {
   cleanup();
@@ -381,32 +358,4 @@ test("an ended session shows work time, tokens, and cost but no context row", as
   expect(screen.getByTestId("session-details-work-time")).toBeTruthy();
   expect(screen.getByTestId("session-details-tokens")).toBeTruthy();
   expect(screen.getByTestId("session-details-cost")).toBeTruthy();
-});
-
-// --- palette wiring ---------------------------------------------------------
-
-// The command palette's "Toggle session details" (/status) no longer reaches
-// into this panel's DOM: it toggles the sessionDetails workspace pane on every
-// viewport (shell/palette/commands.ts toggleSessionPane). Pin that contract
-// here instead of the retired [data-details-trigger] click path.
-test("running the palette's 'Toggle session details' command toggles the sessionDetails workspace pane", () => {
-  const command = buildCommands().find((c) => c.title === "Toggle session details");
-  if (!command) throw new Error("no 'Toggle session details' command in the palette registry");
-  const ctx: PaletteRunContext = {
-    sessionRef: "ref_a",
-    onPage: "session",
-    toasts: { push: () => {} },
-    ui: { clearToSearch: () => {}, showHelp: () => {} },
-  };
-  const params = { ref: "ref_a" };
-  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(false);
-  act(() => {
-    command.run?.(ctx);
-  });
-  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(true);
-  // A second run must close it again - the command is a toggle, not an open.
-  act(() => {
-    command.run?.(ctx);
-  });
-  expect(isPaneOpen(workspaceStore.getState(), "sessionDetails", params)).toBe(false);
 });

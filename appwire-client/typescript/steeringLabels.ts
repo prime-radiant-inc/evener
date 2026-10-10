@@ -37,7 +37,6 @@ export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>
   "no-tool-calls": "Reminded to keep working",
   "loop-detected": "Loop detected",
   "tasks-done": "Tasks complete",
-  "task-nudge": "Task reminder",
   "task-inactive": "Task list idle",
   "note-handoff": "Note to self",
   "goal-objective": "Goal objective",

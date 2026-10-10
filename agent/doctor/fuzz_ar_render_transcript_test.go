@@ -49,8 +49,15 @@ func FuzzArRenderTranscript(f *testing.F) {
 			Elided:        3,
 		}
 		for i := range n {
+			// Every other row is an entry read_transcript omits, which
+			// carries no turn number.
+			var turn *int
+			if i%2 == 0 {
+				number := i
+				turn = &number
+			}
 			r.Turns = append(r.Turns, TurnSummary{
-				Index:       i + 1,
+				Turn:        turn,
 				Kind:        kind,
 				Role:        "assistant",
 				Text:        text,

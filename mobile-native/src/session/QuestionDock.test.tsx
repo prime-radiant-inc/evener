@@ -18,6 +18,7 @@ import {
 	renderedText,
 	renderHook,
 	textOf,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
@@ -274,7 +275,10 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		act(() => keyboard.show());
 		return mounted;
 	}
-	afterEach(() => keyboard.reset());
+	afterEach(() => {
+		unmountMountedTrees();
+		keyboard.reset();
+	});
 
 	it("shows only the header and the scrolling question, with no options or answer controls", () => {
 		const { tree } = typing();

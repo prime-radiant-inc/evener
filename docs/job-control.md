@@ -35,6 +35,14 @@ The default model-facing posture is:
 > Read shell bytes with `job:<job_id>` and delegate history with its session
 > `transcript_ref`. Do not poll.
 
+Shell start registration records background evidence for explicit background
+launches and foreground promotion before acknowledging the handoff. That evidence
+survives terminal outcomes, forwarding and journal reconstruction. Retained inline
+foreground output and a foreground runtime limit do not establish background
+eligibility. Detached processes have no managed job record. Older unmarked
+records retain their diagnostic history and output without claiming background
+execution.
+
 The shipped model intentionally does **not** expose:
 
 - `job_kill`
@@ -70,7 +78,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
-  jobs and `<delegate-notification delegate_id="dlg_...">` for direct delegates.
+  jobs and `<delegate-notification delegate_id="dlg_..." kind="report">` for direct delegates.
   Your delegates handle their own children's attention.
 - Use `job_watch` when a condition should notify the watcher. `source` is typed:
   `self`, granted `parent`, a stable `dlg_...`, or a visible shell `job_...`.
@@ -740,7 +748,7 @@ Practical observer guidance for agents:
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
 - When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
 - Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_...">` block carrying the result packet — which arms delegate attention and wakes the parent.
+- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
@@ -1122,7 +1130,10 @@ Return shape:
 (kata tpb0): who requested the stop, whether this exact delegate resource can
 still be resumed (the same classification `job_status` reports), and whatever
 partial scratch/worktree evidence its run loop had already gathered before
-being cancelled. All are omitted for a shell `job_stop`. `requested_by` is
+being cancelled. The scratch directory at `scratch_path` stays after the
+delegate finishes; it is deleted when the root session is archived or deleted.
+All are omitted for a
+shell `job_stop`. `requested_by` is
 reported on every delegate stop, including one that has not completed yet;
 `resumable`, `not_resumable_reason`, `scratch_path`, and `worktree` are read
 from the settled delegate and are omitted until the stop completes
@@ -1350,11 +1361,21 @@ Direct-delegate completion uses the stable identity and canonical bounded
 terminal packet:
 
 ```xml
-<delegate-notification delegate_id="dlg_...">...</delegate-notification>
+<delegate-notification delegate_id="dlg_..." name="..." kind="report">{packet JSON}</delegate-notification>
 ```
 
-It never carries `job_id` or `job_type="delegate"`. The full conversation stays
-available through the delegate's `transcript_ref`.
+`kind="report"` marks the generation's terminal packet, whatever its outcome.
+A mid-work update (`communicate(end_turn=false)`) is
+`<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
+the delegate's message as the body, `<` escaped so it can neither close the
+frame nor open another. Clients decode the body's entities once, so a
+literal entity the delegate types, such as `&amp;`, reads as the character it
+names; job output excerpts share this remainder. The `name` attribute appears
+only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
+delegate frame never carries `job_id` or `job_type="delegate"`. The full
+conversation stays available through the delegate's `transcript_ref`. A
+`delegate_send` reply that carries an update ahead of its result lists it in
+`earlier_results` with `action: "update"` and the message as `output`.
 
 When a shell excerpt contains the complete output, the body says
 `Complete output below.` instead of nudging a redundant read. Otherwise it
@@ -1382,6 +1403,13 @@ Rules:
   fsyncs. A stopping subtree durably discards its own unresolved attention.
 - If the owner is mid-turn or awaiting an `ask_user` reply, attention waits for
   the next safe boundary. Wakes coalesce, but committed entries do not vanish.
+- Attention a turn already showed the model is consumed with that turn. When a
+  settled model request of a root turn, or of a delegate turn running in its
+  generation, carried an attention entry, the turn's successful end appends the
+  consumed marker, so the entry starts no further turn or attention generation.
+  Attention appended after the turn's last request was built keeps its own wake,
+  and so does attention already armed for the root's own notification turn when
+  the turn began: that notification turn consumes it.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.

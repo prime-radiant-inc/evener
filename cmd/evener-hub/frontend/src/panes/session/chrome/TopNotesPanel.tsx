@@ -24,9 +24,10 @@ const CLASS = {
 export interface TopNotesPanelProps {
   sessionRef: string;
   model: ThreadModel;
+  sourcePaneId?: string;
 }
 
-export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
+export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingRequest = usePendingTopNotesFocus(sessionRef);
   const readable = canReadSharedNotes(model);
@@ -159,7 +160,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
       </button>
       {expanded && (
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
-          <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />
+          <NotesPanelBody sessionRef={sessionRef} model={model} sourcePaneId={sourcePaneId} editorRef={editorRef} />
         </div>
       )}
     </div>

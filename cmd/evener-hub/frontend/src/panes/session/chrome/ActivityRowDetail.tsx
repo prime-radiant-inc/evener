@@ -15,10 +15,12 @@ import {
   type ActivityWatchRow,
   activityDelegateDiagnostics,
   activityDelegateState,
+  decodeJobOutputText,
   delegateTiming,
   findEntityView,
   formatClockTime,
   jobCommandLabel,
+  parseJobOutputPage,
   splitMandate,
   watchDeliveryInstants,
   watchFacts,
@@ -276,14 +278,6 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
 // the job last said, small enough that expanding a row is never a log dump.
 const previewBytes = 256;
 
-// tailText validates the untyped evener/jobs/output data field down to the one
-// member the preview needs (same wire-shape caution as JobLog's own parser).
-function tailText(data: unknown): string | null {
-  if (typeof data !== "object" || data === null) return null;
-  const tail = (data as Record<string, unknown>).tail;
-  return typeof tail === "string" ? tail : null;
-}
-
 // JobOutputPreview shows the latest bytes of a shell job's log inside the
 // detail strip. It stays silent on every failure mode - a missing log, an
 // old daemon, a dropped connection - because the strip's meta line already
@@ -304,7 +298,8 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
         .then(
           (data) => {
             if (cancelled) return;
-            const text = tailText(data);
+            const page = parseJobOutputPage(data);
+            const text = page ? decodeJobOutputText(page.bytes) : null;
             setTail(text !== null && text.length > 0 ? text : null);
           },
           () => {

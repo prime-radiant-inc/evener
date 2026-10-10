@@ -210,7 +210,7 @@ func gitBinaryMainRootLocal(cwd string) (string, bool, error) {
 func runGitCmd(ctx context.Context, dir string, args ...string) (string, bool) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = filteredGitEnvironment(os.Environ())
+	cmd.Env = FilteredGitEnvironment(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
@@ -224,7 +224,11 @@ var repositorySelectionEnvironment = map[string]struct{}{
 	"GIT_CEILING_DIRECTORIES": {}, "GIT_DISCOVERY_ACROSS_FILESYSTEM": {},
 }
 
-func filteredGitEnvironment(environment []string) []string {
+// FilteredGitEnvironment returns the environment with git's
+// repository-selection variables (GIT_DIR, GIT_WORK_TREE, and friends)
+// removed, so a spawned git command operates on the repository its
+// working directory implies rather than one an ambient variable selects.
+func FilteredGitEnvironment(environment []string) []string {
 	filtered := make([]string, 0, len(environment))
 	for _, entry := range environment {
 		key, _, _ := strings.Cut(entry, "=")

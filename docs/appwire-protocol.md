@@ -74,6 +74,49 @@ Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
+## Explicit skill and command input
+
+Input-bearing requests accept canonical selections alongside text and images:
+`{"type":"skill","name":"pkg:review"}` and
+`{"type":"command","name":"pkg:review"}` request different behavior even when
+their names match. These items admit only `type` and `name`; bodies, paths,
+arguments and other raw keys are rejected. The target's advertised `skillInput`
+or `commandInput` capability authorizes that kind, never a client assumption.
+
+Command selections resolve exact catalog identity at consumption and expand
+once per canonical name with empty arguments under their source's existing
+expansion rules. Original user text is retained separately from expanded bodies.
+Generated output cannot select or recursively invoke commands. Existing leading
+typed `/command args` retains its arguments; unselected inline slash prose is
+not an explicit selection. Queue, return and recovery input keeps both kinds.
+
+Text items may carry `mentions: [{kind, name, offset}]` as editing metadata.
+Offsets count UTF-16 code units in that text item and locate ordered,
+non-overlapping visible labels for separately selected canonical identities.
+They never authorize activation or carry command bodies, paths or arguments.
+Accepted input persists these locations; queue reads and `thread/queueChanged`
+project FIFO-aligned `mentions` beside full text and canonical name lists, so a
+fresh client's edit restores the chosen kind without selecting duplicate prose.
+Attachment marker translation shifts locations at the submission boundary.
+Automatic transcript-refusal recovery uses `returnClaimedQueuedMutation` to
+clone the original `pending.Input`, retaining text items and their locations.
+The separate `pushQueueHead` helper has no production callers; explicit use of
+it retains locations in the flattened returned text. Public `turn/drainAsSteer`
+preserves each retained entry's raw text and shifts its locations by the
+preceding UTF-16 text length plus the two-unit `\n\n` separator, including any
+extra drain input. Image-only entries add no text separator. Direct promotion
+retains the original text items and their item-relative locations. These
+locations survive durable recovery and mutation replay without changing
+canonical activation identities.
+
+Live completion reads `thread.evener.diagnostics.commands` from the owning
+session's `thread/read` response. It contains path-free descriptors for that
+session's loaded plugin, project and user commands, resolved for its cwd, host
+and harness. An absent field means unreported inventory; `[]` means an
+authoritative empty inventory. Neither permits controller catalog fallback.
+`evener/command/list` remains controller-wide discovery for the separate palette;
+`evener/spawn/slashCatalog` supplies target-scoped pre-session discovery.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
@@ -142,10 +185,10 @@ no router (reserved).
 | `evener/pin-section/delete` | hub | `PinSectionDeleteParams` | `PinSectionDeleteResponse` | Deletes a named pin section and returns its removed membership and committed navigation receipt. |
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
-| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
+| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
-| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time and the newest tool intent of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
+| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -181,7 +224,7 @@ no router (reserved).
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
-| `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog (one pinned to a tag or a commit is already current) and stamps its lastUpdated; returns the updated list. Broadcasts evener/marketplace/updated only when the refresh moved the clone to another commit or repaired it. |
 | `evener/marketplace/edit` | hub | `MarketplaceEditParams` | `MarketplaceListResponse` | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
@@ -191,6 +234,7 @@ no router (reserved).
 | `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
+| `evener/plugin/checkUpdates` | hub | `EmptyParams` | `PluginListResponse` | Refreshes each fetched git marketplace, within a time budget (a refresh it cannot make is a warning), then asks each git-backed installed plugin's remote whether it has moved past the installed commit and checks each plugin stored in its marketplace's own repo against the refreshed clone, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
@@ -217,7 +261,7 @@ no router (reserved).
 | `evener/host/operations` | hub | `HostOperationsParams` | `HostOperationsResponse` | Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal "absent" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
 | `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
-| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
+| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 | `evener/session/document` | hub | `SessionDocumentParams` | `SessionDocumentResponse` | Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route. |
 
 ## Notifications (server → client)
@@ -245,7 +289,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
-| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
@@ -349,6 +393,7 @@ An embedded type contributes its own fields inline.
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
+| `revision` | `string` | yes |  |
 
 
 ### `ArchivedListResponse`
@@ -359,6 +404,8 @@ An embedded type contributes its own fields inline.
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
 | `catalog` | `string` | yes |  |
+| `revision` | `string` | yes |  |
+| `unchanged` | `bool` | yes |  |
 
 
 ### `AttentionChangedPayload`
@@ -1583,15 +1630,25 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
-### `JobOutputTail`
+### `JobOutputPage`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `tail` | `string` |  |  |
+| `offsetBytes` | `int64` |  |  |
+| `bytesReturned` | `int64` |  |  |
 | `totalBytes` | `int64` |  |  |
-| `retainedStart` | `int64` |  |  |
-| `truncated` | `bool` |  |  |
-| `hasEarlier` | `bool` | yes |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `encoding` | `string` |  |  |
+| `data` | `string` |  |  |
+
+
+### `JobOutputPrunedErrorData`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `evenerErrorInfo` | `appwire.ErrorInfo` |  |  |
+| `retainedStartBytes` | `int64` |  |  |
+| `totalBytes` | `int64` |  |  |
 
 
 ### `JobsGetParams`
@@ -1631,14 +1688,14 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `jobId` | `string` |  |  |
 | `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| `beforeBytes` | `*int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `appwire.JobOutputTail` |  |  |
+| `data` | `appwire.JobOutputPage` |  |  |
 
 
 ### `JobsTreeUpdatedParams`

@@ -10,7 +10,7 @@ import { expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { TaskList, TasksSheet } from "./TasksSheet";
-import { render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
+import { pressable, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const goBack = vi.fn();
@@ -70,9 +70,8 @@ it("renders the Completed line for done rows only, never a stamped cancellation"
 	await act(async () => {});
 
 	// Both rows are terminal, so both sit behind the settled group's toggle.
-	const settledToggle = tree.root
-		.findAll((node) => typeof node.props.onPress === "function")
-		.find((node) => String(node.props.children).includes("Done · settled"));
+	const settledToggle = pressable(tree, "Done · settled · 2");
+	expect(settledToggle).toBeDefined();
 	await act(async () => {
 		settledToggle?.props.onPress();
 	});

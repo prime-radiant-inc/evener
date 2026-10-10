@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -199,9 +200,6 @@ type readMeta struct {
 	LastRendered  int
 }
 
-// errBadRange is the sentinel wrapped by parseRangeErr for malformed range specs.
-var errBadRange = errors.New("malformed range")
-
 var encodeTranscriptJSON = func(v any) (string, error) {
 	var buf strings.Builder
 	enc := json.NewEncoder(&buf)
@@ -228,94 +226,14 @@ func parseRange(spec string, entryCount int) (startSeq, endSeq int) {
 
 // parseRangeErr is parseRange's strict variant: it returns an error for a
 // syntactically malformed spec instead of falling back to the default, so the
-// tool layer can surface a clear error. Valid syntax produces the same clamped
-// bounds as parseRange. An empty entry list is not malformed; it yields (0, -1).
-//
-// Grammar (Task 5):
-//   - ""         → the last defaultRangeTurns turns.
-//   - "last:N"   → the last N turns (N must be a positive integer).
-//   - "start:N"  → the first N turns (N must be a positive integer).
-//   - "N-M"      → seq N..M inclusive (N, M non-negative integers).
-//
-// "N-M" with N > M is syntactically valid; it clamps to an empty range rather
-// than erroring.
+// tool layer can surface a clear error. The empty spec is the smart default,
+// the last defaultRangeTurns turns; every other spec follows turnwindow's
+// grammar, shared with doctor transcript.
 func parseRangeErr(spec string, entryCount int) (startSeq, endSeq int, err error) {
-	if entryCount <= 0 {
-		return 0, -1, nil
+	if spec == "" {
+		spec = fmt.Sprintf("last:%d", defaultRangeTurns)
 	}
-	last := entryCount - 1
-
-	switch {
-	case spec == "":
-		return clampRange(entryCount-defaultRangeTurns, last, entryCount)
-
-	case strings.HasPrefix(spec, "last:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "last:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(entryCount-n, last, entryCount)
-
-	case strings.HasPrefix(spec, "start:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "start:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(0, n-1, entryCount)
-
-	case strings.Contains(spec, "-"):
-		lo, hi, ok := parseDashRange(spec)
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(lo, hi, entryCount)
-
-	default:
-		return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-	}
-}
-
-// clampRange clamps [lo, hi] to [0, entryCount-1] and returns it as inclusive
-// bounds. A resulting lo > hi denotes an empty selection.
-func clampRange(lo, hi, entryCount int) (startSeq, endSeq int, err error) {
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > entryCount-1 {
-		hi = entryCount - 1
-	}
-	if hi < 0 {
-		hi = 0
-	}
-	if lo > entryCount-1 {
-		lo = entryCount - 1
-	}
-	return lo, hi, nil
-}
-
-// parsePositiveInt parses s as a strictly positive base-10 integer.
-func parsePositiveInt(s string) (int, bool) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
-}
-
-// parseDashRange parses an "N-M" spec into non-negative integers N and M. Both
-// operands must be present and non-negative; either side missing or non-numeric
-// is rejected.
-func parseDashRange(spec string) (lo, hi int, ok bool) {
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	lo, err1 := strconv.Atoi(parts[0])
-	hi, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || lo < 0 || hi < 0 {
-		return 0, 0, false
-	}
-	return lo, hi, true
+	return turnwindow.Parse(spec, entryCount)
 }
 
 // rawLinesForRange reads the transcript file at path and returns semantic
@@ -678,7 +596,7 @@ func isFrontAnchored(spec string) bool {
 	if spec == "" || strings.HasPrefix(spec, "last:") {
 		return false
 	}
-	_, _, ok := parseDashRange(spec)
+	_, _, ok := turnwindow.ParseDash(spec)
 	return ok
 }
 
@@ -814,7 +732,7 @@ func writeDocumentHeader(b *strings.Builder, header transcript.Header, opt rende
 
 // writeEntry emits one transcript entry as markdown.
 func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool string, idx *resultIndex, opt renderOpts) {
-	if !publicTranscriptKind(e.Turn.Kind) {
+	if !e.Turn.Kind.PublicTranscript() {
 		// Attention resolutions are durable private correlation records, and
 		// transcript-only entries exist for the history projection. Both are
 		// transparent to the public conversation and its tool-round structure.
@@ -833,10 +751,13 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Steering\n", seq)
 		writeCompactNote(b, "Steering", e.Turn, wantFullTurn(opt, seq))
 
-	case schema.TurnEnvironment, schema.TurnNotesContext:
+	case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 		label := "Environment"
 		if e.Turn.Kind == schema.TurnNotesContext {
 			label = "Shared notes"
+		}
+		if e.Turn.Kind == schema.TurnMemoryContext {
+			label = "Memory context"
 		}
 		fmt.Fprintf(b, "\n## Turn %d — %s\n", seq, label)
 		writeCompactNote(b, label, e.Turn, wantFullTurn(opt, seq))
@@ -1187,14 +1108,47 @@ func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolRe
 // known job result fields: in that case the general JSON pretty-print keeps the
 // extra evidence visible rather than the struct silently dropping it.
 func jobResultBody(raw string) (string, bool) {
-	r, ok := decodeJobResult(raw)
+	r, ok := decodeRenderableJobResult(raw)
 	if !ok {
 		return "", false
 	}
-	if hasNonJobResultKeys(raw) {
-		return "", false
+	// A delegate_send reply can carry earlier results of its delegate ahead
+	// of its own (#3906). Each renders exactly as a reply does, after the
+	// reply's status line so the ref survives truncation; any element with
+	// evidence this projection doesn't capture sends the whole body to the
+	// JSON fallback, as a top-level key would.
+	var b strings.Builder
+	b.WriteString(jobResultStatus(r, raw))
+	for i, element := range r.EarlierResults {
+		earlier, ok := decodeRenderableJobResult(string(element))
+		if !ok || len(earlier.EarlierResults) != 0 {
+			return "", false
+		}
+		b.WriteString(earlierResultHeader(i, len(r.EarlierResults)))
+		b.WriteString(jobResultStatus(earlier, string(element)))
+		b.WriteString(jobResultOutput(earlier))
 	}
+	if len(r.EarlierResults) != 0 {
+		b.WriteString(latestResultHeader)
+	}
+	b.WriteString(jobResultOutput(r))
+	return b.String(), true
+}
 
+// decodeRenderableJobResult decodes a job result body this projection can
+// render whole: it reports false when the body isn't a job result or carries
+// keys jobResult doesn't capture.
+func decodeRenderableJobResult(raw string) (jobResult, bool) {
+	r, ok := decodeJobResult(raw)
+	if !ok || hasNonJobResultKeys(raw) {
+		return jobResult{}, false
+	}
+	return r, true
+}
+
+// jobResultStatus is a job result's status line, with the ref prominent, and
+// its metadata line.
+func jobResultStatus(r jobResult, raw string) string {
 	ref := r.TranscriptRef
 	if ref == "" {
 		ref = "(none)"
@@ -1206,10 +1160,15 @@ func jobResultBody(raw string) (string, bool) {
 	if jobID == "" {
 		jobID = "(none)"
 	}
-	// Status line first, with the ref prominent and before the output body.
+	// An update a delegate_send reply carries settled nothing and has no
+	// status; its metadata line says it is an update.
+	status := r.Status
+	if status == "" {
+		status = "(none)"
+	}
 	statusParts := []string{
 		"job_id=" + jobID,
-		"status=" + r.Status,
+		"status=" + status,
 	}
 	if r.Reason != "" {
 		statusParts = append(statusParts, "reason="+r.Reason)
@@ -1221,7 +1180,6 @@ func jobResultBody(raw string) (string, bool) {
 		// merely accepting it as a decoded-but-invisible field.
 		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
 	}
-
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
@@ -1230,6 +1188,12 @@ func jobResultBody(raw string) (string, bool) {
 		b.WriteString(metadata)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// jobResultOutput is a job result's output and structured result.
+func jobResultOutput(r jobResult) string {
+	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
@@ -1243,7 +1207,7 @@ func jobResultBody(raw string) (string, bool) {
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), true
+	return b.String()
 }
 
 // jobResultKnownKeys is the set of JSON keys captured by jobResult. A body with
@@ -1307,6 +1271,7 @@ var jobResultKnownKeys = map[string]bool{
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // stableDelegateCreateResult
+	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 
 var jobResultMetadataKeys = []string{

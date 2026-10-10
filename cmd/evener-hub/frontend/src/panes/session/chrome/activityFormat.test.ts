@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import {
+  activityActionLabel,
   formatQuietAge,
   formatUsagePair,
   isFailedStatus,
@@ -7,6 +9,28 @@ import {
   jobStatusDotState,
   quietAnchorMillis,
 } from "./activityFormat";
+
+test("Overview labels retain unknown activity instead of inventing a zero count", () => {
+  const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
+  expect(activityActionLabel(undefined, subagents, "Overview")).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), null, "Overview")).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), { ...subagents, known: false }, "Overview")).toBe("Overview");
+});
+
+// Subagents count at every depth (the subtree count, useSubagentCounts); jobs
+// count for the session itself. The session's own delegate count is ignored.
+test("Overview labels count subagents at every depth and the session's jobs", () => {
+  const summary = activitySummary();
+  summary.delegates = { known: true, total: 1, active: 1, failed: 0, completed: 0 };
+  const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
+  expect(activityActionLabel(summary, subagents, "Overview")).toBe("Overview · 5 active");
+  expect(activityActionLabel(summary, subagents)).toBe("Activity · 5 active");
+  subagents.active = 0;
+  summary.jobs.active = 0;
+  expect(activityActionLabel(summary, subagents, "Overview")).toBe("Overview · 0 active");
+  summary.jobs.known = false;
+  expect(activityActionLabel(summary, subagents, "Overview")).toBe("Overview");
+});
 
 test("formatUsagePair renders arrows with compact counts", () => {
   expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41.2K ↓6.1K");

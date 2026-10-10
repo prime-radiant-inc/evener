@@ -277,7 +277,7 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 		Send: true, Steer: true, Interrupt: true, Queue: true,
 		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
 		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
-		SkillInput: true, StopSubagent: true, // ForkFromTurn stays the daemon's hardwired false.
+		SkillInput: true, CommandInput: true, StopSubagent: true, // ForkFromTurn stays the daemon's hardwired false.
 	}
 	if got.Capabilities != want {
 		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)

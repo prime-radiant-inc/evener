@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -189,35 +188,6 @@ func TestRetirementPreparationStaleClaimRefused(t *testing.T) {
 	}
 	if _, err := c.Prepare(context.Background(), nil); err == nil {
 		t.Fatal("preparation accepted a nil claim")
-	}
-}
-
-// TestRetirementPreparationMissingScratchArtifactStaysResident proves a pinned
-// required scratch directory that has vanished blocks preparation instead of
-// being silently minted or ignored.
-func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) {
-	root, c, claim := retirementPrepareFixture(t)
-	owner, ok := root.scratchRetentionOwner()
-	if !ok {
-		t.Fatal("root had no scratch retention owner")
-	}
-	scratch, err := sandbox.NewSessionScratch(t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = scratch.Retain() })
-	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
-	if err := scratch.Pin(owner, ref); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(scratch.Dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Prepare(context.Background(), claim); err == nil {
-		t.Fatal("preparation accepted a missing required scratch artifact")
-	}
-	if err := c.Abort(claim, "prepare_failed"); err != nil {
-		t.Fatal(err)
 	}
 }
 

@@ -32,6 +32,7 @@ import {
 	createPluginsStore,
 	HUB_WRITE_BUSY,
 	type HubWriteGate,
+	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
@@ -490,6 +491,38 @@ function Plugins({
 			model.dispose();
 		};
 	}, [model]);
+	// The first time this store's installed list loads, ask the hub which
+	// plugins have an update (read-on-open: nothing polls). A first read that
+	// failed checks once a later one recovers, and a page closed before its
+	// list landed asks nothing. A check that got no answer (see
+	// checkPluginUpdates) asks again on the next return to ready, never while
+	// the connection is down. A hub without the check flags none, so Upgrade
+	// stays hidden.
+	const checkedUpdates = useRef<PluginsStore | null>(null);
+	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	// Counts returns to ready, so a check that fails only after the
+	// connection already came back still gets that ready's one re-ask: it
+	// bumps checkAgain, which re-runs the effect. A check that fails with the
+	// connection unchanged waits for the next return to ready instead, so a
+	// hub that keeps failing is never asked in a loop.
+	const readyReturns = useRef(0);
+	useEffect(() => {
+		if (ready) readyReturns.current += 1;
+	}, [ready]);
+	const [checkAgain, setCheckAgain] = useState(0);
+	useEffect(() => {
+		if (!listLoaded || !ready || checkedUpdates.current === model) return;
+		checkedUpdates.current = model;
+		const askedIn = readyReturns.current;
+		void model
+			.getState()
+			.checkPluginUpdates()
+			.then((answered) => {
+				if (answered || checkedUpdates.current !== model) return;
+				checkedUpdates.current = null;
+				if (readyReturns.current !== askedIn) setCheckAgain((n) => n + 1);
+			});
+	}, [model, listLoaded, ready, checkAgain]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -605,9 +638,13 @@ function Plugins({
 						<Fragment key={marketplace}>
 							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
-									const sub = item.broken
-										? "Broken"
-										: `${item.version || "Unknown version"}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+									const sub = [
+										item.broken ? "Broken" : item.version || "Unknown version",
+										item.updateAvailable && "Update available",
+										!item.broken && item.autoUpgrade && "Upgrades automatically",
+									]
+										.filter(Boolean)
+										.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}
@@ -670,7 +707,10 @@ function Plugins({
 							/>
 						</Group>
 						<Group>
-							<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							{/* Only where the hub's update check found one. */}
+							{entry.updateAvailable ? (
+								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							) : null}
 							<Row
 								label="Remove"
 								accessibilityLabel="Remove plugin"
@@ -681,7 +721,11 @@ function Plugins({
 						</Group>
 						{/* Beneath the actions that fix it. */}
 						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+							<GroupFooter tone="danger">
+								{entry.updateAvailable
+									? "This plugin is broken. Upgrade it or remove it."
+									: "This plugin is broken. Remove it."}
+							</GroupFooter>
 						) : null}
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}

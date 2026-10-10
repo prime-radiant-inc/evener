@@ -9249,7 +9249,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v6","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -12948,6 +12948,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginEnable,
 		appwire.MethodEvenerPluginDisable,
 		appwire.MethodEvenerPluginSetAutoUpgrade,
+		appwire.MethodEvenerPluginCheckUpdates,
 		appwire.MethodEvenerPluginCheckNow,
 		appwire.MethodEvenerPluginPreview,
 		// Component 07a's remote-admin proxy.

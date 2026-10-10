@@ -70,6 +70,13 @@ type RetirementController struct {
 	// flight. It is nil in production and is installed before the controller is
 	// used concurrently, so it needs no lock of its own.
 	evidenceGate func()
+	// namingHeld counts the active leases that are a session namer naming its
+	// session: work that settles on its own within sessionNameTimeout, which
+	// a manual retire waits for (TryManualClaim). namingWake is closed, and
+	// replaced, whenever the leases change while one of them is held, so a
+	// waiting retire re-checks.
+	namingHeld int
+	namingWake chan struct{}
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -98,6 +105,7 @@ func NewRetirementController(timeout time.Duration, clk RetirementClock) (*Retir
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
 		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
+		namingWake: make(chan struct{}),
 	}, nil
 }
 
@@ -142,6 +150,17 @@ func (c *RetirementController) AttachRoot(root *Session) error {
 // actually passes must therefore be listed here, or its blocker reports as
 // unknown work.
 func (c *RetirementController) BeginMutation(sessionID, category string) (func(), error) {
+	return c.beginMutation(sessionID, category, false)
+}
+
+// BeginNamingMutation admits a session namer's naming of its session. It
+// blocks retirement as autonomous work, like any other lease, but a manual
+// retire waits for it to settle rather than being refused (TryManualClaim).
+func (c *RetirementController) BeginNamingMutation(sessionID string) (func(), error) {
+	return c.beginMutation(sessionID, "autonomous", true)
+}
+
+func (c *RetirementController) beginMutation(sessionID, category string, naming bool) (func(), error) {
 	switch category {
 	case "turn", "input", "autonomous", "question", "job", "watch", "delegate",
 		"environment", "persistence", "admission", "notification",
@@ -154,9 +173,13 @@ func (c *RetirementController) BeginMutation(sessionID, category string) (func()
 		c.mu.Unlock()
 		return nil, ErrRetirementUnavailable
 	}
+	c.wakeNamingWaitersLocked()
 	c.nextLease++
 	lease := c.nextLease
 	c.active[lease] = RetirementBlocker{Category: category, SessionID: sessionID}
+	if naming {
+		c.namingHeld++
+	}
 	c.eligibleSince = time.Time{}
 	c.mu.Unlock()
 	c.Changed()
@@ -164,11 +187,78 @@ func (c *RetirementController) BeginMutation(sessionID, category string) (func()
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
+			c.wakeNamingWaitersLocked()
 			delete(c.active, lease)
+			if naming {
+				c.namingHeld--
+			}
 			c.mu.Unlock()
 			c.Changed()
 		})
 	}, nil
+}
+
+// TryManualClaim is TryClaim for a user's retire. A session namer only names
+// the session and settles on its own, so a retire that arrives while namers
+// are the only work holding the process waits for them to release, up to
+// sessionNameTimeout, before claiming, rather than being refused over them
+// (#3921). With any other lease held the retire is refused at once, as
+// TryClaim does, since waiting would end in the same refusal. Work that holds
+// no lease (an open question, an active goal between turns) is not seen
+// here, so a retire beside it still waits out the namer before TryClaim
+// refuses it (#4055).
+func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
+	c.awaitNaming(ctx, sessionNameTimeout)
+	if err := ctx.Err(); err != nil {
+		// The caller gave up while the retire waited: it must not claim.
+		return nil, RetirementSnapshot{}, err
+	}
+	return c.TryClaim(true)
+}
+
+// awaitNaming returns once namers are no longer the only work holding the
+// process, ctx is done or bound has passed on the controller's clock.
+func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Duration) {
+	c.mu.Lock()
+	waiting := c.onlyNamingLocked()
+	c.mu.Unlock()
+	if !waiting {
+		return
+	}
+	timer := c.clock.NewTimer(bound)
+	defer timer.Stop()
+	for {
+		c.mu.Lock()
+		if !c.onlyNamingLocked() {
+			c.mu.Unlock()
+			return
+		}
+		wake := c.namingWake
+		c.mu.Unlock()
+		select {
+		case <-wake:
+		case <-timer.C():
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// wakeNamingWaitersLocked wakes a retire waiting on naming leases, if any
+// are held, so it re-checks after the lease change the caller is about to
+// make. Callers hold c.mu.
+func (c *RetirementController) wakeNamingWaitersLocked() {
+	if c.namingHeld != 0 {
+		close(c.namingWake)
+		c.namingWake = make(chan struct{})
+	}
+}
+
+// onlyNamingLocked reports whether the resident process is held by naming
+// leases and nothing else. Callers hold c.mu.
+func (c *RetirementController) onlyNamingLocked() bool {
+	return c.phase == "resident" && c.namingHeld != 0 && len(c.active) == c.namingHeld
 }
 
 // Changed coalesces notifications; callers notify only after dropping owner locks.
@@ -540,7 +630,7 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // Run returns nil when ctx is done; consumer errors are the consumer's
 // responsibility (it owns Abort/Commit), not the loop's.
 func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
-	var timer RetirementTimer
+	var timer clock.Timer
 	disarm := func() {
 		if timer != nil {
 			timer.Stop()

@@ -15,7 +15,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { keyboard, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { keyboard, render, renderedText, screenConnection, settle, unmountMountedTrees } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { TimelineItem } from "./TimelineItem";
 
@@ -159,16 +159,6 @@ const navigation = {
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
-
 const CAPABILITIES = {
 	send: true,
 	steer: true,
@@ -303,7 +293,10 @@ it("keeps one fork callback across the same re-render", async () => {
 	expect(forkOf(tree)).toBe(before);
 });
 
-afterEach(() => keyboard.reset());
+afterEach(() => {
+	unmountMountedTrees();
+	keyboard.reset();
+});
 
 /** Focuses the composer's field and raises the keyboard for it. */
 function typeInComposer(tree: ReactTestRenderer) {
@@ -316,8 +309,8 @@ function typeInComposer(tree: ReactTestRenderer) {
 }
 
 // The keyboard rising or falling, and the composer's focus, change only what
-// folds or steps aside over the composer (the queue, Next, the header's
-// chips); each reads them itself, so the flip never re-renders the screen
+// steps aside over the composer (Next, the header's chips); each reads them
+// itself, so the flip never re-renders the screen
 // or its transcript rows. A screen-wide commit as the keyboard starts to
 // move holds back the keyboard controller's per-frame padding for as long as
 // it takes (#3247).
@@ -332,12 +325,13 @@ it("re-renders no transcript row when the keyboard comes up or goes down", async
 	expect(rows.renders).toBe(0);
 });
 
-// With a message queued, the fold as the keyboard rises changes the bottom
-// bar's height, and the bar's re-layout re-renders the screen. That render
-// changes nothing a transcript row reads, so no row re-renders: the list
-// hands its cells a stable renderer (strictMode), and they re-render only
-// for a new renderItem, new rows, or the extraData they read (#3247).
-it("re-renders no transcript row when the bottom bar re-lays out as the keyboard folds the queue", async () => {
+// With a message queued, its ghost is a transcript row that reads the
+// screen's state by context (GhostRowContext). Typing into an empty draft
+// changes that state (Edit can't bring a message back over your text) and
+// re-renders the screen, but no other row: the list hands its cells a stable
+// renderer (strictMode), and they re-render only for a new renderItem, new
+// rows, or the extraData they read (#3247).
+it("re-renders no transcript row when you type with a message queued", async () => {
 	const served = twoTurns("ref-memo-queued");
 	(served as unknown as { evener: { queue: unknown } }).evener.queue = {
 		revision: 1,
@@ -347,21 +341,18 @@ it("re-renders no transcript row when the bottom bar re-lays out as the keyboard
 		ids: ["queue_1"],
 	};
 	const { tree } = await mount(served);
-	const bar = () =>
-		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
-	await settle();
+	const composer = () =>
+		tree.root.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message");
 	expect(renderedText(tree)).toContain("check the logs");
 	rows.renders = 0;
 	typeInComposer(tree);
-	// Folded to one line.
-	expect(renderedText(tree)).not.toContain("check the logs");
-	// The fold shrinks the bar, which reports its new height.
-	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 560, width: 390, height: 200 } } }));
+	act(() => composer().props.onChangeText("a"));
+	await settle();
+	act(() => composer().props.onChangeText(""));
 	await settle();
 	act(() => keyboard.hide());
-	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
 	await settle();
+	expect(renderedText(tree)).toContain("check the logs");
 	expect(rows.renders).toBe(0);
 });
 

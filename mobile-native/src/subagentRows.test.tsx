@@ -14,7 +14,7 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import {
 	subagentCallItems,
 	subagentOutcomesResponse,
@@ -24,7 +24,7 @@ import {
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf } from "./renderNative.testkit";
+import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
@@ -482,17 +482,14 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		);
 	}
 
-	const screens: ReturnType<typeof render>[] = [];
 	function transcript(props: Parameters<typeof Transcript>[0]) {
-		const screen = render(<Transcript {...props} />);
-		screens.push(screen);
-		return screen;
+		return render(<Transcript {...props} />);
 	}
 	const rowText = (screen: ReturnType<typeof render>, delegateId: string) =>
 		textOf(screen.root.find((node) => node.type === TimelineItem && node.props.item.id === delegateId));
 
 	afterEach(() => {
-		for (const screen of screens.splice(0)) act(() => screen.unmount());
+		unmountMountedTrees();
 		forgetSubagentTrees("hub-1");
 	});
 
@@ -529,10 +526,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 		reply = next;
 		await act(async () => {
-			client.emitNotification({
-				method: "evener/thread/activity/changed",
-				params: { ref: COORDINATOR.ref, threadId: "root", sessionId: "root", resources: ["delegates"] },
-			});
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 			await vi.runOnlyPendingTimersAsync();
 		});
 		expect(renderedText(screen)).toContain("Second run report.");
@@ -636,15 +630,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).toContain("Finished");
 		answer = recorded;
 		await act(async () => {
-			client.emitNotification({
-				method: "evener/thread/activity/changed",
-				params: {
-					ref: COORDINATOR.ref,
-					threadId: COORDINATOR.threadId,
-					sessionId: COORDINATOR.threadId,
-					resources: ["delegates"],
-				},
-			});
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 		});
 		expect(jobsLists(client)).toHaveLength(2);
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");

@@ -1,4 +1,4 @@
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { fonts } from "./design/tokens";
 import { MermaidDiagram } from "./MermaidDiagram";
@@ -35,11 +35,8 @@ it("locks the WebView down", () => {
 
 it("posts the source as JSON once the page reports ready", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	// Nothing is posted before the page's listener is attached.
 	expect(postMessage).not.toHaveBeenCalled();
@@ -58,11 +55,8 @@ it("posts the source as JSON once the page reports ready", () => {
 
 it("sizes itself from the page's height message", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	const webview = () => tree.root.findByType("WebView" as never);
 	act(() => {
@@ -79,11 +73,8 @@ it("sizes itself from the page's height message", () => {
 
 it("serializes render posts: a change while one is in flight waits for the reply", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	const webview = () => tree.root.findByType("WebView" as never);
 	act(() => {
@@ -200,11 +191,8 @@ it("opens a fullscreen viewer on press, with source toggle and copy", () => {
 
 it("gives the fullscreen WebView the same lockdown and posts mode:zoom", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	act(() => {
 		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
@@ -256,11 +244,8 @@ it("re-posts the zoom render when the palette changes", () => {
 	clipboard.setStringAsync.mockClear();
 	mode.scheme = "light";
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	act(() => {
 		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
@@ -295,11 +280,8 @@ it("re-posts the zoom render when the palette changes", () => {
 it("queues a palette flip during an in-flight zoom render and re-posts it on the reply", () => {
 	mode.scheme = "light";
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" onAccessibilityAction={() => {}} />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" onAccessibilityAction={() => {}} />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	act(() => {
 		tree.root.findByProps({ testID: "mermaid-open" }).props.onPress();
@@ -399,11 +381,8 @@ it("clears the error fallback when the source changes to a valid diagram", () =>
 
 it("ignores a height reply from a superseded source", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	const webview = () => tree.root.findByType("WebView" as never);
 	act(() => {
@@ -426,11 +405,8 @@ it("ignores a height reply from a superseded source", () => {
 
 it("does not fail on an error reply from a superseded source", () => {
 	const postMessage = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
-			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
-		});
+	const tree = render(<MermaidDiagram source="graph TD; A-->B" />, {
+		createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
 	});
 	const webview = () => tree.root.findByType("WebView" as never);
 	act(() => {

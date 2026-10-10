@@ -1,5 +1,5 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
-import { AppwireClient } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -212,7 +212,7 @@ test("initiates and settles the welcome navigation load without an error", async
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [3] },
@@ -233,7 +233,7 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "app-generation", sequence: 0, readVersions: [3] },

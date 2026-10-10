@@ -5,7 +5,7 @@ import {
   type SessionActivityReadState,
   sessionActionError,
 } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
@@ -15,6 +15,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
+import { restoreTranscriptView } from "../session/transcript/flow/transcriptViewRegistry";
 import { useTranscriptScroll } from "../session/transcript/flow/useTranscriptScroll";
 import {
   TranscriptBody,
@@ -82,12 +83,21 @@ export function ReadOnlyThreadContent({
     () => (projection ? { projection, rows, anchorEntries } : undefined),
     [projection, rows, anchorEntries],
   );
+  const hasContent = rows.length > 0;
+  useLayoutEffect(() => {
+    // The child body registers first. Admit its retained placement before the
+    // scroll coordinator initializes against a possibly unmeasured port, so
+    // its end-follow intent agrees with the restored reader.
+    if (hasContent && initialViewCapture) restoreTranscriptView(view.id, initialViewCapture);
+  }, [hasContent, initialViewCapture, view.id]);
   useTranscriptScroll({
     ref,
     model,
     listRef,
     loadOlder,
     cancelOlder,
+    onReaderIntent: view.supersedePositioning,
+    onReaderMovement: view.syncPositioningMovement,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
     renderedRowCount: rows.length,
@@ -123,6 +133,7 @@ export function ReadOnlyThreadContent({
               sessionRef={ref}
               viewId={view.id}
               initialViewCapture={initialViewCapture}
+              readView={view}
               onAnnounceViewChange={(summary) => {
                 announcementSequence.current += 1;
                 setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

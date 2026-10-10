@@ -348,14 +348,43 @@ for a write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and
 skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
 sibling check.
 
-What it writes, and where: under the host's `HOME` it creates its own
-`evener-deploy-e2e-{source,binary}` directory, deploys the binary to
-`<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
-`hub.toml` and state root beside it so the host hub it starts uses its own
-loopback port (`127.0.0.1:19180` / `:19181`) and its own lock. It removes that
-directory when it finishes. It never addresses the host's real install
-(`~/.local/bin/evener`); the check hashes that file before and after and fails if
-it changed.
+What it writes, and where: under the host's `/tmp` it creates its own
+`evener-deploy-e2e-{source,binary}-<run-id>` directory with an atomic claim that
+refuses existing paths. Both machines need a writable `/tmp` ancestor for catalog
+previews, while the run-unique project paths exist only on the host. It deploys
+the binary to `<dir>/bin/evener` (the basename `checkRunTarget` requires), and
+writes a private `hub.toml` beside it. The config explicitly sets the hub state root, daemon
+directory, project-state glob and history database under `<dir>/state`, alongside
+its loopback port (`127.0.0.1:19180` / `:19181`) and private lock. Setting only
+`hub_state_root` leaves the other runtime paths on their normal defaults.
+The controller's fixture-only SSH wrapper executes the real OpenSSH client and
+sets the remote command's `HOME` to `<dir>/home`, with config, state and cache XDG
+roots beneath that home. It unsets inherited `EVENER_PROVIDERS_CONFIG`,
+`EVENER_CREDENTIALS_CONFIG` and `EVENER_STATE_DIR` overrides before bootstrap or
+attach. Startup extension directories and child processes therefore use private
+roots too. The host's login environment and SSH server configuration are unchanged.
+Cleanup signals only
+a listener whose command line names that private config. It removes the directory
+only after proving shutdown; an unproved shutdown fails the check and leaves the
+directory in place. It never writes the host's real install (`~/.local/bin/evener`);
+the check hashes that file before and after and fails if it changed. A failed or
+unrecognized hash probe cannot establish absence.
+
+Each case creates two private remote projects with distinct command and skill
+descriptors. Forwarded slash catalogs must follow an alpha → beta → alpha
+directory switch without leaking the other project's or controller's entries.
+Direct controller calls for the same host-only paths must exclude those remote
+entries. A separate controller project supplies the local positive control.
+
+Use an unmanaged host for this fixture and inspect its supervisor listings before
+running it. The current bootstrap selects evener hub launchd/systemd units by
+name, without matching the private config or port; a matching loaded unit can
+start or restart the regular hub. These private paths do not establish isolation
+on a managed host.
+
+The SSH target must provide a separate filesystem for its private catalog
+projects. Localhost on the controller's filesystem cannot satisfy the host-only
+path checks or the direct-controller negative control.
 
 Prerequisites: a disposable host reachable over non-interactive ssh, with a
 supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
@@ -792,10 +821,12 @@ their workspace under it.
 
 Tests clean up after themselves without the runner, too: a direct `go test`
 must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
-that harder than it looks. A closing session retains its scratch directory and
-its world-usable temp container for the crashed-scratch sweep's 24h reclaim
-(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
-the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+that harder than it looks. A closing session keeps its named scratch
+(`evener-scratch-<root>/<session>`) until its root is archived, a session a
+test kills leaves its disposable scratch for the crashed-scratch sweep's 24h
+reclaim (`sandbox.SweepCrashedSessionScratch`), and a detached command's
+world-usable temp container lives in `/tmp` or `/var/tmp`, which no `TMPDIR`
+moves. So a
 package whose tests run sessions routes its TestMain through
 `agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
 TestMain that does more, point `TMPDIR` and the container bases into one root
@@ -803,9 +834,10 @@ and remove it when the run ends. Self-exec helper children inherit that
 `TMPDIR`, so what they leave when they are killed on purpose goes with it.
 The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
 `evener serve` a test starts inherits them too. That matters beyond leftovers:
-each of those processes runs the crashed-scratch sweep at startup, and without
-the variable it reclaims other sessions' abandoned scratch from the
-developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+each of those processes runs the crashed-scratch sweep at startup, so without
+the variable a test
+reclaims other sessions' abandoned scratch from the developer's real `/tmp`
+and `/var/tmp`. A TestMain that clears every product
 `EVENER_*` variable after `RedirectHostTemp` keeps that one value
 (`sandboxtest.Redirected`), and a test that builds a child environment from
 scratch must pass it on. A test that sets the bases itself has to prove they
@@ -813,9 +845,9 @@ are in force before it mints or sweeps anything, so a regression fails the
 test instead of reaching `/tmp`.
 
 A test that drives the crashed-scratch sweep itself confines it to scratch it
-owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
-unleased scratch it can see, including another process's.
+owns (its own `TMPDIR` and user cache dir, no container bases), because the
+sweep deletes any aged, unleased scratch it can see, including another
+process's.
 
 A fixture built once and cached for the whole package run (a `sync.Once`
 repo, a built binary) belongs in the package's own fixture root, never in
@@ -836,6 +868,43 @@ npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
+The production editorial-preview config still refuses a symlinked
+`node_modules`: its server boundary must not serve dependencies that concurrent
+lanes can write. Its Node isolation tests do not skip in a worktree that uses
+the lockfile-matched shared install. They copy the real frontend, AppWire
+sources, and dependency tree into a private repository-shaped fixture, then run
+the config, HTTP routes, and wrapper there. Never run `npm ci` through the
+shared symlink to make those tests pass.
+
+A fresh agent worktree has no frontend install. The cheap setup that stays
+inside every preflight's rules is to symlink a lockfile-matched real install
+from another tree: `cmp` this tree's `package-lock.json` against the
+install's first, then `ln -s`. The frontend tree's `.gitignore` ignores the
+link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
+match a symlink: that link shows as untracked in `git status`, so keep it
+out of commits by path, not by ignore.
+
+The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+`vitest_run_args` selects `--configLoader runner` (Vite's default loader
+writes a bundled config under `node_modules/.vite-temp`), and the plugin
+that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
+not read-only yet. Vitest still writes its dependency cache to the
+checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
+phase loads Vite configs with the default loader in
+`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
+`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
+(issue #4193). So a read-only lane still needs a scratch config for focused
+experiments: run
+it with `--configLoader runner --cache=false`, and give the scratch-rooted
+Vite config a `server.fs.allow` that names the checkout, the AppWire
+package and the dependency realpath, or external setup imports fail as
+`Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
+the custom config, test files, cacheDir and dependency symlink in scratch,
+reuse the frontend's resolve aliases and test setup, and keep at least two
+workers (the vmThreads isolation floor explained below). These runs are
+probes; canonical verdicts stay with `make test-web`, which cannot run in
+a read-only lane until those writes are gone.
+
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
@@ -855,6 +924,17 @@ extends the same reasoning to the other gate runs sharing it, which a fixed
 count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
+
+One in-band check does not share that protection: the flush-scope hygiene
+meta-test (src/testFlushScopeHygiene.test.ts) parses every test file under
+the frontend's `src/` with the TypeScript compiler inside a single vitest
+test bounded only
+by the default 5000ms, so its runtime grows with the tree and with CPU
+contention (issue #3966). `make test-web` run beside another heavy lane can
+time that one test out with everything else green. Run the heavy local
+gates — `make test-web`, `make vet`, `make lint` — one at a time, and rerun
+the gate alone before diagnosing that timeout as a regression.
+
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own
 checkout and cache restore are still in the one-minute average when the gate
@@ -898,6 +978,12 @@ timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
 crosses the show delay on a fake clock scoped to the hover, so it needs none
 of that wiring, and it must be called on real timers.
 
+The frontend has no jest-dom (it is not in `package.json`), so matchers
+such as `toHaveValue`, `toBeDisabled` or `toBeInTheDocument` fail
+`npm run typecheck` even when vitest, which never typechecks, runs them
+green. Assert on the DOM directly (`input.value`, `el.textContent`,
+`button.disabled`, `document.activeElement`).
+
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await` has to
 be awaited, never asserted right after the click. Work that goes through
@@ -907,8 +993,12 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 (src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
-has settled, and the dispatched request has gone out by then. A `waitFor`
-on the request races that chain against a 1000ms ceiling, which a loaded
+has settled, and the dispatched request has gone out by then. The flush
+waits only for work registered with that tracker: if production code adds
+an awaited step outside storage (say, a component awaits a store call
+before clearing its state), wrap the whole operation in
+`trackProjectionWork` (src/stores/projectionWork.ts), or the flush returns
+early. A `waitFor` on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
 tracked work open on purpose (a held read or commit) cannot flush until it
@@ -920,6 +1010,72 @@ then can be the next test's fake client, so the next test sees an extra
 call. For the same reason a suite resets every global store it renders
 against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
 toast from the previous test can satisfy this test's assertion.
+
+### Frontend store-fixture contracts
+
+Five contracts that repeatedly bite store-test authors, none of them visible
+from the assertion that fails:
+
+- A store fixture's `thread/read` handler must echo the request generation
+  (`requestGeneration: params.requestGeneration ?? …`), or the response is
+  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  discards a latest-window response whose `requestGeneration` is older than
+  the held history's `issuedGeneration`, so a handler returning a static
+  fixture with a stale default generation turns the read into a silent no-op
+  — issued on the wire, never applied to the model. Assert on wire request
+  counts when only issuance matters.
+- `holdNextWriteTransaction(stores)`
+  (src/stores/testing/stalledIndexedDB.ts) matches the next readwrite
+  transaction opened over exactly that store set, not the cache method that
+  opened it, so an earlier matching transaction can consume a broadly armed
+  hold. Arm it immediately before the intended real `put` call
+  in a call-through spy, and observe the method entry and the hold's
+  `reached` boundary separately. The helper lets fake-indexeddb commit and
+  withholds the completion event; it does not prove an active transaction
+  lock blocks other writes, so diagnose a stalled successor from its actual
+  pending operation.
+- To test a boundary before commit, while the write can still abort, hook
+  the request itself: wrap the object-store method in a call-through spy
+  that either holds the request's `success` event with `holdIndexedDBEvent`
+  or calls `this.transaction.abort()`. Match the call by `this.name` and the
+  exact key the caller builds, not by call order, since production may add
+  an earlier read. Worked example: src/stores/humanNoteDrafts.test.ts.
+- fake-indexeddb throws a synchronous `DataError` from the store method
+  itself for a put/add whose key cannot be derived (`buildRecordAddPut`
+  throws before any request is created). Such a test proves method-fault
+  handling only; request-error and rollback proofs need an actual failing
+  request, its observed error and transaction abort, and a reopen check that
+  earlier writes did not persist.
+- Both the real client and `FakeClient` isolate notification-handler errors
+  — a throwing subscriber must not abort dispatch — so an assertion inside
+  a notification callback is swallowed instead of failing the test, and the
+  failure surfaces later as an unrelated stall or timeout. Capture callback
+  assertion errors outside the catching pipeline and assert them in the test
+  body.
+
+The console guard (src/testConsoleGuard.ts) fails a test on any unspied
+`console.error`/`warn`/`log`/`info`/`debug` call, with a message that
+names the call and the `vi.spyOn(console, …)` recipe. A diagnostic probe
+that prints its
+observations therefore reports a phantom failure: record probe observations
+to a scratch file or spy on the console.
+
+### Navigation fixtures
+
+- A session summary in a v3 navigation graph may not nest other sessions:
+  the TS codec (appwire-client/typescript/state/navigation/codec.ts) and Go
+  schema both enforce flat session rows ("Session summaries are flat; the
+  empty owned slot preserves graph structure", navigation_schema.go). A
+  fixture that nests fails the TS codec as `invalid resource graph`, not as
+  the behavior under test. Prove a recursive roster walk at the
+  selector/helper level, and
+  discovery through real stores with flat rows.
+- The store's progress validator rejects an empty page only when it still
+  reports data ("… returned no rows with remaining data",
+  state/navigation/store.ts), and the codec accepts `sessions: [],
+  remaining: 0, truncated: true`, so `remaining === 0` alone is not proof
+  that a roster sweep completed. Absence proofs must check truncation; keep
+  the ordinary non-truncated empty terminal page as a removal control.
 
 ### Whole-system residue audit
 
@@ -1057,7 +1213,10 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document.
+  document. The floating fixture waits for the restored workspace before opening
+  Settings. A held lazy DockHost request verifies that it captures no pane ID
+  before restoration, then proves real placement, overhang, native input and
+  resize after the request resumes. Workspace restoration and Dockview stay real.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
 - **`npm run transcriptscrollguard`** renders the real transcript through the
@@ -1086,6 +1245,19 @@ virtualization engine with real measurements. The second exists because the
 first could not have caught the bug that prompted it. Hand-authored markup
 freezes whatever was current when the case was written, so restoring the old
 glyph would have left the guard green while the app broke.
+
+A new dev harness entry that mounts the app-router SPA itself — none of
+the existing `src/dev/*-entry.tsx` guards does this today; they mount
+fixtures or shell components directly — needs two things, or it presents as
+a dead document with no error captured anywhere: reset the
+route before the app import — a router-driven shell renders NotFound from the
+harness path, so call `window.history.replaceState(null, "", "/")` —
+and set a synchronous boot-marker global before any top-level
+`await import("../main")`, because the `load` event fires while that import's
+top-level await is still pending, and a boot check on a global set after it
+re-navigates the live document forever. Order the entry: synchronous
+install/setup, boot marker, `replaceState`, then the dynamic import, and
+wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
@@ -1544,6 +1716,18 @@ does slip through shows up on the hub's stderr:
 ```
 [hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
 ```
+
+## Driving Turns from a Go Fixture
+
+A session runs one turn at a time. A `turn/start` during an active turn is
+refused with `turn is already active`, so a fixture must wait for each turn
+to finish before starting the next.
+
+To wait on the turn lifecycle, call `thread/read` with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same daemon connection
+before `TurnStart`. Without `Subscribe: true` the read returns a snapshot
+and subscribes to nothing, so `Client.Notifications()` never carries that
+thread's `thread/status/changed` or `history/updated`.
 
 ## A Disposable Hub Needs Its Own HOME
 

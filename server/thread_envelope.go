@@ -59,6 +59,12 @@ type threadEnvelope struct {
 	HumanNote   string
 	AgentNote   string
 	SessionURLs []appwire.SessionURL
+	// WorkingDir is the installed session environment's cwd. The direct
+	// environment carrier and SessionMeta checkpoints share this field; the
+	// generation prevents an older in-flight checkpoint from replacing a newer
+	// carrier commit.
+	WorkingDir           string
+	cwdCarrierGeneration uint64
 	// Carrier generations are internal per-identity fences. A sampled checkpoint
 	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
 	taskCarrierGeneration uint64
@@ -352,6 +358,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
 	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
+	cwdCarrierGeneration := s.appEnvelope.cwdCarrierGeneration
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
 	ref := s.appRef
@@ -420,6 +427,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
 		if facets&facetMeta != 0 {
+			next.WorkingDir = meta.EnvInfo.WorkingDir
 			next.Name = strings.TrimSpace(meta.Name)
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
 			if !meta.LastTurnEndedAt.IsZero() {
@@ -470,6 +478,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
 			assignFacets &^= facetGoal
 		}
+		cwdStale := s.appEnvelope.cwdCarrierGeneration != cwdCarrierGeneration
 		// The notes and URLs carriers ride the goal facet's sample (SessionMeta
 		// holds Goal, HumanNote, AgentNote, and SessionURLs together), so the
 		// guard cannot clear the whole facet the way the task/goal guards do —
@@ -480,7 +489,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		// their independent carriers.
 		notesStale := s.appEnvelope.notesCarrierGeneration != notesCarrierGeneration
 		urlsStale := s.appEnvelope.urlsCarrierGeneration != urlsCarrierGeneration
-		s.appEnvelope.assign(assignFacets, next, notesStale, urlsStale)
+		s.appEnvelope.assign(assignFacets, next, cwdStale, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
 }
@@ -499,7 +508,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 // place: a field added to the struct without a line here is a field that is
 // sampled and then dropped, which is far easier to see in six lines of
 // assignment than spread across the sampler.
-func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notesStale, urlsStale bool) {
+func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdStale, notesStale, urlsStale bool) {
 	if facets&facetContext != 0 {
 		e.ContextPressure = next.ContextPressure
 		e.ContextMetrics = next.ContextMetrics
@@ -551,6 +560,9 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.VisionModel = next.VisionModel
 	}
 	if facets&facetMeta != 0 {
+		if !cwdStale {
+			e.WorkingDir = next.WorkingDir
+		}
 		e.Name = next.Name
 		e.Preview = next.Preview
 		e.LastTurnEndedAt = next.LastTurnEndedAt

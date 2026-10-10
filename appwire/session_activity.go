@@ -77,9 +77,13 @@ type SessionActivitySummary struct {
 	RefreshPending bool                   `json:"refreshPending,omitempty"`
 	Context        SessionActivityContext `json:"context"`
 	Scope          SessionActivityScope   `json:"scope"`
-	Delegates      SessionActivityCounts  `json:"delegates"`
-	Jobs           SessionActivityCounts  `json:"jobs"`
-	Watches        SessionActivityCounts  `json:"watches"`
+	// Delegates counts a delegate as active while its run is open. For a root
+	// read at scope subtree, Active is the Live row's SubagentTally.Running
+	// and evener/activity/read's runningSubagents; scope session counts only
+	// direct children.
+	Delegates SessionActivityCounts `json:"delegates"`
+	Jobs      SessionActivityCounts `json:"jobs"`
+	Watches   SessionActivityCounts `json:"watches"`
 }
 
 // SessionActivityIssue makes unavailable branches and incomplete retained sources explicit.

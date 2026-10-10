@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { compactDuration, spokenDuration } from "./format";
+import { compactDuration, spokenDuration, timeAgo } from "./format";
 
 it.each([
 	[0, "0s"],
@@ -32,4 +32,19 @@ it.each([
 	[Number.NaN, "0 seconds"],
 ])("reads %i ms as %s", (ms, text) => {
 	expect(spokenDuration(ms)).toBe(text);
+});
+
+it.each([
+	[-5_000, "just now"],
+	[0, "just now"],
+	[59_999, "just now"],
+	[60_000, "1m ago"],
+	[3 * 3_600_000, "3h ago"],
+])("%i ms ago reads %s", (ms, text) => {
+	expect(timeAgo(ms)).toBe(text);
+});
+
+it("reads how long ago in the words it is given", () => {
+	expect(timeAgo(3 * 60_000, spokenDuration)).toBe("3 minutes ago");
+	expect(timeAgo(30_000, spokenDuration)).toBe("just now");
 });

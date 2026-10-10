@@ -17,7 +17,7 @@ const FOCUSABLE_SELECTOR = [
 // Walks up from `el` checking computed style on each ancestor, so an
 // element hidden by an ancestor's display:none or visibility:hidden isn't
 // treated as tabbable even though it matches FOCUSABLE_SELECTOR itself.
-function isRendered(el: Element): boolean {
+export function isRendered(el: Element): boolean {
   if (el instanceof HTMLElement && el.hidden) return false;
   let node: Element | null = el;
   while (node) {

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 const (
@@ -42,11 +43,11 @@ type listDirResult struct {
 	Truncated bool
 }
 
-// dirEntrySize over-estimates an entry's rendered line length (name, an optional
-// slash or tab-separated size, and a newline) so the running budget keeps the
-// rendered listing under the cap.
+// dirEntrySize over-estimates an entry's rendered line length (name as
+// formatDirListing writes it, an optional slash or tab-separated size, and a
+// newline) so the running budget keeps the rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(e.Name) + 16
+	return len(execenv.OneLinePath(e.Name)) + 16
 }
 
 // formatDirListing renders a page as plain text, ls-style: one entry per line,
@@ -58,7 +59,7 @@ func formatDirListing(r listDirResult) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(e.Name)
+		b.WriteString(execenv.OneLinePath(e.Name))
 		switch {
 		case e.IsDir:
 			b.WriteByte('/')
@@ -201,28 +202,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	// grep
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			pat := stringArg(args, "pattern")
-			path := stringArg(args, "path")
-			glob := stringArg(args, "glob_filter")
-			ci := false
-			if v, ok := args["case_insensitive"].(bool); ok {
-				ci = v
-			}
-			maxRes := execenv.DefaultGrepMaxResults
-			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
-				maxRes = int(v)
-			}
-			outputMode := ""
-			if v, ok := args["output_mode"].(string); ok {
-				outputMode = v
-			}
-			contextLines := 0
-			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
-				contextLines = min(int(v), 10)
-			}
-			return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
-		},
+		Exec: execFileGrep,
 	}); err != nil {
 		return err
 	}
@@ -254,12 +234,18 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			for i, match := range matches {
+				matches[i] = execenv.OneLinePath(match)
+			}
 			result := strings.Join(matches, "\n")
+			// Notes about the result follow its paths after a blank line
+			// (searchresult.WithNotes), so a reader never counts one as a path.
+			var notes []string
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).
 			if len(matches) == 0 && excluded > 0 {
-				result = fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded)
+				notes = append(notes, fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded))
 			}
 			if truncatedAt > 0 {
 				// Silent truncation is the same enemy: the matches collected
@@ -269,12 +255,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				// The cap counts candidate matches, before the dotfile/
 				// gitignore exclusion above drops any of them, so the number
 				// of paths actually shown can be smaller than the cap itself.
-				note := fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
-				if result == "" {
-					result = note
-				} else {
-					result += "\n\n" + note
-				}
+				notes = append(notes, fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt))
+			}
+			if len(notes) > 0 {
+				return searchresult.WithNotes(result, notes...), nil
 			}
 			return result, nil
 		},
@@ -757,4 +741,38 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	}
 	fmt.Fprintf(&b, "exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut)
 	return b.String(), err
+}
+
+func execFileGrep(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	g := parseFileGrepArgs(args)
+	return env.Grep(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines)
+}
+
+// fileGrepArgs are a grep tool call's arguments with their defaults applied.
+type fileGrepArgs struct {
+	pattern, path, glob, outputMode string
+	caseInsensitive                 bool
+	maxResults, contextLines        int
+}
+
+func parseFileGrepArgs(args map[string]any) fileGrepArgs {
+	g := fileGrepArgs{
+		pattern:    stringArg(args, "pattern"),
+		path:       stringArg(args, "path"),
+		glob:       stringArg(args, "glob_filter"),
+		maxResults: execenv.DefaultGrepMaxResults,
+	}
+	if v, ok := args["case_insensitive"].(bool); ok {
+		g.caseInsensitive = v
+	}
+	if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
+		g.maxResults = int(v)
+	}
+	if v, ok := args["output_mode"].(string); ok {
+		g.outputMode = v
+	}
+	if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
+		g.contextLines = min(int(v), 10)
+	}
+	return g
 }

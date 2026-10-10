@@ -158,7 +158,7 @@ func TestSkillCompaction_CheckpointOnly(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "ckpt-only-cheap", func(llm.Request) llm.Response {
 		summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -245,7 +245,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 		t.Parallel()
 		stateDir := t.TempDir()
 		s := newScriptedSummaryCompactSession(t, "defer-auto-cheap", func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 		id := s.Meta().ID
 		disableSessionNaming(s)
@@ -326,7 +326,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 				close(entered)
 				<-release
 			}
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 		}, withoutGitSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 		id := s.Meta().ID
 		disableSessionNaming(s)
@@ -428,7 +428,7 @@ func TestSkillCompaction_UnchangedPublication(t *testing.T) {
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "unchanged-cheap", func(llm.Request) llm.Response {
 		summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -503,9 +503,9 @@ func TestSkillCompaction_LosingAttempt(t *testing.T) {
 				t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
 			}
 			s.mu.Unlock()
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nlosing summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nlosing summary\n[END SUMMARY]")}
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nwinning summary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nwinning summary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -583,7 +583,7 @@ func TestSkillCompaction_CompetingForced(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "competing-forced-cheap", func(llm.Request) llm.Response {
 		n := summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\nfold %d summary\n[END SUMMARY]", n))}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -687,7 +687,7 @@ func TestSkillCompaction_ConcurrentSteering(t *testing.T) {
 			close(entered)
 			<-release
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -758,7 +758,7 @@ func TestSkillCompaction_FinalSummary(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "final-summary-cheap", func(llm.Request) llm.Response {
 		summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -822,7 +822,7 @@ func TestSkillCompaction_RestartBeforePublish(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "restart-before-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -839,7 +839,7 @@ func TestSkillCompaction_RestartBeforePublish(t *testing.T) {
 	s.Close()
 
 	restored := restoreForPublication(t, stateDir, id, "restart-before-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 	})
 	disableSessionNaming(restored)
 	op := restored.pendingSkillCompactionSnapshot()
@@ -889,7 +889,7 @@ func TestSkillCompaction_RestartAfterPublish(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "restart-after-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
@@ -987,7 +987,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		t.Parallel()
 		stateDir := t.TempDir()
 		s := newScriptedSummaryCompactSession(t, "stale-snap-cheap", func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_f1e9\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
 		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 		id := s.Meta().ID
 		disableSessionNaming(s)
@@ -1198,7 +1198,7 @@ func TestSkillCompaction_RestartHandoffIdentity(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	summary := func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_9d2f\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_9d2f\n[END SUMMARY]")}
 	}
 	s := newScriptedSummaryCompactSession(t, "handoff-id-cheap", summary,
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
@@ -1261,7 +1261,7 @@ func TestSkillCompaction_IntermediateSaveWindowRestore(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newScriptedSummaryCompactSession(t, "intermediate-save-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_4b7c\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_4b7c\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)

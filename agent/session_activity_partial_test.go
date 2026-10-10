@@ -23,7 +23,7 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 			for _, delegateID := range []string{"dlg_healthy", "dlg_unavailable"} {
 				ownerID, store := newSessionActivityChildJournal(t, s, delegateID, at)
 				ownerRefs = append(ownerRefs, encodeRef("", ownerID))
-				event := jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, OwnerSessionID: ownerID, TS: at, StartedAt: &at}
+				event := jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, Background: true, OwnerSessionID: ownerID, TS: at, StartedAt: &at}
 				if resource == "watches" {
 					event = jobstore.Event{Kind: jobstore.EventWatchRegistered, WatchID: "watch_equal", TS: at, Watch: &jobstore.WatchEvent{
 						Generation: "g", OwnerSessionID: ownerID, VisibleSessionID: ownerID, Target: "timer", ConfigHash: "hash",
@@ -32,6 +32,11 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 				}
 				if err := store.Append(event); err != nil {
 					t.Fatal(err)
+				}
+				if resource == "jobs" {
+					if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_unmarked", Type: jobstore.JobShell, OwnerSessionID: ownerID, TS: at, StartedAt: &at}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if delegateID == "dlg_unavailable" {
 					badPath = filepath.Join(jobsDir(s.stateDir, ownerID), "jobs.jsonl")
@@ -89,6 +94,12 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 			if len(seen) != 1 || last.NextCursor != "" {
 				t.Fatalf("healthy branch unreachable: owners=%v page=%+v", seen, last)
 			}
+			if resource == "jobs" {
+				summary, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref, Scope: params.Scope})
+				if err != nil || summary.Jobs.Known {
+					t.Fatalf("partial counts claimed authority: %+v error=%v", summary, err)
+				}
+			}
 
 			if err := os.WriteFile(badPath, intact, 0o600); err != nil {
 				t.Fatal(err)
@@ -98,6 +109,12 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 			owners, recovered, err := list(params)
 			if err != nil || len(owners) != 2 || owners[0] == owners[1] || !recovered.Complete || len(recovered.Issues) != 0 {
 				t.Fatalf("fresh read did not recover repaired branch: owners=%v page=%+v error=%v", owners, recovered, err)
+			}
+			if resource == "jobs" {
+				summary, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref, Scope: params.Scope})
+				if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 2 || summary.Jobs.Active != 2 || len(summary.Issues) != 0 {
+					t.Fatalf("recovered eligibility counts remain unknown or include foreground: %+v error=%v", summary, err)
+				}
 			}
 		})
 	}
@@ -110,7 +127,7 @@ func TestSessionActivityFailedScansShareInputBudget(t *testing.T) {
 	for _, id := range []string{"dlg_a_unavailable", "dlg_b_unavailable", "dlg_z_healthy"} {
 		owner, store := newSessionActivityChildJournal(t, s, id, at)
 		if id == "dlg_z_healthy" {
-			if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_healthy", Type: jobstore.JobShell, OwnerSessionID: owner, TS: at, StartedAt: &at}); err != nil {
+			if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_healthy", Type: jobstore.JobShell, Background: true, OwnerSessionID: owner, TS: at, StartedAt: &at}); err != nil {
 				t.Fatal(err)
 			}
 		} else {
@@ -150,7 +167,7 @@ func TestSessionActivityUnavailableBranchInvalidatesWarmCounts(t *testing.T) {
 			var badPath string
 			for _, id := range []string{"dlg_healthy", "dlg_unavailable"} {
 				owner, store := newSessionActivityChildJournal(t, s, id, at)
-				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, OwnerSessionID: owner, TS: at, StartedAt: &at}); err != nil {
+				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, Background: true, OwnerSessionID: owner, TS: at, StartedAt: &at}); err != nil {
 					t.Fatal(err)
 				}
 				if id == "dlg_unavailable" {

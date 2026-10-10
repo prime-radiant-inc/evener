@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -143,6 +144,22 @@ func result(id, name, content string) llm.ContentPart {
 }
 
 func standalone(kind schema.TurnKind, s string) schema.Turn { return schema.NewTurn(kind, llm.User(s)) }
+
+// memoryContext is a memory-context entry as the session records it: one
+// notification whose sections each project as their own item.
+func memoryContext(sections ...string) schema.Turn {
+	text := llm.SystemNotificationOpenTag + apptranscript.MemoryContextBody(sections) + llm.SystemNotificationCloseTag
+	return schema.NewTurn(schema.TurnMemoryContext, llm.UserMachinery(text))
+}
+
+// bothScopesMemoryContext carries two index sections and a page notice.
+func bothScopesMemoryContext() schema.Turn {
+	return memoryContext(
+		apptranscript.MemoryIndexSection("personal", "current", false, "- [a](a.md) — personal note\n"),
+		apptranscript.MemoryIndexSection("project", "missing", false, ""),
+		apptranscript.MemoryPageChangesSection("personal", []apptranscript.MemoryPageChange{{Path: "a.md"}}),
+	)
+}
 
 func steering(s string) schema.Turn { return standalone(schema.TurnSteering, s) }
 
@@ -339,6 +356,7 @@ func fixtures() []fixture {
 		entryLine(standalone(schema.TurnCheckpoint, "checkpoint text")),
 		entryLine(standalone(schema.TurnSummary, "summary text")),
 		entryLine(standalone(schema.TurnNotesContext, "notes")),
+		entryLine(bothScopesMemoryContext()),
 		entryLine(standalone(schema.TurnHookCompleted, "")),
 		entryLine(standalone(schema.TurnAttentionResolution, "resolved")),
 		entryLine(user("after the markers")),
@@ -580,6 +598,14 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		entryLine(completion("turn_m21", schema.TurnCompleted, 70, 10)),
 	}
 
+	// A memory-context entry projects one item per section.
+	memory := []fixtureLine{
+		entryLine(opens("turn_m23", execution, user("memory boundary"))),
+		entryLine(inTurn("turn_m23", bothScopesMemoryContext())),
+		entryLine(inTurn("turn_m23", inRound(assistant(text("noted")), "r_23"))),
+		entryLine(completion("turn_m23", schema.TurnCompleted, 90, 10)),
+	}
+
 	interruptedCall := []fixtureLine{
 		entryLine(opens("turn_m22", execution, user("crash mid-call"))),
 		entryLine(inTurn("turn_m22", inRound(assistant(text("calling"), call("ic1", "shell", `{"cmd":"sleep"}`), call("ic2", "read_file", `{}`)), "r_22"))),
@@ -600,6 +626,7 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		{name: "fold copies", header: header, lines: folds},
 		{name: "communicate echoes", header: header, lines: echoes},
 		{name: "notices", header: header, lines: notices},
+		{name: "memory context sections", header: header, lines: memory},
 	}
 }
 

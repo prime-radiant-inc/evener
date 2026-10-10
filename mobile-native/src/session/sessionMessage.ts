@@ -20,6 +20,7 @@ import { type SendAction, sendAction } from "./sendAction";
 export interface SessionState {
 	threadId: string;
 	instanceId: string;
+	cwd: string;
 	status: string;
 	capabilities: ThreadCapabilities;
 	queueDepth: number;
@@ -61,6 +62,7 @@ export class SessionLink {
 		const state: SessionState = {
 			threadId: thread.id,
 			instanceId: thread.evener.instanceId ?? thread.id,
+			cwd: thread.cwd,
 			status: thread.status.type,
 			capabilities: thread.evener.capabilities,
 			queueDepth: thread.evener.queue.depth ?? 0,
@@ -95,6 +97,12 @@ export class SessionLink {
 				});
 			else if (notification.method === "thread/queueChanged" && notification.params.ref === this.ref)
 				this.publish({ ...state, queueDepth: notification.params.queue.depth ?? 0 });
+			else if (
+				notification.method === "evener/thread/resync" &&
+				notification.params.ref === this.ref &&
+				notification.params.threadId === state.threadId
+			)
+				void this.read({ follow: true }).catch(() => {});
 		});
 	}
 

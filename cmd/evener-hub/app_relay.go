@@ -2096,6 +2096,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err := appwire.ValidateSkillInputSupport(params.Input, prepared.Thread.Evener.Capabilities.SkillInput); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
+		if err := appwire.ValidateCommandInputSupport(params.Input, prepared.Thread.Evener.Capabilities.CommandInput); err != nil {
+			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+		}
 		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)
 		})

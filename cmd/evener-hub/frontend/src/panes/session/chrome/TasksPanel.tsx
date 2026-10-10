@@ -386,10 +386,11 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
 export interface TasksPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  showSummary?: boolean;
 }
 
-/** Shared task-list body used by both the mobile Sheet and desktop pane. */
-export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
+/** Shared task-list body for the activity viewer, mobile Sheet and desktop pane. */
+export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   // Bumped by Try again. The only fetch trigger a reader controls: the other
@@ -483,7 +484,7 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
             {retry}
           </div>
         )}
-        {model.tasks && (
+        {showSummary && model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
             <span className={CLASS.count}>{taskAggregateLabel(model.tasks)}</span>
           </div>

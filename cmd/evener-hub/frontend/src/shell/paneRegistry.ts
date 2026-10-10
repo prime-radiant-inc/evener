@@ -11,7 +11,6 @@ export type PaneTypeId =
   | "sessionZoom"
   | "doc"
   | "sessionTasks"
-  | "sessionActivity"
   | "sessionDetails"
   | "spawn"
   | "settings"

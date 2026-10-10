@@ -9,8 +9,9 @@ import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
+import { Button } from "./sheet/Grouped";
 
 type Props = NativeStackScreenProps<HubRoutes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
@@ -61,9 +62,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 	const colors = useColors();
 	return (
 		<View style={{ borderTopWidth: 0.5, borderColor: colors.border }}>
-			<Action expanded={open} onPress={() => setOpen(!open)}>
-				{title}
-			</Action>
+			<Button text label={title} expanded={open} onPress={() => setOpen(!open)} />
 			{open && <View style={{ paddingBottom: 14, gap: 8 }}>{children}</View>}
 		</View>
 	);
@@ -178,14 +177,14 @@ function HubSettings({
 				{state.loading && !data && <Spinner label="Loading hub information" />}
 				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />
 				{state.error && (
-					<Action
+					<Button
+						text
+						label="Retry hub information"
 						disabled={state.loading || !ready}
 						onPress={whenReady(canUseConnection, () => {
 							void state.refresh();
 						})}
-					>
-						Retry hub information
-					</Action>
+					/>
 				)}
 				{data && (
 					<>

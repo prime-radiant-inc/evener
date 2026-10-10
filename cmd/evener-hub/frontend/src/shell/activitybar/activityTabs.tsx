@@ -1,11 +1,13 @@
 // Activity counters share authoritative active/total labels across the footer
-// and sidebar. Tasks use done/total from the selected navigation row.
+// and sidebar. Tasks use the settled count (done plus cancelled) and total
+// from the selected navigation row.
 
 import type { SessionDelegate } from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 import type { ActivityScope, ActivityTab, ScopeCounts } from "../statusbar/statusScope";
+import { AboutTab } from "./AboutTab";
 import { AgentsTab } from "./AgentsTab";
 import styles from "./activitybar.module.css";
 import { JobsTab } from "./JobsTab";
@@ -23,14 +25,14 @@ export interface ActivityTabSpec {
   id: ActivityTab;
   glyph: ReactNode;
   label: string;
-  /** Active/total count, or done/total for Tasks. */
+  /** Active/total count, or settled/total for Tasks. */
   chipCount(counts: ScopeCounts): string;
   /** The chip's accessible label. */
   chipLabel(counts: ScopeCounts): string;
   /** Category and shared fraction on separate lines within the tab. */
   tabLabel(counts: ScopeCounts): string;
   /** The kind shows in the bar only when there's something to say (tasks hide
-   * with no list); the sidebar's control always lists all four. */
+   * with no list); About has no chip. The sidebar lists every category. */
   chipVisible(counts: ScopeCounts): boolean;
   Body: ComponentType<ActivityTabBodyProps>;
 }
@@ -75,11 +77,21 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     id: "tasks",
     label: "Tasks",
     glyph: "☑",
-    chipCount: (c) => `${c.tasksDone}/${c.tasksTotal}`,
-    chipLabel: (c) => `Tasks, ${c.tasksDone} of ${c.tasksTotal} done`,
-    tabLabel: (c) => `Tasks\n${c.tasksDone}/${c.tasksTotal}`,
+    chipCount: (c) => fraction(c.tasksSettled, c.tasksTotal),
+    chipLabel: (c) => countLabel("Tasks", c.tasksSettled, c.tasksTotal, "settled"),
+    tabLabel: (c) => `Tasks\n${fraction(c.tasksSettled, c.tasksTotal)}`,
     chipVisible: (c) => c.tasksTotal > 0,
     Body: TasksTab,
+  },
+  {
+    id: "about",
+    glyph: null,
+    label: "About",
+    chipCount: () => "",
+    chipLabel: () => "About",
+    tabLabel: () => "About",
+    chipVisible: () => false,
+    Body: AboutTab,
   },
 ];
 

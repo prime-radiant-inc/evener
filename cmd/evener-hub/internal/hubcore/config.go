@@ -250,6 +250,11 @@ type WebConfig struct {
 	// (e.g. in tests that construct a WebServer directly).
 	PokeAttention func()
 
+	// ScratchReconcile asks for a pass that removes the scratch of every
+	// archived session whose daemon is not running, off the caller's path.
+	// Nil when not wired (e.g. in tests that construct a WebServer directly).
+	ScratchReconcile func()
+
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
 	// Logf receives the hub's operational log lines. Nil writes them to

@@ -15,6 +15,15 @@
   padding-block-start: var(--space-4);
 }
 
+.session [data-testid="inspector-row"] {
+  align-items: flex-start;
+}
+
+.session [data-testid="inspector-row"] > span:last-child {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
 /* The group's own name sits above its rows, quieter than the values it covers:
  * it is a wayfinding label, not a fact to read. */
 .sectionTitle {
@@ -54,6 +63,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
   gap: var(--space-2);
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
@@ -82,5 +93,6 @@
  * anywhere (not break-all) keeps it breaking at natural boundaries. */
 .path {
   font-family: var(--font-mono);
+  min-inline-size: 0;
   overflow-wrap: anywhere;
 }

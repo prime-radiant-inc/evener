@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
-import { render } from "../renderNative.testkit";
+import { render, unmountMountedTrees } from "../renderNative.testkit";
 import { HeaderButton } from "./HeaderButton";
 
 // The text size the phone is set to: 1 is the default (Large).
@@ -49,6 +49,7 @@ it("reads in ink-low while its action can't run, as iOS draws an unavailable bar
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	text.fontScale = 1;
 });
 

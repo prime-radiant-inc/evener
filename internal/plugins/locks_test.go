@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -335,5 +337,84 @@ func TestResolveForLaunch_RefusesAnUnresolvedRootWithoutTakingTheLock(t *testing
 	}
 	if len(entries) != 0 {
 		t.Errorf("the refused launch wrote %v into the working directory", entries)
+	}
+}
+
+// A clone lock taken while its holder removes the lock file (as removing a
+// marketplace does) is taken on the file at the path, not on the removed one,
+// so a later taker still waits for it.
+func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.marketplaceDir("acme")
+	release, err := m.lockClone(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	// The file is removed only once the waiter is contending on it, so the
+	// waiter is granted the lock on the removed file, not on a new one.
+	contending := make(chan struct{})
+	var once sync.Once
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if isLockContended(err) {
+			once.Do(func() { close(contending) })
+		}
+		return err
+	}
+	acquired := make(chan func())
+	go func() {
+		next, err := NewManager(m.Root).lockClone(context.Background(), dir)
+		if err != nil {
+			t.Errorf("waiting lockClone: %v", err)
+			close(acquired)
+			return
+		}
+		acquired <- next
+	}()
+	<-contending
+	m.removeCloneLock(dir)
+	release()
+	next := <-acquired
+	if next == nil {
+		return
+	}
+	defer next()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	third := NewManager(m.Root)
+	stderr := &bytes.Buffer{}
+	third.Stderr = stderr
+	if release, err := third.lockClone(ctx, dir); err == nil {
+		release()
+		t.Fatal("a third taker got the clone lock while the waiter held it on the removed file")
+	}
+	if !strings.Contains(stderr.String(), "taking the lock on marketplace clone") {
+		t.Fatalf("the third taker's wait was not logged: %q", stderr.String())
+	}
+}
+
+// A clone lock taken for the first time is taken once: the lock file is made
+// before the wait, so the first grant is on the file at the path.
+func TestLockClone_AFirstLockIsTakenOnce(t *testing.T) {
+	m := NewManager(t.TempDir())
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	grants := 0
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if err == nil && how == lockOpExclusiveNB {
+			grants++
+		}
+		return err
+	}
+	release, err := m.lockClone(context.Background(), m.marketplaceDir("acme"))
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	release()
+	if grants != 1 {
+		t.Fatalf("a first clone lock was granted %d times, want once", grants)
 	}
 }

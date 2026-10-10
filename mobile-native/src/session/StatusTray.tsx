@@ -3,6 +3,7 @@
 // is doing now, and Stop. Tapping the line jumps to the live end.
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { PulseMeter } from "../board/PulseMeter";
 import { allowFontScaling, useColors } from "../ui";
@@ -71,18 +72,28 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 
 /** The tray with its own one-second clock, so only the tray re-renders each
  * second. The clock runs only while the tray shows a line, so an idle session
- * runs no timer. */
+ * runs no timer. It shows the hub's activity read for this session (S5),
+ * which the session screen polls while it is in front: its running-subagent
+ * count is the one the Board's row names (spec 13.1). */
 export function LiveStatusTray({
 	session,
 	frames,
+	activity,
+	row,
 	...tray
 }: Omit<StatusTrayProps, "line" | "perMinute"> & {
 	session: TraySource | null;
 	frames: FrameCounter;
+	/** The hub's activity read for this session, which the session screen
+	 * polls while it is in front; undefined where the hub reports none. */
+	activity: SessionActivity | undefined;
+	/** The session's navigation row, whose subagent tally stands in without a
+	 * fresh activity read, as on the Board. */
+	row?: NavigationSessionSummary;
 }) {
 	const [, tick] = useReducer((count: number) => count + 1, 0);
 	const now = Date.now();
-	const line = session ? trayLine(session, now) : null;
+	const line = session ? trayLine(session, now, activity, row) : null;
 	const shown = line !== null;
 	useEffect(() => {
 		if (!shown) return;

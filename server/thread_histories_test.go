@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -138,6 +139,8 @@ func TestThreadHistoriesDetachExceptLeavesTheKeptHistoryAndClosesNothing(t *test
 	child := r.ensure("child", "local:child", writeDelegateTranscript(t, "child", "c"), 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
 
 	detached := r.detachExcept("root")
+	// Closed on a failure too: the registry's close waits for it.
+	t.Cleanup(func() { closeHistories(detached) })
 	if len(detached) != 1 || detached[0] != child {
 		t.Fatalf("detached %v, want only the child's history", detached)
 	}
@@ -299,6 +302,8 @@ func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testin
 	}()
 	awaitClosed(t, parked, "the read's rebuild to park")
 	released := r.detach("child")
+	// Closed on a failure too: the registry's close waits for it.
+	t.Cleanup(func() { closeHistories([]*threadHistory{released}) })
 	close(release)
 	if err := <-read; err != nil {
 		t.Fatalf("read of the recovering delegate = %v", err)
@@ -310,5 +315,111 @@ func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testin
 	defer sentMu.Unlock()
 	if again.Epoch() < sent {
 		t.Fatalf("recreated history at epoch %d, below the %d a client was sent", again.Epoch(), sent)
+	}
+}
+
+// The registry's close waits for a history a replace or release detached and
+// is still closing, before it closes the shared cache: that history's read in
+// flight (or projection) can still write its index, and must land before the
+// daemon's Server.Close returns (#4064).
+func TestThreadHistoriesCloseWaitsForADetachedHistoryStillClosing(t *testing.T) {
+	c := closeRegistryWithADetachedReadParked(t)
+	select {
+	case <-c.registryClosed:
+		t.Fatal("the registry closed while a detached history's read still held the index")
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.finish(t)
+}
+
+// Once the registry is closing, a replace that lands meanwhile (a
+// thread/clear handler outliving the server's HTTP close) registers nothing:
+// a history it created would never be closed, and close would wait on it
+// forever.
+func TestThreadHistoriesRegisterNothingOnceClosing(t *testing.T) {
+	c := closeRegistryWithADetachedReadParked(t)
+	r := c.r
+	// close marks the registry closing almost at once; bound the wait.
+	deadline := time.Now().Add(historyTestWait)
+	for {
+		r.mu.Lock()
+		closing := r.closing
+		r.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the registry never began closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// ReplaceAppIdentity's registry steps.
+	if detached := r.detachExcept("new-root"); len(detached) != 0 {
+		t.Fatalf("a replace during close detached %d histories, want none left", len(detached))
+	}
+	if created := r.ensure("new-root", "local:new-root", writeDelegateTranscript(t, "new-root", "x"), 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil); created != nil {
+		t.Fatal("ensure registered a history while the registry was closing")
+	}
+	if created := r.ensureDescendant("new-root", "child", "local:child", writeDelegateTranscript(t, "child", "c"), "1", noopHistoryPublish, noopHistoryResync, nil); created != nil {
+		t.Fatal("ensureDescendant registered a history while the registry was closing")
+	}
+	c.finish(t)
+}
+
+// registryClosingOverAParkedRead is a registry whose close is in flight
+// while a history it detached is still closing behind a parked read.
+type registryClosingOverAParkedRead struct {
+	r              *threadHistories
+	releaseRead    func()
+	readDone       chan error
+	registryClosed chan struct{}
+}
+
+// closeRegistryWithADetachedReadParked parks a read on a registered history,
+// detaches the history and closes it on its own goroutine (as a replace or
+// release does; that close waits for the read), then starts the registry's
+// close.
+func closeRegistryWithADetachedReadParked(t *testing.T) *registryClosingOverAParkedRead {
+	t.Helper()
+	r := newThreadHistories(transcriptindex.DefaultCacheCapacity, appoverlay.DefaultBudgetBytes)
+	path := writeDelegateTranscript(t, "delegate_d", "hello")
+	h := r.ensure("delegate_d", "local:delegate_d", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	inRead, release := make(chan struct{}), make(chan struct{})
+	c := &registryClosingOverAParkedRead{
+		r:              r,
+		releaseRead:    sync.OnceFunc(func() { close(release) }),
+		readDone:       make(chan error, 1),
+		registryClosed: make(chan struct{}),
+	}
+	t.Cleanup(c.releaseRead)
+	go func() {
+		c.readDone <- h.read(func(*transcriptindex.Index) error {
+			close(inRead)
+			<-release
+			return nil
+		})
+	}()
+	awaitClosed(t, inRead, "the read to hold the index")
+	// Detached before the registry's close starts, as a replace or release
+	// that finished detaching would have; closed on its own goroutine.
+	detached := r.detach("delegate_d")
+	if detached == nil {
+		t.Fatal("the history was not registered to detach")
+	}
+	go closeHistories([]*threadHistory{detached})
+	go func() {
+		r.close()
+		close(c.registryClosed)
+	}()
+	return c
+}
+
+// finish releases the parked read and waits for the registry's close.
+func (c *registryClosingOverAParkedRead) finish(t *testing.T) {
+	t.Helper()
+	c.releaseRead()
+	awaitClosed(t, c.registryClosed, "the registry's close")
+	if err := <-c.readDone; err != nil {
+		t.Fatalf("the read in flight: %v", err)
 	}
 }

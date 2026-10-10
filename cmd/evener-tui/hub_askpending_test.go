@@ -67,3 +67,33 @@ func TestHubModelStatusFrameWithoutAskPendingLeavesItAlone(t *testing.T) {
 		t.Fatal("detail.AskPending=false after a frame that carried no askPending, want the read's own value kept")
 	}
 }
+
+// A turn that ended on needs_response rests idle, then its daemon announces
+// awaiting on a status frame of its own once the quiet period passes, with no
+// turn around it. The TUI takes the new state from that frame alone, and no
+// question appears.
+func TestHubModelStatusFrameOutsideATurnMovesIdleToAwaiting(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{
+		Ref:       "local:th_1",
+		SessionID: "sess_1",
+		State:     appwire.ThreadStatusIdle,
+	}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "th_1",
+			Ref:      "local:th_1",
+			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
+		}).Notification,
+	})
+	got := updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusAwaiting {
+		t.Fatalf("detail.State=%q after the settled status frame, want awaiting", got.detail.State)
+	}
+	if got.detail.AskPending {
+		t.Fatal("detail.AskPending=true, but no question was asked")
+	}
+}

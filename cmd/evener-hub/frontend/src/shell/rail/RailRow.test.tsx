@@ -15,7 +15,6 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -26,9 +25,9 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { cadenceStateFor } from "../SessionStatusIndicator";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
-  cadenceStateFor,
   watchGloss as domainWatchGloss,
   RailRow,
   type RailRowActions,
@@ -49,6 +48,10 @@ import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+const STATUS_CSS = readModuleCss(import.meta.url, "../SessionStatusIndicator.module.css").replace(
+  /\/\*[\s\S]*?\*\//g,
+  " ",
+);
 
 function nestedRuleBlock(css: string, selector: string): string {
   const selectorStart = css.indexOf(selector);
@@ -119,19 +122,64 @@ function PaneFixture() {
 
 beforeAll(() => {
   // Minimal, test-only pane registrations (TreeDrawer.test.tsx's precedent):
-  // the workspace store's openPane refuses an unregistered type, and the
-  // unified menu's Details/Tasks/Activity items open real panes now.
+  // the workspace store's openPane refuses an unregistered type.
   registerPaneForTests<{ ref: string }>({
     id: "session",
     title: () => "Session",
     component: lazy(() => Promise.resolve({ default: PaneFixture })),
   });
-  for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
+  for (const id of ["sessionTasks", "sessionDetails"] as const) {
     registerPaneForTests<{ ref: string }>({
       id,
       title: () => id,
       component: lazy(() => Promise.resolve({ default: PaneFixture })),
     });
+  }
+});
+
+test.each([
+  { title: "Short", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "A much longer nested session title", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "Short", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+  { title: "A much longer nested session title", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+])("session card measures sidebar and owning row for $title", ({ title, sidebarRight, rowHeight, left, top }) => {
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  const activate = vi.fn();
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-sidebar-rail")) return new DOMRect(0, 0, sidebarRight, 800);
+    if (this.getAttribute("role") === "treeitem") return new DOMRect(20, 300, 220, rowHeight);
+    return new DOMRect(80, 310, title.length * 5, 16);
+  });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div data-sidebar-rail>
+        <div role="treeitem" tabIndex={0}>
+          <RailRow node={sessionRailNode(apiNode({ title }))} info={info({ activate })} actions={actions()} />
+        </div>
+      </div>,
+    );
+    const row = screen.getByRole("treeitem");
+    const card = hoverForTooltip(screen.getByRole("button", { name: title }));
+    expect(card.style.left).toBe(left);
+    expect(card.style.top).toBe(top);
+    expect(card.parentElement).toBe(document.body);
+    expect(activate).not.toHaveBeenCalled();
+    expect(within(card).getByText("Proj")).toBeTruthy();
+
+    fireEvent.mouseLeave(screen.getByRole("button", { name: title }));
+    act(() => row.focus());
+    expect(screen.getByRole("tooltip").style.left).toBe(left);
+    expect(row.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+    expect(document.activeElement).toBe(row);
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    rect.mockRestore();
+    width.mockRestore();
+    height.mockRestore();
   }
 });
 
@@ -248,7 +296,7 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
-    onOpenSessionPane: vi.fn(),
+    onOpenOverview: vi.fn(),
     onRenameSession: vi.fn().mockResolvedValue(undefined),
     onShutdownSession: vi.fn().mockResolvedValue(undefined),
     onForceStopSession: vi.fn().mockResolvedValue(undefined),
@@ -419,17 +467,52 @@ describe("compact session status", () => {
     expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("broken descendants outrank needs-you and running work", () => {
+  test("failed descendants do not hide running work", () => {
     const session = apiNode({
-      state: "awaiting",
+      state: "idle",
       running_job_count: 2,
       subagents: { running: 1, failed: 1, done: 0 },
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  });
+
+  test.each([
+    ["active", "Running"],
+    ["idle", null],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+  ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, subagents: { running: 0, failed: 3, done: 46 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
+    if (expected === null) expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    else expect(screen.getByRole("img", { name: expected })).toBeTruthy();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("3 failed, 46 done")).toBeTruthy();
+  });
+
+  test.each(["awaiting", "warning"])("a %s question stays visible with running and failed children", (state) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: true, subagents: { running: 1, failed: 1, done: 0 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
   });
 
   test("a running descendant gives an otherwise quiet session the spinner", () => {
@@ -452,14 +535,12 @@ describe("compact session status", () => {
   });
 
   test.each([
-    ["awaiting", "job", { running_job_count: 1 }],
-    ["warning", "job", { running_job_count: 1 }],
-    ["awaiting", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-    ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-  ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
+    ["job", { running_job_count: 1 }],
+    ["subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+  ] as const)("a non-blocking warning yields to running %s work", (_workKind, work) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state, ask_pending: false, ...work }))}
+        node={sessionRailNode(apiNode({ state: "warning", ask_pending: false, ...work }))}
         info={info()}
         actions={actions()}
       />,
@@ -471,10 +552,15 @@ describe("compact session status", () => {
     expect(within(panel).getByText("Running")).toBeTruthy();
   });
 
-  test("a pending question outranks running work", () => {
+  // Awaiting without a question is a turn that ended on needs_response: it
+  // waits on a person as a question does, so it outranks work too (#4093).
+  test.each([
+    ["pending question", true, "Question waiting"],
+    ["needs_response rest", false, "Needs you"],
+  ] as const)("a %s outranks running work", (_name, askPending, expected) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: askPending, running_job_count: 1 }))}
         info={info()}
         actions={actions()}
       />,
@@ -483,7 +569,7 @@ describe("compact session status", () => {
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Question waiting")).toBeTruthy();
+    expect(within(panel).getByText(expected)).toBeTruthy();
   });
 
   test("a pending approval outranks running work", () => {
@@ -606,7 +692,7 @@ describe("compact session status", () => {
 
   test.each([
     ["warning", { state: "warning" }, "Warning"],
-    ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
+    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Needs you"],
     ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
     ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
   ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
@@ -850,14 +936,14 @@ describe("row alignment", () => {
   });
 
   test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toMatch(
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toMatch(
       /border-radius:\s*1px;[^}]*rotate\(45deg\)/,
     );
-    const motionRules = mediaBlock(RAIL_CSS, "prefers-reduced-motion: no-preference");
+    const motionRules = mediaBlock(STATUS_CSS, "prefers-reduced-motion: no-preference");
     expect(nestedRuleBlock(motionRules, ".statusSpinner")).toMatch(/animation:/);
-    const baseSpinner = topRuleBlock(RAIL_CSS, ".statusSpinner");
+    const baseSpinner = topRuleBlock(STATUS_CSS, ".statusSpinner");
     expect(baseSpinner).not.toContain("animation:");
   });
 
@@ -1196,7 +1282,7 @@ describe("session row", () => {
     renderRow({ kind: "subagent", rename: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(items).toEqual(["Details", "Activity", "Rename", "Shut down"]);
+    expect(items).toEqual(["Overview", "Rename", "Shut down"]);
   });
 
   // The row's menu is THE shared SessionMenu now - the same item list, in the
@@ -1207,8 +1293,7 @@ describe("session row", () => {
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
     expect(items).toEqual([
-      "Details",
-      "Activity",
+      "Overview",
       "Rename",
       "Pin this session…",
       "Archive",
@@ -1218,46 +1303,31 @@ describe("session row", () => {
     ]);
   });
 
-  test("Details opens the session pane, then the sessionDetails pane", async () => {
-    const acts = actions({
-      // The same wiring Rail's rowActions gives this callback: the session
-      // pane itself, plus the selected panel beside it.
-      onOpenSessionPane: (target, pane) => {
-        const workspace = workspaceStore.getState();
-        workspace.openPane("session", { ref: target.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
-      },
-    });
-    renderRow({}, acts);
+  test("Overview dispatches the row's session", async () => {
+    const acts = actions();
+    const session = renderRow({}, acts);
     const user = await openMenu(/actions for/i);
-    await user.click(screen.getByRole("menuitem", { name: "Details" }));
-    const panes = workspaceStore.getState().panes.map((p) => p.type);
-    expect(panes).toContain("session");
-    expect(panes).toContain("sessionDetails");
+    await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+    expect(acts.onOpenOverview).toHaveBeenCalledWith(session);
   });
 
-  test("a restored sessionActivity pane does not mark Activity on mobile", async () => {
-    // New mobile Activity actions open the shared sidebar. A restored legacy
-    // pane has no opener and must not claim the Activity checkmark.
+  test("a retained Details pane does not mark closed Overview on mobile", async () => {
     const restoreViewport = installMobileViewport();
     try {
-      workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+      workspaceStore.getState().openPane("sessionDetails", { ref: "local:a" });
       renderRow();
       await openMenu(/actions for/i);
-      expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
     } finally {
       restoreViewport();
     }
   });
 
-  test("on desktop a leftover sessionActivity pane does not mark the Activity item", async () => {
-    // The chrome treats such a pane as an orphan on desktop (opening the
-    // sidebar retires it) and never marks it; the rail reads the same state
-    // per viewport, or the two menus disagree about the same session.
-    workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+  test("a retained Details pane does not mark closed Overview on desktop", async () => {
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:a" });
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
   });
 
   test("a pure focus move refreshes the Activity check (the ✓ names the session the sidebar shows)", async () => {
@@ -1268,12 +1338,12 @@ describe("session row", () => {
     activitySidebarStore.getState().openWith();
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Overview ✓" })).toBeTruthy();
     act(() => {
       workspaceStore.getState().openPane("session", { ref: "local:other" });
     });
     // The row re-rendered on the focus change: the item is plain again.
-    expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
+    expect(await screen.findByRole("menuitem", { name: "Overview" })).toBeTruthy();
   });
 
   test("the Tasks menu item is absent while the sidebar shows its tab", async () => {

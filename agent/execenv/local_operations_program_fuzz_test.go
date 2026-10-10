@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/fuzz/fault"
 )
 
@@ -174,6 +175,12 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 	if _, err := env.ListDirectory("missing", 1); err == nil {
 		t.Fatal("ListDirectory missing path unexpectedly succeeded")
 	}
+	// Modification times differ between runs; the trace compares the rest.
+	for _, list := range [][]DirEntry{shallow, deep} {
+		for i := range list {
+			list[i].ModTime = time.Time{}
+		}
+	}
 	trace.Lists = append(trace.Lists, shallow, deep)
 
 	for i, name := range []string{"order-a.txt", "order-b.txt", "order-new.txt"} {
@@ -280,7 +287,8 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 		t.Fatalf("Grep count fallback = %q, %v", counts, err)
 	}
 	capped, err := env.Grep(context.Background(), "needle", "", "", true, 1, "")
-	if err != nil || capped == "" || strings.Count(capped, "\n") != 0 {
+	match, notes := searchresult.Split(capped)
+	if err != nil || notes != grepTruncationNote(1) || match == "" || strings.Count(match, "\n") != 0 {
 		t.Fatalf("Grep capped fallback = %q, %v", capped, err)
 	}
 	if _, err := env.Grep(context.Background(), "[", "", "", false, 100, ""); err == nil || !strings.Contains(err.Error(), "invalid regex") {

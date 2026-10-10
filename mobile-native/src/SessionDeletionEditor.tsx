@@ -1,6 +1,7 @@
 import { ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function SessionDeletionEditor({
 	title,
@@ -58,11 +59,7 @@ export function SessionDeletionEditor({
 							The request may have been applied. Check its current state before deciding whether to allow another
 							attempt.
 						</Copy>
-						{retryAvailable ? (
-							<Action disabled={busy} onPress={allowRetry}>
-								Allow another attempt
-							</Action>
-						) : null}
+						{retryAvailable ? <Button text label="Allow another attempt" disabled={busy} onPress={allowRetry} /> : null}
 					</>
 				) : (
 					<>
@@ -82,23 +79,19 @@ export function SessionDeletionEditor({
 						) : !eligible ? (
 							<Copy muted>End the session runtime before deleting its saved history.</Copy>
 						) : null}
-						<Action disabled={!canDelete} onPress={requestDelete}>
-							Delete saved session
-						</Action>
+						<Button text label="Delete saved session" disabled={!canDelete} onPress={requestDelete} />
 					</>
 				)}
 				{busy ? <Copy muted>Checking the session…</Copy> : null}
-				{ready ? (
-					<Action disabled={busy} onPress={refresh}>
-						Check again
-					</Action>
-				) : null}
-				<Action tone="quiet" disabled={busy} onPress={openSessions}>
-					{missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
-				</Action>
-				<Action tone="quiet" onPress={close}>
-					Close
-				</Action>
+				{ready ? <Button text label="Check again" disabled={busy} onPress={refresh} /> : null}
+				<Button
+					text
+					quiet
+					label={missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
+					disabled={busy}
+					onPress={openSessions}
+				/>
+				<Button text quiet label="Close" onPress={close} />
 			</ScrollView>
 		</SafeAreaView>
 	);

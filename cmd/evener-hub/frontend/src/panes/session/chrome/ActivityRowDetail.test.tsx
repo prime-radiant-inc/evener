@@ -1,5 +1,6 @@
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode, EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ActivityDelegateRow, type ActivityJobRow, buildEntityView } from "@evener/appwire-client";
+import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -142,9 +143,14 @@ function renderDelegateStrip(delegateOverrides: Record<string, unknown> = {}) {
 // fetch stays in-process; the default resolve is an empty tail, and tests
 // override it with mockResolvedValue/mockRejectedValue on the returned spy.
 function setupJobOutput() {
-  return vi
-    .spyOn(threadsStore.getState(), "jobOutput")
-    .mockResolvedValue({ tail: "", totalBytes: 0, retainedStart: 0, truncated: false });
+  return vi.spyOn(threadsStore.getState(), "jobOutput").mockResolvedValue({
+    offsetBytes: 0,
+    bytesReturned: 0,
+    totalBytes: 0,
+    retainedStartBytes: 0,
+    encoding: "utf8",
+    data: "",
+  });
 }
 
 let jobOutput: ReturnType<typeof setupJobOutput>;
@@ -163,6 +169,30 @@ afterEach(() => {
 });
 
 describe("ActivityRowDetail", () => {
+  test("decodes a latest base64 preview through the actual AppwireClient", async () => {
+    vi.restoreAllMocks();
+    const { client, peer } = await connectJobOutputPeer();
+    connectionStore.setState({ state: "ready", client });
+    try {
+      render(<ActivityRowDetail row={jobRow({ command: "npm test", hasOutput: true }, { live: true })} now={NOW} />);
+      const request = await peer.request("evener/jobs/output");
+      expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", maxBytes: 256 });
+      await act(async () =>
+        peer.reply(request, {
+          offsetBytes: 100,
+          bytesReturned: 5,
+          totalBytes: 105,
+          retainedStartBytes: 100,
+          encoding: "base64",
+          data: "8J+YgAo=",
+        }),
+      );
+      expect(await screen.findByText("😀")).toBeTruthy();
+    } finally {
+      client.close();
+    }
+  });
+
   test("terminal delegate detail displays outcome instead of idle lifecycle status", () => {
     render(
       <ActivityRowDetail
@@ -464,10 +494,12 @@ describe("ActivityRowDetail", () => {
 
   test("a shell job row with output fetches a bounded tail and renders its ANSI escapes as styled runs", async () => {
     jobOutput.mockResolvedValue({
-      tail: "[32mok[39m\n[2mPASS[22m\n",
-      totalBytes: 8,
-      retainedStart: 0,
-      truncated: false,
+      data: "[32mok[39m\n[2mPASS[22m\n",
+      totalBytes: 27,
+      offsetBytes: 0,
+      bytesReturned: 27,
+      retainedStartBytes: 0,
+      encoding: "utf8",
     });
     render(
       <ActivityRowDetail

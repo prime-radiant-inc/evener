@@ -271,11 +271,11 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if s.exists("edge", filepath.Join(worktree, "missing-parent", "leaf")) {
 		t.Fatal("sandbox exists missing parent unexpectedly returned true")
 	}
-	if _, err := s.listDir("edge", filepath.Join(worktree, "missing-dir"), 1); err == nil {
+	if _, err := s.listDir("edge", filepath.Join(worktree, "missing-dir"), 1, false); err == nil {
 		t.Fatal("sandbox listDir missing directory unexpectedly succeeded")
 	}
 	entries := []DirEntry{}
-	if err := s.walkDirFd(-1, "", worktree, 1, &entries); err == nil {
+	if err := s.walkDirFd(-1, "", worktree, 1, false, &entries); err == nil {
 		t.Fatal("walkDirFd invalid descriptor unexpectedly succeeded")
 	}
 	if _, _, err := s.openReadBaseFd("edge", filepath.Join(worktree, "missing-dir")); err == nil {
@@ -342,13 +342,13 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if _, _, err := s.glob(t.Context(), "glob", worktree, "[", false, NewGlobBudget()); err == nil {
 		t.Fatal("sandbox glob malformed pattern unexpectedly succeeded")
 	}
-	if _, err := s.grepNative(context.Background(), "[", worktree, "", false, 10, ""); err == nil {
+	if _, err := s.grepNative(context.Background(), "[", worktree, "", false, 10, "", 0, nil); err == nil {
 		t.Fatal("sandbox grep invalid regex unexpectedly succeeded")
 	}
-	if _, err := s.grepNative(context.Background(), "needle", filepath.Join(worktree, "missing-grep-base"), "", false, 10, ""); err == nil {
+	if _, err := s.grepNative(context.Background(), "needle", filepath.Join(worktree, "missing-grep-base"), "", false, 10, "", 0, nil); err == nil {
 		t.Fatal("sandbox grep missing base unexpectedly succeeded")
 	}
-	grep, err := s.grepNative(context.Background(), "needle", worktree, "", false, 10, "")
+	grep, err := s.grepNative(context.Background(), "needle", worktree, "", false, 10, "", 0, nil)
 	if err != nil || grep != "visible.txt:1:needle visible" {
 		t.Fatalf("sandbox grep filtered entries = %q, %v", grep, err)
 	}

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { searchForWorkspaceRoot } from "vite";
-import { defineConfig, type Plugin } from "vitest/config";
+import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
@@ -30,10 +30,13 @@ const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client
 // otherwise forbids for good reason. Restoring the file HERE, as part of the
 // build itself, means every invocation path (`make build-web`, `npm run
 // build`, or `vite build` run directly during frontend dev) leaves the
-// tracked file's content byte-identical afterward instead of missing.
+// tracked file's content byte-identical afterward instead of missing. Vite
+// also calls closeBundle when a dev or test server closes, so the plugin
+// applies to builds only: a vitest run must write nothing into the checkout.
 function restoreDistPlaceholder(): Plugin {
   return {
     name: "restore-dist-placeholder",
+    apply: "build",
     closeBundle() {
       const outDir = path.join(__dirname, "dist");
       fs.mkdirSync(outDir, { recursive: true });
@@ -113,8 +116,9 @@ export default defineConfig({
       // file outside the allow list. The daemon's recorded notification frames
       // (agent/testdata/notificationwire), its system events and steers
       // (agent/testdata/systemeventwire), its tool calls
-      // (agent/testdata/toolwire) and its subagent calls
-      // (agent/testdata/subagentwire) reach the same suites the same way,
+      // (agent/testdata/toolwire), its subagent calls
+      // (agent/testdata/subagentwire) and its automatic memory refreshes
+      // (agent/testdata/memorycontextwire) reach the same suites the same way,
       // through the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
@@ -125,6 +129,7 @@ export default defineConfig({
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),
       ],
     },
     proxy: {
@@ -155,6 +160,11 @@ export default defineConfig({
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
+    // The top-level scripts/*.test.mjs files are node:test suites that `npm test`
+    // runs with `node --test`. Vitest finds no suite in them, but loading one
+    // still starts its node:test run, and the worker teardown that follows skips
+    // its after hooks, so a bare `vitest run` leaked the processes they start.
+    exclude: [...configDefaults.exclude, "scripts/*.test.mjs"],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],

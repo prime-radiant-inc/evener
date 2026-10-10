@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../../motion";
+import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -24,7 +26,7 @@ import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
-import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -68,8 +70,9 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
   );
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   installLocalStorage(new MemoryStorage());
+  await import("../index");
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
@@ -711,7 +714,9 @@ test("goal replacement preserves both recovery rows while a merged source discar
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  await mountComposer("ref_a", {
+    evener: { ...currentWorkEvener({ goal: true }), diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   await user.keyboard("{ArrowDown}");
@@ -857,8 +862,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
+  resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
@@ -894,6 +901,61 @@ function installNarrowComposer(width: number): void {
 function textarea(): HTMLDivElement {
   return screen.getByRole("textbox", { name: /^message$/i }) as HTMLDivElement;
 }
+
+test.each([false, true])("repeated composer /status targets its ref, phone=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: mobile && media === "(max-width: 899px)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const user = userEvent.setup();
+  const { fake } = await mountComposerWithHandle(
+    "ref_a",
+    {},
+    {
+      focused: true,
+      prepare: (fake) => fake.on("evener/thread/activity/read", answerActivityRead),
+    },
+  );
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        { id: "command-a", type: "session", params: { ref: "ref_a" }, slot: "main" },
+        { id: "focused-b", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+      ],
+      focusedPaneId: "focused-b",
+    });
+  });
+  render(
+    <MotionProvider>
+      <ActivitySidebar mobile={mobile} />
+    </MotionProvider>,
+  );
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const editor = textarea();
+    await user.click(editor);
+    act(() => replaceEditorText(editor, "/status"));
+    await user.keyboard("{Enter}");
+    expect(editor.textContent).toBe("/status ");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+    await waitFor(() =>
+      expect(activitySidebarStore.getState()).toMatchObject({
+        open: true,
+        tab: "about",
+        ref: "ref_a",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+    if (mobile && invocation === 0) {
+      await waitFor(() => expect(screen.getByTestId("activity-sidebar").contains(document.activeElement)).toBe(true));
+    }
+  }
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
 
 // The composer's controls are addressed by their stable data-testid, not by
 // accessible name: two different buttons in this tree start with "Steer"
@@ -970,10 +1032,12 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const ref = "ref_activity_live";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
@@ -986,6 +1050,10 @@ test("the real live Composer mount discovers initial activity without a test-sup
   );
 
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+
+  // One shared subagent count read, however many surfaces show it.
+
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -995,6 +1063,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   const ref = "ref_activity_saved";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () =>
     readResponse(ref, {
       status: { type: "notLoaded" },
@@ -1002,8 +1071,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
     }),
   );
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -1016,6 +1086,8 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   expect(textarea().style.minHeight).toBe("1lh");
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -2122,14 +2194,22 @@ test("a plain typed mention stays prose through a programmatic attachment insert
   await selectEditorText(editor, "Run /cleanup".length);
   await user.keyboard(" then /cleanup");
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 
   // A programmatic edit (the attachment marker) must not turn that prose into
   // a second chip behind the user's back.
   pastePngInto(editor, "shot.png");
   await screen.findByRole("button", { name: "View shot.png" });
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup[image 1]",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 });
 
 test("Shift+Enter with an empty queue steers the draft and leaves nothing behind", async () => {
@@ -3491,6 +3571,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   const { fake } = await mountComposerWithHandle(
     ref,
     {
@@ -3500,8 +3581,9 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
     {
       prepare: (fake) => {
         fake.on("evener/thread/activity/read", (params) => {
-          activityRefs.push(params.ref);
-          return activitySummary(params.ref);
+          // Discovery is the session read; the subtree read is the subagent count's own.
+          (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+          return answerActivityRead(params);
         });
       },
     },
@@ -3513,6 +3595,8 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   const chrome = screen.getByTestId("session-chrome-inline");
   expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
   // Focus changes the editor height without replacing the discovery owner.
@@ -3522,6 +3606,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   expect(screen.getByTestId("session-chrome-inline")).toBe(chrome);
   expect(textarea().style.minHeight).toBe("3lh");
   expect(activityRefs).toEqual([ref]);
+  expect(subtreeRefs).toEqual([ref]);
 });
 
 // Blur preserves a draft and its expanded writing space.
@@ -3700,12 +3785,12 @@ test("a stale resumeOnlyFoldable bit is cleared off its shut-down snapshot, rout
   expect(routedCalls(fake)).toEqual(["turn/queue"]);
 });
 
-// A merely-resumable session that also holds delivery-uncertain messages is NOT
-// the clean resume case: the hub's explicit Resume still reconciles those rows
-// (the connection/uncertain-message shape), and the resume-only carve-out must
-// not offer a Send whose folded resume would skip that reconciliation. The
-// composer keeps Send disabled and the chord sends no turn/start.
-test("a merely-resumable local session with uncertain messages keeps Send disabled", async () => {
+// A merely-resumable session that also holds delivery-uncertain messages is not
+// the clean resume case: the hub's explicit Resume reconciled those rows and the
+// fold could not. Under R09 this shape is the Send-resumes face - Send is
+// offered, the store drives the resume (which reconciles the uncertain rows)
+// before the parked send dispatches.
+test("a merely-resumable local session with uncertain messages offers Send and drives the resume", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -3735,23 +3820,349 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
     await refreshPendingTurnsProjection(ref);
   });
   await flushPendingTurnsProjectionForTests();
+  // The resume is held open, so the parked send cannot drain while asserting.
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  await waitFor(() => expect(submitButton().disabled).toBe(true));
-  // The chord reaches the form by the same route the button does; it refuses too.
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
+  // The Send is admitted and parks; the store drives the resume rather than the
+  // press minting nothing.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// R09 journey on the canonical wire shape: a local snapshot carrying the hub's
+// resumeRequired overlay, send:false, and a delivery-uncertain row. Send is
+// offered on the follow-up card; one press durably enqueues the intent (it
+// parks), the store runs ONE thread/resume, its hydration reconciles the
+// uncertain row, and the dispatch tails drain exactly one turn/start carrying
+// the pressed text. No standalone Resume control anywhere, and Queue is never
+// offered in the fence window (the one send routes to turn/start).
+test("Send on a recovery-fenced session resumes, reconciles, and drains exactly one send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-journey";
+  let uncertain = "";
+  let resumed = false;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which is what reconciles it.
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await act(async () => {
+    const input = [{ type: "text", text: "uncertain" }];
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The canonical shape offers a Send control and no standalone Resume one.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "the pressed text");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.params).toEqual(
+    expect.objectContaining({ ref, input: [{ type: "text", text: "the pressed text" }] }),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// R09: a resume failure surfaces through the send path. The toast names the
+// reason; the pressed text survives as the parked outbox row and the draft
+// clears (the row is the preserved input); no turn/start dispatches; Send stays
+// offered. A later press re-drives the resume and the parked rows drain.
+test("a failed resume toasts, keeps the pressed row parked, and a later press re-drives it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-failure";
+  let resumed = false;
+  let failResume = true;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The toast names the reason.
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Resume failed: resume rejected"));
+  // The pressed text is a parked durable row and nothing reached the wire.
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.composerText)).toEqual(["keep me"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  // Send stays offered: no fence control, and the empty draft is the only
+  // reason the button is disabled.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(submitButton().disabled).toBe(true);
+  // A later press re-drives the resume; the parked rows then drain.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(2);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+});
+
+const REMOUNT_FAILURE_SHAPE = (ref: string) => ({
+  status: { type: "notLoaded" } as const,
+  evener: {
+    ref,
+    capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+    mutationStateAuthoritative: false,
+    resumeRequired: true,
+    queue: { revision: 0 },
+  },
+});
+
+// R09 defect: a stale resume failure re-toasted on every composer remount
+// (dockview unmounts inactive panes routinely). A remount seeds its dedup from
+// the store, so a failure that predates the mount is never reported twice.
+test("a resume failure does not re-toast when the composer remounts", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-failure-remount";
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+});
+
+// R09 defect: the success path must also clear the stored failure, or a later
+// remount still reports a failure the resume has since recovered from.
+test("a successful re-drive clears the failure so a later remount cannot toast it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-recovered-remount";
+  let failResume = true;
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    return readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
+  // The later press re-drives and succeeds: the stored failure is cleared.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+});
+
+// R09 defect: the render passed mutationStateAuthoritative but the press-time
+// re-derivation did not, so an authoritative local child (parentRef local:, the
+// obligation armed, a live status) offered Send at render and refused it at the
+// press as if it were owner-retained - a stranded pane with the notice
+// suppressed. The press must read the same face the render did and park.
+test("an authoritative local child's Send press takes the Send-resumes face instead of refusing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:authoritative-child";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      parentRef: "local:owner",
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "child message");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // No owner-retained refusal: the press parked the row and drove the resume.
+  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The reconciliationFailed fence is separate from the recovery-fence notice: it
+// holds dispatch closed (currentDispatchClient) but does NOT take Send away. On
+// the Send-resumes face Send is offered and the pressed row parks until
+// recovery succeeds, while the notice that says so lives in the session pane.
+test("a reconciliation-failed Send-resumes face offers Send and parks the row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:reconciliation-failed-send";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set([ref]) }));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "wait for recovery");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The resume is driven; the row stays parked because dispatch is closed by the
+  // reconciliation failure, so nothing reaches the wire yet.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.method)).toContain("turn/start");
 });
 
 // The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
 // and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
 // dispatch use): a blockedUnknown row published between the render and the
-// press must route the press to the refusal, not fold the resume into a send
-// that the store's own fence would then refuse. The store update and the press
-// run in one synchronous task, so the render-time read cannot have caught up.
-test("a blockedUnknown row published after the render routes the press to the refusal", async () => {
+// press must route the press to the Send-resumes face - the store drives the
+// resume rather than folding it into the send ahead of the uncertain row. The
+// store update and the press run in one synchronous task, so the render-time
+// read cannot have caught up.
+test("a blockedUnknown row published after the render routes the press to the Send-resumes face", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -3792,16 +4203,16 @@ test("a blockedUnknown row published after the render routes the press to the re
   if (!blocked) throw new Error("expected the blocked row to be durable");
   const submit = submitButton();
   expect(submit.disabled).toBe(false);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   act(() => {
     publishOutboxRecordForTests(blocked);
     fireEvent.click(submit);
   });
   await flushPendingTurnsProjectionForTests();
-  // The submit itself refused (route none): the alternative is routing to send
-  // and being refused a step later at enqueue with a different toast.
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("Send is not available for this session"),
-  );
+  // The submit routed to the Send-resumes face: the store drives the resume and
+  // no refusal is toasted.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -3859,11 +4270,11 @@ test("a merely-resumable local session with a pending send refuses a second send
 
 // A snapshot that advertises send is not the hub's resume-fenced shape: the
 // resume requirement clears send:false together with resumeRequired
-// (applyThreadResumeRequirement). The client-side obligation still fences it -
-// with no wire send fence the resume-only carve-out does not apply - so the
-// rendered Send stays disabled rather than offering a press against an
-// obligation the wire never confirmed.
-test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
+// (applyThreadResumeRequirement). Under R09 the client-side obligation is the
+// Send-resumes face: Send is offered, and the store drives the resume before
+// the parked send dispatches, rather than refusing a press the wire never
+// confirmed.
+test("a fenced stopped local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-send-advertised";
   const fake = await mountComposer(ref, {
@@ -3878,13 +4289,14 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -3892,12 +4304,9 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
 // daemon's still-active status while the hub overlays resumeRequired beside it
 // (applyThreadResumeRequirement), and the store arms the obligation on that
 // hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
-// absent, and its status is live (idle), which is not in SHUT_DOWN_STATUSES;
-// isResumeOnlyLocal now keys on the hub bit, the shut-down status, and the
-// uncertain/stop/queued signals, so the merely-resumable carve-out does not
-// apply on either count. The hub still refuses turn/start while the Stop
-// drains, so Send stays disabled.
-test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
+// absent and this is the Send-resumes face: Send is offered and the store's
+// driver resumes before the parked send dispatches.
+test("a live fenced idle local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";
   const fake = await mountComposer(ref, {
@@ -3911,21 +4320,22 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
 // A closed local frame carries send:true (stampClosedThreadCapabilities); it is
 // not the hub's resume-fenced shape, which clears send:false alongside
-// resumeRequired (applyThreadResumeRequirement). With no wire send fence the
-// resume-only carve-out does not apply, so Send stays disabled.
-test("a fenced closed local session that advertises send renders a disabled Send", async () => {
+// resumeRequired (applyThreadResumeRequirement). Under R09 the obligation is
+// the Send-resumes face: Send is offered and the store drives the resume.
+test("a fenced closed local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:closed-send-advertised";
   const fake = await mountComposer(ref, {
@@ -3940,13 +4350,14 @@ test("a fenced closed local session that advertises send renders a disabled Send
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -3955,13 +4366,9 @@ test("a fenced closed local session that advertises send renders a disabled Send
 // during a Stop relays the daemon's still-active status while the hub overlays
 // resumeRequired beside it (cmd/evener-hub's applyThreadResumeRequirement on
 // the relayed thread/read), and the store arms its restart-blocking obligation
-// on exactly that hydration - while the hub's recovery admission
-// (sessionActionRecoveryError, keyed on the resume locks and never on the
-// projected status) refuses turn/start and turn/queue for as long as the model
-// still reads active. The availability table answers queue-mode for that
-// snapshot, so the offered press could only mint durable intent that parks
-// until the explicit Resume action clears the fence.
-test("an active fenced local session renders a disabled Send and enqueues nothing", async () => {
+// on exactly that hydration. Under R09 the obligation is the Send-resumes face:
+// Send is offered, the parked send waits, and the store drives the resume.
+test("an active fenced local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:active-fenced";
   const fake = await mountComposer(ref, {
@@ -3978,20 +4385,16 @@ test("an active fenced local session renders a disabled Send and enqueues nothin
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
-  // Nothing parks in the durable outbox either: a fenced press mints no intent.
-  const storage = new MutationOutboxIndexedDB();
-  const parked = await storage.listOutbox(ref);
-  storage.close();
-  expect(parked).toEqual([]);
 });
 
 // The Steer surface of the same fence: turn/steer sits in the same hub
@@ -4536,6 +4939,87 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
   },
 );
 
+test("submitted markers around retained command and skill atoms preserve their exact identities", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_retained_selections";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  writeComposerDraft(ref, {
+    text: "😀 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+    },
+  });
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const editor = textarea();
+  selectEditorText(editor, 0);
+  pastePngInto(editor, "before.png");
+  await screen.findByRole("button", { name: "View before.png" });
+  selectEditorText(editor, editor.textContent?.length ?? 0);
+  pastePngInto(editor, "after.png");
+  await screen.findByRole("button", { name: "View after.png" });
+  expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+  expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await hold.reached;
+    });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+  } finally {
+    await act(async () => hold.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+
+  expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+  expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect.soft(readComposerDraft(ref)).toEqual({
+    text: "😀 /same /same /same later",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  expect(screen.queryByRole("button", { name: "Remove before.png" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove after.png" })).toBeNull();
+
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const records = await storage.listOutbox(ref);
+  expect(records).toHaveLength(2);
+  expect(records[0]?.attachments.map((item) => item.name)).toEqual(["before.png", "after.png"]);
+  expect(records[1]?.attachments).toEqual([]);
+  expect(records[1]?.payload.input).toEqual([
+    {
+      type: "text",
+      text: "😀 /same /same /same later",
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    },
+    { type: "skill", name: "same" },
+    { type: "command", name: "same" },
+  ]);
+});
+
 test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
@@ -4917,7 +5401,12 @@ test("clicking the attach button triggers the hidden file input", async () => {
 test('"/" at the start of an empty composer types a literal slash and opens the INLINE menu, not the modal palette', async () => {
   useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }] });
   const user = userEvent.setup();
-  await mountComposer("ref_slash");
+  await mountComposer("ref_slash", {
+    evener: {
+      ...testThread("ref_slash").evener,
+      diagnostics: { commands: [{ name: "review", description: "review the diff" }] },
+    },
+  });
 
   const editor = textarea();
   await user.type(editor, "/");
@@ -5078,7 +5567,9 @@ test("committing a skill during an IME composition leaves the menu open rather t
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash3");
+  await mountComposer("ref_slash3", {
+    evener: { ...testThread("ref_slash3").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /re");
 
@@ -5096,15 +5587,18 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   ]);
 });
 
-// The reported bug: a fresh browser never saw a user-global command like /par
-// in this menu, because nothing loaded the catalog until the palette had been
-// opened once on a session page. No useCommandCatalog.setState seeds the
-// catalog here - the connection-driven load must carry it from the hub.
-test("a user command from the hub catalog autocompletes without a palette open", async () => {
+// A fresh browser reads the owning session's user command through thread/read,
+// without needing to open the controller palette.
+test("a user command from the owning session autocompletes without a palette open", async () => {
   const user = userEvent.setup();
   await mountComposerWithHandle(
     "ref_slash_par",
-    {},
+    {
+      evener: {
+        ...testThread("ref_slash_par").evener,
+        diagnostics: { commands: [{ name: "par", description: "adversarial review", source: "user" }] },
+      },
+    },
     {
       prepare: (fake) =>
         fake.on("evener/command/list", () => ({
@@ -5133,7 +5627,10 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
   await mountComposer("ref_slash_plugins", {
     evener: {
       ...testThread("ref_slash_plugins").evener,
-      diagnostics: { plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" }],
+        plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
 
@@ -5153,7 +5650,7 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   await mountComposer("ref_slash_empty", {
     evener: {
       ...testThread("ref_slash_empty").evener,
-      diagnostics: { plugins: [] },
+      diagnostics: { commands: [], plugins: [] },
     },
   });
 
@@ -5164,6 +5661,18 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
     expect.stringContaining("/project"),
   ]);
 });
+
+test.each([undefined, []])(
+  "live missing or empty owner inventory never falls back to controller user commands %s",
+  async (commands) => {
+    useCommandCatalog.setState({ commands: [{ name: "controller-only", source: "user" }] });
+    const ref = "ref_owner_absent";
+    await mountComposer(ref, { evener: { ...testThread(ref).evener, diagnostics: { commands } } });
+    const user = userEvent.setup();
+    await user.type(textarea(), "/controller-only");
+    expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  },
+);
 
 test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
   const user = userEvent.setup();
@@ -5236,6 +5745,215 @@ test("skill completions keep indivisible chips in the sentence and submit both r
       { type: "skill", name: "skill-2" },
     ],
   });
+});
+
+test.each([
+  ["project", "review", "plugin review", "project review", "project review"],
+  ["plugin", "pkg:review", "plugin review", "project review", "plugin review"],
+  ["descriptionless plugin collision", "review", undefined, "project review", "project review"],
+  [
+    "descriptionless project",
+    "review",
+    "plugin review",
+    undefined,
+    "review — no longer in this session's command catalog",
+  ],
+])(
+  "command chip details use the canonical identity for %s",
+  async (_case, name, pluginDescription, projectDescription, details) => {
+    if (!name) throw new Error("command tooltip fixture requires a name");
+    const ref = "ref_command_tooltip";
+    writeComposerDraft(ref, { text: `Run /${name}`, skillNames: [], commandNames: [name] });
+    await mountComposer(ref, {
+      evener: {
+        ...testThread(ref).evener,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+        diagnostics: {
+          commands: [
+            { name: "review", source: "plugin", pluginName: "pkg", description: pluginDescription },
+            { name: "review", source: "project", description: projectDescription },
+          ],
+        },
+      },
+    });
+
+    const chip = textarea().querySelector("[data-command-name]");
+    expect(chip?.getAttribute("data-command-name")).toBe(name);
+    expect(chip?.getAttribute("title")).toBe(details);
+    expect(chip?.getAttribute("aria-label")).toBe(`/${name}: ${details}`);
+  },
+);
+
+test.each([undefined, []])("command chip details retain the missing owner catalog fallback %s", async (commands) => {
+  const ref = "ref_missing_command_tooltip";
+  writeComposerDraft(ref, { text: "Run /review", skillNames: [], commandNames: ["review"] });
+  await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+      diagnostics: { commands },
+    },
+  });
+
+  const chip = textarea().querySelector("[data-command-name]");
+  expect(chip?.getAttribute("data-command-name")).toBe("review");
+  expect(chip?.getAttribute("title")).toBe("review — no longer in this session's command catalog");
+  expect(chip?.getAttribute("aria-label")).toBe("/review: review — no longer in this session's command catalog");
+});
+
+test.each([true, false])("explicit commands persist through remount and respect commandInput %s", async (supported) => {
+  const user = userEvent.setup();
+  const ref = "ref_atomic_command";
+  useCommandCatalog.setState({ commands: [{ name: "audit", source: "user", description: "command intent" }] });
+  const options = {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: supported },
+      queue: { revision: 0 },
+      diagnostics: { commands: [{ name: "audit", source: "user", description: "command intent" }] },
+    },
+  };
+  await mountComposer(ref, options);
+  await user.type(textarea(), "Before /aud");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("command intent"))!);
+  await user.paste("after /audit");
+  expect(textarea().textContent).toBe("Before /audit after /audit");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  cleanup();
+  const fake = await mountComposer(ref, options);
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  if (supported) {
+    expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+      input: [
+        { type: "text", text: "Before /audit after /audit" },
+        { type: "command", name: "audit" },
+      ],
+    });
+  } else {
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(false);
+    expect(readComposerDraft(ref).commandNames).toEqual(["audit"]);
+    expect(textarea().textContent).toBe("Before /audit after /audit");
+  }
+});
+
+test.each(["same", "audit"])(
+  "authoritative queue edit preserves selected %s atoms in a fresh client through delete and resend",
+  async (name) => {
+    const user = userEvent.setup();
+    const ref = `ref_authoritative_${name}`;
+    const text = name === "same" ? "/same /same /same" : "/audit /audit";
+    const mentions = [
+      { kind: "command" as const, name, offset: 0 },
+      ...(name === "same" ? [{ kind: "skill" as const, name, offset: 6 }] : []),
+    ];
+    const { buildComposerInput } = await import("@evener/appwire-client");
+    const input = buildComposerInput(text, [], name === "same" ? [name] : [], [name], mentions);
+    // JSON is the accepted queue representation, with no local draft/outbox.
+    const accepted = JSON.parse(JSON.stringify(input));
+    const fake = await mountComposer(ref, {
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q1"],
+          texts: [accepted[0].text],
+          preview: [text],
+          commandNames: [[name]],
+          skillNames: [name === "same" ? [name] : []],
+          mentions: [accepted[0].mentions ?? []],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", (params) => ({
+      removedText: text,
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    }));
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(readComposerDraft(ref).mentions).toEqual(mentions);
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(name === "same" ? 1 : 0);
+    await selectEditorText(textarea(), name.length + 1);
+    await user.keyboard("{Backspace}");
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(0);
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    const sent = (fake.calls.find((call) => call.method === "turn/start")?.params as { input: InputItem[] } | undefined)
+      ?.input;
+    expect(sent?.filter((item) => item.type === "command")).toEqual([]);
+    expect(sent?.filter((item) => item.type === "skill").map((item) => item.name)).toEqual(
+      name === "same" ? [name] : [],
+    );
+    expect(sent?.[0]?.text).toBe(name === "same" ? " /same /same" : " /audit");
+  },
+);
+
+test("queue edit retains current command and skill atom locations without activating duplicate prose", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_queue_atom_intent";
+  writeComposerDraft(ref, {
+    text: "/same and /same and /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 0 },
+      { kind: "skill", name: "same", offset: 10 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+      activeTurnId: "turn_1",
+      queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued prose"], preview: ["queued prose"] },
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    removedText: "queued prose",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("/same and /same and /same\n\nqueued prose");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  expect(readComposerDraft(ref).mentions).toEqual([
+    { kind: "command", name: "same", offset: 0 },
+    { kind: "skill", name: "same", offset: 10 },
+  ]);
 });
 
 test("repeated inline skills survive remount and undo while deletion reconciles activation", async () => {
@@ -5500,7 +6218,9 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
 test("a token with no catalog match shows no menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash6");
+  await mountComposer("ref_slash6", {
+    evener: { ...testThread("ref_slash6").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
 
   await user.type(textarea(), "hi /zzz");
 
@@ -5510,7 +6230,9 @@ test("a token with no catalog match shows no menu", async () => {
 test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash7");
+  await mountComposer("ref_slash7", {
+    evener: { ...testThread("ref_slash7").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   await user.type(textarea(), "hi /re");
   // Four matches: three contiguous beginnings, then one fuzzy match
   // (/drain-as-steer would be a second, but it is unavailable on an idle
@@ -5533,7 +6255,9 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash8");
+  await mountComposer("ref_slash8", {
+    evener: { ...testThread("ref_slash8").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5562,7 +6286,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
   await mountComposer("ref_slash_qualified", {
     evener: {
       ...testThread("ref_slash_qualified").evener,
-      diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+      diagnostics: {
+        commands: [{ name: "review", description: "review the diff", source: "plugin", pluginName: "p" }],
+        plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }],
+      },
     },
   });
   const editor = textarea();
@@ -5577,7 +6304,10 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_slash9", { status: { type: "idle" } });
+  const fake = await mountComposer("ref_slash9", {
+    status: { type: "idle" },
+    evener: { ...testThread("ref_slash9").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   fake.on("turn/start", (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,
@@ -5599,7 +6329,9 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
 test("Escape closes the menu without clearing the draft, and typing further reopens it", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash10");
+  await mountComposer("ref_slash10", {
+    evener: { ...testThread("ref_slash10").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5618,7 +6350,9 @@ test("Escape closes the menu without clearing the draft, and typing further reop
 test("blur closes the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash11");
+  await mountComposer("ref_slash11", {
+    evener: { ...testThread("ref_slash11").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
@@ -5631,7 +6365,9 @@ test("blur closes the menu", async () => {
 test("clicking an option commits it without ever blurring the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash12");
+  await mountComposer("ref_slash12", {
+    evener: { ...testThread("ref_slash12").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
@@ -5646,7 +6382,9 @@ test("clicking an option commits it without ever blurring the textarea", async (
 test("the open menu wires listbox/option roles and aria-activedescendant on the textarea", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
-  await mountComposer("ref_slash13");
+  await mountComposer("ref_slash13", {
+    evener: { ...testThread("ref_slash13").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
+  });
   const editor = textarea();
   await user.type(editor, "hi /re");
 

@@ -11,6 +11,8 @@ import "maps"
 // See the engine's SessionConfig for the authoritative semantics and defaults
 // of each field.
 type ConfigSnapshot struct {
+	MemoryProjectID             string                     `json:"memory_project_id,omitempty"`
+	DisableMemory               bool                       `json:"disable_memory,omitempty"`
 	MaxToolRoundsPerInput       int                        `json:"max_tool_rounds_per_input,omitempty"`     // tool-call rounds per ProcessInput before TURN_LIMIT
 	MaxTurns                    int                        `json:"max_turns,omitempty"`                     // lifetime cap on user inputs (0 = unlimited)
 	DefaultCommandTimeoutMS     int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout

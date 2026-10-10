@@ -17,8 +17,10 @@ const (
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
 // becomes the agent's next steering message. Variant: v09
 //
-// canUseTaskList is the caller's answer to "does this session serve task_list";
-// false swaps the closing call instruction for wording the session can obey.
+// canUseTaskList is the caller's answer to "does this session serve task_list".
+// A session with task_list gets no closing instruction: agents close their tasks
+// unprompted, and a per-step "mark it done" line pulled them into extra
+// bookkeeping. A session without it is told to say when the step is complete.
 func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	b := systemReminderBlockBuilder()
 	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
@@ -29,9 +31,7 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
-	if canUseTaskList {
-		fmt.Fprintf(b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
-	} else {
+	if !canUseTaskList {
 		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
 	}
 	return finishSystemReminderBlock(b)
@@ -149,13 +149,4 @@ func formatTaskCompletionMachineBlock(completion events.TaskCompletionSteeringDa
 		panic(fmt.Sprintf("marshal task completion steering: %v", err))
 	}
 	return taskCompletionMachineBlockStart + string(payload) + taskCompletionMachineBlockEnd
-}
-
-// taskReminderNudge generates the one-time suggestion to use task_list, wrapped
-// as a SYSTEM-REMINDER so all task reminders share a single envelope.
-func taskReminderNudge() string {
-	return "<SYSTEM-REMINDER>\n" +
-		"You have a task_list tool available for organizing multi-step work. " +
-		"Consider creating a task list to track your progress.\n" +
-		"</SYSTEM-REMINDER>"
 }

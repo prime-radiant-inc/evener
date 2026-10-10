@@ -13,7 +13,10 @@ const PLUGIN_UPDATED: AnyNotification = { method: "evener/plugin/updated", param
 
 // A client through the module's own Pick: scripted per-method reads, recorded
 // requests, and a notification sink the test drives by hand.
-function boundary(commands: unknown[] = [{ name: "review", source: "plugin", pluginName: "loaded" }]) {
+function boundary(
+  commands: unknown[] = [{ name: "review", source: "plugin", pluginName: "loaded" }],
+  sessionCommands: unknown[] = commands,
+) {
   const requests: Array<{ method: string; params: unknown }> = [];
   const handlers = new Set<(n: AnyNotification) => void>();
   const io = {
@@ -25,6 +28,7 @@ function boundary(commands: unknown[] = [{ name: "review", source: "plugin", plu
               evener: {
                 ref: "local:test",
                 diagnostics: {
+                  commands: sessionCommands,
                   plugins: [{ name: "loaded" }],
                   skills: [
                     {
@@ -156,11 +160,17 @@ describe("sessionPluginNames", () => {
 
 describe("createSessionCommandCatalog", () => {
   const sessionBoundary = () =>
-    boundary([
-      { name: "review", source: "plugin", pluginName: "loaded" },
-      { name: "review", source: "plugin", pluginName: "absent" },
-      { name: "notes", source: "user" },
-    ]);
+    boundary(
+      [
+        { name: "review", source: "plugin", pluginName: "loaded" },
+        { name: "review", source: "plugin", pluginName: "absent" },
+        { name: "notes", source: "user" },
+      ],
+      [
+        { name: "review", source: "plugin", pluginName: "loaded" },
+        { name: "notes", source: "user" },
+      ],
+    );
 
   test("offers only session-loaded plugin commands with qualified insertions and advertised skills", async () => {
     const { client, requests } = sessionBoundary();
@@ -170,6 +180,7 @@ describe("createSessionCommandCatalog", () => {
       method: "thread/read",
       params: { ref: "local:test", includeTurns: false },
     });
+    expect(requests.some((request) => request.method === "evener/command/list")).toBe(false);
     expect(catalog.getState().items.map((item) => item.invocation)).toEqual(["/loaded:review", "/notes", "/testing"]);
   });
 
@@ -246,7 +257,7 @@ describe("createSessionCommandCatalog", () => {
     catalog.start();
     expect(handlers.size).toBe(1);
     await vi.waitFor(() => expect(catalog.getState().items).toHaveLength(3));
-    const loads = () => requests.filter((r) => r.method === "evener/command/list").length;
+    const loads = () => requests.filter((r) => r.method === "thread/read").length;
     expect(loads()).toBe(1);
     notify({ method: "evener/thread/resync", params: { ref: "local:other" } } as AnyNotification);
     expect(loads()).toBe(1);
@@ -256,5 +267,23 @@ describe("createSessionCommandCatalog", () => {
     await vi.waitFor(() => expect(loads()).toBe(3));
     catalog.dispose();
     expect(handlers.size).toBe(0);
+  });
+
+  test("owner inventory replaces stale rows and absence never borrows controller commands", async () => {
+    const { client, io, requests } = boundary(
+      [{ name: "controller-only", source: "user" }],
+      [{ name: "project-only", source: "project" }],
+    );
+    const catalog = createSessionCommandCatalog(client, "local:test");
+    await catalog.refresh();
+    expect(catalog.getState().items.map((item) => item.invocation)).toEqual(["/project-only", "/testing"]);
+    for (const diagnostics of [{ commands: [] }, {}, { commands: [{ name: "new-owner", source: "project" }] }]) {
+      io.read = async () => ({ thread: { evener: { ref: "local:test", diagnostics } } });
+      await catalog.refresh();
+      expect(catalog.getState().items.map((item) => item.invocation)).toEqual(
+        diagnostics.commands?.length ? ["/new-owner"] : [],
+      );
+    }
+    expect(requests.every((request) => request.method === "thread/read")).toBe(true);
   });
 });

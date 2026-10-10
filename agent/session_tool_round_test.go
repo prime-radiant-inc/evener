@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -51,16 +52,25 @@ func TestApplyNoToolCallsDecision_PersistsNoToolCallsKind(t *testing.T) {
 }
 
 // TestInjectPostToolSteering_PersistsTaskReminderKind drives the task-reminder
-// tail of injectPostToolSteering (trigger 3: task_list never used, 10+
-// rounds in) directly. Only one trigger is exercised here — the site's fix
-// (appendSteeringTurn) is generic over whichever kind maybeInjectTaskReminder
-// returns, and round 1's TestMaybeInjectTaskReminder_* tests already cover
-// that each trigger returns the right kind value.
+// tail of injectPostToolSteering (an in-progress task, task_list idle for 25+
+// rounds) directly. The site's fix (appendSteeringTurn) is generic over
+// whichever kind maybeInjectTaskReminder returns, and the
+// TestMaybeInjectTaskReminder_* tests already cover the kind it returns.
 func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s := newTestSessionForState(t) // a temp-dir workspace, so the task store can save
+	defer s.Close()
+	store := s.getOrCreateTaskStore()
+	if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"}}); err != nil {
+		t.Fatalf("add task 1: %v", err)
+	}
+	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("mark task 1 in_progress: %v", err)
+	}
 	s.mu.Lock()
-	s.totalRounds = 10 // trigger 3: never used task_list, 10+ rounds in.
+	s.taskToolEverUsed = true
+	s.taskToolLastRound = 0
+	s.totalRounds = 25
 	s.mu.Unlock()
 
 	var toolSigs []string
@@ -75,8 +85,8 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}
-	if last.SteeringKind != events.SteeringKindTaskNudge {
-		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindTaskNudge)
+	if last.SteeringKind != events.SteeringKindTaskInactive {
+		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindTaskInactive)
 	}
 }
 

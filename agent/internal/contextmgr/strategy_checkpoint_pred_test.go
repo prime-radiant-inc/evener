@@ -386,7 +386,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 				return llm.Response{
 					Model:   "gpt-4.1-mini",
 					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
-					Message: llm.Assistant("Summary of the conversation so far."),
+					Message: llm.Assistant("## Progress\nSummary of the conversation so far."),
 				}
 			},
 		},

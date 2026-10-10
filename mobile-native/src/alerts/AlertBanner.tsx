@@ -23,22 +23,22 @@ const DRAFT_KEPT_LINE = "Your draft is kept.";
 const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
 	failed: "failed",
 	question: "question",
+	needsYou: "needsYou",
 	approval: "approval",
 	warning: "warning",
 	restartNeeded: "restartNeeded",
-	finished: "finished",
 	started: "working",
 	startFailed: "failed",
 };
 
 /** What the banner's two lines say: the title, and the why line for one
- * session, the prototype's hint for several, or nothing for a notice or a
- * finished result (until S11 and S1 give them one). */
+ * session, the prototype's hint for several, or nothing for a notice
+ * (until S11 gives it one). */
 function words(banner: Banner): { title: string; why: WhyLine | null; hint: string | null } {
 	const [only] = banner.alerts;
 	// Two or more alerts are always sessions that need you: the center
 	// combines only those (AlertCenter.show's needsYou check, and release()
-	// joins held sessions only), never a notice or a finished result.
+	// joins held sessions only), never a notice.
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
 	if (only.kind === "started") return { title: only.title, why: null, hint: STARTED_LINE };
@@ -103,7 +103,7 @@ export function AlertBanner({
 	const scale = useTextScale();
 	const { title, why, hint } = words(banner);
 	const label = bannerLabel(banner);
-	// News rather than a request: a finished result or a session you started.
+	// News rather than a request: a session you started.
 	const news = banner.alerts.every(quiet);
 
 	// The drop: this component mounts once per banner (the host keys it by

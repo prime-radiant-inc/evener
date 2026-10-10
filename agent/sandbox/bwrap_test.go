@@ -406,3 +406,43 @@ func TestBuildBwrapArgvSessionTmpStaysWritableUnderAReboundRoot(t *testing.T) {
 		t.Fatalf("the writable session tmp must be bound after the read-only re-bind of its ancestor (rebind idx %d, last session bind idx %d): %v", rebindIdx, lastSessionBind, args)
 	}
 }
+
+// The read-anywhere modes re-bind the root session's scratch tree read-only
+// under the private /tmp, with the session's own scratch bound writable on top;
+// restricted mode, whose file tools cannot read the tree, binds only its own
+// scratch (#4170).
+func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "sbx-scratch-tree-")
+	if err != nil {
+		t.Skipf("this host offers no writable /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	base = resolveCleanPath(base)
+	if !pathUnder(base, "/tmp") {
+		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
+	}
+	tree := filepath.Join(base, sessionScratchTreePrefix+"root")
+	own := filepath.Join(tree, "child")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, cwd, _ := resolveFixture(t, mode, true)
+			args := buildBwrapArgv(rp, own, cwd)
+			treeIdx := seqIndex(args, "--ro-bind", tree, tree)
+			if mode == ModeRestricted {
+				if treeIdx >= 0 {
+					t.Errorf("restricted mode must not expose the scratch tree: %v", args)
+				}
+				return
+			}
+			if treeIdx < 0 {
+				t.Fatalf("the scratch tree %q must be re-bound read-only: %v", tree, args)
+			}
+			if !hasSeq(args[treeIdx:], "--bind", own, own) {
+				t.Errorf("the session's own scratch must be bound writable after the tree: %v", args)
+			}
+		})
+	}
+}

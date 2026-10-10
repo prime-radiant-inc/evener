@@ -7,9 +7,10 @@ import { pinDrafts } from "./nativeOrganization";
 import { PinAssignmentEditor } from "./PinAssignmentEditor";
 import type { PinAssignmentDraft, PinAssignmentSelection } from "./pinAssignmentDrafts";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Button } from "./sheet/Grouped";
 
 const draftError = "Your last saved pin proposal is kept. This edit could not be saved on this device. Try again.";
 
@@ -114,7 +115,7 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 						status={
 							<View style={{ gap: 8 }}>
 								<ErrorMessage message={selected?.error ?? null} />
-								{selected?.error ? <Action onPress={refresh}>Retry saved proposal</Action> : null}
+								{selected?.error ? <Button text label="Retry saved proposal" onPress={refresh} /> : null}
 								{observed ? (
 									<Copy muted>
 										{!observed.location

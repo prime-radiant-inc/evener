@@ -10,40 +10,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestS3Cov_ClampRange(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		lo, hi, count  int
-		wantLo, wantHi int
-	}{
-		{-5, 100, 10, 0, 9}, // both clamped to bounds
-		{3, 7, 10, 3, 7},    // in range unchanged
-		{20, 30, 10, 9, 9},  // lo past end clamped to last
-		{5, -3, 10, 5, 0},   // hi negative clamped to 0
-	}
-	for _, tc := range tests {
-		lo, hi, err := clampRange(tc.lo, tc.hi, tc.count)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if lo != tc.wantLo || hi != tc.wantHi {
-			t.Errorf("clampRange(%d,%d,%d) = %d,%d want %d,%d", tc.lo, tc.hi, tc.count, lo, hi, tc.wantLo, tc.wantHi)
-		}
-	}
-}
-
-func TestS3Cov_ParseDashRange(t *testing.T) {
-	t.Parallel()
-	if lo, hi, ok := parseDashRange("3-7"); !ok || lo != 3 || hi != 7 {
-		t.Fatalf("3-7 => %d,%d,%v", lo, hi, ok)
-	}
-	for _, bad := range []string{"nodash", "-5", "3-", "a-b", "-1-2", "3"} {
-		if _, _, ok := parseDashRange(bad); ok {
-			t.Errorf("parseDashRange(%q) unexpectedly ok", bad)
-		}
-	}
-}
-
 func TestS3Cov_ScalarStringAndFormatNumber(t *testing.T) {
 	t.Parallel()
 	cases := map[any]string{

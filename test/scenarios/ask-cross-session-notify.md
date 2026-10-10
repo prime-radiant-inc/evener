@@ -61,12 +61,13 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
 
 ## Steps
 
-1. **(browser-free)** Spawn Session B first — trivial, no question — and wait for it to
-   settle `awaiting` (a plain completed turn with nothing pending rests `awaiting`, not
-   `idle`; see `status-vocabulary-roundtrip.md`):
+1. **(browser-free)** Spawn Session B first — no `ask_user` question, but ending on
+   `needs_response` — and wait for it to settle `awaiting` (a plain reply rests `idle`; a
+   `needs_response` turn with nothing pending rests `awaiting`; see
+   `status-vocabulary-roundtrip.md`):
    ```bash
    tmpdir_b=$(mktemp -d -t evener-e2e-ask-notify-b-XXXXX)
-   bodyB=$(jq -n --arg wd "$tmpdir_b" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
+   bodyB=$(jq -n --arg wd "$tmpdir_b" '{prompt:"Ask me in one sentence which color I prefer, then end your turn with end_reason needs_response. Do not use ask_user.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
    SIDB=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyB" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDB" | jq -r '.state // ""')
@@ -165,10 +166,10 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
 6. **(browser + browser-free) `loudScope` default: a generic your-move settle stays quiet.**
    Re-arm the capture in Session B's tab (`window.__asked = []` — the stubs from step 2
    survive, the array does not need to), then spawn a **third** throwaway session with a
-   no-ask prompt and wait for it to settle `awaiting`:
+   no-ask prompt that ends on `needs_response`, and wait for it to settle `awaiting`:
    ```bash
    tmpdir_c=$(mktemp -d -t evener-e2e-ask-notify-c-XXXXX)
-   bodyC=$(jq -n --arg wd "$tmpdir_c" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
+   bodyC=$(jq -n --arg wd "$tmpdir_c" '{prompt:"Ask me in one sentence which color I prefer, then end your turn with end_reason needs_response. Do not use ask_user.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
    SIDC=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyC" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDC" | jq -r '.state // ""')

@@ -2,20 +2,18 @@
 // wait has a known explanation, that explanation instead of either. Two
 // explanations exist, in precedence order: a model call the daemon has told us
 // it is retrying ("rate limited — attempt 9/11 — retrying in 60s", kata 4zn8), and
-// the active turn's own delegated children still running ("waiting on N
-// subagents"). Both are design brief principle 6: a wait fully explained is not
-// a stall. The retry wins when both hold, being the more specific and more
-// directly observed of the two. Driven by gap = now -
-// ThreadModel.lastFrameAt, active, a running-children COUNT
-// (LivenessLine.tsx sources it from subagentModuleStore, scoped by
-// turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
-// bare turn id is never enough), and ThreadModel.modelRetry (which
-// deliberately does NOT restamp lastFrameAt, so the gap this reads keeps
-// measuring the real silence the retry is explaining). The retry does NOT,
-// however, share the ordinary 20s quiet gate past its first attempt - see
-// describeLiveness's own doc comment (kata gw2c). Display-only - no self-heal/reconnect side
-// effect (that's a connection.ts/threads.ts concern, not this pane's), no
-// idle animation (Cadence already carries live activity via its trace - see
+// the session's subagents still running ("waiting on N subagents"). Both are
+// design brief principle 6: a wait fully explained is not a stall. The retry
+// wins when both hold, being the more specific and more directly observed of
+// the two. Driven by gap = now - ThreadModel.lastFrameAt, active, a
+// running-subagents COUNT (LivenessLine.tsx sources it - see there), and
+// ThreadModel.modelRetry (which deliberately does NOT restamp lastFrameAt, so
+// the gap this reads keeps measuring the real silence the retry is
+// explaining). The retry does NOT, however, share the ordinary 20s quiet gate
+// past its first attempt - see describeLiveness's own doc comment (kata gw2c).
+// Display-only - no self-heal/reconnect side effect (that's a
+// connection.ts/threads.ts concern, not this pane's), no idle animation
+// (Cadence already carries live activity via its trace - see
 // widgets/cadence). These are session-level thresholds only.
 
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
@@ -134,21 +132,21 @@ export function formatSubagentCount(count: number): string {
  * the model's last frame, whether the thread is currently "active" (liveness
  * only ever evaluates while active - any other status always reads as level
  * "none", matching the legacy renderer's own gate), and how many of the
- * active turn's delegated children are still running, decides the
- * quiet/stalled/waiting level and its display text.
+ * session's subagents are still running, decides the quiet/stalled/waiting
+ * level and its display text.
  *
  * A wait explained by running children is not a stall (design brief principle
  * 6), so running children suppress "quiet" outright.
  *
  * They do NOT suppress the stall report, and that asymmetry is the important
  * part. "A child is running" is a CLAIM this client cannot independently
- * verify: the count comes from subagent rows whose status is itself derived
- * from the wire, and a row that has lost contact with its child reports
- * "running" because that is the honest default when nothing bad is known
- * (subagentModuleStore's classifyJobStatus, and kata g5kf on how a row can
- * hold that claim after the child is gone). If a believed-running child were
- * allowed to suppress the stall report forever, then the single case where a
- * reader most needs the truth — a parent wedged behind a child that died
+ * verify: the hub reports a run open until it sees it end, and the fallback
+ * rows derive their status from the wire too, where a row that has lost
+ * contact with its child reports "running" because that is the honest default
+ * when nothing bad is known (subagentModuleStore's classifyJobStatus, and kata
+ * g5kf on how a row can hold that claim after the child is gone). If a
+ * believed-running child were allowed to suppress the stall report forever,
+ * then the single case where a reader most needs the truth — a parent wedged behind a child that died
  * quietly — would be the one case the UI stayed confidently silent about, and
  * the honest-liveness rule would be inverted by its own explanation.
  *

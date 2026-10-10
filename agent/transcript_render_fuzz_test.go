@@ -125,7 +125,7 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 }
 
 // trender_isOmittedKind reports whether a JSONL entry line carries a turn kind
-// publicTranscriptLine refuses to render (publicTranscriptKind). A line that
+// publicTranscriptLine refuses to render (TurnKind.PublicTranscript). A line that
 // is not a decodable entry is not one, which leaves it to the ordinary
 // comparison.
 func trender_isOmittedKind(line string) bool {
@@ -141,7 +141,7 @@ func trender_isOmittedKind(line string) bool {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return false
 	}
-	return !publicTranscriptKind(kind)
+	return !kind.PublicTranscript()
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection

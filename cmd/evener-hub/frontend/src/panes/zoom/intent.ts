@@ -10,10 +10,16 @@ export interface DelegateEdgeIntent {
 export type ConversationReturnDescriptor =
   | { type: "session"; params: SessionPaneParams }
   | { type: "transcript"; params: TranscriptParams };
+export interface CascadeReturnOrigin {
+  paneId: string;
+  type: "session" | "transcript";
+  ref: string;
+}
 export interface SessionZoomParams {
   ref: string;
   source: ConversationReturnDescriptor;
   edges: DelegateEdgeIntent[];
+  inspection?: { origin: CascadeReturnOrigin | null };
 }
 export interface CascadeScope {
   requestedRef: string;
@@ -56,6 +62,20 @@ function edgeSegment(value: unknown, leaf: string): DelegateEdgeIntent[] {
   return previousChild === undefined || previousChild === leaf ? edges : [];
 }
 
+function inspectionOrigin(value: unknown, sourceRef: string): CascadeReturnOrigin | null {
+  const raw = object(object(value)?.origin);
+  if (
+    !raw ||
+    typeof raw.paneId !== "string" ||
+    raw.paneId.trim() === "" ||
+    (raw.type !== "session" && raw.type !== "transcript") ||
+    !sessionRef(raw.ref) ||
+    raw.ref !== sourceRef
+  )
+    return null;
+  return { paneId: raw.paneId, type: raw.type, ref: raw.ref };
+}
+
 export function parseZoomParams(value: unknown): SessionZoomParams | null {
   const raw = object(value);
   if (!raw || !sessionRef(raw.ref)) return null;
@@ -72,7 +92,14 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
       params: { ref: params.ref, ...(params.parentRef === undefined ? {} : { parentRef: params.parentRef }) },
     };
   } else return null;
-  return { ref: raw.ref, source: descriptor, edges: edgeSegment(raw.edges, raw.ref) };
+  const edges = edgeSegment(raw.edges, raw.ref);
+  if (!Object.hasOwn(raw, "inspection")) return { ref: raw.ref, source: descriptor, edges };
+  return {
+    ref: raw.ref,
+    source: { type: "transcript", params: descriptor.params },
+    edges,
+    inspection: { origin: inspectionOrigin(raw.inspection, descriptor.params.ref) },
+  };
 }
 
 export function deriveCascadePath(params: SessionZoomParams, context: SessionActivityContext | null): CascadePath {
@@ -104,6 +131,16 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
     index -= 1;
   }
   return { ancestryKnown: true, scopes };
+}
+
+/** The index of the first readable scope in the cascade track. The leaf and
+ * its immediate parent are readable, except when that parent is the cascade's
+ * live origin conversation: its pane is already on screen, so the cascade does
+ * not repeat it and the leaf stays the only readable scope. */
+export function firstReadableIndex(scopes: CascadeScope[], originRef: string | null): number {
+  const parent = scopes[scopes.length - 2];
+  const duplicateOrigin = originRef !== null && parent !== undefined && parent.requestedRef === originRef;
+  return duplicateOrigin ? scopes.length - 1 : Math.max(0, scopes.length - 2);
 }
 
 export function drillZoomIntent(params: SessionZoomParams, edge: DelegateEdgeIntent): SessionZoomParams {

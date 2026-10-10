@@ -275,8 +275,8 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(string, int64, int64) (appwire.JobOutputTail, bool, error) {
-		return appwire.JobOutputTail{}, false, nil
+	srv.SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error) {
+		return appwire.JobOutputPage{}, false, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -299,17 +299,17 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 func TestHandleAppJobsOutput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (appwire.JobOutputTail, bool, error) {
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
 		}
-		if beforeBytes != 7 {
-			t.Errorf("beforeBytes = %d, want 7", beforeBytes)
+		if beforeBytes == nil || *beforeBytes != 7 {
+			t.Errorf("beforeBytes = %v, want 7", beforeBytes)
 		}
 		if maxBytes != 99 {
 			t.Errorf("maxBytes = %d, want 99", maxBytes)
 		}
-		return agent.JobOutputTail{Tail: "hi", TotalBytes: 2}, true, nil
+		return agent.JobOutputPage{OffsetBytes: 5, BytesReturned: 2, TotalBytes: 7, Encoding: "utf8", Data: "hi"}, true, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -317,7 +317,8 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: 7, MaxBytes: 99}))
+	before := int64(7)
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: &before, MaxBytes: 99}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
@@ -326,8 +327,8 @@ func TestHandleAppJobsOutput(t *testing.T) {
 		t.Fatalf("evener/jobs/output result=%T (%+v)", resp.Response.Result, resp)
 	}
 	tail := out.Data
-	if tail.Tail != "hi" {
-		t.Errorf("tail: got %q, want hi", tail.Tail)
+	if tail.Data != "hi" || tail.OffsetBytes != 5 || tail.BytesReturned != 2 || tail.TotalBytes != 7 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Errorf("output page: got %+v, want hi at [5,7), floor 0", tail)
 	}
 }
 

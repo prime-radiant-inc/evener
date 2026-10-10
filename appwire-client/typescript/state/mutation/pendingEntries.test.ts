@@ -79,6 +79,23 @@ test("a skill-only pending entry carries its canonical skill selection", () => {
   ]);
 });
 
+test("pending input retains a command alongside the same-spelling skill across serialized recovery", () => {
+  const input: InputItem[] = [
+    { type: "skill", name: "probe" },
+    { type: "command", name: "probe" },
+    { type: "command", name: "probe" },
+  ];
+  const record: MutationOutboxRecord = {
+    ...outbox("mutation_1", "turn/queue", ""),
+    payload: { ref: "ref_a", input, clientMutationId: "mutation_1" },
+    optimisticDisplay: { method: "turn/queue", input },
+  };
+  const recovered = JSON.parse(JSON.stringify(record)) as MutationOutboxRecord;
+  expect(
+    reconcilePendingEntries("ref_a", [recovered], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
+  ).toMatchObject([{ skillNames: ["probe"], commandNames: ["probe"] }]);
+});
+
 test("the authoritative pending projection replaces the same outbox identity", () => {
   const pending: PendingMutation = {
     clientMutationId: "mutation_1",
@@ -298,6 +315,31 @@ test("a promote's display input previews in the entry", () => {
   expect(reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY)).toEqual([
     expect.objectContaining({ id: "mutation_1", method: "promote", text: "promoted body" }),
   ]);
+});
+
+test("a promote names the queued entry it steers with; other methods name none", () => {
+  const promote = outbox("mutation_1", "turn/promoteQueuedAsSteer", "");
+  const promoteRecord: MutationOutboxRecord = {
+    ...promote,
+    payload: { ...promote.payload, expectedEntryId: "queue_3" },
+  };
+  const steer = outbox("mutation_2", "turn/steer", "hello");
+  const steerRecord: MutationOutboxRecord = { ...steer, payload: { ...steer.payload, expectedEntryId: "queue_4" } };
+  const entries = reconcilePendingEntries(
+    "ref_a",
+    [promoteRecord, steerRecord],
+    model(),
+    NOTHING_SUBMITTED_HERE,
+    UNATTRIBUTED_ONLY,
+  );
+  expect(entries.map((entry) => entry.queueEntryId)).toEqual(["queue_3", undefined]);
+});
+
+test("a drain names the queue revision it steers with", () => {
+  const drain = outbox("mutation_1", "turn/drainAsSteer", "");
+  const record: MutationOutboxRecord = { ...drain, payload: { ...drain.payload, expectedQueueRevision: 7 } };
+  const [entry] = reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY);
+  expect(entry?.queueRevision).toBe(7);
 });
 
 test("sorts known-createdAt entries first, ascending, with unknown-createdAt after them", () => {

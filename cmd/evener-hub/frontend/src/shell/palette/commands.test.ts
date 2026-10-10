@@ -14,6 +14,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -265,6 +266,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  resetActivitySidebarStoreForTests();
 });
 
 // --- scope gating (search.js:581-588) ---
@@ -981,21 +983,20 @@ test("copyToClipboard prefers the async Clipboard API", async () => {
   expect(writeText).toHaveBeenCalledWith("hello");
 });
 
-test("/tasks and /status toggle the focused session panes at every viewport", () => {
+test("/tasks toggles its pane and /status opens About for the focused session", () => {
   focusSession("ref_a");
   seedModel("ref_a");
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
   expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } }),
-      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } })]),
   );
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
-test("/tasks and /status toggle-close already-open panes", () => {
+test("/tasks toggle-closes while repeated /status preserves About and a saved Details pane", () => {
   focusSession("ref_a");
   seedModel("ref_a");
   workspaceStore.getState().openPane("sessionTasks", { ref: "ref_a" });
@@ -1003,8 +1004,16 @@ test("/tasks and /status toggle-close already-open panes", () => {
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
+  cmd("status").run?.(runContext());
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
-  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(true);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+});
+
+test("/status advertises Overview and remains findable by details and info", () => {
+  expect(cmd("status").title).toBe("Show session details in Overview");
+  expect(cmd("status").keywords).toEqual(["details", "info"]);
+  expect(cmd("status").scope).toBe("session");
 });
 
 test("/notes toggles the top notes panel and requests focus", () => {
@@ -1067,7 +1076,7 @@ test('the keyboard-shortcuts command is findable by keyword "hotkey"', () => {
   expect(cmd("help").keywords).toContain("hotkey");
 });
 
-test("/tasks and /status still toggle the workspace panes on a mobile viewport", () => {
+test("mobile /tasks toggles its pane and /status opens About", () => {
   window.matchMedia = vi.fn(() => ({
     matches: true,
     addEventListener: vi.fn(),
@@ -1078,13 +1087,9 @@ test("/tasks and /status still toggle the workspace panes on a mobile viewport",
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
-  // The unified SessionMenu owns Details/Tasks at every width, so the chrome
-  // trigger buttons the legacy mobile path clicked no longer render - the
-  // commands open the workspace panes directly, exactly as on desktop.
   expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } }),
-      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } })]),
   );
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });

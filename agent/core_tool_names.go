@@ -36,7 +36,7 @@ func CoreToolNames() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
 	}
-	defer sess.Close()
+	defer sess.CloseDiscardingScratch()
 
 	names := sess.reg.Names()
 	kept := make([]string, 0, len(names))

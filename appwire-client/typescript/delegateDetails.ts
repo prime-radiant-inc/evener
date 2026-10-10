@@ -14,6 +14,7 @@
 // only when no anchor parses or the clock is not a finite number.
 import type { ActivityDelegate } from "./activityData";
 import { firstLine } from "./displayFormat";
+import { nonblank } from "./toolCallText";
 
 export type DelegateTimingFields = Pick<
   ActivityDelegate,
@@ -92,10 +93,6 @@ export function delegateTiming(delegate: DelegateTimingFields, now: number): Del
     result.quietForMs = snapshotDuration(delegate.quietForMs);
   }
   return result;
-}
-
-function nonblank(value: string | undefined): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 export function delegateModel(delegate: DelegateModelFields): {

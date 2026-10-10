@@ -435,16 +435,12 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
-// shell/rail/RailRow.module.css renders the compact rail's needs-you and broken
-// status dots with their semantic families; running uses a neutral grey ring.
-// RailRow.module.css is a shell stylesheet, not a
-// widget (it lives under shell/rail/, not widgets/<name>/), so it can never
-// match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
-// extended - this is a deliberate, exact-path exception, the same shape as
-// the dockview-theme.css naming exception above, scoped to this one file so
-// a same-named stylesheet elsewhere can't ride along on it. (The rail's
-// signal hues live with the row content in RailRow.module.css; Rail.module.
-// css itself carries none.)
+// shell/SessionStatusIndicator.module.css renders the session-list and cascade
+// needs-you and broken glyphs with their semantic families; running uses a
+// neutral grey ring. shell/rail/RailRow.module.css uses the same families for
+// context-card status text. Both are shell stylesheets, so they cannot match
+// WIDGET_STYLESHEET_RE. Exact-path exceptions keep same-named stylesheets
+// elsewhere from inheriting permission to use semantic colors.
 //
 // kata 3h80: panes/session/transcript/tools/subagentmodule.module.css earns
 // the same exception for the same structural reason - it lives under
@@ -573,6 +569,7 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // keybindings.module.css's .rowError and marketplacesPlugins.module.css's
 // .sheetError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
+  "shell/SessionStatusIndicator.module.css",
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
   "panes/session/chrome/notespanel.module.css",
@@ -614,6 +611,12 @@ test("the RailRow.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
+});
+
+test("the SessionStatusIndicator.module.css semantic-var exception is scoped to its exact path", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/SessionStatusIndicator.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/SessionStatusIndicator.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/SessionStatusIndicator.module.css")).toBe(false);
 });
 
 test("the activitybar.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

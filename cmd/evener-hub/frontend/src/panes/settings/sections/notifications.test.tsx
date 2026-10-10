@@ -46,15 +46,15 @@ function renderWithToasts() {
   );
 }
 
-test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud for defaults to Questions, approvals & errors", () => {
+test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud for defaults to Questions, reply requests, approvals & errors", () => {
   renderWithToasts();
   expect(screen.getByRole("switch", { name: "Title bar count" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Favicon dot" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "OS notification" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "Sound" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("radio", { name: "Questions, approvals & errors" }).getAttribute("aria-checked")).toBe(
-    "true",
-  );
+  expect(
+    screen.getByRole("radio", { name: "Questions, reply requests, approvals & errors" }).getAttribute("aria-checked"),
+  ).toBe("true");
 });
 
 test("intro copy matches the current defaults (title on, the rest opt-in)", () => {
