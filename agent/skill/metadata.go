@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/lineend"
 )
 
 const skillFrontmatterDelimiter = "---\n"
@@ -22,10 +23,12 @@ var utf8BOM = []byte{0xef, 0xbb, 0xbf}
 // It reports true only when the first non-blank line begins a plain mapping
 // entry and the block before the closing "---" line parses as a YAML mapping
 // carrying both a name and a description, so ordinary body text that merely
-// contains a "---" rule is left alone. A leading UTF-8 BOM is trimmed either
-// way, so the returned bytes never carry it into the parse.
+// contains a "---" rule is left alone. Either way a leading UTF-8 BOM is
+// trimmed and line endings are normalized as frontmatter.Split reads them, so
+// the returned bytes never carry the BOM into the parse and a CRLF source
+// reads like any other.
 func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
-	data = bytes.TrimPrefix(data, utf8BOM)
+	data = []byte(lineend.Normalize(string(bytes.TrimPrefix(data, utf8BOM))))
 	if bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
 		return data, false
 	}

@@ -23,7 +23,9 @@ its auth URL out of process arguments and environment variables.
 
 The guard checks:
 
-- Two readable columns and five 52px ancestor spines at depth six, a 400px
+- A first drill whose immediate parent is the mounted origin conversation
+  collapses that parent to a 52px spine, keeping only the leaf readable; two
+  readable columns and five 52px ancestor spines at depth six, a 400px
   parent and a leaf with a 440px minimum.
 - Compact ancestor status geometry with exact hover and screen-reader text,
   including a real running-to-resting transition and a still spinner under reduced

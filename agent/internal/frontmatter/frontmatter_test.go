@@ -228,7 +228,9 @@ func TestSplit(t *testing.T) {
 		{"--- ending a value is not the closing delimiter", "---\ndescription: a---\nb: 1\n---\nbody\n", "description: a---\nb: 1\n", "body\n", true},
 		{"--- ending a value with no closing line", "---\ndescription: a---\nbody\n", "", "---\ndescription: a---\nbody\n", false},
 		{"--- with no newline at the end is not a closing delimiter", "---\na: 1\n---", "", "---\na: 1\n---", false},
-		{"CRLF delimiters are not frontmatter", "---\r\na: 1\r\n---\r\nbody\r\n", "", "---\r\na: 1\r\n---\r\nbody\r\n", false},
+		{"CRLF line endings read as newlines", "---\r\na: 1\r\n---\r\nbody\r\n", "a: 1\n", "body\n", true},
+		{"lone carriage returns read as newlines", "---\ra: 1\r---\rbody\r", "a: 1\n", "body\n", true},
+		{"an unframed document comes back with newline endings", "body\r\nmore\r", "", "body\nmore\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -174,6 +174,25 @@ function mount(fake: FakeClient) {
 function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
+function spineRefs() {
+  return screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"));
+}
+function inspectedCascade() {
+  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, source);
+  return { source, inspector };
+}
 
 test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
   const { fake, response } = fixture();
@@ -287,24 +306,15 @@ test("the agent path nav shows resolved thread names, not raw refs", async () =>
 
 test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
   const { fake } = fixture();
-  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
-  const inspector: OpenPaneRecord = {
-    ...currentPane(),
-    slot: "secondary",
-    params: {
-      ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
-      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
-      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
-    } satisfies SessionZoomParams,
-  };
-  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
-  recordCascadeOrigin(inspector, source);
+  const { source, inspector } = inspectedCascade();
   const sourceLifetime = conversationPaneLifetime(source);
   const inspectorLifetime = conversationPaneLifetime(inspector);
   mount(fake);
-  await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
+  // The origin conversation is already live as its own pane, so the cascade
+  // must not repeat it: only the leaf stays readable, the parent is a spine.
+  expect(columnRefs()).toEqual(["child"]);
+  expect(spineRefs()).toEqual(["root"]);
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(inspectorLifetime.composer).toBeNull();
   requestPaneFocus(inspector.id);
@@ -316,6 +326,51 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   expect(sourceLifetime.alive).toBe(true);
   expect(inspectorLifetime.alive).toBe(false);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("a live origin conversation collapses only its own duplicate parent column", async () => {
+  const { fake } = fixture();
+  const { source, inspector } = inspectedCascade();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  expect(spineRefs()).toEqual(["root"]);
+  // A deeper drill makes the origin the grandparent, not the immediate
+  // parent, so the two readable columns return for the drill.
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), inspector.id),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  expect(spineRefs()).toEqual(["root"]);
+  // Popping back to depth one keeps the collapse while the origin lives...
+  act(() => popAgentCascade(inspector.id, "child"));
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  // ...and closing the origin retires the association, so the readable
+  // parent column returns without disturbing the selected leaf.
+  act(() => workspaceStore.getState().closePane(source.id));
+  await screen.findByText("root content old-root");
+  expect(columnRefs()).toEqual(["root", "child"]);
+});
+
+test("a cascade with no live origin keeps the readable parent column", async () => {
+  const { fake } = fixture();
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: null },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [inspector], focusedPaneId: inspector.id });
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["root", "child"]);
 });
 
 test.each(["deleted", "missing"] as const)(
