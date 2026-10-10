@@ -38,7 +38,7 @@ import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { type IDBDatabase, IDBFactory, IDBVersionChangeEvent } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBVersionChangeEvent } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   pendingTurnEntries,
@@ -56,6 +56,7 @@ import {
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
+import { IDBUpgradeError } from "./idbConnection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
@@ -14182,6 +14183,51 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     expect(await reader.listOutbox("ref_a")).toEqual([]);
     reader.close();
+  });
+
+  // A throwing schema upgrade is a bug in the outbox, not storage failing. The
+  // engine answers it by aborting the versionchange transaction, and the open
+  // then fails with a bare AbortError that looks like a storage abort; the
+  // send must still fail closed rather than go out without its durable row.
+  test("a send whose outbox schema upgrade throws stays fail-closed", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-upgrade-bug";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    // The send's open lands on a database that still needs its schema, and
+    // the upgrade's first store creation throws.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        open(name === databaseName ? `${databaseName}-unmigrated` : name, version),
+      );
+    const schemaBug = new TypeError("schema bug");
+    vi.spyOn(IDBDatabase.prototype, "createObjectStore").mockImplementation(() => {
+      throw schemaBug;
+    });
+    try {
+      const failure = await threadsStore
+        .getState()
+        .send("ref_a", "not sent past a schema bug")
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+      expect(failure).toBeInstanceOf(IDBUpgradeError);
+      expect((failure as Error).cause).toBe(schemaBug);
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 
   // A browser that denies this origin IndexedDB (a privacy mode, blocked site

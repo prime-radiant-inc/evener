@@ -66,6 +66,17 @@ export function tryAbortTransaction(transaction: IDBTransaction): boolean {
   }
 }
 
+// An adapter's own schema upgrade threw: a bug in the adapter, never storage
+// failing. The engine answers a throwing upgradeneeded handler by aborting the
+// versionchange transaction, and the open then fails with a bare AbortError
+// that reads exactly like storage aborting it; this names the real cause.
+export class IDBUpgradeError extends Error {
+  constructor(cause: unknown) {
+    super("IndexedDB schema upgrade failed", { cause });
+    this.name = "IDBUpgradeError";
+  }
+}
+
 export class IDBConnection {
   readonly #options: IDBConnectionOptions;
   #database: IDBDatabase | undefined;
@@ -103,6 +114,7 @@ export class IDBConnection {
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = options.indexedDB.open(options.databaseName, options.databaseVersion);
       let abandoned = false;
+      let upgradeFailure: IDBUpgradeError | undefined;
       const fail = (error: unknown) => {
         abandoned = true;
         clearTimeout(timer);
@@ -122,7 +134,14 @@ export class IDBConnection {
           if (abandoned || this.#databasePromise !== opening) {
             options.reportDiagnostic("upgrade-abandoned", Boolean(request.transaction));
           }
-          options.upgrade(request.result);
+          try {
+            options.upgrade(request.result);
+          } catch (error) {
+            // Rethrown so the engine still aborts the half-built schema, as
+            // it would without this catch; the open's error names the cause.
+            upgradeFailure = new IDBUpgradeError(error);
+            throw error;
+          }
         },
         { once: true },
       );
@@ -173,7 +192,7 @@ export class IDBConnection {
         "error",
         () => {
           if (abandoned) return;
-          const error = request.error ?? options.errors.open();
+          const error = upgradeFailure ?? request.error ?? options.errors.open();
           options.reportOpenError?.(error);
           fail(error);
         },
