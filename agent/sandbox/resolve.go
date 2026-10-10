@@ -515,9 +515,10 @@ var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
 // serve caches (overlaid or redirected), off/read-only need none. Every root
-// passes the shared-tree guard: an overlay over a directory holding the
-// worktree, the home directory or a temp root would hide the real files behind
-// an upper layer discarded at session end, so edits there would silently vanish.
+// passes the shared-tree guard, and none lies inside the worktree: an overlay
+// over the worktree, a directory holding it, the home directory or a temp root
+// would hide the real files behind an upper layer discarded at session end, so
+// edits there would silently vanish.
 func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
@@ -529,7 +530,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return dedupeRoots(guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree))
+		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		roots = slices.DeleteFunc(roots, func(r string) bool { return pathUnder(r, worktree) })
+		return dedupeRoots(roots)
 	default:
 		return nil
 	}

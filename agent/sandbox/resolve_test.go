@@ -435,7 +435,8 @@ func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
 
 // An overlay over a directory that holds the worktree would hide the real
 // worktree behind a discarded upper layer, so edits would vanish at session end.
-// A cache root at or above the worktree (or home, or a temp root) is dropped.
+// A cache root at, above or inside the worktree (or at or above home, or a
+// temp root) is dropped.
 func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
 	const worktree = "/home/tester/src/project"
 	for _, host := range []HostFacts{
@@ -443,9 +444,13 @@ func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
 		{Home: "/home/tester", GoCache: worktree},
 		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
 		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
+		// A cache inside the worktree is workspace the session writes for good;
+		// an overlay there would discard those writes too.
+		{Home: "/home/tester", GoModCache: worktree + "/.cache/mod"},
+		{Home: "/home/tester", GoPath: worktree + "/gopath"},
 	} {
 		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
-			if r == worktree || pathUnder(worktree, r) || r == host.Home {
+			if pathUnder(worktree, r) || pathUnder(r, worktree) || r == host.Home {
 				t.Errorf("cache root %q covers the worktree %q or home (host %+v)", r, worktree, host)
 			}
 		}

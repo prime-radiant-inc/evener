@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -204,15 +203,13 @@ func (hostProbeSystem) userConfigDir() (string, error) { return os.UserConfigDir
 // few lines; anything near this size is not one.
 const goEnvFileLimit = 64 << 10
 
-// readFile reads a small regular file. syscall.O_NONBLOCK is defined for every
-// GOOS this module builds on, Windows included (syscall/types_windows.go), so
-// this needs no build tag. GOENV can name anything, and the probe
+// readFile reads a small regular file. GOENV can name anything, and the probe
 // runs before any sandbox exists, so a FIFO (which would block session start),
 // a device such as /dev/zero (which never ends) or an oversized file is refused.
 func (hostProbeSystem) readFile(path string) ([]byte, error) {
 	// Open without blocking (a FIFO's open waits for a writer), then judge the
 	// descriptor itself, so a file swapped in after a path check cannot slip by.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
 	}
