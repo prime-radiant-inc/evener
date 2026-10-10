@@ -191,6 +191,8 @@ export interface TranscriptRepositoryBinding {
    * the still-held route without a release/reacquire.
    */
   suppressed?: () => boolean;
+  /** Persistence-only lifetime permission. Live input and display stay usable. */
+  mayPersist?: () => boolean;
   lifetime: number;
   seedModel?: ThreadModel;
   seedAuthority?: {
@@ -1651,6 +1653,7 @@ export class TranscriptRepository {
    * committed-coverage bookkeeping back over the new baseline's.
    */
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): Promise<void> {
+    if (this.#binding.mayPersist?.() === false) return this.#declinePersistence(batch);
     const issuedRevision = retryRevision ?? this.#sourceRevision;
     const bodies = retainedBodies(batch);
     const bodyBytes = bodies.reduce((sum, body) => sum + body.bytes, 0);
@@ -1691,6 +1694,11 @@ export class TranscriptRepository {
     isRetry: boolean,
     isExempt: boolean,
   ): Promise<void> {
+    if (this.#binding.mayPersist?.() === false) {
+      this.#admission.release(bodies, this);
+      if (isExempt) this.#admission.releaseExempt(this);
+      return this.#declinePersistence(batch);
+    }
     this.#inFlight.set(batch, bodies);
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       const superseded = isRetry && issuedRevision !== this.#sourceRevision;
@@ -1769,6 +1777,17 @@ export class TranscriptRepository {
       this.#reclaimBackgroundModel();
     });
     return write;
+  }
+
+  #declinePersistence(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): Promise<void> {
+    for (const row of batch.items) {
+      if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
+    }
+    // No local certificate can claim this deliberately unpersisted input.
+    // Unlike an overflow, the owner's suppression must not request repairs.
+    this.#cacheContinuityLost = true;
+    this.#reclaimBackgroundModel();
+    return Promise.resolve();
   }
 
   /**

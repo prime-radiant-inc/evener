@@ -1118,6 +1118,7 @@ async function acceptEntryTranscriptHydration(
       },
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
       suppressed: () => fixture.clearInert === true,
+      mayPersist: () => !productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true,
       readHistory: (held, signal) =>
         runEntryHistoryRequest(fixture, signal, () => {
           const client = wiredClient;
@@ -1145,12 +1146,12 @@ async function acceptEntryTranscriptHydration(
   }
   const repository = fixture.repository;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
+  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     readId: `fixture-read-${++fixture.readSequence}`,
     boundary: `fixture-boundary-${fixture.readSequence}`,
   });
-  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   for (const update of hydration.fixtureNotifications) {
     repository.accept(update.notification, { lifetime: fixture.lifetime });
   }
@@ -4560,8 +4561,31 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of refs) {
       const fixture = entryTranscriptRoute(ref);
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
+        const beforeInvalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
         if (fixture.repository.accept(n, { lifetime: fixture.lifetime }) && !fixture.unsubscribeRepository) {
           publishEntryTranscriptModel(ref);
+        }
+        const invalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
+        if (
+          productionEntryRoutes.get(ref) === fixture &&
+          invalidation !== undefined &&
+          invalidation !== beforeInvalidation &&
+          !pendingThreadHydrations.has(ref) &&
+          canonicalThreadOwnerActive(ref) &&
+          wiredClient?.state === "ready"
+        ) {
+          // The repository already published this transition. The later legacy
+          // fold sees no diff, so the entry owner must wake its own recovery.
+          void refreshTrackedThread(
+            wiredClient,
+            readyEpoch,
+            ref,
+            true,
+            false,
+            undefined,
+            undefined,
+            hydrationIntentFor(ref),
+          ).catch(() => {});
         }
       } else if (
         fixture &&
