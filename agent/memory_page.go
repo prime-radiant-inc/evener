@@ -100,18 +100,10 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 	return listed
 }
 
-// memoryPageText is a page's bytes as the page reader and the frontmatter
-// editors see them, with each Markdown line ending ("\r\n", a lone "\r")
-// turned into "\n". frontmatter.Split finds delimiters ending in "\n" only,
-// so a page saved with other line endings still has its frontmatter read,
-// and stamped in place, on the same lines its headings are read from.
-func memoryPageText(raw []byte) string {
-	return normalizeLineEndings(string(raw))
-}
-
 // splitMemoryFrontmatter splits text into its frontmatter block and body
 // exactly as frontmatter.Parse does, so a page whose YAML fails to parse
-// still has a body to fall back on.
+// still has a body to fall back on. Both end their lines in "\n", whatever
+// line endings the page was saved with.
 func splitMemoryFrontmatter(text string) (block, body string, ok bool) {
 	return frontmatter.Split(text)
 }
@@ -129,7 +121,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	if path.Ext(rel) != ".md" {
 		return p
 	}
-	text := memoryPageText(raw)
+	text := string(raw)
 	// Parse reads the block Split finds, so its body is Split's even when
 	// the YAML fails. Frontmatter is the block's presence, not its parsed
 	// value: a block holding only a YAML null parses to no metadata.

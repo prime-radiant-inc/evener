@@ -192,7 +192,7 @@ func memoryYAMLField(key, value string) string {
 // only top-level entry for its key, replacing an existing one and the lines of
 // its value, or adding it at the end of the block, or adding a block. Every
 // other byte of the page is kept, except that its line endings become "\n"
-// (memoryPageText). Keys are found as YAML reads them (quoted,
+// (splitMemoryFrontmatter). Keys are found as YAML reads them (quoted,
 // or with a space before the colon); a block that does not parse gains the
 // line at its end and stays as unreadable as it was (frontmatter.Parse
 // reads only a mapping). Readable frontmatter that would not read the line
@@ -200,10 +200,10 @@ func memoryYAMLField(key, value string) string {
 // with a "..." document end, is returned as it is.
 func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	key, _, _ := strings.Cut(line, ":")
-	text := memoryPageText(raw)
+	text := string(raw)
 	block, body, ok := splitMemoryFrontmatter(text)
 	if !ok {
-		return []byte("---\n" + line + "---\n" + text)
+		return []byte("---\n" + line + "---\n" + body)
 	}
 	keys := memoryFrontmatterKeyLines(block)
 	lines := slices.Collect(strings.Lines(block))
@@ -257,10 +257,10 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 // in free text ("like `shop: add Count`"). Only these free-text keys are
 // quoted; quoting tags or updated would change their type. The quoting is
 // kept only when it makes the frontmatter parse, and the page then has "\n"
-// line endings (memoryPageText); any other page, readable or not, is returned
+// line endings (splitMemoryFrontmatter); any other page, readable or not, is returned
 // as it is.
 func repairMemoryFrontmatter(raw []byte) []byte {
-	text := memoryPageText(raw)
+	text := string(raw)
 	block, body, ok := splitMemoryFrontmatter(text)
 	if !ok {
 		return raw

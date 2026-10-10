@@ -51,6 +51,7 @@ func FuzzFrontmatterParse(f *testing.F) {
 		// Framing contract: an unframed document is returned verbatim with nil
 		// Meta; a framed one splits Body exactly at the inner boundary.
 		const delim = "---\n"
+		raw = NormalizeLineEndings(raw)
 		if idx := indexAfter(raw); idx < 0 {
 			if doc.Meta != nil || doc.Body != raw {
 				t.Fatalf("unframed document not returned verbatim:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
