@@ -1103,9 +1103,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// run's lease, so the admission gate (coversPresentedAttention) and
 		// this predicate agree. A successful leased turn credits what its
 		// requests presented as consumed, so the predicate falls quiet; an
-		// update stays pending only if no request presented it, and a turn
-		// that fails first returns its error from the process call below
-		// rather than looping.
+		// update stays pending only if no request presented it or its marker
+		// write failed (retried after the turn), and a turn that fails first
+		// returns its error from the process call below rather than looping.
 		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasPendingDelegateUpdateAttention()
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
@@ -1125,6 +1125,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			}
 			if res != "" {
 				lastResult = res
+			}
+			// A failed consumed-marker write leaves an update the model
+			// already saw pending, and the predicate above would run another
+			// model turn for it. The turn's coverage survives until the next
+			// turn starts, so retry only the marker.
+			if s.hasPendingDelegateUpdateAttention() {
+				if err := s.finishAttentionTurn(nil, nil); err != nil {
+					return lastResult, err
+				}
 			}
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall

@@ -686,6 +686,22 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 // coordinator, and that turn carries the report along with it.
 func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	t.Parallel()
+	drainingCoordinatorWaitsForAnUpdate(t, false)
+}
+
+// When the write that marks the update consumed fails once, the drain retries
+// the marker without running a second model turn for an update the model
+// already saw.
+func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
+	t.Parallel()
+	drainingCoordinatorWaitsForAnUpdate(t, true)
+}
+
+// drainingCoordinatorWaitsForAnUpdate runs the draining-coordinator scenario;
+// failConsumedMarker makes the coordinator's first attention resolution write
+// fail.
+func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failConsumedMarker bool) {
+	t.Helper()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
 	coordinatorIdle, updateGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	releaseUpdate := sync.OnceFunc(func() { close(updateGate) })
@@ -764,9 +780,24 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
 		t.Fatalf("the sibling's report ran a turn: the coordinator made %d model requests, want 3", got)
 	}
+	if failConsumedMarker {
+		installResolutionSyncFailureWriter(t, coordinator)
+	}
 	releaseUpdate()
 	select {
 	case text := <-presented:
+		if failConsumedMarker {
+			// Worker B stays blocked, so no report can run a turn: the only
+			// possible fifth request is a rerun for the update.
+			// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+			waitForCondition(t, 30*time.Second, "the update to be marked consumed", func() bool {
+				fold, err := readDelegateAttentionFold(path, sessionID)
+				return err == nil && len(fold.pendingIDs()) == 0
+			})
+			if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
+				t.Fatalf("the coordinator made %d model requests after the marker write failed, want 4", got)
+			}
+		}
 		releaseReport()
 		if !strings.Contains(text, "SIBLING_UPDATE") {
 			t.Fatalf("the coordinator's first drain turn was not woken by the update:\n%s", text)
