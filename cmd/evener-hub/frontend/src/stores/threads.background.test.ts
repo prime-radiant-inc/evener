@@ -750,7 +750,7 @@ describe("background thread claims", () => {
       const ref = "local:recovery-retirement";
       const lease = acquireBackgroundThread(ref);
       let hold: ReturnType<typeof holdNextWriteTransaction> | undefined;
-      let release: Promise<void> | undefined;
+      let release: ReturnType<ReturnType<typeof acquireBackgroundThread>["release"]> | undefined;
       try {
         await cache.readEpoch();
         await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
@@ -801,8 +801,8 @@ describe("background thread claims", () => {
     const firstOwner = acquireBackgroundThread(ref);
     let replacement: ReturnType<typeof acquireBackgroundThread> | undefined;
     let heldWrite: ReturnType<typeof holdNextWriteTransaction> | undefined;
-    let firstRelease: Promise<void> | undefined;
-    let replacementRelease: Promise<void> | undefined;
+    let firstRelease: ReturnType<ReturnType<typeof acquireBackgroundThread>["release"]> | undefined;
+    let replacementRelease: ReturnType<ReturnType<typeof acquireBackgroundThread>["release"]> | undefined;
     try {
       await cache.readEpoch();
       await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
@@ -2709,8 +2709,16 @@ describe("background thread claims", () => {
     expect(threadsStore.getState().threads.get("local:one")).toBe(resident);
     expect(membershipReads(fake)).toBe(subscribedReads);
 
+    const ownerCalls = fake.calls.length;
     await first.release();
     await second.release();
+    expect(
+      fake.calls
+        .slice(ownerCalls)
+        .filter((call) =>
+          ["turn/start", "turn/steer", "turn/queue", "thread/resume", "thread/unsubscribe"].includes(call.method),
+        ),
+    ).toEqual([]);
     fake.emitNotification(textDelta("local:one", "-after-background-close"));
     expect(
       threadsStore

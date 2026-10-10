@@ -9,7 +9,7 @@ import type {
   NavigationSessionSummary,
   ThreadStartResponse,
 } from "@evener/appwire-client";
-import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { AppwireClient, acquireThreadSubscription, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -703,6 +703,56 @@ function backgroundReadyClient(): FakeClient {
   client.on("thread/unsubscribe", () => ({}));
   return client;
 }
+
+test("two mounted panes and an activity holder survive background ownership release", async () => {
+  const client = backgroundReadyClient();
+  const owners = trackBackgroundOwners();
+  const activity = acquireThreadSubscription(client, "local:s1");
+  const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
+  let view: ReturnType<typeof render> | undefined;
+  try {
+    window.history.pushState({}, "", "/s/local:s1");
+    installLocationForRoute("local:s1");
+    view = render(<AppShell client={client} />);
+    await waitFor(() => expect(membershipReads(client)).toBeGreaterThanOrEqual(1));
+    act(() => {
+      workspaceStore
+        .getState()
+        .openPane("transcript", { ref: "local:s1", parentRef: "local:owner" }, { slot: "secondary" });
+    });
+    await waitFor(() =>
+      expect(ensure.mock.calls.filter(([ref]) => ref === "local:s1").length).toBeGreaterThanOrEqual(2),
+    );
+    await activity.read({ includeTurns: false, itemsView: "full", itemLimit: 80 });
+    await owners.records[0]!.owner.settled();
+    const boundary = client.calls.length;
+    await act(async () => {
+      await owners.records[0]!.owner.dispose();
+    });
+    expect(unsubscribedRefs(client)).not.toContain("local:s1");
+    expect(
+      workspaceStore.getState().panes.filter((pane) => (pane.params as { ref?: string }).ref === "local:s1"),
+    ).toHaveLength(2);
+    expect(
+      client.calls
+        .slice(boundary)
+        .filter((call) => call.method.startsWith("thread/"))
+        .every((call) => call.method === "thread/read" || call.method === "thread/unsubscribe"),
+    ).toBe(true);
+    view.unmount();
+    view = undefined;
+    await owners.joinDisposals();
+    expect(unsubscribedRefs(client)).not.toContain("local:s1");
+    activity.release();
+    await waitFor(() => expect(unsubscribedRefs(client)).toContain("local:s1"));
+  } finally {
+    view?.unmount();
+    activity.release();
+    await owners.joinDisposals();
+    ensure.mockRestore();
+    owners.restore();
+  }
+});
 
 // A versioned thread read carrying `literal`, so a resident model has versioned
 // history and its release drains a real cache write; distinct literals let a

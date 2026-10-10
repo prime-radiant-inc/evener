@@ -87,7 +87,7 @@ import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCache
 import type { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
-import { type TranscriptReader, TranscriptRepository } from "./transcriptRepository";
+import { type TranscriptReader, TranscriptRepository, type TranscriptRetirementOutcome } from "./transcriptRepository";
 import {
   createTranscriptResidency,
   type ReceivedTranscriptUpdate,
@@ -250,6 +250,7 @@ export interface ThreadsStoreState {
   // a canceled action never republishes over newer authoritative state.
   refreshThread(ref: string, beforePublish?: () => void): Promise<void>;
   releaseThread(ref: string): void;
+  releaseThreadAndWait(ref: string): Promise<TranscriptRetirementOutcome | undefined>;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
   // upgrades the read to carry the child's turn history for the expanded
@@ -397,7 +398,7 @@ export interface ThreadsStoreState {
 
 export interface BackgroundThreadLease {
   readonly ready: Promise<void>;
-  release(): Promise<void>;
+  release(): Promise<undefined | TranscriptRetirementOutcome>;
 }
 
 // Module-private bookkeeping the locked interface doesn't expose: pane
@@ -461,6 +462,20 @@ function canonicalThreadOwnerActive(ref: string): boolean {
 }
 
 function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): void {
+  const fixture = entryTranscriptFixtureForTests;
+  if (fixture?.ref === ref && fixture.retirement) {
+    fixture.repository?.dispose();
+    fixture.unsubscribeRepository?.();
+    fixture.unsubscribeRepository = undefined;
+    fixture.reader?.dispose();
+    fixture.reader = undefined;
+    fixture.repository = undefined;
+    fixture.retirement = undefined;
+    fixture.lifetime++;
+    noteEntryRouteRetirement(ref);
+    finalReleaseOwners.delete(ref);
+    removeThreadModel(ref);
+  }
   if (finalReleaseCuts.delete(ref)) {
     const model = threadsStore.getState().threads.get(ref);
     if (model) scheduleCacheWrite(ref);
@@ -492,6 +507,11 @@ async function endHistoryHold(ref: string): Promise<void> {
   historyHoldCounts.delete(ref);
   syncTranscriptResidencyOwners(ref);
   retireCanonicalThreadIfUnowned(ref);
+  const retirement = retireEntryTranscriptIfUnowned(ref);
+  if (retirement) {
+    await retirement;
+    return;
+  }
   syncThreadSubscription(ref);
   if (!canonicalThreadOwnerActive(ref)) dropUnpinnedModel(ref);
 }
@@ -575,6 +595,7 @@ interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsFo
   repository?: TranscriptRepository;
   reader?: TranscriptReader;
   unsubscribeRepository?: () => void;
+  retirement?: Promise<TranscriptRetirementOutcome>;
   lifetime: number;
   readSequence: number;
   historyKey?: string;
@@ -704,6 +725,7 @@ function clearEntryTranscriptLocalOpening(ref: string): void {
 // ref is genuinely background-only; an attached reader means a real holder.
 function publishEntryTranscriptFixtureModel(ref: string): void {
   const fixture = entryTranscriptFixtureForTests;
+  if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
   const snapshot = fixture?.repository?.getSnapshot();
   if (!snapshot) return;
   putThreadModel(ref, isEntryTranscriptFixtureBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
@@ -734,12 +756,36 @@ function releaseEntryTranscriptFixtureReader(ref: string): void {
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
-  fixture.unsubscribeRepository?.();
-  fixture.unsubscribeRepository = undefined;
   const model = threadsStore.getState().threads.get(ref);
   if (model && isEntryTranscriptFixtureBackgroundOnly(ref)) {
     putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
+}
+
+function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetirementOutcome> | undefined {
+  const fixture = entryTranscriptFixtureForTests;
+  const repository = fixture?.ref === ref ? fixture.repository : undefined;
+  if (!fixture || !repository || canonicalThreadOwnerActive(ref)) return undefined;
+  if (fixture.retirement) return fixture.retirement;
+  const generation = (backgroundLeaseSequences.get(ref) ?? 0) + 1;
+  backgroundLeaseSequences.set(ref, generation);
+  finalReleaseOwners.set(ref, generation);
+  syncThreadSubscription(ref);
+  fixture.retirement = repository.retire().then((outcome) => {
+    if (fixture.repository !== repository || canonicalThreadOwnerActive(ref)) return { kind: "cancelled" };
+    fixture.unsubscribeRepository?.();
+    fixture.unsubscribeRepository = undefined;
+    fixture.reader?.dispose();
+    fixture.reader = undefined;
+    repository.dispose();
+    fixture.repository = undefined;
+    fixture.retirement = undefined;
+    if (finalReleaseOwners.get(ref) === generation) finalReleaseOwners.delete(ref);
+    dropUnpinnedModel(ref, false);
+    syncThreadSubscription(ref);
+    return outcome;
+  });
+  return fixture.retirement;
 }
 
 async function acceptEntryTranscriptHydration(
@@ -812,9 +858,31 @@ async function acceptEntryTranscriptHydration(
       lifetime: fixture.lifetime,
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
       suppressed: () => fixture.clearInert === true,
+      readHistory: (held) => {
+        const client = wiredClient;
+        const epoch = readyEpoch;
+        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+        const lease = syncThreadSubscription(ref, client);
+        if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
+        const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
+        return lease.read(threadReadParams(true, generation, held)).then((result) => {
+          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+          return result;
+        });
+      },
+      readHistoryPage: ({ cursor, before }) => {
+        const client = wiredClient;
+        const epoch = readyEpoch;
+        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+        return client.request("thread/turns/list", { ...olderItemsParams(ref, cursor), before }).then((result) => {
+          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+          return result;
+        });
+      },
     });
   }
   const repository = fixture.repository;
+  fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     readId: `fixture-read-${++fixture.readSequence}`,
@@ -4214,17 +4282,19 @@ function handleNotification(n: AnyNotification): void {
     }
   }
   const now = Date.now();
-  const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   const route = notificationRoutingKey(n);
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
       const fixture = entryTranscriptFixtureForTests;
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
-        fixture.repository.accept(n, { lifetime: fixture.lifetime });
+        if (fixture.repository.accept(n, { lifetime: fixture.lifetime }) && !fixture.unsubscribeRepository) {
+          publishEntryTranscriptFixtureModel(ref);
+        }
       }
     }
   }
+  const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   const residencySkipped = new Set<string>();
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
@@ -4274,10 +4344,11 @@ function handleNotification(n: AnyNotification): void {
   // accept no other method), and the frame has already been offered to that
   // repository above. Folding it into the store as well would make the store a
   // second owner able to publish recorded content the repository refused.
-  // Overlay, status and every metadata/session method keep their ordinary fold:
-  // only recorded history is excluded, and only for the fixture ref.
+  // Overlay is repository-owned too: the ordinary end reducer would overwrite
+  // the repository's uncovered-slot handoff. Other routes retain their existing
+  // overlay semantics, and status/session metadata keep their ordinary fold.
   const fixtureRecordedRefs: ReadonlySet<string> =
-    route && n.method === "history/updated"
+    route && (n.method === "history/updated" || n.method.startsWith("overlay/"))
       ? new Set(
           ("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])]).filter((ref) =>
             isEntryTranscriptFixtureRef(ref),
@@ -5389,6 +5460,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
+  async releaseThreadAndWait(ref) {
+    threadsStore.getState().releaseThread(ref);
+    return entryTranscriptFixtureForTests?.ref === ref ? entryTranscriptFixtureForTests.retirement : undefined;
+  },
+
   releaseThread(ref) {
     const count = refCounts.get(ref) ?? 0;
     if (count <= 0) return; // never tracked, or already released
@@ -5399,6 +5475,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     refCounts.delete(ref);
     syncTranscriptResidencyOwners(ref);
+    const retirement = retireEntryTranscriptIfUnowned(ref);
+    if (retirement) {
+      releaseSubagentRows(ref);
+      releaseEntryTranscriptFixtureReader(ref);
+      retireCanonicalThreadIfUnowned(ref);
+      return retirement;
+    }
     syncThreadSubscription(ref);
     releaseSubagentRows(ref);
     releaseEntryTranscriptFixtureReader(ref);
@@ -6693,21 +6776,33 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   })();
   const ready = Promise.race([acquisition, retired]).finally(() => stopWatchingReadyGeneration?.());
 
-  let releasePromise: Promise<void> | undefined;
+  let releasePromise: Promise<undefined | TranscriptRetirementOutcome> | undefined;
   return {
     ready,
-    release(): Promise<void> {
+    release(): Promise<undefined | TranscriptRetirementOutcome> {
       if (releasePromise) return releasePromise;
       settleRetired?.();
       const remaining = (backgroundRefCounts.get(ref) ?? 0) - 1;
       if (remaining > 0) {
         backgroundRefCounts.set(ref, remaining);
         syncTranscriptResidencyOwners(ref);
-        releasePromise = Promise.resolve();
+        releasePromise = Promise.resolve(undefined);
         return releasePromise;
       }
       backgroundRefCounts.delete(ref);
       syncTranscriptResidencyOwners(ref);
+      const entryRetirement = retireEntryTranscriptIfUnowned(ref);
+      if (entryRetirement) {
+        retireCanonicalThreadIfUnowned(ref);
+        const pending = pendingThreadHydrations.get(ref);
+        if (pending) retirePendingHydration(ref, pending, pendingThreadHydrations);
+        inflightHydrates.delete(ref);
+        inflightHydrateClients.delete(ref);
+        inflightHydrateEpochs.delete(ref);
+        trackedHydrationCompletions.delete(ref);
+        releasePromise = entryRetirement;
+        return releasePromise;
+      }
       const releaseGeneration = (backgroundLeaseSequences.get(ref) ?? 0) + 1;
       backgroundLeaseSequences.set(ref, releaseGeneration);
       finalReleaseOwners.set(ref, releaseGeneration);

@@ -176,6 +176,13 @@ test("Rail keeps a previously loaded later visible page and Load more through ba
 
   const owner = startBackgroundTranscripts(navigationStore);
   await owner.settled();
+  const acquired = client.calls
+    .filter((call) => call.method === "thread/read")
+    .map((call) => (call.params as { ref: string }).ref);
+  expect(new Set(acquired)).toEqual(new Set([...pages.values()].flatMap((page) => page.map((session) => session.ref))));
+  expect(client.calls.every((call) => call.method === "evener/navigation/read" || call.method === "thread/read")).toBe(
+    true,
+  );
 
   render(<Rail />, {
     wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider>,
@@ -188,6 +195,8 @@ test("Rail keeps a previously loaded later visible page and Load more through ba
   expect(screen.getByText("live-006")).toBeTruthy();
   expect(screen.queryByText("live-003")).toBeNull();
   expect(screen.queryByText("live-004")).toBeNull();
+  expect(screen.queryByText("live-007")).toBeNull();
+  expect(screen.queryByText("live-008")).toBeNull();
   expect(screen.getByText("+4 older")).toBeTruthy();
 
   // Reconnect: a fresh generation re-boots navigation and the owner rediscovers.

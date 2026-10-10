@@ -15,6 +15,7 @@ import {
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
   pruneBackgroundHistoryBodies,
+  type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
   type ThreadModel,
@@ -223,9 +224,17 @@ export interface TranscriptRepositoryBinding {
    * readiness honestly and the breaker waits for changed eligible content.
    */
   reconcile?: () => void;
+  /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
+  readHistory?: (held?: SnapshotIdentity) => Promise<ThreadReadResponse>;
+  readHistoryPage?: (request: {
+    snapshot: SnapshotIdentity;
+    cursor: string;
+    before: ThreadItemPosition;
+  }) => Promise<ThreadTurnsListResponse>;
 }
 
 export type TranscriptReaderStatus = "current" | "stale" | "recovery-needed";
+export type TranscriptRetirementOutcome = { kind: "saved" | "stale" | "cancelled" };
 
 export interface TranscriptReaderResult {
   model?: ThreadModel;
@@ -354,6 +363,14 @@ export class TranscriptRepository {
   // the shared cache, released on disposal so a replacement owner is the one
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
+  readonly #endClaims = new Set<string>();
+  #endWork: Promise<void> | undefined;
+  #endRetryCancel: (() => void) | undefined;
+  #endRetryAttempt = 0;
+  #lastDisposedRound: string | undefined;
+  #sealed = false;
+  #retirement: Promise<TranscriptRetirementOutcome> | undefined;
+  #cancelRetirement: (() => void) | undefined;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -503,10 +520,13 @@ export class TranscriptRepository {
   }
 
   /** Accept a complete wire read under its captured reader lifetime. */
-  acceptRead(response: ThreadReadResponse, request: { lifetime: number; readId: string; boundary: string }): boolean {
-    if (!this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
+  acceptRead(
+    response: ThreadReadResponse,
+    request: { lifetime: number; readId: string; boundary: string; preserveEnded?: boolean },
+  ): boolean {
+    if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
-    const candidate = before
+    let candidate = before
       ? applyReadResponse(before, response, this.#now())
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
@@ -529,6 +549,23 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    if (request.preserveEnded && before?.overlay) {
+      for (const item of Object.values(before.overlay)) {
+        if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
+        candidate = applyNotification(
+          candidate,
+          { method: "overlay/upserted", params: { ref: this.#binding.ref, threadId: this.#binding.threadId, item } },
+          this.#now(),
+        );
+      }
+      for (const roundId of this.#endClaims) {
+        candidate = applyOverlayEndForTranscriptHandoff(
+          candidate,
+          { method: "overlay/end", params: { ref: this.#binding.ref, threadId: this.#binding.threadId, roundId } },
+          this.#now(),
+        );
+      }
+    }
     if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
@@ -604,10 +641,17 @@ export class TranscriptRepository {
 
   /** Accept a notification only when the captured authority still matches this repository. */
   accept(notification: AnyNotification, context: { lifetime: number }): boolean {
-    if (!this.#acceptsLifetime(context.lifetime)) return false;
+    if (this.#sealed || !this.#acceptsLifetime(context.lifetime)) return false;
     const params = notification.params as { ref?: unknown; threadId?: unknown; item?: unknown };
     if (params.ref !== this.#binding.ref || params.threadId !== this.#binding.threadId) return false;
     if (!this.#model) return false;
+    if (notification.method === "overlay/end" && notification.params.roundId === this.#lastDisposedRound) return false;
+    if (notification.method === "overlay/end") {
+      if (notification.params.roundId !== this.#lastDisposedRound) {
+        this.#endClaims.add(notification.params.roundId);
+        this.#startEndDisposition();
+      }
+    }
     const previousModel = this.#model;
     const now = this.#now();
     const next =
@@ -688,7 +732,7 @@ export class TranscriptRepository {
       requestCursor?: string;
     },
   ): boolean {
-    if (!this.#acceptsLifetime(request.lifetime)) return false;
+    if (this.#sealed || !this.#acceptsLifetime(request.lifetime)) return false;
     if (request.authority !== this.#baselineIdentity) return false;
     if (response.snapshot && response.snapshot.incarnation !== this.#binding.identity.incarnation) return false;
     const current = this.#model;
@@ -985,7 +1029,8 @@ export class TranscriptRepository {
    * a future timer (which demand can keep rearming), so it throws when recovery
    * is outstanding rather than hanging or silently succeeding.
    */
-  async settled(): Promise<void> {
+  async settled(includeEnd = true): Promise<void> {
+    if (includeEnd) await this.#endWork;
     // Accepted background work drains immediately once the batch ahead of it
     // settles, so await that continuation instead of reporting a batch that is
     // queued only because this repository is still running its predecessor. A
@@ -1027,6 +1072,9 @@ export class TranscriptRepository {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#cancelRetirement?.();
+    this.#endRetryCancel?.();
+    this.#endRetryCancel = undefined;
     this.#unregisterPreferred?.();
     this.#unregisterPreferred = undefined;
     this.#cancelRetry();
@@ -1035,6 +1083,215 @@ export class TranscriptRepository {
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
+  }
+
+  /** Fresh response seals inputs, then joins only the writes accepted at that cut. */
+  retire(): Promise<TranscriptRetirementOutcome> {
+    if (this.#retirement) return this.#retirement;
+    this.#endRetryCancel?.();
+    this.#endRetryCancel = undefined;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const current = () => active && this.#acceptsLifetime(this.#binding.lifetime);
+    const cancelled = new Promise<TranscriptRetirementOutcome>((resolve) => {
+      this.#cancelRetirement = () => {
+        active = false;
+        resolve({ kind: "cancelled" });
+      };
+    });
+    const work = (async (): Promise<TranscriptRetirementOutcome> => {
+      const read = this.#binding.readHistory;
+      if (!read || !current()) return { kind: "stale" };
+      const response = await read();
+      if (!current()) return { kind: "cancelled" };
+      if (!response.snapshot || !this.#matchesRead(response)) throw new Error("final read has no authority");
+      const boundary = `final:${this.#boundary}:${response.snapshot.length}`;
+      if (
+        !this.acceptRead(response, {
+          lifetime: this.#binding.lifetime,
+          readId: boundary,
+          boundary,
+          preserveEnded: true,
+        })
+      )
+        throw new Error("final read was discarded");
+      this.#sealed = true;
+      await this.settled(false);
+      if (!current()) return { kind: "cancelled" };
+      const unresolvedEnd = Object.values(this.#model?.overlay ?? {}).some(
+        (item) => item.kind !== "notice" && item.roundId && this.#endClaims.has(item.roundId),
+      );
+      return { kind: this.#recoveryNeeded || unresolvedEnd ? "stale" : "saved" };
+    })();
+    this.#retirement = Promise.race([
+      work,
+      cancelled,
+      new Promise<TranscriptRetirementOutcome>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "stale" }), 30_000);
+      }),
+    ])
+      .catch((): TranscriptRetirementOutcome => ({ kind: current() ? "stale" : "cancelled" }))
+      .then((outcome) => {
+        this.#sealed = true;
+        if (outcome.kind === "stale" && current()) {
+          this.#recoveryNeeded = true;
+          if (this.#model) this.#model = invalidateHistory(this.#model);
+          this.#publish();
+        }
+        return outcome;
+      })
+      .finally(() => {
+        active = false;
+        this.#cancelRetirement = undefined;
+        if (timer !== undefined) clearTimeout(timer);
+      });
+    return this.#retirement;
+  }
+
+  #startEndDisposition(): void {
+    if (
+      this.#retirement ||
+      !this.#binding.readHistory ||
+      this.#endWork ||
+      this.#endRetryCancel ||
+      !this.#acceptsLifetime(this.#binding.lifetime)
+    )
+      return;
+    // Defer once so a recorded publication in the same delivery batch can retire
+    // its covered slots before the authoritative request is issued.
+    this.#endWork = Promise.resolve()
+      .then(async () => {
+        const rounds = new Set(this.#endClaims);
+        if (rounds.size === 0 || !this.#acceptsLifetime(this.#binding.lifetime)) return;
+        let active = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          // Same 30-second deadline as AppwireClient's ordinary thread/read. One
+          // attempt owns that deadline, not one new interval per returned page.
+          await Promise.race([
+            this.#resolveEnd(
+              rounds,
+              () => active && !this.#retirement && this.#acceptsLifetime(this.#binding.lifetime),
+            ),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("end disposition timed out")), 30_000);
+            }),
+          ]);
+          if (this.#retirement || !this.#acceptsLifetime(this.#binding.lifetime)) return;
+          for (const round of rounds) {
+            this.#endClaims.delete(round);
+            this.#lastDisposedRound = round;
+          }
+          this.#endRetryAttempt = 0;
+        } catch {
+          if (this.#retirement || !this.#acceptsLifetime(this.#binding.lifetime)) return;
+          this.#recoveryNeeded = true;
+          if (this.#readerCount === 0) this.#dropEnded(rounds);
+          if (this.#model) this.#model = invalidateHistory(this.#model);
+          this.#publish();
+          this.#paceEndRetry();
+        } finally {
+          active = false;
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      })
+      .finally(() => {
+        this.#endWork = undefined;
+        if (this.#endClaims.size > 0 && !this.#endRetryCancel) this.#startEndDisposition();
+      });
+  }
+
+  #paceEndRetry(): void {
+    if (this.#endRetryCancel || !this.#binding.readHistory) return;
+    const attempt = ++this.#endRetryAttempt;
+    const fire = () => {
+      this.#endRetryCancel = undefined;
+      this.#startEndDisposition();
+    };
+    if (this.#binding.retryScheduler) this.#endRetryCancel = this.#binding.retryScheduler(attempt, fire);
+    else {
+      const timer = setTimeout(fire, Math.min(2_000, 250 * 2 ** Math.min(attempt - 1, 3)));
+      this.#endRetryCancel = () => clearTimeout(timer);
+    }
+  }
+
+  #dropEnded(rounds: ReadonlySet<string>): void {
+    if (!this.#model) return;
+    for (const roundId of rounds)
+      this.#model = applyNotification(
+        this.#model,
+        {
+          method: "overlay/end",
+          params: { ref: this.#binding.ref, threadId: this.#binding.threadId, roundId },
+        },
+        this.#now(),
+      );
+  }
+
+  async #resolveEnd(rounds: ReadonlySet<string>, current: () => boolean): Promise<void> {
+    const model = this.#model;
+    const read = this.#binding.readHistory;
+    if (!model || !read) throw new Error("end disposition has no source");
+    // Only identities and positions are captured. Bodies remain in the real
+    // model, charged by the existing handoff owner, until disposition.
+    const anchors = Object.values(model.overlay ?? {})
+      .flatMap((item) =>
+        item.kind !== "notice" && item.roundId && rounds.has(item.roundId) && item.anchor ? [item.anchor] : [],
+      )
+      .sort(comparePosition);
+    const held = model.history?.incarnation
+      ? { incarnation: model.history.incarnation, length: model.history.length }
+      : undefined;
+    const response = await read(held);
+    if (!current()) return;
+    if (!response.snapshot || !this.#matchesRead(response)) throw new Error("end disposition has no history authority");
+    const fixed = response.snapshot;
+    const boundary = `end:${this.#boundary}:${fixed.length}`;
+    if (
+      !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
+    )
+      throw new Error("end disposition read was discarded");
+    const minimum = anchors[0];
+    let cursor = response.olderCursor;
+    let before = this.#rowsFromWindow(response)
+      .map((row) => row.position)
+      .sort(comparePosition)[0];
+    const seen = new Set<string>();
+    while (minimum && before && comparePosition(minimum, before) < 0 && cursor) {
+      if (!this.#binding.readHistoryPage || seen.has(cursor)) throw new Error("end disposition coverage is incomplete");
+      seen.add(cursor);
+      const page = await this.#binding.readHistoryPage({ snapshot: fixed, cursor, before });
+      if (!current()) return;
+      // Later traffic cannot move this attempt's history boundary.
+      if (
+        page.snapshot?.incarnation !== fixed.incarnation ||
+        page.snapshot.length !== fixed.length ||
+        page.bootGeneration !== response.bootGeneration ||
+        page.epoch !== response.epoch
+      )
+        throw new Error("end disposition page crossed its boundary");
+      if (
+        !this.acceptPage(page, {
+          lifetime: this.#binding.lifetime,
+          readId: boundary,
+          boundary,
+          authority: this.#baselineIdentity,
+          requestCursor: cursor,
+          before,
+        })
+      )
+        throw new Error("end disposition page was discarded");
+      const positions = page.data
+        .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
+        .sort(comparePosition);
+      before = positions[0] ?? before;
+      cursor = page.nextCursor;
+    }
+    if (minimum && before && comparePosition(minimum, before) < 0 && cursor !== undefined)
+      throw new Error("end disposition coverage is incomplete");
+    this.#dropEnded(rounds);
+    this.#recoveryNeeded = this.#model?.history?.invalidatedAtGeneration !== undefined;
+    this.#publish();
   }
 
   #acceptsLifetime(lifetime: number): boolean {

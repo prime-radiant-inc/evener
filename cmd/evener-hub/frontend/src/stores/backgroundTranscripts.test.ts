@@ -420,6 +420,28 @@ describe("eligibleLiveRefs", () => {
 });
 
 describe("startBackgroundTranscripts", () => {
+  test("discovers idle attached-host sessions beyond two pages without automatic delegate or archive demand", async () => {
+    world.pages = new Map([
+      [0, { rows: [liveRow("local:first")], remaining: 3 }],
+      [1, { rows: [liveRow("local:delegate", { kind: "subagent" })], remaining: 2 }],
+      [2, { rows: [liveRow("local:archive", { live: false })], remaining: 1 }],
+      [3, { rows: [liveRow("remote-a:idle", { host_id: "remote-a", state: "idle" })], remaining: 0 }],
+    ]);
+    fake = connectFake();
+    await navigationStore.getState().loadSection("live", 0);
+    const visible = selectLiveRows(navigationStore.getState()).map((row) => row.ref);
+    const boundary = selectNextSectionOffset("live", navigationStore.getState());
+    const owner = startBackgroundTranscripts(navigationStore);
+    try {
+      await owner.settled();
+      expect(threadReadRefs()).toEqual(new Set(["local:first", "remote-a:idle"]));
+      expect(selectLiveRows(navigationStore.getState()).map((row) => row.ref)).toEqual(visible);
+      expect(selectNextSectionOffset("live", navigationStore.getState())).toBe(boundary);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
   test("owns every Live page without moving the visible rail boundary", async () => {
     // Three full pages at the section limit. Page 0 carries a remote session;
     // the terminal page carries an idle remote session. (The v3 navigation
