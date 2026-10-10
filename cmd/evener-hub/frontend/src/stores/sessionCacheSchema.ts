@@ -75,6 +75,9 @@ export interface TranscriptHistoryMetaRow {
   savedAt?: number;
   accessedAt?: number;
   formatVersion?: number;
+  // Durable per-history fence generation. Deletion advances it so work captured
+  // before the delete cannot re-enter the identity; absent means 0.
+  generation?: number;
 }
 
 export interface TranscriptAggregateMetaRow {

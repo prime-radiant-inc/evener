@@ -79,7 +79,7 @@ afterEach(async () => {
   for (const { factory, name } of databases.splice(0)) await deleteDatabase(factory, name);
 });
 
-async function setup() {
+async function setup(extra: { maxBytes?: number; ttlMs?: number } = {}) {
   const name = `entry-migrate-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
@@ -88,6 +88,7 @@ async function setup() {
     keyRange: IDBKeyRange,
     databaseName: name,
     now: () => 1_000,
+    ...extra,
   });
   caches.push(cache);
   // Open the fixture database first so the v3 upgrade creates the entry stores;
@@ -263,7 +264,10 @@ it("refuses a migration captured before the durable Clear epoch", async () => {
       clearEpoch: 0,
     }),
   ).resolves.toEqual({ outcome: "refused", reason: "clear-epoch" });
-  await expect(readRaw(factory, name, "records", seeded.ref)).resolves.toMatchObject({ ref: seeded.ref });
+  // Approved all-history Clear contract: Clear removed the legacy source too,
+  // so there is nothing for a later epoch to re-import.
+  await expect(readRaw(factory, name, "records", seeded.ref)).resolves.toBeUndefined();
+  await expect(readRaw(factory, name, "meta", seeded.ref)).resolves.toBeUndefined();
   await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
 });
 
@@ -385,4 +389,169 @@ it("drops items without a key, position or version and never guesses one", () =>
   );
   expect(converted?.items.map((row) => row.transcriptKey)).toEqual(["e2"]);
   expect(legacySessionToEntryRows({ ref: "x" }, "identity")).toBeUndefined();
+});
+
+it("does not regress newer metadata or delete the newer target when migrating an older source", async () => {
+  // now=1000, ttl=100: the stale source timestamp 1 would expire, the newer
+  // 1000 would not. The merge must keep the newer retention state.
+  const { cache, legacy } = await setup({ ttlMs: 100 });
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [
+      {
+        historyKey,
+        transcriptKey: "e1",
+        position: { entry: 1, item: 0 },
+        version: 5,
+        item: { id: "a1", turnId: "turn_1", type: "agentMessage", text: "newer" },
+      },
+    ],
+    coverage: {
+      kind: "read",
+      readId: "read-new",
+      start: { entry: 1, item: 0 },
+      end: { entry: 1, item: 0 },
+      representedSnapshot: 1,
+      boundary: "read-new",
+    },
+    sessionMetadata: {
+      historyKey,
+      requestedRefs: [{ clientId: "c", ref: "alias://newer" }],
+      resolvedIdentity: identity,
+      savedAt: 1_000,
+      accessedAt: 1_000,
+      formatVersion: 3,
+    },
+  });
+  await legacy.put(legacyRecord(), 0, 1);
+
+  await expect(
+    migrateLegacySession(cache, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: "local:thr_1" }],
+      savedAt: 1,
+      source: { kind: "records", ref: "local:thr_1" },
+      clearEpoch: 0,
+    }),
+  ).resolves.toMatchObject({ outcome: "converted" });
+
+  const rows = await cache.getLatest(historyKey, 10);
+  expect(rows.find((row) => row.transcriptKey === "e1")).toMatchObject({ version: 5, item: { text: "newer" } });
+  await expect(cache.getSessionMetadata(historyKey)).resolves.toMatchObject({ savedAt: 1_000, accessedAt: 1_000 });
+  await expect(cache.getCoverage(historyKey, "read:read-new")).resolves.toMatchObject({ boundary: "read-new" });
+  const metadataAfter = await cache.getSessionMetadata(historyKey);
+  expect(metadataAfter?.requestedRefs).toEqual(
+    expect.arrayContaining([
+      { clientId: "c", ref: "alias://newer" },
+      { clientId: "c", ref: "local:thr_1" },
+    ]),
+  );
+});
+
+it("refuses a migration captured before a delete, keeps the source, and admits a fresh generation", async () => {
+  const { cache, legacy, factory, name } = await setup();
+  const seeded = legacyRecord();
+  await legacy.put(seeded, 0, 1_000);
+  await cache.deleteHistory(historyKey);
+  expect(await cache.getHistoryGeneration(historyKey)).toBe(1);
+
+  await expect(
+    migrateLegacySession(cache, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: seeded.ref }],
+      savedAt: 1_000,
+      source: { kind: "records", ref: seeded.ref },
+      clearEpoch: 0,
+    }),
+  ).resolves.toEqual({ outcome: "refused", reason: "history-fence" });
+  // The refused migration must not remove the source it would have converted.
+  await expect(readRaw(factory, name, "records", seeded.ref)).resolves.toMatchObject({ ref: seeded.ref });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+  await expect(
+    migrateLegacySession(cache, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: seeded.ref }],
+      savedAt: 1_000,
+      source: { kind: "records", ref: seeded.ref },
+      clearEpoch: 0,
+      historyGeneration: 1,
+    }),
+  ).resolves.toMatchObject({ outcome: "converted" });
+  const rowsAfter = await cache.getLatest(historyKey, 10);
+  expect(rowsAfter.map((row) => row.transcriptKey)).toEqual(["e1", "e2"]);
+});
+
+it("aborting Clear preserves every history store, the fence and the epoch", async () => {
+  const { cache, legacy, factory, name } = await setup();
+  await legacy.put(legacyRecord(), 0, 1_000);
+  const item: ThreadItem = {
+    id: "a1",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "cur",
+    transcriptKey: "e1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+  };
+  const base = currentRead("local:cur");
+  const read: ThreadReadResponse = {
+    ...base,
+    thread: { ...base.thread, turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [item] }] },
+  };
+  const state = currentTranscriptState(hydrateThread(read, "local:cur", 10));
+  if (!state) throw new Error("fixture state did not build");
+  const current: CurrentSessionRecord = {
+    ownerToken: "tab",
+    ref: "local:cur",
+    connectionGeneration: 1,
+    ownershipGeneration: 1,
+    clearEpoch: 0,
+    appliedSequence: 1,
+    savedAt: 10,
+    state,
+  };
+  await legacy.putCurrent(current, 10);
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [
+      {
+        historyKey,
+        transcriptKey: "entry",
+        position: { entry: 1, item: 0 },
+        version: 1,
+        item: { id: "entry", turnId: "turn_1", type: "agentMessage", text: "entry" },
+      },
+    ],
+  });
+
+  const transact = IDBDatabase.prototype.transaction;
+  let clearTransaction: IDBTransaction | undefined;
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    if (
+      transaction.mode === "readwrite" &&
+      transaction.objectStoreNames.contains("records") &&
+      transaction.objectStoreNames.contains("current")
+    ) {
+      clearTransaction = transaction;
+    }
+    return transaction;
+  });
+  const pending = cache.clear();
+  await settleRealTasks(() => clearTransaction !== undefined);
+  expect(clearTransaction).toBeDefined();
+  clearTransaction?.abort();
+  await expect(pending).resolves.toEqual({ committed: false, epoch: 0 });
+  vi.restoreAllMocks();
+
+  await expect(readRaw(factory, name, "records", "local:thr_1")).resolves.toBeDefined();
+  await expect(readRaw(factory, name, "current", ["tab", "local:cur"])).resolves.toBeDefined();
+  await expect(cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "entry" }]);
+  expect(await cache.getHistoryGeneration(historyKey)).toBe(0);
 });

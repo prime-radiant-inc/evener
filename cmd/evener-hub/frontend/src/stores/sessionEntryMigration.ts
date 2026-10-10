@@ -19,6 +19,8 @@ export interface MigrateLegacySessionOptions {
   accessedAt?: number;
   source: EntryMigrationSource;
   clearEpoch: number;
+  // Durable generation the caller read for this identity. Defaults to 0.
+  historyGeneration?: number;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -109,6 +111,7 @@ export function migrateLegacySession(
   return cache.commitMigration({
     historyKey,
     clearEpoch: options.clearEpoch,
+    historyGeneration: options.historyGeneration,
     source: options.source,
     sessionMetadata,
     convert: (legacy) => legacySessionToEntryRows(legacy, historyKey),

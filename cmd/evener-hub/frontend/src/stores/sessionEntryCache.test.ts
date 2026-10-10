@@ -1,12 +1,17 @@
 import {
+  currentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
+  hydrateThread,
   markItemIdentityOnly,
   markItemTextOmitted,
+  type ThreadItem,
+  type ThreadReadResponse,
 } from "@evener/appwire-client";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   CURRENT_META_STORE,
   CURRENT_STORE,
@@ -2138,7 +2143,7 @@ function metadataFor(sessionId: string, savedAt: number, accessedAt: number) {
   };
 }
 
-it("evicts the least recently used history together with its coverage under a small cap", async () => {
+it("refuses an oversized history instead of committing it over the cap", async () => {
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
@@ -2151,9 +2156,45 @@ it("evicts the least recently used history together with its coverage under a sm
     now: () => 1_000,
   });
   caches.push(cache);
+  const historyKey = entryHistoryKey(identityFor("only"));
+
+  // Approved contract: an indivisible history larger than the cap must be
+  // refused, not written over the cap. Abort leaves no rows and no coverage.
+  await expect(
+    cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      coverage: {
+        kind: "read",
+        readId: "read-only",
+        start: { entry: 1, item: 0 },
+        end: { entry: 1, item: 0 },
+        representedSnapshot: 1,
+        boundary: "only",
+      },
+    }),
+  ).resolves.toEqual({ outcome: "refused", reason: "capacity" });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(cache.getCoverage(historyKey, "read:read-only")).resolves.toBeUndefined();
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({ historyBytes: 0, aggregateBytes: 0 });
+});
+
+it("evicts an older history with its coverage and reports the post-policy total", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
   const older = entryHistoryKey(identityFor("older"));
   const newer = entryHistoryKey(identityFor("newer"));
-  await cache.commitBatch({
+  await measure.commitBatch({
     historyKey: older,
     clearEpoch: 0,
     items: [itemRow(older, 1)],
@@ -2167,19 +2208,50 @@ it("evicts the least recently used history together with its coverage under a sm
     },
     sessionMetadata: metadataFor("older", 1, 1),
   });
-  await cache.commitBatch({
+  const olderBytes = (await measure.getByteTotals(older)).historyBytes;
+  await measure.commitBatch({
+    historyKey: newer,
+    clearEpoch: 0,
+    items: [itemRow(newer, 2)],
+    coverage: {
+      kind: "read",
+      readId: "read-newer",
+      start: { entry: 2, item: 0 },
+      end: { entry: 2, item: 0 },
+      representedSnapshot: 2,
+      boundary: "newer",
+    },
+    sessionMetadata: metadataFor("newer", 2, 2),
+  });
+  const newerBytes = (await measure.getByteTotals(newer)).historyBytes;
+  expect(olderBytes).toBeGreaterThan(0);
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: newerBytes + 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  const outcome = await capped.commitBatch({
     historyKey: newer,
     clearEpoch: 0,
     items: [itemRow(newer, 2)],
     sessionMetadata: metadataFor("newer", 2, 2),
   });
+  expect(outcome).toMatchObject({ outcome: "committed", encodedBytes: newerBytes });
 
-  // The protected (current) identity survives; the only other identity is
-  // evicted atomically with its coverage rather than left with a silent hole.
-  await expect(cache.getLatest(older, 10)).resolves.toEqual([]);
-  await expect(cache.getCoverage(older, "read:read-older")).resolves.toBeUndefined();
-  await expect(cache.getByteTotals(older)).resolves.toEqual({ historyBytes: 0, aggregateBytes: expect.any(Number) });
-  await expect(cache.getLatest(newer, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+  // The older identity, rows and coverage together, made room; the reported
+  // total equals the independently read durable total.
+  await expect(capped.getLatest(older, 10)).resolves.toEqual([]);
+  await expect(capped.getCoverage(older, "read:read-older")).resolves.toBeUndefined();
+  await expect(capped.getLatest(newer, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+  await expect(capped.getByteTotals(newer)).resolves.toEqual({
+    historyBytes: newerBytes,
+    aggregateBytes: newerBytes,
+  });
 });
 
 it("reclaims expired history on the next transaction under an injected clock", async () => {
@@ -2215,4 +2287,162 @@ it("reclaims expired history on the next transaction under an injected clock", a
 
   await expect(cache.getLatest(expired, 10)).resolves.toEqual([]);
   await expect(cache.getLatest(fresh, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+});
+
+it("prefers a retained identity when an archive write must evict", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  const live = entryHistoryKey(identityFor("live"));
+  const other = entryHistoryKey(identityFor("other"));
+  const archive = entryHistoryKey(identityFor("archive"));
+  const write = (historyKey: string, entry: number, savedAt: number) =>
+    measure.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, entry)],
+      sessionMetadata: metadataFor(
+        historyKey === live ? "live" : historyKey === other ? "other" : "archive",
+        savedAt,
+        savedAt,
+      ),
+    });
+  await write(live, 1, 1);
+  const liveBytes = (await measure.getByteTotals(live)).historyBytes;
+  await write(other, 1, 2);
+  const otherBytes = (await measure.getByteTotals(other)).historyBytes;
+  await write(archive, 1, 3);
+  const archiveBytes = (await measure.getByteTotals(archive)).historyBytes;
+  const cap = Math.max(liveBytes + otherBytes, liveBytes + archiveBytes, otherBytes + archiveBytes);
+  expect(cap).toBeLessThan(liveBytes + otherBytes + archiveBytes);
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: cap,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+    isPreferred: (unit) => unit.kind === "entry" && unit.historyKey === live,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey: archive,
+      clearEpoch: 0,
+      items: [itemRow(archive, 1)],
+      sessionMetadata: metadataFor("archive", 3, 3),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  await expect(capped.getLatest(live, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+  await expect(capped.getLatest(archive, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+  await expect(capped.getLatest(other, 10)).resolves.toEqual([]);
+  await expect(capped.getByteTotals(other)).resolves.toMatchObject({ historyBytes: 0 });
+});
+
+it("counts a current checkpoint in the combined cap and evicts its body", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(cache);
+  await cache.getByteTotals("warmup");
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
+  caches.push(legacy);
+
+  const item: ThreadItem = {
+    id: "a1",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "x".repeat(20_000),
+    transcriptKey: "e1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+  };
+  const base = currentRead("local:big");
+  const read: ThreadReadResponse = {
+    ...base,
+    thread: { ...base.thread, turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [item] }] },
+  };
+  const state = currentTranscriptState(hydrateThread(read, "local:big", 10));
+  if (!state) throw new Error("fixture state did not build");
+  const current: CurrentSessionRecord = {
+    ownerToken: "tab",
+    ref: "local:big",
+    connectionGeneration: 1,
+    ownershipGeneration: 1,
+    clearEpoch: 0,
+    appliedSequence: 1,
+    savedAt: 1_000,
+    state,
+  };
+  await legacy.putCurrent(current, 1_000);
+
+  const historyKey = entryHistoryKey(identityFor("entry"));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [itemRow(historyKey, 1)],
+    sessionMetadata: metadataFor("entry", 1_000, 1_000),
+  });
+  const entryBytes = (await cache.getByteTotals(historyKey)).historyBytes;
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: entryBytes + 5,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      sessionMetadata: metadataFor("entry", 1_000, 1_000),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  // The ~20 KB current checkpoint was part of the combined total, so it was
+  // evicted body-and-meta; the entry history survived.
+  const currentAfter = await new Promise<unknown>((resolve, reject) => {
+    const request = factory.open(name);
+    request.addEventListener(
+      "success",
+      () => {
+        const database = request.result;
+        const tx = database.transaction("current", "readonly");
+        const get = tx.objectStore("current").get(["tab", "local:big"]);
+        get.addEventListener("success", () => {
+          database.close();
+          resolve(get.result);
+        });
+        get.addEventListener("error", () => {
+          database.close();
+          reject(get.error);
+        });
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  expect(currentAfter).toBeUndefined();
+  await expect(capped.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
 });

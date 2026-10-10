@@ -186,15 +186,58 @@ it("returns false and keeps rows when a delete transaction aborts", async () => 
   await expect(cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
 });
 
-it("starts clean after a delete so a later write cannot resurrect removed rows", async () => {
+it("refuses pre-delete work and admits an explicit fresh-generation write", async () => {
   const { cache } = newCache();
   const historyKey = "host/session/delete-resurrection";
   await cache.commitBatch({ historyKey, clearEpoch: 0, items: [row(historyKey, 1), row(historyKey, 2)] });
   await cache.deleteHistory(historyKey);
   await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  const generation = await cache.getHistoryGeneration(historyKey);
+  expect(generation).toBe(1);
 
-  await expect(cache.commitBatch({ historyKey, clearEpoch: 0, items: [row(historyKey, 3)] })).resolves.toMatchObject({
-    outcome: "committed",
+  // Approved contract: a captured pre-delete batch (generation 0) is refused,
+  // not silently re-admitted against an empty history.
+  await expect(cache.commitBatch({ historyKey, clearEpoch: 0, items: [row(historyKey, 3)] })).resolves.toEqual({
+    outcome: "refused",
+    reason: "history-fence",
   });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+  await expect(
+    cache.commitBatch({ historyKey, clearEpoch: 0, historyGeneration: generation, items: [row(historyKey, 3)] }),
+  ).resolves.toMatchObject({ outcome: "committed" });
   await expect(cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-3" }]);
+});
+
+it("keeps a delete fence through repeat deletes, TTL expiry and unrelated eviction", async () => {
+  const name = `entry-lifecycle-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 1,
+    ttlMs: 100,
+    now: () => 1_000,
+  });
+  caches.push(cache);
+  const deleted = "host/session/fenced";
+  const other = "host/session/other";
+  await cache.commitBatch({ historyKey: deleted, clearEpoch: 0, items: [row(deleted, 1)] });
+  await cache.deleteHistory(deleted);
+  await cache.deleteHistory(deleted);
+  expect(await cache.getHistoryGeneration(deleted)).toBe(2);
+
+  // A small-cap, short-TTL write elsewhere runs TTL and eviction; the fence row
+  // has neither bytes nor timestamps, so it survives and still refuses old work.
+  await cache.commitBatch({ historyKey: other, clearEpoch: 0, items: [row(other, 9)] });
+  expect(await cache.getHistoryGeneration(deleted)).toBe(2);
+  await expect(
+    cache.commitBatch({ historyKey: deleted, clearEpoch: 0, historyGeneration: 0, items: [row(deleted, 2)] }),
+  ).resolves.toEqual({ outcome: "refused", reason: "history-fence" });
+  await expect(
+    cache.commitBatch({ historyKey: deleted, clearEpoch: 0, historyGeneration: 2, items: [row(deleted, 2)] }),
+  ).resolves.toEqual({ outcome: "refused", reason: "capacity" });
+  await expect(cache.getLatest(deleted, 10)).resolves.toEqual([]);
 });

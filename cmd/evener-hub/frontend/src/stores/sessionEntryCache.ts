@@ -25,6 +25,7 @@ import {
   type TranscriptCoverageRow,
   type TranscriptHistoryMetaRow,
   type TranscriptItemRow,
+  type TranscriptRequestedRef,
   type TranscriptSessionMetadata,
   type TranscriptTurnRow,
   upgradeSessionCache,
@@ -42,6 +43,21 @@ export interface SessionEntryCacheOptions {
   ttlMs?: number;
   // Clock seam for TTL and LRU decisions, so tests never wait on real time.
   now?: () => number;
+  // Preference seam. Eviction reclaims expired units first, then unpresferred
+  // units, then preferred units only as needed; the cache invents no discovery.
+  // Pure scalar/identity: no async work and no transcript bodies.
+  isPreferred?: (unit: RetentionUnit) => boolean;
+}
+
+export type RetentionUnit =
+  | { kind: "entry"; historyKey: string }
+  | { kind: "records"; ref: string }
+  | { kind: "current"; ownerToken: string; ref: string };
+
+export interface EntryPolicyResult {
+  aggregateBytes: number;
+  protectedSurvived: boolean;
+  overCapacity: boolean;
 }
 
 export type EntryCoverageInput =
@@ -83,6 +99,10 @@ export type EntryCoverageInput =
 export interface EntryBatch {
   historyKey: string;
   clearEpoch: number;
+  // Durable history generation the caller read for this identity. A batch
+  // captured before a deleteHistory of the same identity carries the old value
+  // and is refused.
+  historyGeneration?: number;
   items: readonly TranscriptItemRow<unknown>[];
   turns?: readonly TurnModel[];
   coverage?: EntryCoverageInput;
@@ -91,7 +111,7 @@ export interface EntryBatch {
 
 export type EntryWriteOutcome =
   | { outcome: "committed"; coverage: "extended" | "unchanged" | "not-extended"; encodedBytes: number }
-  | { outcome: "refused"; reason: "clear-epoch" }
+  | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" }
   | { outcome: "failed"; error: unknown };
 
 export interface EntryWindow {
@@ -110,6 +130,7 @@ export type EntryMigrationSource =
 export interface EntryMigrationRequest {
   historyKey: string;
   clearEpoch: number;
+  historyGeneration?: number;
   source: EntryMigrationSource;
   sessionMetadata?: TranscriptSessionMetadata;
   // Pure conversion of the stored legacy value into keyed entry rows. Returning
@@ -122,7 +143,7 @@ export interface EntryMigrationRequest {
 export type EntryMigrationOutcome =
   | { outcome: "converted"; itemCount: number; turnCount: number; encodedBytes: number; removedBytes: number }
   | { outcome: "skipped"; reason: "missing" | "undecodable" }
-  | { outcome: "refused"; reason: "clear-epoch" }
+  | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" }
   | { outcome: "failed"; error: unknown };
 
 const CLEAR_EPOCH_KEY = "__clearEpoch";
@@ -134,9 +155,22 @@ const WRITE_STORES = [
   ENTRY_TURN_STORE,
   ENTRY_COVERAGE_STORE,
   ENTRY_META_STORE,
+  LEGACY_RECORDS_STORE,
   LEGACY_META_STORE,
+  CURRENT_STORE,
+  CURRENT_META_STORE,
 ] as const;
-const MIGRATION_STORES = [...WRITE_STORES, LEGACY_RECORDS_STORE, CURRENT_STORE, CURRENT_META_STORE] as const;
+const MIGRATION_STORES = WRITE_STORES;
+const CLEAR_STORES = [
+  ENTRY_ITEM_STORE,
+  ENTRY_TURN_STORE,
+  ENTRY_COVERAGE_STORE,
+  ENTRY_META_STORE,
+  LEGACY_RECORDS_STORE,
+  LEGACY_META_STORE,
+  CURRENT_STORE,
+  CURRENT_META_STORE,
+] as const;
 
 function encodedBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -161,6 +195,34 @@ function sessionMetadataPayload(
     return undefined;
   }
   return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion };
+}
+
+// Migration merges retention metadata instead of replacing it: a compatible
+// legacy source must never regress a newer history's timestamps or drop its
+// aliases, because the TTL policy reads those timestamps in the same
+// transaction and could otherwise delete the freshly merged newer content.
+function mergeRequestedRefs(
+  previous: readonly TranscriptRequestedRef[] | undefined,
+  incoming: readonly TranscriptRequestedRef[],
+): TranscriptRequestedRef[] {
+  const byKey = new Map<string, TranscriptRequestedRef>();
+  for (const ref of previous ?? []) byKey.set(`${ref.clientId}\u0000${ref.ref}`, ref);
+  for (const ref of incoming) byKey.set(`${ref.clientId}\u0000${ref.ref}`, ref);
+  return [...byKey.values()];
+}
+
+function mergeSessionMetadata(
+  previous: TranscriptHistoryMetaRow,
+  incoming: TranscriptSessionMetadata,
+): SessionMetadataPayload {
+  return {
+    historyKey: previous.historyKey,
+    requestedRefs: mergeRequestedRefs(previous.requestedRefs, incoming.requestedRefs),
+    resolvedIdentity: previous.resolvedIdentity ?? incoming.resolvedIdentity,
+    savedAt: Math.max(previous.savedAt ?? 0, incoming.savedAt),
+    accessedAt: Math.max(previous.accessedAt ?? 0, incoming.accessedAt),
+    formatVersion: Math.max(previous.formatVersion ?? 0, incoming.formatVersion),
+  };
 }
 
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
@@ -188,6 +250,21 @@ function compareNullablePosition(left: ThreadItemPosition | null, right: ThreadI
   if (left === null) return -1;
   if (right === null) return 1;
   return comparePosition(left, right);
+}
+
+function isProtectedUnit(unit: RetentionUnit, protect: RetentionUnit): boolean {
+  if (unit.kind !== protect.kind) return false;
+  if (unit.kind === "entry" && protect.kind === "entry") return unit.historyKey === protect.historyKey;
+  if (unit.kind === "records" && protect.kind === "records") return unit.ref === protect.ref;
+  if (unit.kind === "current" && protect.kind === "current")
+    return unit.ownerToken === protect.ownerToken && unit.ref === protect.ref;
+  return false;
+}
+
+function unitSortKey(unit: RetentionUnit): string {
+  if (unit.kind === "entry") return `entry\u0000${unit.historyKey}`;
+  if (unit.kind === "records") return `records\u0000${unit.ref}`;
+  return `current\u0000${unit.ownerToken}\u0000${unit.ref}`;
 }
 
 function positionCoveredBy(position: ThreadItemPosition, cert: TranscriptCoverageRow): boolean {
@@ -467,6 +544,7 @@ export class SessionEntryCache {
   readonly #maxBytes: number;
   readonly #ttlMs: number;
   readonly #now: () => number;
+  readonly #isPreferred: ((unit: RetentionUnit) => boolean) | undefined;
 
   constructor(options: SessionEntryCacheOptions) {
     if (options.databaseName === SESSION_CACHE_DATABASE_NAME) {
@@ -476,6 +554,7 @@ export class SessionEntryCache {
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.#now = options.now ?? Date.now;
+    this.#isPreferred = options.isPreferred;
     this.#connection = new IDBConnection({
       indexedDB: options.indexedDB ?? globalThis.indexedDB,
       databaseName: options.databaseName,
@@ -548,6 +627,11 @@ export class SessionEntryCache {
       const historyMeta = (await requestResult(
         metaStore.get(batch.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
       )) ?? { historyKey: batch.historyKey, encodedBytes: 0, itemCount: 0 };
+      if ((historyMeta.generation ?? 0) !== (batch.historyGeneration ?? 0)) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "refused", reason: "history-fence" };
+      }
       const aggregateMeta = (await requestResult(
         metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
       )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
@@ -577,9 +661,18 @@ export class SessionEntryCache {
         itemCount: historyMeta.itemCount + changedItems,
       });
       metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
-      await this.#enforcePolicy(transaction, batch.historyKey);
+      const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: batch.historyKey });
+      if (policy.overCapacity) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "refused", reason: "capacity" };
+      }
       await complete;
-      return { outcome: "committed", coverage: coverageResult.result, encodedBytes: aggregateBytes };
+      return {
+        outcome: "committed",
+        coverage: policy.protectedSurvived ? coverageResult.result : "not-extended",
+        encodedBytes: policy.aggregateBytes,
+      };
     } catch (error) {
       try {
         transaction?.abort();
@@ -626,6 +719,17 @@ export class SessionEntryCache {
         return { outcome: "refused", reason: "clear-epoch" };
       }
 
+      const historyMeta = (await requestResult(
+        metaStore.get(request.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+      )) ?? { historyKey: request.historyKey, encodedBytes: 0, itemCount: 0 };
+      // Fence before touching the source: a migration captured before a delete
+      // is refused without removing the legacy source it would have converted.
+      if ((historyMeta.generation ?? 0) !== (request.historyGeneration ?? 0)) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "refused", reason: "history-fence" };
+      }
+
       let legacy: unknown;
       let removedBytes = 0;
       if (request.source.kind === "records") {
@@ -663,9 +767,6 @@ export class SessionEntryCache {
         throw new Error("migration produced a different history identity");
       }
 
-      const historyMeta = (await requestResult(
-        metaStore.get(request.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
-      )) ?? { historyKey: request.historyKey, encodedBytes: 0, itemCount: 0 };
       const aggregateMeta = (await requestResult(
         metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
       )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
@@ -680,9 +781,12 @@ export class SessionEntryCache {
       );
       historyBytes += written.byteDelta;
       aggregateBytes += written.byteDelta;
-      if (request.sessionMetadata) {
+      const mergedMetadata = request.sessionMetadata
+        ? mergeSessionMetadata(historyMeta, request.sessionMetadata)
+        : undefined;
+      if (mergedMetadata) {
         const previousPayload = sessionMetadataPayload(historyMeta);
-        const nextPayload = sessionMetadataPayload(request.sessionMetadata);
+        const nextPayload = mergedMetadata;
         const metadataDelta =
           (nextPayload ? encodedBytes(nextPayload) : 0) - (previousPayload ? encodedBytes(previousPayload) : 0);
         historyBytes += metadataDelta;
@@ -690,19 +794,24 @@ export class SessionEntryCache {
       }
       metaStore.put({
         ...historyMeta,
-        ...request.sessionMetadata,
+        ...mergedMetadata,
         historyKey: request.historyKey,
         encodedBytes: historyBytes,
         itemCount: historyMeta.itemCount + written.changedItems,
       });
       metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
-      await this.#enforcePolicy(transaction, request.historyKey);
+      const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: request.historyKey });
+      if (policy.overCapacity) {
+        transaction.abort();
+        await complete.catch(() => {});
+        return { outcome: "refused", reason: "capacity" };
+      }
       await complete;
       return {
         outcome: "converted",
         itemCount: converted.items.length,
         turnCount: converted.turns?.length ?? 0,
-        encodedBytes: aggregateBytes,
+        encodedBytes: policy.aggregateBytes,
         removedBytes,
       };
     } catch (error) {
@@ -717,11 +826,11 @@ export class SessionEntryCache {
   }
 
   /**
-   * Atomically remove every entry row for one history identity and retire its
-   * byte accounting. A late write that still holds a pre-delete version cannot
-   * regress an already-removed row, because the rows are gone and the write
-   * merges against an empty held value. Returns true only when the transaction
-   * completed, so a caller never treats an aborted delete as durable.
+   * Atomically remove every entry row for one history identity and advance its
+   * durable generation, leaving a fence tombstone with no timestamps so the TTL
+   * and LRU policy can never reclaim it. Work captured before the delete carries
+   * the old generation and is refused; explicit fresh caching reads the new
+   * generation first. Returns true only when the transaction completed.
    */
   async deleteHistory(historyKey: string): Promise<boolean> {
     let transaction: IDBTransaction | undefined;
@@ -732,10 +841,19 @@ export class SessionEntryCache {
       complete = transactionCompletion(transaction);
       void complete.catch(() => {});
       const metaStore = transaction.objectStore(ENTRY_META_STORE);
+      const historyMeta = await requestResult(
+        metaStore.get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+      );
       const aggregateMeta = await requestResult(
         metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
       );
       const removed = await this.#deleteHistoryRows(transaction, historyKey);
+      metaStore.put({
+        historyKey,
+        encodedBytes: 0,
+        itemCount: 0,
+        generation: (historyMeta?.generation ?? 0) + 1,
+      });
       metaStore.put({
         historyKey: AGGREGATE_META_KEY,
         encodedBytes: Math.max(0, (aggregateMeta?.encodedBytes ?? 0) - removed),
@@ -753,11 +871,29 @@ export class SessionEntryCache {
     }
   }
 
+  /** The durable generation a caller must carry to write this identity. */
+  async getHistoryGeneration(historyKey: string): Promise<number> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    try {
+      const row = await requestResult(
+        transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+      );
+      await complete;
+      return row?.generation ?? 0;
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
+  }
+
   /**
-   * Atomically remove every entry-store row and advance the shared durable
-   * Clear epoch by one in the same transaction. The reserved epoch row in the
-   * legacy meta store is the existing cross-tab fence, so a write captured
-   * before this Clear is refused without a second authority service.
+   * Atomically remove every history record - entry stores, legacy records and
+   * current checkpoints - and advance the shared durable Clear epoch by one in
+   * the same transaction. The reserved epoch row in the legacy meta store is
+   * the existing cross-tab fence. Abort leaves every store, generation tombstone
+   * and the epoch unchanged.
    */
   async clear(): Promise<{ committed: boolean; epoch: number }> {
     let observed = 0;
@@ -765,7 +901,7 @@ export class SessionEntryCache {
     let complete: Promise<void> | undefined;
     try {
       const database = await this.#connection.open();
-      transaction = database.transaction([...WRITE_STORES], "readwrite");
+      transaction = database.transaction([...CLEAR_STORES], "readwrite");
       complete = transactionCompletion(transaction);
       void complete.catch(() => {});
       const legacyMetaStore = transaction.objectStore(LEGACY_META_STORE);
@@ -776,6 +912,13 @@ export class SessionEntryCache {
       transaction.objectStore(ENTRY_TURN_STORE).clear();
       transaction.objectStore(ENTRY_COVERAGE_STORE).clear();
       transaction.objectStore(ENTRY_META_STORE).clear();
+      transaction.objectStore(LEGACY_RECORDS_STORE).clear();
+      transaction.objectStore(CURRENT_STORE).clear();
+      transaction.objectStore(CURRENT_META_STORE).clear();
+      const metaKeys = await requestResult(legacyMetaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+      for (const key of metaKeys) {
+        if (key !== CLEAR_EPOCH_KEY) legacyMetaStore.delete(key);
+      }
       legacyMetaStore.put({ ref: CLEAR_EPOCH_KEY, epoch: observed + 1 });
       await complete;
       return { committed: true, epoch: observed + 1 };
@@ -813,62 +956,152 @@ export class SessionEntryCache {
     return meta?.encodedBytes ?? 0;
   }
 
-  // TTL reclamation and LRU eviction inside the committing transaction, so a
-  // history's rows and its coverage retire together and a reader's in-memory
-  // pages are untouched. The cap counts combined old/new bytes: entry records
-  // plus any still-present legacy record meta rows. Legacy bodies stay their
-  // owner's to retire; migration removes them in its own transaction.
-  async #enforcePolicy(transaction: IDBTransaction, protectHistoryKey: string): Promise<void> {
+  // One coherent disk policy over every history population: entry histories,
+  // legacy records and current checkpoints. TTL reclaims expired units of every
+  // kind first, regardless of preference. Then eviction orders unpresferred
+  // units before preferred ones and oldest first; the just-written identity is
+  // never a victim and is refused instead if it cannot fit. Deleting a unit
+  // removes its rows and coverage together inside this transaction; a reader's
+  // in-memory pages are never touched, and a generation tombstone has no bytes
+  // or timestamps so it can never be reclaimed.
+  async #enforcePolicy(transaction: IDBTransaction, protect: RetentionUnit): Promise<EntryPolicyResult> {
     const metaStore = transaction.objectStore(ENTRY_META_STORE);
-    const rows = await requestResult(
-      metaStore.getAll() as IDBRequest<
-        Array<{
-          historyKey: string;
-          encodedBytes?: number;
-          savedAt?: number;
-          accessedAt?: number;
-        }>
+    const entryRows = (
+      await requestResult(
+        metaStore.getAll() as IDBRequest<
+          Array<{ historyKey: string; encodedBytes?: number; savedAt?: number; accessedAt?: number }>
+        >,
+      )
+    ).filter((row) => row.historyKey !== AGGREGATE_META_KEY);
+    const legacyRows = (
+      await requestResult(
+        transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<
+          Array<{ ref?: string; bytes?: number; savedAt?: number }>
+        >,
+      )
+    ).filter((row) => row.ref !== CLEAR_EPOCH_KEY && typeof row.ref === "string");
+    const currentRows = await requestResult(
+      transaction.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<
+        Array<{ ownerToken?: string; ref?: string; bytes?: number; savedAt?: number }>
       >,
     );
-    const histories = rows.filter((row) => row.historyKey !== AGGREGATE_META_KEY);
-    let entryTotal = histories.reduce((sum, row) => sum + (row.encodedBytes ?? 0), 0);
-    const legacyRows = await requestResult(
-      transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<Array<{ ref?: string; bytes?: number }>>,
-    );
-    const legacyTotal = legacyRows.reduce(
-      (sum, row) => (row.ref !== CLEAR_EPOCH_KEY && Number.isFinite(row.bytes) ? sum + (row.bytes ?? 0) : sum),
-      0,
-    );
-    let combined = entryTotal + legacyTotal;
     const now = this.#now();
-    const stamp = (row: { savedAt?: number; accessedAt?: number }): number => {
-      if (Number.isFinite(row.accessedAt)) return row.accessedAt as number;
-      if (Number.isFinite(row.savedAt)) return row.savedAt as number;
-      return 0;
-    };
-    for (const row of histories) {
-      if ((row.encodedBytes ?? 0) === 0) continue;
-      const age = stamp(row);
-      if (age > 0 && age + this.#ttlMs <= now) {
-        const removed = await this.#deleteHistoryRows(transaction, row.historyKey);
-        entryTotal -= removed;
-        combined -= removed;
-        row.encodedBytes = 0;
-      }
+    const stamp = (accessedAt: number | undefined, savedAt: number | undefined): number =>
+      Number.isFinite(accessedAt) ? (accessedAt as number) : Number.isFinite(savedAt) ? (savedAt as number) : 0;
+    const expired = (age: number): boolean => age > 0 && age + this.#ttlMs <= now;
+
+    let entryTotal = entryRows.reduce((sum, row) => sum + (row.encodedBytes ?? 0), 0);
+    let combined =
+      entryTotal +
+      legacyRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0) +
+      currentRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+
+    for (const row of entryRows) {
+      if ((row.encodedBytes ?? 0) === 0 || !expired(stamp(row.accessedAt, row.savedAt))) continue;
+      const removed = await this.#deleteHistoryRows(transaction, row.historyKey);
+      entryTotal -= removed;
+      combined -= removed;
+      row.encodedBytes = 0;
     }
+    for (const row of legacyRows) {
+      if ((row.bytes ?? 0) === 0 || typeof row.ref !== "string" || !expired(stamp(undefined, row.savedAt))) continue;
+      combined -= await this.#deleteLegacyRecordRows(transaction, row.ref);
+      row.bytes = 0;
+    }
+    for (const row of currentRows) {
+      if (
+        (row.bytes ?? 0) === 0 ||
+        typeof row.ownerToken !== "string" ||
+        typeof row.ref !== "string" ||
+        !expired(stamp(undefined, row.savedAt))
+      )
+        continue;
+      combined -= await this.#deleteCurrentRows(transaction, [row.ownerToken, row.ref]);
+      row.bytes = 0;
+    }
+
     if (combined > this.#maxBytes) {
-      const victims = histories
-        .filter((row) => (row.encodedBytes ?? 0) > 0 && row.historyKey !== protectHistoryKey)
-        .sort((left, right) => stamp(left) - stamp(right) || left.historyKey.localeCompare(right.historyKey));
-      for (const victim of victims) {
+      const victims: Array<{ unit: RetentionUnit; bytes: number; stamp: number; preferred: boolean }> = [];
+      const add = (unit: RetentionUnit, bytes: number, age: number) => {
+        victims.push({ unit, bytes, stamp: age, preferred: this.#isPreferred?.(unit) ?? false });
+      };
+      for (const row of entryRows) {
+        if ((row.encodedBytes ?? 0) > 0) {
+          add({ kind: "entry", historyKey: row.historyKey }, row.encodedBytes ?? 0, stamp(row.accessedAt, row.savedAt));
+        }
+      }
+      for (const row of legacyRows) {
+        if ((row.bytes ?? 0) > 0 && typeof row.ref === "string") {
+          add({ kind: "records", ref: row.ref }, row.bytes ?? 0, stamp(undefined, row.savedAt));
+        }
+      }
+      for (const row of currentRows) {
+        if ((row.bytes ?? 0) > 0 && typeof row.ownerToken === "string" && typeof row.ref === "string") {
+          add(
+            { kind: "current", ownerToken: row.ownerToken, ref: row.ref },
+            row.bytes ?? 0,
+            stamp(undefined, row.savedAt),
+          );
+        }
+      }
+      const eligible = victims
+        .filter((candidate) => !isProtectedUnit(candidate.unit, protect))
+        .sort(
+          (left, right) =>
+            Number(left.preferred) - Number(right.preferred) ||
+            left.stamp - right.stamp ||
+            unitSortKey(left.unit).localeCompare(unitSortKey(right.unit)),
+        );
+      for (const victim of eligible) {
         if (combined <= this.#maxBytes) break;
-        const removed = await this.#deleteHistoryRows(transaction, victim.historyKey);
-        entryTotal -= removed;
+        const removed =
+          victim.unit.kind === "entry"
+            ? await this.#deleteHistoryRows(transaction, victim.unit.historyKey)
+            : victim.unit.kind === "records"
+              ? await this.#deleteLegacyRecordRows(transaction, victim.unit.ref)
+              : await this.#deleteCurrentRows(transaction, [victim.unit.ownerToken, victim.unit.ref]);
         combined -= removed;
-        victim.encodedBytes = 0;
+        if (victim.unit.kind === "entry") {
+          entryTotal -= removed;
+          const row = entryRows.find(
+            (candidate) => candidate.historyKey === (victim.unit as { historyKey: string }).historyKey,
+          );
+          if (row) row.encodedBytes = 0;
+        }
       }
     }
+
     metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: Math.max(0, entryTotal) });
+    const protectRow =
+      protect.kind === "entry" ? entryRows.find((row) => row.historyKey === protect.historyKey) : undefined;
+    const protectedBytes = protectRow?.encodedBytes ?? 0;
+    return {
+      aggregateBytes: Math.max(0, entryTotal),
+      protectedSurvived: protectRow !== undefined && protectedBytes > 0,
+      overCapacity: protectRow !== undefined && protectedBytes > this.#maxBytes,
+    };
+  }
+
+  // Delete one legacy record body and its meta accounting, returning the meta
+  // bytes. The reserved epoch row is never a history row.
+  async #deleteLegacyRecordRows(transaction: IDBTransaction, ref: string): Promise<number> {
+    const meta = await requestResult(
+      transaction.objectStore(LEGACY_META_STORE).get(ref) as IDBRequest<{ bytes?: number } | undefined>,
+    );
+    transaction.objectStore(LEGACY_RECORDS_STORE).delete(ref);
+    transaction.objectStore(LEGACY_META_STORE).delete(ref);
+    return Number.isFinite(meta?.bytes) ? (meta?.bytes as number) : 0;
+  }
+
+  // Delete one current checkpoint and its meta accounting, returning the meta
+  // bytes.
+  async #deleteCurrentRows(transaction: IDBTransaction, key: [string, string]): Promise<number> {
+    const meta = await requestResult(
+      transaction.objectStore(CURRENT_META_STORE).get(key) as IDBRequest<{ bytes?: number } | undefined>,
+    );
+    transaction.objectStore(CURRENT_STORE).delete(key);
+    transaction.objectStore(CURRENT_META_STORE).delete(key);
+    return Number.isFinite(meta?.bytes) ? (meta?.bytes as number) : 0;
   }
 
   async #applyCoverage(
