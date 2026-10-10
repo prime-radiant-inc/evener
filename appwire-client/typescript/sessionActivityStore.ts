@@ -1299,38 +1299,47 @@ function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateI
     revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision),
   );
 }
+/** Every field a delegate row carries, as a keyed set: the `Record` type fails
+ * to compile while one is missing, so a field added to the wire row cannot be
+ * compared by omission -- which reads as "unchanged" and drops a frame's change
+ * on the floor. */
+const delegateRowFields: Record<keyof SessionDelegate, true> = {
+  delegateId: true,
+  name: true,
+  ownerRef: true,
+  rootRef: true,
+  childRef: true,
+  runGeneration: true,
+  projectionRevision: true,
+  reportPreview: true,
+  reportPreviewTruncated: true,
+  parentDelegateId: true,
+  description: true,
+  task: true,
+  type: true,
+  lifecycle: true,
+  phase: true,
+  status: true,
+  outcome: true,
+  reason: true,
+  error: true,
+  terminal: true,
+  resumable: true,
+  notResumableReason: true,
+  model: true,
+  reasoningEffort: true,
+  runStartedAt: true,
+  runEndedAt: true,
+  latestActivityAt: true,
+  usage: true,
+  worktree: true,
+};
+const delegateRowFieldNames = Object.keys(delegateRowFields) as (keyof SessionDelegate)[];
 function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
-  return (
-    a.delegateId === b.delegateId &&
-    a.name === b.name &&
-    a.ownerRef === b.ownerRef &&
-    a.rootRef === b.rootRef &&
-    a.childRef === b.childRef &&
-    a.runGeneration === b.runGeneration &&
-    a.projectionRevision === b.projectionRevision &&
-    a.reportPreview === b.reportPreview &&
-    a.reportPreviewTruncated === b.reportPreviewTruncated &&
-    a.parentDelegateId === b.parentDelegateId &&
-    a.description === b.description &&
-    a.task === b.task &&
-    a.type === b.type &&
-    a.lifecycle === b.lifecycle &&
-    a.phase === b.phase &&
-    a.status === b.status &&
-    a.outcome === b.outcome &&
-    a.reason === b.reason &&
-    a.error === b.error &&
-    a.terminal === b.terminal &&
-    a.resumable === b.resumable &&
-    a.notResumableReason === b.notResumableReason &&
-    a.model === b.model &&
-    a.reasoningEffort === b.reasoningEffort &&
-    a.runStartedAt === b.runStartedAt &&
-    a.runEndedAt === b.runEndedAt &&
-    a.latestActivityAt === b.latestActivityAt &&
-    sameJsonValue(a.usage, b.usage) &&
-    sameJsonValue(a.worktree, b.worktree)
-  );
+  for (const field of delegateRowFieldNames) {
+    if (!sameJsonValue(a[field], b[field])) return false;
+  }
+  return true;
 }
 function rowIdentity(resource: SessionActivityCollection, row: ActivityRow): string {
   if (resource === "delegates") {

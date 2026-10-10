@@ -536,12 +536,17 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		out.StructuredValid = cloneBool(packet.StructuredResultValid)
 		out.StructuredReason = packet.StructuredResultReason
 		out.Warnings = append([]string(nil), packet.Warnings...)
-		// The activity read parses metadata only when it fits the cap, so a pushed
+		// The activity read bounds the payload with the same helper, so a pushed
 		// frame omits the same usage and worktree -- and, like the read, never
-		// parses an oversized document at all.
-		if len(packet.Metadata) != 0 && (!boundedMetadata || len(packet.Metadata) <= activityMaxDelegatePayloadBytes) {
+		// parses an oversized document at all. Detailed status asks for a
+		// diagnostics projection and keeps the whole payload.
+		payload := packet.Metadata
+		if boundedMetadata {
+			payload = boundActivityDelegatePayload(payload)
+		}
+		if len(payload) != 0 {
 			var metadata delegateTerminalPacketMetadata
-			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+			if err := json.Unmarshal(payload, &metadata); err != nil {
 				out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")
 			} else {
 				out.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)

@@ -1233,9 +1233,9 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		// The delegates list read parses metadata only when it fits this cap,
 		// so an ancestor row of the same packet omits the usage and worktree
 		// too -- and, like the read, never parses an oversized document.
-		if len(packet.Metadata) != 0 && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
+		if bounded := boundActivityDelegatePayload(packet.Metadata); len(bounded) != 0 {
 			var metadata delegateTerminalPacketMetadata
-			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+			if err := json.Unmarshal(bounded, &metadata); err != nil {
 				appendActivityBranchError(&delegate.Branch, "delegate terminal metadata is invalid")
 				delegate.Diagnostics = append(delegate.Diagnostics, "delegate terminal metadata is invalid")
 			} else {
