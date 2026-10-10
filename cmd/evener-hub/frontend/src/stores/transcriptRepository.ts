@@ -944,6 +944,16 @@ export class TranscriptRepository {
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
+          if (this.#seedAuthorityInvalid) {
+            // A disk-only opening may display its bounded rows, including prior
+            // older pages, but old coverage cannot certify this browser's source.
+            window = {
+              rows: await this.#cache.getLatest(this.#binding.historyKey, limit),
+              coverage: [],
+              complete: false,
+              stale: true,
+            };
+          }
           if (!window.complete && coverageBoundary !== undefined) {
             window = { ...window, rows: [] };
             window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
@@ -1679,6 +1689,41 @@ export class TranscriptRepository {
    */
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): Promise<void> {
     if (this.#binding.mayPersist?.() === false) return this.#declinePersistence(batch);
+    const model = this.#model;
+    const history = model?.history;
+    if (retryRevision === undefined && model && history?.incarnation !== undefined && !this.#seedAuthorityInvalid) {
+      // Do not construct a whole cached record to get these fields: that would
+      // encode every body. Pages update the cursor in this scalar header too.
+      batch = {
+        ...batch,
+        sessionMetadata: {
+          historyKey: this.#binding.historyKey,
+          requestedRefs: [{ clientId: this.#binding.identity.clientId, ref: this.#binding.ref }],
+          resolvedIdentity: this.#binding.identity,
+          savedAt: this.#now(),
+          accessedAt: this.#now(),
+          formatVersion: 3,
+          cachedHeader: {
+            ref: model.ref,
+            threadId: model.threadId,
+            name: model.name,
+            modelProvider: model.modelProvider,
+            model: model.model,
+            imageSessionId: model.imageSessionId,
+            olderCursor: model.olderCursor,
+            savedAt: this.#now(),
+            history: {
+              bootGeneration: history.bootGeneration,
+              epoch: history.epoch,
+              incarnation: history.incarnation,
+              length: history.length,
+              appliedGeneration: history.appliedGeneration,
+              issuedGeneration: history.issuedGeneration,
+            },
+          },
+        },
+      };
+    }
     const issuedRevision = retryRevision ?? this.#sourceRevision;
     const bodies = retainedBodies(batch);
     const bodyBytes = bodies.reduce((sum, body) => sum + body.bytes, 0);

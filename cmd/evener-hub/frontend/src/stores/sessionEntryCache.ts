@@ -185,13 +185,13 @@ function encodedBytes(value: unknown): number {
 
 type SessionMetadataPayload = Pick<
   TranscriptHistoryMetaRow,
-  "historyKey" | "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion"
+  "historyKey" | "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion" | "cachedHeader"
 >;
 
 function sessionMetadataPayload(
   row: TranscriptHistoryMetaRow | TranscriptSessionMetadata,
 ): SessionMetadataPayload | undefined {
-  const { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion } = row;
+  const { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader } = row;
   if (
     requestedRefs === undefined &&
     resolvedIdentity === undefined &&
@@ -201,7 +201,7 @@ function sessionMetadataPayload(
   ) {
     return undefined;
   }
-  return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion };
+  return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader };
 }
 
 // Migration merges retention metadata instead of replacing it: a compatible
@@ -229,6 +229,7 @@ function mergeSessionMetadata(
     savedAt: Math.max(previous.savedAt ?? 0, incoming.savedAt),
     accessedAt: Math.max(previous.accessedAt ?? 0, incoming.accessedAt),
     formatVersion: Math.max(previous.formatVersion ?? 0, incoming.formatVersion),
+    cachedHeader: previous.cachedHeader ?? incoming.cachedHeader,
   };
 }
 
@@ -1684,7 +1685,39 @@ export class SessionEntryCache {
       savedAt: row.savedAt,
       accessedAt: row.accessedAt,
       formatVersion: row.formatVersion,
+      ...(row.cachedHeader ? { cachedHeader: row.cachedHeader } : {}),
     };
+  }
+
+  /** Foreground identity discovery reads metadata only, never transcript bodies. */
+  async getSessionForRequestedRef(clientId: string, ref: string): Promise<TranscriptHistoryMetaRow | undefined> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    const row = await new Promise<TranscriptHistoryMetaRow | undefined>((resolve, reject) => {
+      const request = transaction.objectStore(ENTRY_META_STORE).openCursor();
+      let selected: TranscriptHistoryMetaRow | undefined;
+      request.addEventListener("error", () => reject(request.error), { once: true });
+      request.addEventListener("success", () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(selected);
+          return;
+        }
+        const candidate = cursor.value as TranscriptHistoryMetaRow;
+        if (
+          candidate.resolvedIdentity &&
+          candidate.resolvedIdentity.clientId === clientId &&
+          Math.max(candidate.savedAt ?? 0, candidate.accessedAt ?? 0) >= this.#now() - this.#ttlMs &&
+          candidate.requestedRefs?.some((binding) => binding.clientId === clientId && binding.ref === ref) &&
+          (!selected || (candidate.savedAt ?? 0) > (selected.savedAt ?? 0))
+        )
+          selected = candidate;
+        cursor.continue();
+      });
+    });
+    await complete;
+    return row;
   }
 
   /** Metadata-only lookup for deletion, including histories no longer owned in memory. */

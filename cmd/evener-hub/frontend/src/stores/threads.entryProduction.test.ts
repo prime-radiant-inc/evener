@@ -1,6 +1,7 @@
 import {
   cachedSessionRecord,
   currentTranscriptState,
+  encodeTranscriptItem,
   hydrateThread,
   type ThreadReadResponse,
   type Turn,
@@ -17,7 +18,7 @@ import { requestResult, transactionCompletion } from "./idbConnection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
+import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptItemRow } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
@@ -25,6 +26,7 @@ import {
   clearCachedSessions,
   countCachedSessions,
   installEntryTranscriptFixtureForTests,
+  markCacheSessionsDeleted,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   settleEntryTranscriptForTests,
@@ -143,6 +145,10 @@ async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache
   }
   await settleEntryTranscriptForTests("local:a");
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const metadata = await storage.getSessionMetadata(key);
+  expect(metadata?.cachedHeader).toMatchObject({ threadId: "thread-a", imageSessionId: "session-a" });
+  expect(metadata?.cachedHeader?.history).not.toHaveProperty("turns");
+  expect(metadata?.cachedHeader).not.toHaveProperty("overlay");
   expect((await storage.getLatest(key, 200)).map((row) => row.transcriptKey)).toEqual(
     withPages
       ? ["oldest-1", "oldest-2", "oldest-3", "older-1", "older-2", "older-3", "window-1", "window-2", "window-3"]
@@ -207,6 +213,23 @@ it("ordinary disk-only opening displays the window and both cached pages before 
       ]);
     });
     expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("cur-page-3");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.items[0]?.text),
+    ).toEqual([
+      "oldest-1",
+      "oldest-2",
+      "oldest-3",
+      "older-1",
+      "older-2",
+      "older-3",
+      "window-1",
+      "window-2",
+      "window-3",
+    ]);
+    expect(client.calls.filter((call) => call.method === "thread/read")[0]?.params).not.toHaveProperty("heldSnapshot");
     expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeDefined();
     await threadsStore.getState().loadOlderTurns("local:a");
     expect(listCalls).toEqual([]);
@@ -214,11 +237,237 @@ it("ordinary disk-only opening displays the window and both cached pages before 
     if (!releaseRead) throw new Error("reconciliation read was not issued");
     releaseRead();
     await opening;
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["settled"]);
     expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeUndefined();
     await threadsStore.getState().loadOlderTurns("local:a");
     expect(listCalls).toEqual([{ cursor: "cur-settled" }]);
   } finally {
     releaseRead?.();
+    await opening;
+  }
+});
+
+it.each(["transport", "history"] as const)(
+  "ordinary disk-only opening keeps content and refuses paging and writes after a %s read failure",
+  async (failure) => {
+    const storage = await seedDiskOnlyOpening();
+    const writes = vi.spyOn(SessionEntryCache.prototype, "commitBatch");
+    const client = connect();
+    client.on("thread/read", () => {
+      throw failure === "history"
+        ? new WireError("source unavailable", -32000, { evenerErrorInfo: "transcriptHistoryFailed" })
+        : new Error("transport unavailable");
+    });
+    const pages = vi.fn(() => ({ data: [] }));
+    client.on("thread/turns/list", pages);
+    await threadsStore.getState().ensureThread("local:a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["window-1", "window-2", "window-3"]);
+    expect(client.calls.filter((call) => call.method === "thread/read")[0]?.params).not.toHaveProperty("heldSnapshot");
+    if (failure === "history") expect(threadsStore.getState().threads.get("local:a")?.history?.failed).toBeDefined();
+    client.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:a",
+        threadId: "thread-a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-a", length: 70 },
+        items: turn("unverified-input", 40).items,
+      },
+    });
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect(pages).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest(key, 200)).map((row) => row.transcriptKey)).toEqual([
+      "window-1",
+      "window-2",
+      "window-3",
+    ]);
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("unverified-input");
+  },
+);
+
+it.each(["release", "delete", "Clear"] as const)(
+  "ordinary disk-only lookup cannot publish old content after %s retires its acquisition",
+  async (retirement) => {
+    await seedDiskOnlyOpening();
+    const original = SessionEntryCache.prototype.getSessionForRequestedRef;
+    let releaseLookup: (() => void) | undefined;
+    let markLookup: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      markLookup = resolve;
+    });
+    vi.spyOn(SessionEntryCache.prototype, "getSessionForRequestedRef").mockImplementation(async function (
+      this: SessionEntryCache,
+      clientId,
+      ref,
+    ) {
+      const row = await original.call(this, clientId, ref);
+      await new Promise<void>((resolve) => {
+        releaseLookup = resolve;
+        markLookup?.();
+      });
+      return row;
+    });
+    const client = connect(response("local:a", [turn("fresh-after-retirement", 50)]));
+    const opening = threadsStore.getState().ensureThread("local:a");
+    await held;
+    try {
+      if (retirement === "release") await threadsStore.getState().releaseThreadAndWait("local:a");
+      else if (retirement === "delete") {
+        markCacheSessionsDeleted(["local:a"]);
+        await settleProjectionWorkForTests();
+      } else await clearCachedSessions();
+      releaseLookup?.();
+      await opening;
+      const readCount = client.calls.filter((call) => call.method === "thread/read").length;
+      expect(readCount).toBe(retirement === "Clear" ? 1 : 0);
+      expect(JSON.stringify(threadsStore.getState().threads.get("local:a")) ?? "").not.toContain("window-1");
+      if (retirement !== "Clear") expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+    } finally {
+      releaseLookup?.();
+      await opening;
+    }
+  },
+);
+
+it("ordinary disk-only lookup deadline starts the source opening and a late lookup cannot replace it", async () => {
+  await seedDiskOnlyOpening();
+  const original = SessionEntryCache.prototype.getSessionForRequestedRef;
+  let releaseLookup: (() => void) | undefined;
+  const lookups = vi.spyOn(SessionEntryCache.prototype, "getSessionForRequestedRef").mockImplementation(async function (
+    this: SessionEntryCache,
+    clientId,
+    ref,
+  ) {
+    const row = await original.call(this, clientId, ref);
+    await new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    return row;
+  });
+  const client = connect(response("local:a", [turn("deadline-source", 50)]));
+  const opening = threadsStore.getState().ensureThread("local:a");
+  try {
+    await opening;
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["deadline-source"]);
+    expect(releaseLookup).toBeDefined();
+    releaseLookup?.();
+    await Promise.all(lookups.mock.results.map((result) => result.value));
+    await settleEntryTranscriptForTests("local:a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["deadline-source"]);
+  } finally {
+    releaseLookup?.();
+    await opening;
+  }
+});
+
+it("ordinary headerless v3 entries display from cached identity without inventing a source instance", async () => {
+  const storage = cache();
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const sourceTurn = hydrateThread(response("local:a", [turn("headerless-body", 1)]), "local:a", storage.now())
+    .turns[0];
+  const item = sourceTurn?.items[0];
+  if (!item || !sourceTurn) throw new Error("missing fixture item");
+  expect(
+    await storage.commitBatch({
+      historyKey: key,
+      clearEpoch: 0,
+      items: [
+        {
+          historyKey: key,
+          transcriptKey: "headerless-body",
+          position: { entry: 1, item: 0 },
+          version: 1,
+          item: encodeTranscriptItem(item),
+        },
+      ],
+      turns: [{ ...sourceTurn, items: [] }],
+      sessionMetadata: {
+        historyKey: key,
+        requestedRefs: [{ clientId: location.origin, ref: "local:a" }],
+        resolvedIdentity: { ...identity, clientId: location.origin },
+        savedAt: storage.now(),
+        accessedAt: storage.now(),
+        formatVersion: 3,
+      },
+    }),
+  ).toMatchObject({ outcome: "committed" });
+  const client = connect();
+  client.on("thread/read", () => {
+    throw new WireError("offline", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
+  });
+  await threadsStore.getState().ensureThread("local:a");
+  expect(threadsStore.getState().threads.get("local:a")).toMatchObject({
+    threadId: "",
+    imageSessionId: "session-a",
+    capabilities: { send: false },
+    turns: [{ items: [{ text: "headerless-body" }] }],
+  });
+  expect(client.calls.filter((call) => call.method === "thread/read")[0]?.params).not.toHaveProperty("heldSnapshot");
+});
+
+it("ordinary disk-only row-restore deadline disposes its binding before a late body can publish", async () => {
+  await seedDiskOnlyOpening();
+  const original = SessionEntryCache.prototype.getLatest;
+  let releaseRows: (() => void) | undefined;
+  const lookups = vi.spyOn(SessionEntryCache.prototype, "getLatest").mockImplementation(async function <T>(
+    this: SessionEntryCache,
+    key: string,
+    limit: number,
+  ): Promise<TranscriptItemRow<T>[]> {
+    const rows = (await original.call(this, key, limit)) as TranscriptItemRow<T>[];
+    await new Promise<void>((resolve) => {
+      releaseRows = resolve;
+    });
+    return rows;
+  });
+  const client = connect(response("local:a", [turn("row-deadline-source", 50)]));
+  const opening = threadsStore.getState().ensureThread("local:a");
+  try {
+    await opening;
+    expect(releaseRows).toBeDefined();
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["row-deadline-source"]);
+    releaseRows?.();
+    await Promise.all(lookups.mock.results.map((result) => result.value));
+    await settleEntryTranscriptForTests("local:a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual(["row-deadline-source"]);
+  } finally {
+    releaseRows?.();
     await opening;
   }
 });
@@ -1035,12 +1284,14 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
       expect(sourcePending).toBe(true);
       expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
     });
+    expect(threadsStore.getState().threads.get("local:a")?.turns[0]?.items[0]?.text).toBe("window-1");
     expect(await storage.getLatest(key, 200)).toHaveLength(3);
     if (!rejectRead) throw new Error("deletion read was not issued");
     rejectRead();
     await opening;
     await settleProjectionWorkForTests();
     expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
+    expect(threadsStore.getState().threads.get("local:a")?.turns[0]?.items[0]?.text).toBe("window-1");
     expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
     expect(await storage.getLatest(key, 200)).toEqual([]);
     expect(await countCachedSessions()).toBe(0);
@@ -1344,6 +1595,22 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
   const oldClient = connect();
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
+  oldClient.emitNotification({
+    method: "overlay/upserted",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      item: {
+        key: "outgoing-only",
+        kind: "notice",
+        anchor: { entry: 2, item: 0 },
+        turnId: "recorded",
+        item: { id: "outgoing-only", type: "agentMessage", text: "outgoing memory only" },
+      },
+    },
+  });
+  const outgoingModel = threadsStore.getState().threads.get("local:a");
+  expect(JSON.stringify(outgoingModel)).toContain("outgoing memory only");
   let finishOld: (() => void) | undefined;
   oldClient.on(
     "thread/read",
@@ -1376,7 +1643,12 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
   const opening = threadsStore.getState().ensureThread("local:a");
   try {
     await vi.waitFor(() => expect(finishNew).toBeDefined(), { timeout: 500 });
-    expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+    // Ruling 34 preserves disk display, not the outgoing repository's memory.
+    const cached = threadsStore.getState().threads.get("local:a");
+    expect(cached).not.toBe(outgoingModel);
+    expect(cached?.history?.turns.map((turn) => turn.id)).toEqual(["recorded"]);
+    expect(cached?.history?.invalidatedAtGeneration).toBeDefined();
+    expect(JSON.stringify(cached)).not.toContain("outgoing memory only");
     finishNew?.();
     await opening;
     expect(threadsStore.getState().threads.get("local:a")).toMatchObject({

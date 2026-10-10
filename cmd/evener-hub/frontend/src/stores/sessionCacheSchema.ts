@@ -1,4 +1,4 @@
-import type { ThreadItemPosition, TurnModel } from "@evener/appwire-client";
+import type { CachedSessionRecord, ThreadItemPosition, TurnModel } from "@evener/appwire-client";
 
 export const SESSION_CACHE_DATABASE_NAME = "evener-session-cache";
 export const SESSION_CACHE_DATABASE_VERSION = 3;
@@ -68,6 +68,12 @@ export interface TranscriptResolvedIdentity {
   incarnation: string;
 }
 
+// Source-derived display scalars only. Recorded bodies remain keyed rows, and
+// this header grants neither live capabilities nor a current paging baseline.
+export type TranscriptCachedHeader = Omit<CachedSessionRecord, "history"> & {
+  history: Omit<CachedSessionRecord["history"], "turns">;
+};
+
 export interface TranscriptSessionMetadata {
   historyKey: string;
   requestedRefs: readonly TranscriptRequestedRef[];
@@ -75,6 +81,7 @@ export interface TranscriptSessionMetadata {
   savedAt: number;
   accessedAt: number;
   formatVersion: number;
+  cachedHeader?: TranscriptCachedHeader;
 }
 
 export interface TranscriptHistoryMetaRow {
@@ -86,6 +93,7 @@ export interface TranscriptHistoryMetaRow {
   savedAt?: number;
   accessedAt?: number;
   formatVersion?: number;
+  cachedHeader?: TranscriptCachedHeader;
   // Durable per-history fence generation. Deletion advances it so work captured
   // before the delete cannot re-enter the identity; absent means 0.
   generation?: number;

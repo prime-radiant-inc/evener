@@ -637,6 +637,8 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   identity?: TranscriptResolvedIdentity;
   migration?: Promise<void>;
   migrationComplete?: boolean;
+  cachedUnverified?: boolean;
+  cachedOpening?: Promise<void>;
 }
 
 let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
@@ -792,6 +794,7 @@ function publishEntryTranscriptModel(ref: string): void {
 async function openEntryTranscript(ref: string): Promise<void> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return;
+  const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   try {
     fixture.reader ??= fixture.repository.attachReader();
@@ -803,10 +806,138 @@ async function openEntryTranscript(ref: string): Promise<void> {
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
     const result = await fixture.reader.openLocal(200);
-    if (result.model) putThreadModel(ref, result.model);
+    if (
+      result.model &&
+      entryTranscriptRoute(ref) === fixture &&
+      fixture.repository === repository &&
+      !fixture.clearInert &&
+      (refCounts.get(ref) ?? 0) > 0 &&
+      !threadsStore.getState().deletedRefs.has(ref)
+    ) {
+      putThreadModel(ref, result.model);
+    }
   } finally {
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
+}
+
+async function openCachedEntryTranscript(ref: string, generation: number): Promise<void> {
+  const route = entryTranscriptRoute(ref);
+  if (!route || productionEntryRoutes.get(ref) !== route || route.repository) return;
+  if (route.cachedOpening) return route.cachedOpening;
+  const retirement = entryRouteRetirements.get(ref) ?? 0;
+  let active = true;
+  let installed: TranscriptRepository | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const current = () => {
+    const state = threadsStore.getState();
+    return (
+      active &&
+      productionEntryRoutes.get(ref) === route &&
+      (refCounts.get(ref) ?? 0) > 0 &&
+      ensureGenerations.get(ref) === generation &&
+      (entryRouteRetirements.get(ref) ?? 0) === retirement &&
+      !state.deletedRefs.has(ref) &&
+      !route.clearInert &&
+      state.clearInFlight === undefined &&
+      !state.cacheLifetimes.get(ref)?.suppressed
+    );
+  };
+  const opening = Promise.race([
+    (async () => {
+      const metadata = await route.cache.getSessionForRequestedRef(route.clientId, ref);
+      if (!current() || !metadata?.resolvedIdentity || route.repository || threadsStore.getState().threads.has(ref))
+        return;
+      const authorities = await readEntryRouteAuthorities(route, metadata.historyKey);
+      if (
+        !current() ||
+        !authorities ||
+        authorities.historyGeneration !== (metadata.generation ?? 0) ||
+        route.repository ||
+        threadsStore.getState().threads.has(ref)
+      )
+        return;
+      const identity = metadata.resolvedIdentity;
+      // Earlier v3 entries have identity but no display header. Their missing
+      // wire instance stays explicitly unknown, not guessed from an opaque ref.
+      // The first source success replaces this untrusted binding in full.
+      const header = metadata.cachedHeader ?? {
+        ref,
+        threadId: "",
+        name: "",
+        modelProvider: "",
+        model: "",
+        imageSessionId: identity.sessionId,
+        savedAt: metadata.savedAt ?? 0,
+        history: {
+          bootGeneration: "",
+          epoch: 0,
+          incarnation: identity.incarnation,
+          length: 0,
+          appliedGeneration: 0,
+          issuedGeneration: 0,
+        },
+      };
+      if (entryHistoryKey(identity) !== metadata.historyKey || header.history.incarnation !== identity.incarnation)
+        return;
+      // A first durable observation belongs to this unpublished acquisition.
+      if (tabCacheEpoch === undefined) {
+        threadsStore.setState((state) => ({
+          cacheLifetimes: new Map(state.cacheLifetimes).set(ref, {
+            ...state.cacheLifetimes.get(ref),
+            leaseEpoch: authorities.clearEpoch,
+          }),
+        }));
+      }
+      onCacheEpochObserved(authorities.clearEpoch);
+      if (!current()) return;
+      route.identity = identity;
+      route.hostId = identity.hostId;
+      route.historyKey = metadata.historyKey;
+      route.clearEpoch = authorities.clearEpoch;
+      route.historyGeneration = authorities.historyGeneration;
+      route.cachedUnverified = true;
+      route.lifetime += 1;
+      installed = createEntryTranscriptRepository(route, {
+        threadId: header.threadId,
+        historyKey: metadata.historyKey,
+        identity,
+        ...authorities,
+        seedModel: threadModelFromCache(
+          { ...header, ref, history: { ...header.history, turns: [] } },
+          route.cache.now(),
+        ),
+      });
+      route.repository = installed;
+      route.reader = installed.attachReader();
+      route.unsubscribeRepository = installed.subscribe(() => {
+        if (current() && route.repository === installed) publishEntryTranscriptModel(ref);
+      });
+      const token = beginEntryTranscriptLocalOpening(ref);
+      try {
+        await route.reader.openLocal(200);
+      } finally {
+        settleEntryTranscriptLocalOpening(ref, token);
+      }
+    })().catch(() => {
+      // A storage failure is a miss. The ordinary source opening still runs.
+    }),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        active = false;
+        if (installed && route.repository === installed && route.cachedUnverified) {
+          retireEntryTranscriptRoute(route);
+          clearEntryTranscriptLocalOpening(ref);
+        }
+        resolve();
+      }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (route.cachedOpening === opening) route.cachedOpening = undefined;
+  });
+  route.cachedOpening = opening;
+  await opening;
 }
 
 // This is migration's only legacy lookup. It returns scalars, dropping the
@@ -873,6 +1004,7 @@ function startProductionEntryMigration(route: EntryTranscriptRoute): void {
     productionEntryRoutes.get(route.ref) !== route ||
     route.migration ||
     route.migrationComplete ||
+    route.cachedUnverified ||
     !route.identity ||
     route.clearEpoch === undefined ||
     (refCounts.get(route.ref) ?? 0) <= 0 ||
@@ -1024,6 +1156,79 @@ async function runEntryHistoryRequest<T>(
   return result;
 }
 
+function createEntryTranscriptRepository(
+  fixture: EntryTranscriptRoute,
+  binding: {
+    threadId: string;
+    historyKey: string;
+    identity: TranscriptResolvedIdentity;
+    clearEpoch: number;
+    historyGeneration: number;
+    seedModel?: ThreadModel;
+  },
+): TranscriptRepository {
+  const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
+  const ref = fixture.ref;
+  const productionRoute = productionEntryRoutes.get(ref) === fixture;
+  return new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch,
+    historyGeneration,
+    lifetime: fixture.lifetime,
+    seedModel,
+    now: () => fixture.cache.now(),
+    admission: entryWriteAdmissionFor(fixture.cache),
+    reconcile: () => {
+      const client = wiredClient;
+      if (client?.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
+      fixture.repository?.beginFreshBaseline();
+      void refreshTrackedThread(
+        client,
+        readyEpoch,
+        ref,
+        true,
+        false,
+        undefined,
+        undefined,
+        hydrationIntentFor(ref),
+      ).catch(() => {
+        // The owned hydration lifecycle schedules transport recovery.
+      });
+    },
+    isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
+    suppressed: () => fixture.clearInert === true,
+    mayPersist: () =>
+      !fixture.cachedUnverified &&
+      (!productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true),
+    readHistory: (held, signal) =>
+      runEntryHistoryRequest(fixture, signal, () => {
+        const client = wiredClient;
+        const epoch = readyEpoch;
+        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+        const lease = syncThreadSubscription(ref, client);
+        if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
+        const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
+        return lease.read(threadReadParams(true, generation, held)).then((result) => {
+          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+          return result;
+        });
+      }),
+    readHistoryPage: ({ cursor, before, signal }) =>
+      runEntryHistoryRequest(fixture, signal, () => {
+        const client = wiredClient;
+        const epoch = readyEpoch;
+        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+        return client.request("thread/turns/list", { ...olderItemsParams(ref, cursor), before }).then((result) => {
+          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+          return result;
+        });
+      }),
+  });
+}
+
 async function acceptEntryTranscriptHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -1106,62 +1311,16 @@ async function acceptEntryTranscriptHydration(
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
     fixture.historyGeneration = historyGeneration;
-    fixture.repository = new TranscriptRepository(fixture.cache, {
-      ref,
+    fixture.repository = createEntryTranscriptRepository(fixture, {
       threadId: response.thread.id,
       historyKey,
       identity,
       clearEpoch,
       historyGeneration,
-      lifetime: fixture.lifetime,
-      now: () => fixture.cache.now(),
-      admission: entryWriteAdmissionFor(fixture.cache),
-      reconcile: () => {
-        const client = wiredClient;
-        if (client?.state !== "ready" || fixture.clearInert || !canonicalThreadOwnerActive(ref)) return;
-        fixture.repository?.beginFreshBaseline();
-        void refreshTrackedThread(
-          client,
-          readyEpoch,
-          ref,
-          true,
-          false,
-          undefined,
-          undefined,
-          hydrationIntentFor(ref),
-        ).catch(() => {
-          // The owned hydration lifecycle schedules transport recovery.
-        });
-      },
-      isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
-      suppressed: () => fixture.clearInert === true,
-      mayPersist: () => !productionRoute || threadsStore.getState().cacheLifetimes.get(ref)?.suppressed !== true,
-      readHistory: (held, signal) =>
-        runEntryHistoryRequest(fixture, signal, () => {
-          const client = wiredClient;
-          const epoch = readyEpoch;
-          if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
-          const lease = syncThreadSubscription(ref, client);
-          if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
-          const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
-          return lease.read(threadReadParams(true, generation, held)).then((result) => {
-            if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
-            return result;
-          });
-        }),
-      readHistoryPage: ({ cursor, before, signal }) =>
-        runEntryHistoryRequest(fixture, signal, () => {
-          const client = wiredClient;
-          const epoch = readyEpoch;
-          if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
-          return client.request("thread/turns/list", { ...olderItemsParams(ref, cursor), before }).then((result) => {
-            if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
-            return result;
-          });
-        }),
     });
   }
   const repository = fixture.repository;
+  fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   repository.acceptRead(response, {
@@ -2799,7 +2958,9 @@ async function hydrateAndSubscribe(
   signal?: AbortSignal,
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
-  let discardHeldHistory = false;
+  // Cached display is not a source baseline. Its generations, epoch and length
+  // cannot fence the first successful read or ask the source for a delta.
+  let discardHeldHistory = productionEntryRoutes.get(ref)?.cachedUnverified === true;
   const ownerLease = syncThreadSubscription(ref, client);
   if (!ownerLease) throw new Error("Thread hydration has no subscription holder");
   // A background attempt gets its own lease so retirement can invalidate a
@@ -2808,7 +2969,7 @@ async function hydrateAndSubscribe(
   const lease = signal ? acquireThreadSubscription(client, ref) : ownerLease;
   const releaseLease = () => lease.release();
   signal?.addEventListener("abort", releaseLease, { once: true });
-  const held = heldSnapshotFor(pending.baseModel);
+  const held = discardHeldHistory ? undefined : heldSnapshotFor(pending.baseModel);
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
@@ -5646,7 +5807,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // bounded by its own 250 ms deadline. The creator alone publishes and
     // arms; a joiner sees the shell (threads.has) or the hydration
     // (inflightHydrates) and joins that instead.
-    let cachedBase: ThreadModel | undefined;
+    if (usesEntryTranscripts(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+      await openCachedEntryTranscript(ref, generation);
+      if (
+        (refCounts.get(ref) ?? 0) === 0 ||
+        ensureGenerations.get(ref) !== generation ||
+        threadsStore.getState().deletedRefs.has(ref)
+      )
+        return;
+    }
+    let cachedBase: ThreadModel | undefined = usesEntryTranscripts(ref)
+      ? threadsStore.getState().threads.get(ref)
+      : undefined;
     if (!usesEntryTranscripts(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
       const found = await joinCacheLookup(ref);
       const state = threadsStore.getState();
@@ -6065,6 +6237,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // paging below a shell the gap rule is about to replace races that
       // replacement (spec, "Scroll-back"). Scroll-back waits for the read.
       if (threadsStore.getState().cacheLifetimes.get(ref)?.shell) return;
+      if (entryTranscriptRoute(ref)?.cachedUnverified) return;
       // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
       // failing with AppwireClient's synchronous "cannot call ... while
       // reconnecting" rejection - see requireReadyClient's own comment.
