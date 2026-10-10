@@ -543,7 +543,10 @@ func DelegateSendReplyBody(raw, output string, width int) string {
 	var blocks []string
 	for i, entry := range entries {
 		label := fmt.Sprintf("earlier reply %d of %d", i+1, len(entries))
-		if status := jsonString(entry, "status"); strings.TrimSpace(status) != "" && status != "completed" {
+		if jsonString(entry, "action") == "update" {
+			// A mid-work update settled nothing and carries no status.
+			label = fmt.Sprintf("earlier update %d of %d", i+1, len(entries))
+		} else if status := jsonString(entry, "status"); strings.TrimSpace(status) != "" && status != "completed" {
 			label += " · " + status
 		}
 		body := envvars.FirstNonEmpty(jsonString(entry, "output"), jsonString(entry, "reason"), "(no reply)")

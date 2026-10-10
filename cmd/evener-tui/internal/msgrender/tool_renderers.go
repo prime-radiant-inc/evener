@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/identifier"
 )
@@ -323,11 +324,7 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			if output == "" {
-				return "0 hits"
-			}
-			hits := strings.Count(output, "\n") + 1
-			return strconv.Itoa(hits) + " hits"
+			return strconv.Itoa(searchresult.EntryCount(output)) + " hits"
 		},
 	}
 	toolRenderers["grep"] = grepRenderer
@@ -342,16 +339,7 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			// glob returns newline-joined matches without a trailing newline,
-			// so counting newlines under-counts by 1. Split and filter empty.
-			parts := strings.Split(strings.TrimSpace(output), "\n")
-			n := 0
-			for _, p := range parts {
-				if strings.TrimSpace(p) != "" {
-					n++
-				}
-			}
-			return strconv.Itoa(n) + " matches"
+			return strconv.Itoa(searchresult.EntryCount(output)) + " matches"
 		},
 	}
 	toolRenderers["glob"] = globRenderer

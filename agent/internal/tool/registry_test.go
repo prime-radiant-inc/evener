@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/llm"
 )
 
@@ -582,7 +583,7 @@ func TestToolRegistry_TruncatedResultsKeepRecoverableSource(t *testing.T) {
 			name:       "head count character cap",
 			model:      strings.Repeat("x", 100),
 			limit:      schema.ToolOutputLimit{MaxChars: 80, MaxLines: 10, Strategy: schema.TruncHeadCount},
-			wantMarker: "[Output truncated: 76 characters removed from the end.]",
+			wantMarker: "[Output truncated: 77 characters removed from the end.]",
 		},
 		{
 			name:       "lines",
@@ -624,6 +625,34 @@ func TestToolRegistry_TruncatedResultsKeepRecoverableSource(t *testing.T) {
 	}
 }
 
+// TestToolRegistry_SearchTruncationMarkersAreNotes pins the registry's
+// head-count markers to the search-result shape: a note after a blank line
+// (agent/searchresult), so compaction counts the shown entries, never a
+// marker, as a hit.
+func TestToolRegistry_SearchTruncationMarkersAreNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+		limit schema.ToolOutputLimit
+		want  int
+	}{
+		{"line cap", "a\nb\nc\nd", schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount}, 2},
+		{"character cap", "aaaa\nbbbb\ncccc\ndddd" + strings.Repeat("e", 100), schema.ToolOutputLimit{MaxChars: 80, MaxLines: 10, Strategy: schema.TruncHeadCount}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRegistry()
+			registerTextResultTool(t, reg, TextResult{Output: tc.model}, tc.limit)
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("expected Truncated")
+			}
+			if n := searchresult.EntryCount(got.Output); n != tc.want {
+				t.Fatalf("EntryCount(%q) = %d, want %d", got.Output, n, tc.want)
+			}
+		})
+	}
+}
+
 func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -647,13 +676,13 @@ func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T)
 		},
 		{
 			name:  "head count",
-			model: "a\nb\n[3 total lines; showing first 2; 1 lines omitted]",
+			model: "a\nb\n\n[4 total lines; showing first 2; 2 lines omitted]",
 			limit: schema.ToolOutputLimit{MaxChars: 1000, MaxLines: 2, Strategy: schema.TruncHeadCount},
 		},
 		{
 			name:  "head count secondary cap",
-			model: "\n[Output truncated: 56 characters removed from the end.]",
-			limit: schema.ToolOutputLimit{MaxChars: 55, MaxLines: 2, Strategy: schema.TruncHeadCount},
+			model: "\n\n[Output truncated: 57 characters removed from the end.]",
+			limit: schema.ToolOutputLimit{MaxChars: 55, MaxLines: 3, Strategy: schema.TruncHeadCount},
 		},
 	}
 

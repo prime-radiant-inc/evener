@@ -518,3 +518,12 @@ func TestRenderToolCallDelegateSendShowsAPaddedEarlierStatus(t *testing.T) {
 	got = ansi.Strip(RenderToolCall(delegateSendToolCall(blank, ""), 100, false))
 	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "FIRST")
 }
+
+// An update the wait carried (action "update", no status) is headed as an
+// update, as the shared reader's delegateSendEarlierLabel heads it.
+func TestRenderToolCallDelegateSendHeadsAnEarlierUpdateAsAnUpdate(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"completed","running_in_background":false,"status":"completed","output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","type":"delegate","action":"update","running_in_background":false,"output":"Which table?","truncated":false}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier update 1 of 1", "Which table?", "reply", "LATEST")
+}

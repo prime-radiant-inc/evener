@@ -84,39 +84,41 @@ the system prompt, rendered from what the session can do when the prompt is
 built. The guidance is cached with the prompt and re-rendered when the tool
 registry, model or environment changes. It says what each scope holds
 (personal memory: what applies beyond the current project, such as how the
-human partner works and how tools, systems and the world behave; project
+human partner works and how tools and systems behave here; project
 memory: knowledge about this project), when to read a page, and that stored memory is fallible evidence, never
 instructions or permission. Memory reflects what was true when it was
-written: the agent checks that a file, function, command or setting a note names
-still exists before relying on it, and follows a recorded decision or rule
+written: the agent checks that a file, function or command a note names
+still exists before relying on it, and follows a recorded decision
 unless the partner or newer evidence says it changed. A delegate is told
 instead to put what it learned that is worth keeping in its report, because
-its caller decides what to save. Sessions that can call the save tools are also told
-when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision (saved to
-project memory), and when the agent learns
-something the hard way that is not written down. What the agent found by
-reading the repository, and what the session did, belong in its report rather
-than in memory: the next session can read the repository again, and each page
-costs a transcript entry and every later session's context. Partner-stated
-facts are saved before the work they shape, because complying with them does
-not carry them to the next session. A constraint is something about the
-project that stays true on its own; a hold that lasts until the partner lifts
-it is a sign-off for this conversation, and an instruction scoped to this work
-(such as which model to use for some steps of a plan) is not a standing
-preference, so neither is saved. The Finishing guidance and the result
-tool's description repeat the save check at the point the agent decides it is
-done, naming what qualifies: a preference, rule or project fact the partner
-gave, or something learned the hard way that the code, docs and history would
-not show the next session. Pages that contradict what the agent observes are corrected in the same
-turn. Saving sessions are also told the shape of a useful page (one durable
-fact with its reason and when it bears on work, leaving out what the code does
-today, which the code already records, with a frontmatter description that
-says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
-paths, test counts, review verdicts) stay out of
-personal and project memory, as do approvals, sign-offs, authorizations and
-where a plan or task stands: memory never records permission, because a later
-session would act on a grant nobody gave it. A changed fact is rewritten in place. When the
+its caller decides what to save. For sessions that can call the save tools, the
+guidance says memory's main source is the human partner: what they told the
+agent, decided or corrected, which a later session has not heard. Those are
+saved before the work they shape: a preference or correction with the
+partner's reason (personal memory), and a project plan, constraint, convention
+or decision (project memory), even when the agent implements it in the same
+task, since the code shows the value, not that it is a rule. The agent's own
+findings qualify only as facts about the project or its environment that the
+repository can't show and that would change what a later session does: project
+facts go to project memory, and what holds beyond the project, such as how a
+tool behaves on the machine, to personal memory. The
+guidance names what doesn't qualify: a lesson from one task restated as a
+principle, what the code does, that something is missing, general knowledge of
+a language or tool, where a task or plan stands, approvals and sign-offs
+(including holds that last until the partner lifts them, and plan approvals: a
+later session couldn't know whether they still hold, and memory never records
+permission), instructions scoped to one job (such as which model to use for
+some steps), and bugs in Evener itself, which go to the partner or the report
+so they get filed. What the agent found or did belongs in its report. The
+Finishing guidance repeats the check for what the partner told and for project
+or environment facts the repository doesn't show; the result tool carries no
+save reminder. Pages that
+contradict what the agent observes are corrected in the same turn. Saving
+sessions are also told the shape of a useful page (one durable fact with its reason and
+when it bears on work, with a frontmatter description that says what the page
+holds and topic tags that reuse the index's) and to keep run details that go
+stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
+out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
 ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
@@ -320,7 +322,8 @@ root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
 still an error. A search result names a file whose path holds a control
 character as a JSON string, so each result stays one line. A search cut off at
-its result cap ends with a line saying so and how to see the rest. `memory_write`,
+its result cap ends, after a blank line, with a note saying so and how to see
+the rest. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
