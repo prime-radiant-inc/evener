@@ -2,10 +2,12 @@ import type { ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
+import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { installEntryTranscriptFixtureForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let factory: IDBFactory;
 const caches: SessionEntryCache[] = [];
@@ -108,4 +110,56 @@ it("production cache writes and reopens keyed entries on the real database", asy
   first.close();
   expect((await cache().getLatest(historyKey, 1))[0]?.item).toMatchObject({ text: "disk-row" });
   expect(await factory.databases()).toEqual([{ name: SESSION_CACHE_DATABASE_NAME, version: 3 }]);
+});
+
+it("entry store repairs aggregate overflow through an automatic authoritative read", async () => {
+  const restore = installBackgroundTranscriptOptionsForTests({ pendingBytes: 2048 });
+  const storage = cache();
+  const fixture = installEntryTranscriptFixtureForTests({
+    ref: "local:a",
+    cache: storage,
+    clientId: identity.clientId,
+    hostId: identity.hostId,
+  });
+  const client = connect();
+  let reads = 0;
+  let latest = response();
+  client.on("thread/read", () => {
+    reads += 1;
+    return latest;
+  });
+  const owner = {};
+  const bodies = [{ key: {}, bytes: 1900 }];
+  const admission = entryWriteAdmissionFor(storage);
+  try {
+    await threadsStore.getState().ensureThread("local:a");
+    await fixture.settled();
+    const before = reads;
+    expect(admission.retain(bodies, owner, "writing")).toBe(true);
+    latest = response("local:a", [turn("recorded"), turn("recovered", 2, "r".repeat(300))]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    client.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:a",
+        threadId: "thread-a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: latest.snapshot,
+        turns: [turn("recovered", 2, "r".repeat(300))],
+      },
+    });
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).toContain("recovered");
+    admission.release(bodies, owner);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(reads).toBe(before + 1);
+    vi.useRealTimers();
+    await fixture.settled();
+    expect((await storage.getLatest(historyKey, 10)).map((row) => row.transcriptKey)).toContain("recovered");
+  } finally {
+    vi.useRealTimers();
+    admission.release(bodies, owner);
+    fixture.dispose();
+    restore();
+  }
 });
