@@ -1,130 +1,72 @@
-// The settings storage row for the session cache (web session-history cache
-// plan, Task 11; spec, "The clear-cached-sessions setting"): the row's four
-// states — empty, cached, cleared, unavailable — and the per-render count that
-// ends a committed clear's badge.
-//
-// Note: this codebase has no jest-dom matcher setup (vite.config.ts's own
-// setupFiles is ./src/testSetup.ts), so assertions are house-style —
-// findByText/getByText for presence (they throw when absent), queryByText +
-// toBeNull for absence, and the button's disabled DOM property — matching
-// hubResidents.test.tsx's isDisabled convention in this same folder.
-//
-// Test bed: this file re-creates locally what threads.sessionCache.test.ts
-// keeps in its own bed (importing another test file is not allowed):
-// fake-indexeddb's global factory, a seeded SessionCacheIndexedDB installed
-// on the singleton seam, a wedged-open adapter for "unavailable", and a
-// deleteDatabase between tests so no record one test seeded survives — the
-// wedged factory and the delete come from the shared testing module
-// (stores/testing/stalledIndexedDB), which no test file owns.
+// Settings state observations run through the ordinary entry cache boundary.
 import "fake-indexeddb/auto";
-import type { CachedSessionRecord } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "../../../stores/projectionWork";
-import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
+import { entryHistoryKey } from "../../../stores/sessionCacheSchema";
+import { SessionEntryCache } from "../../../stores/sessionEntryCache";
 import {
   deleteIndexedDatabase,
   holdNextWriteTransaction,
   neverSettlingFactory,
 } from "../../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../../../stores/threads";
 import { resetSessionCacheRowStoreForTests, SessionCacheRow, sessionCacheRowStore } from "./sessionCacheRow";
 
-// Checks the HTML disabled property — no jest-dom in this project.
-// Mirrors hubResidents.test.tsx's isDisabled helper.
 function isDisabled(el: Element): boolean {
   return (el as HTMLButtonElement).disabled;
 }
-
-// The record literal every seed in this file agrees on —
-// threads.sessionCache.test.ts's seededRecord shape, re-created locally with
-// only the fields the record type requires. The row counts records store
-// rows, so the history's content is irrelevant here; only its presence makes
-// the row a record the adapter's decode step accepts.
-function seededRecord(ref: string): CachedSessionRecord {
-  return {
-    ref,
-    threadId: "thr_1",
-    name: "cached session",
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    model: "anthropic/claude-sonnet-4-5",
-    savedAt: Date.now(),
-    history: {
-      bootGeneration: "1",
-      epoch: 0,
-      length: 0,
-      appliedGeneration: 0,
-      issuedGeneration: 0,
-      turns: [],
+const installedAdapters: SessionEntryCache[] = [];
+function installCache(cache = new SessionEntryCache({ databaseName: "evener-session-cache" })): SessionEntryCache {
+  installedAdapters.push(cache);
+  setProductionEntryCacheForTests(cache);
+  return cache;
+}
+async function seedRecord(adapter: SessionEntryCache, ref: string, clearEpoch: number): Promise<void> {
+  const identity = { clientId: location.origin, hostId: "local", sessionId: ref, incarnation: "inc-1" };
+  const historyKey = entryHistoryKey(identity);
+  const now = Date.now();
+  const outcome = await adapter.commitBatch({
+    historyKey,
+    clearEpoch,
+    items: [],
+    sessionMetadata: {
+      historyKey,
+      requestedRefs: [{ ref, clientId: location.origin }],
+      resolvedIdentity: identity,
+      savedAt: now,
+      accessedAt: now,
+      formatVersion: 1,
     },
-  };
+  });
+  expect(outcome.outcome).toBe("committed");
 }
-
-// Every adapter a test installed on the singleton seam, closed in afterEach
-// so the next beforeEach's cache-database deletion never fires "blocked" — the
-// beds discipline threads.sessionCache.test.ts itself documents.
-const installedAdapters: SessionCacheIndexedDB[] = [];
-
-// Installs a fresh adapter on the singleton seam — the row counts through
-// it — and writes `count` records into the store the row will read. The
-// seeds must land before the render: the count runs per render, so a record
-// arriving after the last render would never be seen.
 async function seedCacheWithRecords(count: number): Promise<void> {
-  const adapter = new SessionCacheIndexedDB();
-  installedAdapters.push(adapter);
-  setSessionCacheAdapterForTests(adapter);
-  for (let i = 0; i < count; i += 1) {
-    const outcome = await adapter.put(seededRecord(`local:thr_${i}`), 0, Date.now());
-    expect(outcome.outcome).toBe("written");
-  }
+  const cache = installCache();
+  for (let i = 0; i < count; i++) await seedRecord(cache, `local:thr_${i}`, 0);
 }
-
-// The same bed with nothing seeded: the honest empty database the row counts.
 async function seedEmptyCache(): Promise<void> {
-  const adapter = new SessionCacheIndexedDB();
-  installedAdapters.push(adapter);
-  setSessionCacheAdapterForTests(adapter);
+  installCache();
 }
-
-// The wedged-open adapter: the shared module's neverSettlingFactory — the
-// connection-coordinator shape where open() returns and then no event ever
-// arrives.
 function installWedgedCacheAdapter(): void {
-  const adapter = new SessionCacheIndexedDB({ indexedDB: neverSettlingFactory() });
-  installedAdapters.push(adapter);
-  setSessionCacheAdapterForTests(adapter);
+  installCache(new SessionEntryCache({ indexedDB: neverSettlingFactory(), databaseName: "evener-session-cache" }));
 }
-
-// The next record this tab writes: a direct put through a
-// SessionCacheIndexedDB on the same global fake database — the row's count
-// reads that database through the singleton seam. The committed Clear raised
-// the durable epoch from 0 to 1, so the refill is scheduled at exactly that
-// epoch — the same value the tab's own write seam captures after its
-// same-tab clear; scheduling below it aborts by design.
 async function writeOneRecordThroughTheSeam(): Promise<void> {
-  const adapter = installedAdapters.at(-1);
-  if (adapter === undefined) throw new Error("no cache adapter installed");
-  const outcome = await adapter.put(seededRecord("local:refill"), 1, Date.now());
-  expect(outcome.outcome).toBe("written");
+  const cache = installedAdapters.at(-1);
+  if (!cache) throw new Error("no entry cache installed");
+  await seedRecord(cache, "local:refill", 1);
 }
-
 beforeEach(async () => {
-  // resetThreadsStoreForTests returns threads.ts's module state to its
-  // initial values — the tab's clear-epoch view above all — and closes the
-  // singleton adapter. Without it, this file's earlier tests' committed
-  // clears would leave the refill's scheduled epoch dependent on test order.
   resetThreadsStoreForTests();
   resetSessionCacheRowStoreForTests();
   await deleteIndexedDatabase("evener-session-cache");
 });
-
 afterEach(() => {
   cleanup();
-  setSessionCacheAdapterForTests(undefined);
-  for (const adapter of installedAdapters.splice(0)) adapter.close();
+  resetThreadsStoreForTests();
+  for (const cache of installedAdapters.splice(0)) cache.close();
   vi.restoreAllMocks();
 });
-
 describe("SessionCacheRow", () => {
   it("renders empty truthfully when the store holds nothing", { timeout: 3_000 }, async () => {
     await seedEmptyCache();
@@ -212,7 +154,16 @@ describe("SessionCacheRow", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await seedCacheWithRecords(1);
     await sessionCacheRowStore.getState().refresh();
-    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+    const hold = holdNextWriteTransaction([
+      "transcriptItems",
+      "transcriptTurns",
+      "transcriptCoverage",
+      "transcriptMeta",
+      "records",
+      "meta",
+      "current",
+      "currentMeta",
+    ]);
     const clearing = sessionCacheRowStore.getState().clear();
     try {
       await hold.reached;
@@ -241,7 +192,16 @@ describe("SessionCacheRow", () => {
     await act(async () => {
       await sessionCacheRowStore.getState().refresh();
     });
-    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+    const hold = holdNextWriteTransaction([
+      "transcriptItems",
+      "transcriptTurns",
+      "transcriptCoverage",
+      "transcriptMeta",
+      "records",
+      "meta",
+      "current",
+      "currentMeta",
+    ]);
     let clearing: Promise<void> | undefined;
     try {
       await act(async () => {
@@ -261,6 +221,8 @@ describe("SessionCacheRow", () => {
       await act(async () => {
         screen.getByRole("button", { name: "Retry" }).click();
         await settleProjectionWorkForTests();
+        // Entry count is the real storage read, not legacy projection work.
+        await vi.waitFor(() => expect(sessionCacheRowStore.getState().status).toBe("empty"));
       });
       expect(screen.getByText("empty")).toBeTruthy();
     } finally {
@@ -279,14 +241,14 @@ describe("SessionCacheRow", () => {
     // deferred through the seam — the adapter's own count, mocked to a
     // manually-resolved promise — so the interleaving is scheduled, not
     // hoped for.
-    const adapter = new SessionCacheIndexedDB();
+    const adapter = new SessionEntryCache({ databaseName: "evener-session-cache" });
     installedAdapters.push(adapter);
+    setProductionEntryCacheForTests(adapter);
     let releaseCount: ((count: number) => void) | undefined;
     const deferred = new Promise<number>((resolve) => {
       releaseCount = resolve;
     });
     vi.spyOn(adapter, "count").mockImplementation(() => deferred);
-    setSessionCacheAdapterForTests(adapter);
 
     const { unmount } = render(<SessionCacheRow />);
     // The mounted row's first refresh is parked on the deferred count, so the

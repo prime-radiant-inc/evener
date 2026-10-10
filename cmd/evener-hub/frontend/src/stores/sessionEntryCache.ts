@@ -8,7 +8,7 @@ import {
   type ThreadItemPosition,
   type TurnModel,
 } from "@evener/appwire-client";
-import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
+import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import {
   CURRENT_META_STORE,
   CURRENT_STORE,
@@ -1071,38 +1071,55 @@ export class SessionEntryCache {
   async clear(): Promise<{ committed: boolean; epoch: number }> {
     let observed = 0;
     let transaction: IDBTransaction | undefined;
-    let complete: Promise<void> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const database = await this.#connection.open();
       transaction = database.transaction([...CLEAR_STORES], "readwrite");
-      complete = transactionCompletion(transaction);
+      const tx = transaction;
+      const complete = transactionCompletion(tx);
       void complete.catch(() => {});
-      const legacyMetaStore = transaction.objectStore(LEGACY_META_STORE);
-      observed =
-        (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
-          ?.epoch ?? 0;
-      transaction.objectStore(ENTRY_ITEM_STORE).clear();
-      transaction.objectStore(ENTRY_TURN_STORE).clear();
-      transaction.objectStore(ENTRY_COVERAGE_STORE).clear();
-      transaction.objectStore(ENTRY_META_STORE).clear();
-      transaction.objectStore(LEGACY_RECORDS_STORE).clear();
-      transaction.objectStore(CURRENT_STORE).clear();
-      transaction.objectStore(CURRENT_META_STORE).clear();
-      const metaKeys = await requestResult(legacyMetaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
-      for (const key of metaKeys) {
-        if (key !== CLEAR_EPOCH_KEY) legacyMetaStore.delete(key);
-      }
-      legacyMetaStore.put({ ref: CLEAR_EPOCH_KEY, epoch: observed + 1 });
-      await complete;
-      return { committed: true, epoch: observed + 1 };
+      const work = (async () => {
+        try {
+          const legacyMetaStore = tx.objectStore(LEGACY_META_STORE);
+          observed =
+            (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
+              ?.epoch ?? 0;
+          tx.objectStore(ENTRY_ITEM_STORE).clear();
+          tx.objectStore(ENTRY_TURN_STORE).clear();
+          tx.objectStore(ENTRY_COVERAGE_STORE).clear();
+          tx.objectStore(ENTRY_META_STORE).clear();
+          tx.objectStore(LEGACY_RECORDS_STORE).clear();
+          tx.objectStore(CURRENT_STORE).clear();
+          tx.objectStore(CURRENT_META_STORE).clear();
+          const metaKeys = await requestResult(legacyMetaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+          for (const key of metaKeys) {
+            if (key !== CLEAR_EPOCH_KEY) legacyMetaStore.delete(key);
+          }
+          legacyMetaStore.put({ ref: CLEAR_EPOCH_KEY, epoch: observed + 1 });
+          await complete;
+          return { committed: true, epoch: observed + 1 };
+        } catch {
+          tryAbortTransaction(tx);
+          await complete.catch(() => {});
+          return { committed: false, epoch: observed };
+        }
+      })();
+      // Match the legacy adapter's transaction watchdog. Both normal work and
+      // abort cleanup stay owned after timeout, but late completion cannot turn
+      // the already delivered unavailable outcome into a committed Clear.
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          tryAbortTransaction(tx);
+          this.#connection.retire(database);
+          reject(new Error("session entry cache Clear transaction timed out"));
+        }, 10_000);
+      });
+      return await Promise.race([work, deadline]);
     } catch {
-      try {
-        transaction?.abort();
-      } catch {
-        // The transaction may already have finished.
-      }
-      await complete?.catch(() => {});
+      if (transaction) tryAbortTransaction(transaction);
       return { committed: false, epoch: observed };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
