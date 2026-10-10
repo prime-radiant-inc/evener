@@ -1,12 +1,17 @@
 import {
+  currentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
+  hydrateThread,
   markItemIdentityOnly,
   markItemTextOmitted,
+  type ThreadItem,
+  type ThreadReadResponse,
 } from "@evener/appwire-client";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   CURRENT_META_STORE,
   CURRENT_STORE,
@@ -990,7 +995,12 @@ it("accounts exact session metadata bytes across histories, replacement, item-on
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   databases.push({ factory, name });
-  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    now: () => 0,
+  });
   caches.push(cache);
   const identity = (sessionId: string) => ({
     clientId: "client",
@@ -1738,4 +1748,1435 @@ it("publishes item rows, coverage, and totals together after a held transaction 
   const totals = await cache.getByteTotals(historyKey);
   expect(totals.historyBytes).toBeGreaterThan(0);
   expect(totals.aggregateBytes).toBe(totals.historyBytes);
+});
+
+function newEntryCache() {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  return { cache, factory, name };
+}
+
+function itemRow(historyKey: string, entry: number) {
+  return {
+    historyKey,
+    transcriptKey: `row-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `row-${entry}`, turnId: "turn-1", type: "assistant", text: `body-${entry}` },
+  };
+}
+
+function seedPage(
+  cache: SessionEntryCache,
+  historyKey: string,
+  page: {
+    readId: string;
+    before: { entry: number; item: number } | null;
+    start: { entry: number; item: number } | null;
+    end: { entry: number; item: number } | null;
+    representedSnapshot: number;
+    serverCursor?: string;
+    requestCursor?: string;
+    authority?: string;
+    boundary: string;
+  },
+) {
+  return cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "page",
+      readId: page.readId,
+      before: page.before,
+      start: page.start,
+      end: page.end,
+      representedSnapshot: page.representedSnapshot,
+      ...(page.serverCursor === undefined ? {} : { serverCursor: page.serverCursor }),
+      ...(page.requestCursor === undefined ? {} : { requestCursor: page.requestCursor }),
+      ...(page.authority === undefined ? {} : { authority: page.authority }),
+      boundary: page.boundary,
+    },
+  });
+}
+
+it("walks provenance-linked page certificates below a boundary and refuses an uncertified gap", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-walk";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 11, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page2",
+    boundary: "page-2",
+  });
+
+  const full = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(full.stale).toBe(false);
+  expect(full.complete).toBe(true);
+  expect(full.rows.map((row) => row.position.entry)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  // The continuation cursor belongs to the oldest connected certificate, not
+  // to the newest one the query happened to anchor on.
+  expect(full.serverCursor).toBe("cursor-page2");
+
+  const gap = await cache.getOlderWindow(historyKey, { entry: 21, item: 0 }, 100);
+  expect(gap.stale).toBe(true);
+  expect(gap.rows).toEqual([]);
+  expect(gap.serverCursor).toBeUndefined();
+
+  const topOnly = await cache.getOlderWindow(historyKey, { entry: 10, item: 0 }, 100);
+  expect(topOnly.rows.map((row) => row.position.entry)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  expect(topOnly.complete).toBe(true);
+});
+
+it("truncates an older window to the limit and withholds the cursor until certified coverage is exhausted", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-limit";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-1",
+  });
+
+  const first = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 5);
+  expect(first.rows.map((row) => row.position.entry)).toEqual([16, 17, 18, 19, 20]);
+  expect(first.complete).toBe(false);
+  expect(first.serverCursor).toBeUndefined();
+
+  const second = await cache.getOlderWindow(historyKey, { entry: 16, item: 0 }, 5);
+  expect(second.rows.map((row) => row.position.entry)).toEqual([11, 12, 13, 14, 15]);
+  expect(second.complete).toBe(true);
+  expect(second.serverCursor).toBe("cursor-page1");
+
+  const zero = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 0);
+  expect(zero).toMatchObject({ rows: [], complete: false, stale: false });
+});
+
+it("distinguishes an empty terminal page, no certificate, and a zero limit", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-terminal";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 5, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 5,
+    boundary: "terminal",
+  });
+
+  const terminal = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 10);
+  expect(terminal).toMatchObject({ rows: [], complete: true, stale: false, boundary: "terminal" });
+  expect(terminal.serverCursor).toBeUndefined();
+
+  const zero = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 0);
+  expect(zero).toMatchObject({ rows: [], complete: true, stale: false });
+
+  const missing = await cache.getOlderWindow(historyKey, { entry: 9, item: 0 }, 10);
+  expect(missing).toMatchObject({ rows: [], complete: false, stale: true });
+  expect(missing.boundary).toBeUndefined();
+});
+
+it("picks the most specific page certificate deterministically when several share a boundary", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-deterministic";
+  await cache.putItems(Array.from({ length: 12 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 5, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-sibling",
+    boundary: "page-sibling",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 12, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-anchor",
+    boundary: "page-anchor",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual([11, 12]);
+  expect(window.serverCursor).toBe("cursor-anchor");
+});
+
+it("never lets a page certificate hijack the latest window selection", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-latest";
+  await cache.putItems([100, 101, 102, 103, 104, 105, 106].map((entry) => itemRow(historyKey, entry)));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-latest",
+      start: { entry: 100, item: 0 },
+      end: { entry: 106, item: 0 },
+      representedSnapshot: 106,
+      serverCursor: "read-cursor",
+      boundary: "read-latest",
+    },
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-latest",
+    before: { entry: 60, item: 0 },
+    start: { entry: 50, item: 0 },
+    end: { entry: 59, item: 0 },
+    representedSnapshot: 99_999,
+    serverCursor: "page-cursor",
+    boundary: "page-99",
+  });
+
+  const latest = await cache.getLatestWindow(historyKey, 3);
+  expect(latest).toMatchObject({ complete: true, stale: false, boundary: "read-latest", serverCursor: "read-cursor" });
+  expect(latest.rows.map((row) => row.position.entry)).toEqual([104, 105, 106]);
+
+  const explicit = await cache.getLatestWindow(historyKey, 3, "read-latest");
+  expect(explicit).toMatchObject({ boundary: "read-latest", serverCursor: "read-cursor" });
+  await expect(cache.getLatest(historyKey, 3)).resolves.toMatchObject([
+    { position: { entry: 104, item: 0 } },
+    { position: { entry: 105, item: 0 } },
+    { position: { entry: 106, item: 0 } },
+  ]);
+});
+
+it("keeps page certificates when a later read commits", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-persist";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-keep",
+  });
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-later",
+      start: { entry: 21, item: 0 },
+      end: { entry: 24, item: 0 },
+      representedSnapshot: 24,
+      boundary: "shorter-read",
+    },
+  });
+  await expect(cache.getCoverage(historyKey, "page:read-1:page-keep")).resolves.toMatchObject({
+    kind: "page",
+    boundary: "page-keep",
+    serverCursor: "cursor-page1",
+  });
+});
+
+it("preserves a continuation cursor from an empty nonterminal page", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-empty-nonterminal";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 5, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 5,
+    serverCursor: "next-empty",
+    boundary: "empty",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 10);
+  expect(window).toMatchObject({
+    rows: [],
+    complete: true,
+    stale: false,
+    boundary: "empty",
+    serverCursor: "next-empty",
+  });
+});
+
+it("exhausts a connected terminal page instead of returning the superseded cursor", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-connected-terminal";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-superseded",
+    boundary: "page-top",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 10,
+    boundary: "page-terminal",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  expect(window.complete).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("returns an empty complete window with its cursor when the boundary equals the range start", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-before-equals-start";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-C1",
+    boundary: "page-top",
+  });
+
+  await expect(cache.getOlderWindow(historyKey, { entry: 11, item: 0 }, 10)).resolves.toMatchObject({
+    rows: [],
+    complete: true,
+    stale: false,
+    serverCursor: "cursor-C1",
+  });
+});
+
+it("includes an overlapping certified page range in an older window", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-overlap";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-top",
+    boundary: "page-top",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 20, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 15, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-bottom",
+    boundary: "page-bottom",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  expect(window.serverCursor).toBe("cursor-bottom");
+});
+
+it("ignores a page certificate when the latest window is requested by that page boundary", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-latest-boundary";
+  await cache.putItems([100, 101, 102, 103].map((entry) => itemRow(historyKey, entry)));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-latest",
+      start: { entry: 100, item: 0 },
+      end: { entry: 103, item: 0 },
+      representedSnapshot: 103,
+      serverCursor: "read-cursor",
+      boundary: "read-latest",
+    },
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-latest",
+    before: { entry: 60, item: 0 },
+    start: { entry: 50, item: 0 },
+    end: { entry: 59, item: 0 },
+    representedSnapshot: 99_999,
+    serverCursor: "page-cursor",
+    boundary: "page-boundary",
+  });
+
+  const explicit = await cache.getLatestWindow(historyKey, 3, "page-boundary");
+  expect(explicit).toMatchObject({ complete: false, stale: true });
+  expect(explicit.serverCursor).toBeUndefined();
+});
+
+// Three-certificate reproduction of the second-review P1: successive empty
+// pages share `before`/`readId`/snapshot, so a lexical boundary tie is not
+// continuation authority. `a-empty` consumed `C1`, `z-terminal` consumed `C2`
+// and is the genuine terminal; neither query may advertise `C2`.
+it("exhausts successive empty pages instead of returning the consumed cursor", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-empty-succession";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  const authority = "authority-r";
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    boundary: "a-top",
+    authority,
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "a-empty",
+    authority,
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "z-terminal",
+    authority,
+  });
+
+  const fromTop = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, authority);
+  expect(fromTop.rows.map((row) => row.position.entry)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  expect(fromTop.complete).toBe(true);
+  expect(fromTop.stale).toBe(false);
+  expect(fromTop.serverCursor).toBeUndefined();
+
+  const fromEmpty = await cache.getOlderWindow(historyKey, { entry: 11, item: 0 }, 10, authority);
+  expect(fromEmpty.rows).toEqual([]);
+  expect(fromEmpty.complete).toBe(true);
+  expect(fromEmpty.stale).toBe(false);
+  expect(fromEmpty.serverCursor).toBeUndefined();
+});
+
+it("keeps a retried page boundary idempotent and preserves its cursor (R1)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r1";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  const page = {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    authority: "A",
+    boundary: "p1",
+  };
+  await seedPage(cache, historyKey, page);
+  await seedPage(cache, historyKey, page);
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(true);
+  expect(window.stale).toBe(false);
+  expect(window.serverCursor).toBe("C1");
+  // A retry with the same boundary updates one row in place.
+  expect(window.coverage.filter((row) => row.boundary === "p1")).toHaveLength(1);
+});
+
+it("continues through a predecessor pair sharing the consumed cursor (R2)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r2";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    boundary: "p1",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    boundary: "p2",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "s",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.rows.map((row) => row.position.entry)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  expect(window.complete).toBe(true);
+  expect(window.serverCursor).toBe("C2");
+});
+
+it("exhausts a terminal committed before its consumed predecessor (R3)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r3";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "e",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(true);
+  expect(window.stale).toBe(false);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("lets a terminal consume a stale duplicate predecessor (R4)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r4";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  for (const boundary of ["e1", "e2"]) {
+    await seedPage(cache, historyKey, {
+      readId: "r",
+      before: { entry: 25, item: 0 },
+      start: { entry: 11, item: 0 },
+      end: { entry: 20, item: 0 },
+      representedSnapshot: 25,
+      serverCursor: "C2",
+      requestCursor: "C1",
+      boundary,
+      authority: "A",
+    });
+  }
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("treats two unconsumed siblings as unverified, not exhausted (R5)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r5";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C0",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C9",
+    requestCursor: "C1",
+    boundary: "u",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("never forms a cross-authority successor edge (R6)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r6";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "e1",
+    authority: "A1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const scoped1 = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A1");
+  expect(scoped1.serverCursor).toBe("C2");
+  const scoped2 = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2");
+  expect(scoped2.serverCursor).toBe("C3");
+});
+
+it("keeps a stale authority's terminal apart from the current chain (R7)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r7";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t1",
+    authority: "A1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const stale = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A1");
+  expect(stale.complete).toBe(true);
+  expect(stale.serverCursor).toBeUndefined();
+  const current = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2");
+  expect(current.serverCursor).toBe("C3");
+});
+
+it("accepts two agreeing readers' identical cursor (R8)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r8";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C0",
+    boundary: "p",
+    authority: "A",
+  });
+  for (const boundary of ["e1", "e2"]) {
+    await seedPage(cache, historyKey, {
+      readId: "r",
+      before: { entry: 11, item: 0 },
+      start: null,
+      end: null,
+      representedSnapshot: 25,
+      serverCursor: "C1",
+      requestCursor: "C0",
+      boundary,
+      authority: "A",
+    });
+  }
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(true);
+  expect(window.serverCursor).toBe("C1");
+});
+
+it("treats two differing reader cursors as unverified (R9)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r9";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C0",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    boundary: "e1",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C9",
+    requestCursor: "C0",
+    boundary: "e2",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("treats a terminal and a nonterminal sibling as unverified (R10)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-r10";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C1",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "e",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("withholds a cursor when successor-bearing coverage is limit-truncated", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-truncated-succession";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    boundary: "p",
+    authority: "A",
+  });
+
+  const first = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 5, "A");
+  expect(first.rows.map((row) => row.position.entry)).toEqual([16, 17, 18, 19, 20]);
+  expect(first.complete).toBe(false);
+  expect(first.stale).toBe(false);
+  expect(first.serverCursor).toBeUndefined();
+});
+
+it("does not invent exhaustion for a zero-limit successor query", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-zero-succession";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C1",
+    requestCursor: "C0",
+    boundary: "p",
+    authority: "A",
+  });
+
+  const zero = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 0, "A");
+  expect(zero).toMatchObject({ rows: [], complete: false, stale: false });
+  expect(zero.serverCursor).toBeUndefined();
+});
+
+it("exhausts an empty-only successor chain with no top certificate (C1)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c1";
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "a-empty",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "z-terminal",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 11, item: 0 }, 10, "A");
+  expect(window.complete).toBe(true);
+  expect(window.stale).toBe(false);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("does not certify a mixed-authority store when no authority is given (C2)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c2";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t1",
+    authority: "A1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const mixed = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(mixed.complete).toBe(false);
+  expect(mixed.stale).toBe(true);
+  expect(mixed.serverCursor).toBeUndefined();
+  // Both single-authority scoped queries still resolve.
+  const staleAuthority = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A1");
+  expect(staleAuthority.complete).toBe(true);
+  expect(staleAuthority.serverCursor).toBeUndefined();
+  await expect(cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2")).resolves.toMatchObject({
+    serverCursor: "C3",
+  });
+});
+
+// Refined stronger geometry (controller correction): T (terminal) and U (a stale
+// duplicate with C9) are both unconsumed at depth 11, and the probe-preference
+// filter would silently drop U and exhaust on T.
+it("marks competing successors of one consumed certificate unverified (C3)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c3";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 35, item: 0 },
+    start: { entry: 21, item: 0 },
+    end: { entry: 30, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C1",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C2",
+    boundary: "e",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 35,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C9",
+    boundary: "u",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 35, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+// Ruling 1: a current position-only certificate carries an authority, so a probe
+// must not silently supersede it. Only a certificate with neither a request
+// cursor nor an authority is the legacy deeper-range case.
+it("does not supersede a position-only certificate that carries an authority (B2)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-b2";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 35, item: 0 },
+    start: { entry: 21, item: 0 },
+    end: { entry: 30, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C1",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C2",
+    boundary: "e",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 35,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C9",
+    boundary: "u",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 35, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+// Ruling 2: an omitted authority counts as its own distinct value, so a store
+// that mixes an authority-less old terminal with a current authority must not be
+// certified by position.
+it("counts an omitted authority as its own value when no filter is given (C2b)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c2b";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const mixed = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(mixed.complete).toBe(false);
+  expect(mixed.stale).toBe(true);
+  expect(mixed.serverCursor).toBeUndefined();
+  await expect(cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2")).resolves.toMatchObject({
+    serverCursor: "C3",
+  });
+});
+
+function identityFor(sessionId: string) {
+  return { clientId: "c", hostId: "h", sessionId, incarnation: "i" };
+}
+
+function metadataFor(sessionId: string, savedAt: number, accessedAt: number) {
+  const resolvedIdentity = identityFor(sessionId);
+  return {
+    historyKey: entryHistoryKey(resolvedIdentity),
+    requestedRefs: [{ clientId: resolvedIdentity.clientId, ref: `local:${sessionId}` }],
+    resolvedIdentity,
+    savedAt,
+    accessedAt,
+    formatVersion: 3,
+  };
+}
+
+it("refuses an oversized history instead of committing it over the cap", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(cache);
+  const historyKey = entryHistoryKey(identityFor("only"));
+
+  // Approved contract: an indivisible history larger than the cap must be
+  // refused, not written over the cap. Abort leaves no rows and no coverage.
+  await expect(
+    cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      coverage: {
+        kind: "read",
+        readId: "read-only",
+        start: { entry: 1, item: 0 },
+        end: { entry: 1, item: 0 },
+        representedSnapshot: 1,
+        boundary: "only",
+      },
+    }),
+  ).resolves.toEqual({ outcome: "refused", reason: "capacity" });
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(cache.getCoverage(historyKey, "read:read-only")).resolves.toBeUndefined();
+  await expect(cache.getByteTotals(historyKey)).resolves.toEqual({ historyBytes: 0, aggregateBytes: 0 });
+});
+
+it("evicts an older history with its coverage and reports the post-policy total", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  const older = entryHistoryKey(identityFor("older"));
+  const newer = entryHistoryKey(identityFor("newer"));
+  await measure.commitBatch({
+    historyKey: older,
+    clearEpoch: 0,
+    items: [itemRow(older, 1)],
+    coverage: {
+      kind: "read",
+      readId: "read-older",
+      start: { entry: 1, item: 0 },
+      end: { entry: 1, item: 0 },
+      representedSnapshot: 1,
+      boundary: "older",
+    },
+    sessionMetadata: metadataFor("older", 1, 1),
+  });
+  const olderBytes = (await measure.getByteTotals(older)).historyBytes;
+  await measure.commitBatch({
+    historyKey: newer,
+    clearEpoch: 0,
+    items: [itemRow(newer, 2)],
+    coverage: {
+      kind: "read",
+      readId: "read-newer",
+      start: { entry: 2, item: 0 },
+      end: { entry: 2, item: 0 },
+      representedSnapshot: 2,
+      boundary: "newer",
+    },
+    sessionMetadata: metadataFor("newer", 2, 2),
+  });
+  const newerBytes = (await measure.getByteTotals(newer)).historyBytes;
+  expect(olderBytes).toBeGreaterThan(0);
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: newerBytes + 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  const outcome = await capped.commitBatch({
+    historyKey: newer,
+    clearEpoch: 0,
+    items: [itemRow(newer, 2)],
+    sessionMetadata: metadataFor("newer", 2, 2),
+  });
+  expect(outcome).toMatchObject({ outcome: "committed", encodedBytes: newerBytes });
+
+  // The older identity, rows and coverage together, made room; the reported
+  // total equals the independently read durable total.
+  await expect(capped.getLatest(older, 10)).resolves.toEqual([]);
+  await expect(capped.getCoverage(older, "read:read-older")).resolves.toBeUndefined();
+  await expect(capped.getLatest(newer, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+  await expect(capped.getByteTotals(newer)).resolves.toEqual({
+    historyBytes: newerBytes,
+    aggregateBytes: newerBytes,
+  });
+});
+
+it("reclaims expired history on the next transaction under an injected clock", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  let now = 1_000;
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 32 * 1024 * 1024,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(cache);
+  const expired = entryHistoryKey(identityFor("expired"));
+  const fresh = entryHistoryKey(identityFor("fresh"));
+  await cache.commitBatch({
+    historyKey: expired,
+    clearEpoch: 0,
+    items: [itemRow(expired, 1)],
+    sessionMetadata: metadataFor("expired", 1_000, 1_000),
+  });
+
+  now = 1_200;
+  await cache.commitBatch({
+    historyKey: fresh,
+    clearEpoch: 0,
+    items: [itemRow(fresh, 2)],
+    sessionMetadata: metadataFor("fresh", 1_200, 1_200),
+  });
+
+  await expect(cache.getLatest(expired, 10)).resolves.toEqual([]);
+  await expect(cache.getLatest(fresh, 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+});
+
+it("prefers a retained identity when an archive write must evict", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  const live = entryHistoryKey(identityFor("live"));
+  const other = entryHistoryKey(identityFor("other"));
+  const archive = entryHistoryKey(identityFor("archive"));
+  const write = (historyKey: string, entry: number, savedAt: number) =>
+    measure.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, entry)],
+      sessionMetadata: metadataFor(
+        historyKey === live ? "live" : historyKey === other ? "other" : "archive",
+        savedAt,
+        savedAt,
+      ),
+    });
+  await write(live, 1, 1);
+  const liveBytes = (await measure.getByteTotals(live)).historyBytes;
+  await write(other, 1, 2);
+  const otherBytes = (await measure.getByteTotals(other)).historyBytes;
+  await write(archive, 1, 3);
+  const archiveBytes = (await measure.getByteTotals(archive)).historyBytes;
+  const cap = Math.max(liveBytes + otherBytes, liveBytes + archiveBytes, otherBytes + archiveBytes);
+  expect(cap).toBeLessThan(liveBytes + otherBytes + archiveBytes);
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: cap,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+    isPreferred: (unit) => unit.kind === "entry" && unit.historyKey === live,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey: archive,
+      clearEpoch: 0,
+      items: [itemRow(archive, 1)],
+      sessionMetadata: metadataFor("archive", 3, 3),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  await expect(capped.getLatest(live, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+  await expect(capped.getLatest(archive, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+  await expect(capped.getLatest(other, 10)).resolves.toEqual([]);
+  await expect(capped.getByteTotals(other)).resolves.toMatchObject({ historyBytes: 0 });
+});
+
+it("counts a current checkpoint in the combined cap and evicts its body", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(cache);
+  await cache.getByteTotals("warmup");
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
+  caches.push(legacy);
+
+  const item: ThreadItem = {
+    id: "a1",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "x".repeat(20_000),
+    transcriptKey: "e1",
+    position: { entry: 1, item: 0 },
+    version: 1,
+  };
+  const base = currentRead("local:big");
+  const read: ThreadReadResponse = {
+    ...base,
+    thread: { ...base.thread, turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [item] }] },
+  };
+  const state = currentTranscriptState(hydrateThread(read, "local:big", 10));
+  if (!state) throw new Error("fixture state did not build");
+  const current: CurrentSessionRecord = {
+    ownerToken: "tab",
+    ref: "local:big",
+    connectionGeneration: 1,
+    ownershipGeneration: 1,
+    clearEpoch: 0,
+    appliedSequence: 1,
+    savedAt: 1_000,
+    state,
+  };
+  await legacy.putCurrent(current, 1_000);
+
+  const historyKey = entryHistoryKey(identityFor("entry"));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [itemRow(historyKey, 1)],
+    sessionMetadata: metadataFor("entry", 1_000, 1_000),
+  });
+  const entryBytes = (await cache.getByteTotals(historyKey)).historyBytes;
+
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: entryBytes + 5,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      sessionMetadata: metadataFor("entry", 1_000, 1_000),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  // The ~20 KB current checkpoint was part of the combined total, so it was
+  // evicted body-and-meta; the entry history survived.
+  const currentAfter = await new Promise<unknown>((resolve, reject) => {
+    const request = factory.open(name);
+    request.addEventListener(
+      "success",
+      () => {
+        const database = request.result;
+        const tx = database.transaction("current", "readonly");
+        const get = tx.objectStore("current").get(["tab", "local:big"]);
+        get.addEventListener("success", () => {
+          database.close();
+          resolve(get.result);
+        });
+        get.addEventListener("error", () => {
+          database.close();
+          reject(get.error);
+        });
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  expect(currentAfter).toBeUndefined();
+  await expect(capped.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+});
+
+it("evicts a preferred unit only after unpresferred units when pressure persists", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  caches.push(measure);
+  const live = entryHistoryKey(identityFor("live"));
+  const other = entryHistoryKey(identityFor("other"));
+  const archive = entryHistoryKey(identityFor("archive"));
+  const write = (historyKey: string, sessionId: string, savedAt: number) =>
+    measure.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [itemRow(historyKey, 1)],
+      sessionMetadata: metadataFor(sessionId, savedAt, savedAt),
+    });
+  await write(live, "live", 2);
+  await write(other, "other", 1);
+  await write(archive, "archive", 3);
+  const archiveBytes = (await measure.getByteTotals(archive)).historyBytes;
+
+  // Room for the archive alone: after evicting the unpresferred `other`, the
+  // preferred `live` is still over the cap and must be the fallback victim.
+  const capped = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: archiveBytes + 1,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+    isPreferred: (unit) => unit.kind === "entry" && unit.historyKey === live,
+  });
+  caches.push(capped);
+  await expect(
+    capped.commitBatch({
+      historyKey: archive,
+      clearEpoch: 0,
+      items: [itemRow(archive, 1)],
+      sessionMetadata: metadataFor("archive", 3, 3),
+    }),
+  ).resolves.toMatchObject({ outcome: "committed" });
+
+  await expect(capped.getLatest(other, 10)).resolves.toEqual([]);
+  await expect(capped.getLatest(live, 10)).resolves.toEqual([]);
+  await expect(capped.getLatest(archive, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
 });
