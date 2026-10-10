@@ -386,11 +386,13 @@ send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
 dispatched directly as a plain RPC instead of failing closed. A write the
 storage watchdog gave up on (`MutationStorageTimeoutError`) is retried once
 first; a write the browser refuses outright — a full origin's
-`QuotaExceededError`, a `VersionError`, a retired connection, an upgrade
-another tab's older schema blocks — falls back at once. So sends keep working in a storage wedge or a full origin, and the
+`QuotaExceededError`, a browser that denies this origin storage
+(`SecurityError`), a `VersionError`, a retired connection, an upgrade another
+tab's older schema blocks — falls back at once. So sends keep working in a storage wedge or a full origin, and the
 composer's draft follows the send's own outcome. A failure that judges the
 record rather than the storage (the outbox's own validation, an uncloneable
-payload, a duplicate id) stays an ordinary send failure. The same storage
+payload, a duplicate id) or that only a bug in the outbox raises (a missing
+store, a request on a finished transaction) stays an ordinary send failure. The same storage
 failure also fails the ref's reconciliation (its outbox read), and that failure
 is classified apart from a genuine one: the ref is recorded as storage-blocked -
 at the reconcile's rejection, or earlier when the send fallback's own storage
@@ -418,11 +420,11 @@ the send twice.
 
 **Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
 and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3294)
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3296)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3856)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3858)
 splits the storage-caused failure from a genuine one, and
 [currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.

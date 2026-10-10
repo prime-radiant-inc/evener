@@ -14184,6 +14184,35 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // A browser that denies this origin IndexedDB (a privacy mode, blocked site
+  // data) refuses the open with SecurityError: a storage policy, not a verdict
+  // on the send, so the send goes out directly.
+  test("a send whose browser denies IndexedDB access still reaches the daemon", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-denied";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+      if (name === databaseName) throw new DOMException("The operation is insecure.", "SecurityError");
+      return open(name, version);
+    });
+    try {
+      await threadsStore.getState().send("ref_a", "sent while storage is denied");
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   // Another tab still holding the previous schema blocks the outbox's upgrade,
   // and the adapter refuses the open at once rather than wait. That refusal is
   // the storage's, not the send's, so the send goes out directly.
@@ -14459,6 +14488,11 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test.each([
     { failure: "a validation error", error: () => new Error("targetRef is required") },
     { failure: "an uncloneable payload", error: () => new DOMException("could not be cloned", "DataCloneError") },
+    { failure: "a missing object store", error: () => new DOMException("no such store", "NotFoundError") },
+    {
+      failure: "a request on a finished transaction",
+      error: () => new DOMException("transaction finished", "TransactionInactiveError"),
+    },
   ])("a send whose durable write fails with $failure stays fail-closed", async ({ error }) => {
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);

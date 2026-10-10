@@ -3236,19 +3236,21 @@ function isStorageTimeout(error: unknown): boolean {
 }
 
 // The DOMException names IndexedDB uses when storage itself refuses: a full
-// origin, a schema version another tab moved, a connection closed under the
-// transaction, a transaction the browser aborted, an internal failure.
-// DataError, DataCloneError and ConstraintError are absent on purpose: they
-// judge the record written (its key, its payload, a duplicate id), not the
-// storage. An AbortError cannot stand in for a record judgment: the outbox
-// adapter races a transaction's body against its completion, so a body that
-// throws rejects with its own error before the abort it causes is reported.
+// origin, a browser that denies this origin storage, a schema version another
+// tab moved, a connection closed under the transaction, a transaction the
+// browser aborted, an internal failure. Names that judge the record written
+// (DataError, DataCloneError, ConstraintError: its key, its payload, a
+// duplicate id) or that only this code's own bugs raise (NotFoundError for a
+// missing store, TransactionInactiveError for a request on a finished
+// transaction) are absent on purpose. An AbortError cannot stand in for a
+// record judgment: the outbox adapter races a transaction's body against its
+// completion, so a body that throws rejects with its own error before the
+// abort it causes is reported.
 const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
   "QuotaExceededError",
+  "SecurityError",
   "VersionError",
   "InvalidStateError",
-  "TransactionInactiveError",
-  "NotFoundError",
   "UnknownError",
   "AbortError",
 ]);
