@@ -106,10 +106,8 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 // so a page saved with other line endings still has its frontmatter read,
 // and stamped in place, on the same lines its headings are read from.
 func memoryPageText(raw []byte) string {
-	return markdownLineEndings.Replace(string(raw))
+	return normalizeLineEndings(string(raw))
 }
-
-var markdownLineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 
 // splitMemoryFrontmatter splits text into its frontmatter block and body
 // exactly as frontmatter.Parse does, so a page whose YAML fails to parse
@@ -161,7 +159,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 // collapsed, or "".
 func firstMarkdownHeading(body string) string {
 	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
-	for line := range markdownLines(body) {
+	for line := range strings.SplitSeq(body, "\n") {
 		text := strings.TrimLeft(line, " ")
 		if len(line)-len(text) > 3 {
 			continue // indented code
@@ -214,7 +212,7 @@ func fenceRun(line string) string {
 func memoryFallbackDescription(heading, body string) string {
 	text := heading
 	if text == "" {
-		for line := range markdownLines(body) {
+		for line := range strings.SplitSeq(body, "\n") {
 			if text = collapseWhitespace(line); text != "" {
 				break
 			}
@@ -225,12 +223,6 @@ func memoryFallbackDescription(heading, body string) string {
 		return memoryNoDescription
 	}
 	return text + " " + memoryNoDescription
-}
-
-// markdownLines yields the lines of text, which ends its lines in "\n" only
-// (memoryPageText).
-func markdownLines(text string) iter.Seq[string] {
-	return strings.SplitSeq(text, "\n")
 }
 
 // collapseWhitespace trims text and turns each inner run of whitespace into
