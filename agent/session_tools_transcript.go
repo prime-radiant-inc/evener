@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -1036,15 +1037,11 @@ func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dro
 	return b.String()
 }
 
-// rangeAcceptedGrammar is the grammar hint included in range_warning messages
-// when a malformed range spec is received.
-const rangeAcceptedGrammar = "N-M | last:N | start:N"
-
 func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	if pin < 0 || pin >= len(data.Entries) {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
 	}
-	if !publicTranscriptKind(data.Entries[pin].Turn.Kind) {
+	if !data.Entries[pin].Turn.Kind.PublicTranscript() {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a public transcript turn", pin)
 	}
 	if len(data.EntryLines) != len(data.Entries) {
@@ -1063,18 +1060,10 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	return exact, nil
 }
 
-// publicTranscriptKind reports whether entries of kind appear in the public
-// transcript. Resolution markers carry no model/public content, and
-// transcript-only entries exist for the history projection alone; both are
-// omitted entirely so interleaved tool calls and results remain adjacent.
-func publicTranscriptKind(kind schema.TurnKind) bool {
-	return kind != schema.TurnAttentionResolution && !kind.TranscriptOnly()
-}
-
 // publicTranscriptEntry strips correlation metadata that is durable only for
-// crash recovery, and omits the kinds publicTranscriptKind excludes.
+// crash recovery, and omits the kinds TurnKind.PublicTranscript excludes.
 func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
-	if !publicTranscriptKind(entry.Turn.Kind) {
+	if !entry.Turn.Kind.PublicTranscript() {
 		return transcript.Entry{}, false
 	}
 	entry.Turn.AttentionID = ""
@@ -1136,7 +1125,7 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
 	}
-	if !publicTranscriptKind(kind) {
+	if !kind.PublicTranscript() {
 		return nil, false, nil
 	}
 	delete(turn, "attention_id")
@@ -1184,7 +1173,7 @@ func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg 
 	effectiveRange := rangeArg
 	var rangeWarning string
 	if _, _, err := parseRangeErr(rangeArg, len(data.Entries)); err != nil {
-		rangeWarning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", rangeArg, rangeAcceptedGrammar)
+		rangeWarning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", rangeArg, turnwindow.Grammar)
 		effectiveRange = ""
 	}
 
@@ -1555,7 +1544,7 @@ func readRaw(path, root, ref, rangeArg string) (any, error) {
 	effectiveRange := rangeArg
 	var rangeWarning string
 	if _, _, err := parseRangeErr(rangeArg, len(entries)); err != nil {
-		rangeWarning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", rangeArg, rangeAcceptedGrammar)
+		rangeWarning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", rangeArg, turnwindow.Grammar)
 		effectiveRange = ""
 	}
 

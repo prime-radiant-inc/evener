@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -108,17 +109,8 @@ func rleRenderEdges(t *testing.T, payload string) {
 	if got := effectiveResultToolName(optWithConfig); got != "reply" {
 		t.Fatalf("effective result tool = %q, want reply", got)
 	}
-	if _, _, err := parseRangeErr("start:0", 2); !errors.Is(err, errBadRange) {
+	if _, _, err := parseRangeErr("start:0", 2); !errors.Is(err, turnwindow.ErrMalformed) {
 		t.Fatalf("start:0 error = %v, want malformed range", err)
-	}
-	if lo, hi, _ := clampRange(0, -1, 2); lo != 0 || hi != 0 {
-		t.Fatalf("clampRange(0,-1,2) = %d,%d", lo, hi)
-	}
-	if lo, hi, _ := clampRange(0, 9, 2); lo != 0 || hi != 1 {
-		t.Fatalf("clampRange(0,9,2) = %d,%d", lo, hi)
-	}
-	if _, _, ok := parseDashRange("none"); ok {
-		t.Fatal("parseDashRange accepted a dashless value")
 	}
 
 	root := t.TempDir()
@@ -291,7 +283,7 @@ func rleRenderContracts(t *testing.T) {
 			if err != nil || start != tc.wantStart || end != tc.wantEnd {
 				t.Fatalf("parseRangeErr(%q) = %d,%d,%v", tc.spec, start, end, err)
 			}
-		} else if !errors.Is(err, errBadRange) {
+		} else if !errors.Is(err, turnwindow.ErrMalformed) {
 			t.Fatalf("parseRangeErr(%q) error = %v, want malformed range", tc.spec, err)
 		}
 		if fallbackStart, fallbackEnd := parseRange(tc.spec, 3); fallbackStart != tc.wantStart || fallbackEnd != tc.wantEnd {
