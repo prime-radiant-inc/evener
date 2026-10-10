@@ -190,13 +190,14 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 
 // sessionModelCannotTakeMedia reports whether routing this request onto the
 // session model would hand it media it cannot see: an image part needs image
-// input on the row, and a document part never falls back at all — no protocol
-// vouches for a user-message document today (the Anthropic and Google
-// builders reject the kind, chat strips it; #4209), so there is no capability
-// a row could declare that would make the blind request safe.
+// input on the row, and a document part needs document input — the row
+// declares pdf and its adapter represents a user-message document (only the
+// Responses builder writes input_file today; the Anthropic and Google
+// builders reject the kind and chat strips it, so a pdf row on those
+// protocols stays blocked).
 func sessionModelCannotTakeMedia(profile *provider.Profile, req llm.Request) bool {
 	images, documents := requestMediaKinds(req)
-	if documents {
+	if documents && !profile.AcceptsDocumentInput() {
 		return true
 	}
 	return images && !profile.AcceptsImageInput()

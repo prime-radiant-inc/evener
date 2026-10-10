@@ -334,6 +334,16 @@ func (p *Profile) AcceptsImageInput() bool {
 	return p.res.Caps.AcceptsModality("image")
 }
 
+// AcceptsDocumentInput reports whether the row declares document ("pdf")
+// input and its adapter represents a user-message document on the wire.
+// Unlike an image — the one user-message shape every protocol vouches for —
+// a document needs the protocol check too: the Responses builder writes
+// input_file, while the Anthropic and Google builders reject the kind and
+// chat strips it (llm.DeliversUserMessageDocuments).
+func (p *Profile) AcceptsDocumentInput() bool {
+	return p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+}
+
 // SeesToolResultMedia reports whether the session model receives tool-result
 // bytes of this media type inline on the wire: the row declares image input
 // and its adapter delivers tool-result media of this type. This is the fact

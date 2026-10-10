@@ -23,6 +23,25 @@ func visionCapabilityInstances() map[string]registry.Provider {
 	}
 }
 
+// documentCapabilityInstances are the synthetic rows the document-input
+// predicate needs on top of the fixture set: pdf-declaring rows on every
+// protocol, so the row modality and the adapter's user-message representation
+// are exercised separately.
+func documentCapabilityInstances() map[string]registry.Provider {
+	pdfRow := func(protocol string) registry.Provider {
+		return registry.Provider{Protocol: protocol, APIKey: "k", DefaultModel: "doc-1", Transport: registry.Transport{BaseURL: "http://docvis.test.invalid/v1"}, InheritModels: new(false), Models: map[string]registry.Model{
+			"doc-1": {Caps: registry.Caps{InputModalities: []string{"text", "image", "pdf"}}},
+			"vis-1": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+		}}
+	}
+	return map[string]registry.Provider{
+		"respdoc": pdfRow(registry.ProtocolOpenAIResponses),
+		"chatdoc": pdfRow(registry.ProtocolOpenAIChat),
+		"anthdoc": pdfRow(registry.ProtocolAnthropic),
+		"googdoc": pdfRow(registry.ProtocolGoogle),
+	}
+}
+
 func TestProfileImageInputPredicates(t *testing.T) {
 	t.Parallel()
 	r := fixtureRegistryWith(t, visionCapabilityInstances())
@@ -58,6 +77,37 @@ func TestProfileImageInputPredicates(t *testing.T) {
 		}
 		if got := p.SeesToolResultMedia(tc.mediaType); got != tc.seesMedia {
 			t.Errorf("%s: SeesToolResultMedia(%q) = %v, want %v", tc.ref, tc.mediaType, got, tc.seesMedia)
+		}
+	}
+}
+
+func TestProfileDocumentInputPredicate(t *testing.T) {
+	t.Parallel()
+	r := fixtureRegistryWith(t, documentCapabilityInstances())
+
+	cases := []struct {
+		ref                  string
+		acceptsDocumentInput bool
+	}{
+		// Real rows: a Responses row that declares pdf input takes a
+		// user-message document; the image-only row does not.
+		{"openai/gpt-5.4", true},
+		{"openai/gpt-5.2", false},
+		// A pdf-declaring row on a protocol whose builder rejects or strips
+		// user-message documents still cannot take one: the Anthropic and
+		// Google builders reject the kind, chat silently strips it, so only
+		// the Responses builder's input_file representation delivers.
+		{"anthropic/claude-mythos-preview", false},
+		{"respdoc/doc-1", true},
+		{"respdoc/vis-1", false},
+		{"chatdoc/doc-1", false},
+		{"anthdoc/doc-1", false},
+		{"googdoc/doc-1", false},
+	}
+	for _, tc := range cases {
+		p := mustResolve(t, r, tc.ref)
+		if got := p.AcceptsDocumentInput(); got != tc.acceptsDocumentInput {
+			t.Errorf("%s: AcceptsDocumentInput = %v, want %v", tc.ref, got, tc.acceptsDocumentInput)
 		}
 	}
 }

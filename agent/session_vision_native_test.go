@@ -244,10 +244,10 @@ func TestDescribeImage_TextOnlySessionRefusesToDescribeOnRouteRefusal(t *testing
 	}
 }
 
-// The same refusal path must not hand a PDF to the session model even when
-// it is image-capable: no protocol vouches for a user-message document (#4209),
-// so a refusing configured route reports unavailable instead.
-func TestDescribeImage_PDFRouteRefusalNeverFallsBackToTheSessionModel(t *testing.T) {
+// The same refusal path must not hand a PDF to an image-only session model:
+// the row declares no pdf input, so a refusing configured route reports
+// unavailable instead of describing with a model that cannot see the document.
+func TestDescribeImage_PDFRouteRefusalNeverFallsBackToAnImageOnlySessionModel(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai"}
 	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
@@ -272,11 +272,10 @@ func TestDescribeImage_PDFRouteRefusalNeverFallsBackToTheSessionModel(t *testing
 	}
 }
 
-// The retry is for raster images, the shape the session model is known to
-// take in a user message. A document never retries there: whether a model
-// accepts a user-message PDF is protocol territory (#4209), and asking blind
-// repeats the hallucination hazard the gate exists to prevent.
-func TestDescribeImage_PDFRouteFailureDoesNotRetryOnTheSessionModel(t *testing.T) {
+// The retry is for media the session model is known to take. An image-only
+// row never retries a PDF there: the row declares no pdf input, and asking
+// blind repeats the hallucination hazard the gate exists to prevent.
+func TestDescribeImage_PDFRouteFailureDoesNotRetryOnAnImageOnlySessionModel(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai"}
 	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
@@ -298,6 +297,72 @@ func TestDescribeImage_PDFRouteFailureDoesNotRetryOnTheSessionModel(t *testing.T
 	}
 	if len(openai.Requests()) != 0 {
 		t.Fatalf("PDF retried on the session model: %d calls", len(openai.Requests()))
+	}
+}
+
+// A refusing configured route falls back to a session model that can see the
+// document: the row declares pdf input and the Responses builder represents a
+// user-message document as input_file, so the fallback describes rather than
+// reporting the route unavailable.
+func TestDescribeImage_PDFRouteRefusalFallsBackToADocumentCapableSessionModel(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("session pdf description")}, nil
+		},
+	}}
+	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, visionRouteRefusal("anthropic")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.4")),
+		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
+
+	result := sess.describeImageCall(context.Background(), tool.ExecResult{
+		ImageData: []byte("%PDF-1.4 fake"), ImageMediaType: "application/pdf",
+	})
+	if result.outcome != visionSideChannelSuccess || result.description != "session pdf description" {
+		t.Fatalf("PDF refusal fallback result = %+v, want the session model's description", result)
+	}
+	if len(anthropic.Requests()) != 1 {
+		t.Fatalf("configured-route calls = %d, want 1", len(anthropic.Requests()))
+	}
+	if len(openai.Requests()) != 1 {
+		t.Fatalf("session-model calls = %d, want the refusal fallback", len(openai.Requests()))
+	}
+}
+
+// The raster-image retry has a document counterpart: when the failed route
+// attempt never reached the session model and the session row can see the
+// document (pdf input declared, Responses input_file), the PDF retries there
+// once before vision is declared unavailable.
+func TestDescribeImage_PDFRouteFailureRetriesOnADocumentCapableSessionModel(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("session pdf description")}, nil
+		},
+	}}
+	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, visionRouteError("anthropic")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withAdapter(anthropic), withProfile(NewOpenAIProfile("gpt-5.4")),
+		withConfig(SessionConfig{VisionModel: "anthropic/claude-x"}))
+
+	result := sess.describeImageCall(context.Background(), tool.ExecResult{
+		ImageData: []byte("%PDF-1.4 fake"), ImageMediaType: "application/pdf",
+	})
+	if result.outcome != visionSideChannelSuccess || result.description != "session pdf description" {
+		t.Fatalf("PDF retry result = %+v, want the session model's description", result)
+	}
+	if len(anthropic.Requests()) != 1 {
+		t.Fatalf("configured-route calls = %d, want 1", len(anthropic.Requests()))
+	}
+	if len(openai.Requests()) != 1 {
+		t.Fatalf("session-model calls = %d, want the retry", len(openai.Requests()))
 	}
 }
 

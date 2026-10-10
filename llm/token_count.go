@@ -603,6 +603,22 @@ func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
 	return false
 }
 
+// DeliversUserMessageDocuments reports whether the row's adapter represents a
+// document part in a user message in a form the model can consume. Only the
+// OpenAI Responses builder does today (input_file, responses/input.go); the
+// Anthropic and Google builders reject the kind outright, and the chat builder
+// silently strips it. This is a different position from
+// DeliversToolResultMedia: a Responses row can take a user-message document
+// while its protocol still drops tool-result documents (#4209 family).
+func DeliversUserMessageDocuments(res registry.Resolved) bool {
+	switch res.Protocol {
+	case registry.ProtocolOpenAIResponses:
+		return true
+	default:
+		return false
+	}
+}
+
 // unsignedThinkingReplayed reports whether the adapter the resolved target
 // selects replays a ContentThinking part that carries text and no replay
 // metadata:

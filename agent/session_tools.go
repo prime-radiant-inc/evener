@@ -476,6 +476,22 @@ func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fal
 	return true
 }
 
+// sessionModelTakesRequestMedia reports whether the session profile can see a
+// describe-request's media part: a raster image needs image input (a
+// user-message image is the one shape every protocol vouches for), a document
+// needs the row's pdf input plus an adapter that represents a user-message
+// document. Any other kind stays with the configured route's verdict.
+func sessionModelTakesRequestMedia(part llm.ContentPart, profile *provider.Profile) bool {
+	switch part.Kind {
+	case llm.ContentImage:
+		return profile.AcceptsImageInput()
+	case llm.ContentDocument:
+		return profile.AcceptsDocumentInput()
+	default:
+		return false
+	}
+}
+
 // applyVisionRouteEffort clamps the fixed low vision cap to the route's
 // supported effort levels. A model whose cheapest level is above the cap gets
 // that level rather than a value it would reject, and a route that takes no
@@ -591,16 +607,17 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 
 	start := s.sclock().Now()
 	resp, ranSessionModel, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
-	if err != nil && !ranSessionModel && visionCtx.Err() == nil && mediaPart.Kind == llm.ContentImage && profile.AcceptsImageInput() {
+	if err != nil && !ranSessionModel && visionCtx.Err() == nil && sessionModelTakesRequestMedia(mediaPart, profile) {
 		// The failed attempt never touched the session model — cheapmodel
 		// reroutes unservable routes and its own refusal fallback there, and
-		// both report it — the fixed deadline is not spent, the result is a
-		// raster image (a user-message image is the one shape every protocol
-		// vouches for; whether a model takes a user-message document is
-		// #4209 territory), and the session model takes image input: try the
+		// both report it — the fixed deadline is not spent, and the session
+		// model can see the media (a raster image needs image input, the one
+		// user-message shape every protocol vouches for; a document needs the
+		// row's pdf input plus an adapter that represents a user-message
+		// document, which only the Responses builder does): try the
 		// description once on it before declaring vision unavailable. The
 		// effort must fit the session model's ladder, not the failed route's.
-		// A model without image input never gets the doomed request:
+		// A model that cannot see the media never gets the doomed request:
 		// providers reject it, and the ones that do not answer with confident
 		// hallucinated descriptions.
 		s.applyVisionRouteEffort(&req, profile, profile.ID(), profile.Model())

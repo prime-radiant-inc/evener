@@ -323,17 +323,21 @@ Code passes images inline with no describing call at all.
 Failure fallback: the description retries once on the session model only
 when the failed attempt did not already run there — cheapmodel reports the
 fact, which covers rerouted unservable routes and its own refusal fallback —
-when the side-channel's fixed deadline is not already spent, when the result
-is a raster image (a user-message image is the one shape every protocol
-vouches for; user-message document support is #4209 territory, so a document
-never retries), and when the session model accepts image input. A session
-model without image input never
-receives the retry's describe request: providers reject it, and the ones that
-do not answer with a confident hallucinated description. cheapmodel's refusal
+when the side-channel's fixed deadline is not already spent, and when the
+result is media the session model can actually see: a raster image needs
+image input (a user-message image is the one shape every protocol vouches
+for), and a document needs the row's pdf input plus an adapter that
+represents a user-message document (only the Responses builder writes
+input_file today; the Anthropic and Google builders reject the kind and chat
+strips it). A session model that cannot see the media
+never receives the retry's describe request: providers reject it, and the
+ones that do not answer with a confident hallucinated description. cheapmodel's refusal
 fallback is gated the same way: a media-bearing request never lands on a
-session model that cannot see it (`ErrSessionModelCannotTakeMedia`, documents
-blocked outright and images requiring image input, across the live refusal
-and both latched-refusal reroutes), so a refusing configured route reports
+session model that cannot see it (`ErrSessionModelCannotTakeMedia`, images
+requiring image input and documents requiring the row's pdf input plus
+user-message document delivery, across the live refusal
+and both latched-refusal reroutes), so a refusing configured route against a
+media-blind session reports
 unavailable instead of describing; the caller's own choice of the session
 route stays ungated as the try-the-session-model default. What remains open
 under #4213 is the effort refit: the refusal leg still sends the refused
