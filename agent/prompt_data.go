@@ -15,8 +15,10 @@ type promptData struct {
 	// Resolution context
 	NonInteractive           bool
 	BaseInstructionsOverride string
-	// IsSubagent is true for a delegate session (depth above zero): delegates
-	// get their own delegation guidance and none of the root-only sections.
+	// IsSubagent is true for a delegate session (isSubagentSession: a live
+	// spawn, or a session whose persisted meta marks it a subagent, never a
+	// forked root): delegates get their own delegation guidance and none of
+	// the root-only sections.
 	IsSubagent bool
 	// Surface is the provider surface the session's profile speaks
 	// ("openai", "anthropic", ...), for surface-specific guidance.
