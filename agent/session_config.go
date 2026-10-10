@@ -52,6 +52,7 @@ type SessionConfig struct {
 	// An empty state root leaves library sessions without memory access.
 	// MemoryProjectID is bound at launch and persisted. A root session saved
 	// without one adopts its own home's binding on resume, never the resume cwd's.
+	// A delegate's is always its live parent's, on spawn and on every restore.
 	MemoryStateRoot string `json:"-"`
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`

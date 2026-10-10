@@ -1416,7 +1416,10 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
     expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
     expect(inspectionRecord(inspectorId).params).toBe(intent);
     expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
-    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["root", "child"]);
+    // The origin conversation's own pane is live in the main group, so the
+    // cascade collapses it to a spine and keeps only the leaf readable.
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["child"]);
+    expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.dataset.scopeRef)).toEqual(["root"]);
     expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
   } finally {
     fixture.dispose();
@@ -1548,8 +1551,10 @@ test.each([false, true])(
       expect(api.activePanel?.id).toBe(inspectorId);
       expect(window.location.pathname).toBe("/s/root");
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
-        "root",
         "child",
+      ]);
+      expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"))).toEqual([
+        "root",
       ]);
       await act(async () => returnFromAgentCascade(inspectorId));
       expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
