@@ -1782,6 +1782,50 @@ func memoryExec(t *testing.T, s *Session, name string, args map[string]any) tool
 	return s.execTool(context.Background(), llm.ToolCallData{ID: "memory-direct", Name: name, Arguments: raw}, "")
 }
 
+// Memory tools take paths relative to the scope root, so their results and
+// errors name pages the same way and never show the host path of the scope:
+// a model that copied one back would be refused.
+func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			stateRoot := t.TempDir()
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+			env, err := s.openMemoryEnvironment(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := env.WorkingDirectory()
+			for _, call := range []struct {
+				tool    string
+				args    map[string]any
+				isError bool
+			}{
+				{"memory_write", map[string]any{"file_path": "dir/page.md", "content": "---\ndescription: d\n---\nopaque-needle\n"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
+				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
+				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
+				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
+				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
+				{"memory_write", map[string]any{"file_path": "dir/other.md", "content": "x"}, false},
+				{"memory_delete", map[string]any{"file_path": "dir/page.md"}, false},
+			} {
+				call.args["scope"] = scope
+				res := memoryExec(t, s, call.tool, call.args)
+				if res.IsError != call.isError {
+					t.Fatalf("%s %v: IsError=%v: %s", call.tool, call.args, res.IsError, res.Output)
+				}
+				for _, hostPath := range []string{root, stateRoot} {
+					if strings.Contains(res.Output, hostPath) {
+						t.Fatalf("%s %v names the host path %s: %s", call.tool, call.args, hostPath, res.Output)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 	t.Parallel()
 	for _, scope := range []string{"personal", "project"} {

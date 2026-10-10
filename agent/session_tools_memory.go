@@ -59,6 +59,36 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 	return env, forwarded, release, nil
 }
 
+// scopeRelativeMemoryResult returns a function that rewrites a memory tool's
+// result text and error message to name paths relative to env's scope root,
+// the way the tools take them. The shared executors run on host paths
+// (memoryFileArgs), and a model that copied one back would be refused.
+func scopeRelativeMemoryResult(env *execenv.LocalExecutionEnvironment) func(any, error) (any, error) {
+	root := env.WorkingDirectory()
+	relative := strings.NewReplacer(root+string(filepath.Separator), "", root, ".")
+	return func(out any, err error) (any, error) {
+		if text, ok := out.(string); ok {
+			out = relative.Replace(text)
+		}
+		if err != nil {
+			if message := relative.Replace(err.Error()); message != err.Error() {
+				err = memoryPathError{err: err, message: message}
+			}
+		}
+		return out, err
+	}
+}
+
+// memoryPathError is a memory tool's error with scope-relative paths in its
+// message; errors.Is and errors.As still see the original.
+type memoryPathError struct {
+	err     error
+	message string
+}
+
+func (e memoryPathError) Error() string { return e.message }
+func (e memoryPathError) Unwrap() error { return e.err }
+
 // errMemoryIndexGenerated refuses a write, edit or delete of the index.
 var errMemoryIndexGenerated = errors.New(tool.MemoryIndexGenerated)
 
@@ -139,7 +169,7 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 		stamped, notes = s.stampMemoryPage(listed, raw)
 		return stamped
 	}
-	out, err := write(env, forwarded, stamp)
+	out, err := scopeRelativeMemoryResult(env)(write(env, forwarded, stamp))
 	if err != nil {
 		return out, err
 	}
@@ -234,7 +264,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
 		}
 	}
-	return out, err
+	return scopeRelativeMemoryResult(env)(out, err)
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
@@ -265,7 +295,7 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 	if target == "." {
 		skip = isMemoryIndexPath
 	}
-	return env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip)
+	return scopeRelativeMemoryResult(env)(env.GrepSkipping(ctx, g.pattern, g.path, g.glob, g.caseInsensitive, g.maxResults, g.outputMode, g.contextLines, skip))
 }
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {
