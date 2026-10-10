@@ -1,6 +1,8 @@
 import {
   type CachedSessionRecord,
   currentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
   hydrateThread,
   type ThreadItem,
   type ThreadReadResponse,
@@ -221,6 +223,20 @@ it("leaves the legacy source intact when the conversion transaction aborts", asy
   await expect(readRaw(factory, name, "records", seeded.ref)).resolves.toMatchObject({ ref: seeded.ref });
   await expect(readRaw(factory, name, "meta", seeded.ref)).resolves.toBeDefined();
   await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+  // Retry after the abort succeeds and only then removes the source.
+  await expect(
+    migrateLegacySession(cache, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: seeded.ref }],
+      savedAt: 1_000,
+      source: { kind: "records", ref: seeded.ref },
+      clearEpoch: 0,
+    }),
+  ).resolves.toMatchObject({ outcome: "converted" });
+  await expect(readRaw(factory, name, "records", seeded.ref)).resolves.toBeUndefined();
+  const retried = await cache.getLatest(historyKey, 10);
+  expect(retried.map((row) => row.transcriptKey)).toEqual(["e1", "e2"]);
 });
 
 it("skips an undecodable legacy record and leaves its source for retry", async () => {
@@ -389,6 +405,97 @@ it("drops items without a key, position or version and never guesses one", () =>
   );
   expect(converted?.items.map((row) => row.transcriptKey)).toEqual(["e2"]);
   expect(legacySessionToEntryRows({ ref: "x" }, "identity")).toBeUndefined();
+});
+
+it("imports several recorded items including an isolated completion and omitted text as stale seeds", async () => {
+  const { cache, legacy } = await setup();
+  const base = legacyRecord();
+  const record: CachedSessionRecord = {
+    ...base,
+    history: {
+      ...base.history,
+      turns: [
+        {
+          id: "t1",
+          status: "completed",
+          version: 3,
+          items: [
+            {
+              id: "e1",
+              turnId: "t1",
+              type: "agentMessage",
+              text: "one",
+              transcriptKey: "e1",
+              position: { entry: 1, item: 0 },
+              version: 1,
+            },
+            {
+              id: "e2",
+              turnId: "t1",
+              type: "agentMessage",
+              text: "",
+              textOmitted: true,
+              transcriptKey: "e2",
+              position: { entry: 2, item: 0 },
+              version: 2,
+            },
+          ],
+        },
+        {
+          id: "t2",
+          status: "completed",
+          version: 9,
+          items: [
+            {
+              id: "eold",
+              turnId: "t2",
+              type: "toolResult",
+              text: "done",
+              output: "ok",
+              transcriptKey: "eold",
+              position: { entry: 0, item: 0 },
+              version: 9,
+            },
+            {
+              id: "e3",
+              turnId: "t2",
+              type: "agentMessage",
+              text: "three",
+              transcriptKey: "e3",
+              position: { entry: 3, item: 0 },
+              version: 3,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  await legacy.put(record, 0, 1_000);
+
+  await expect(
+    migrateLegacySession(cache, {
+      identity,
+      requestedRefs: [{ clientId: "c", ref: record.ref }],
+      savedAt: 1_000,
+      source: { kind: "records", ref: record.ref },
+      clearEpoch: 0,
+    }),
+  ).resolves.toMatchObject({ outcome: "converted", itemCount: 4, turnCount: 2 });
+
+  const rows = await cache.getLatest(historyKey, 10);
+  expect(rows.map((row) => row.transcriptKey)).toEqual(["eold", "e1", "e2", "e3"]);
+  const omitted = decodeTranscriptItem(rows.find((row) => row.transcriptKey === "e2")?.item);
+  expect(omitted).toBeDefined();
+  if (!omitted) return;
+  expect(encodeTranscriptItem(omitted).textOmitted).toBe(true);
+  expect(rows.find((row) => row.transcriptKey === "eold")).toMatchObject({
+    version: 9,
+    item: { type: "toolResult", output: "ok" },
+  });
+  await expect(cache.getTurn(historyKey, "t2")).resolves.toMatchObject({ version: 9 });
+  // Isolated seed positions certify no range: the gap stays uncertified.
+  await expect(cache.getLatestWindow(historyKey, 10)).resolves.toMatchObject({ complete: false, stale: true });
+  await expect(cache.getCoverage(historyKey, "read:any")).resolves.toBeUndefined();
 });
 
 it("does not regress newer metadata or delete the newer target when migrating an older source", async () => {
