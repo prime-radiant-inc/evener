@@ -1031,6 +1031,14 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 
 // --- Deterministic checkpoint (Layer 3) ---
 
+// maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
+// checkpoint either feeds into the LLM summarizer (which replaces it) or — if
+// the summarizer is unavailable — becomes the sole history the main model sees.
+// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
+// alongside the instruction prefix, and leaves room for preserved recent turns
+// in the main model's context.
+const maxCheckpointChars = 60_000
+
 // checkpoint replaces old history with a structured state snapshot.
 // Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
 //
@@ -1047,14 +1055,6 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 	if cutoff < 0 {
 		return history
 	}
-
-	// Budget: cap the checkpoint to avoid ballooning the context. The checkpoint
-	// either feeds into the LLM summarizer (which replaces it) or — if the
-	// summarizer is unavailable — becomes the sole history the main model sees.
-	// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
-	// alongside the instruction prefix, and leaves room for preserved recent
-	// turns in the main model's context.
-	const maxCheckpointChars = 60_000
 
 	data := collectCheckpointData(history, cutoff, resultToolName)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
@@ -1940,8 +1940,14 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
+			// A previous compaction is the only record of the conversation it
+			// folded, so it gets up to a checkpoint's size: a deterministic
+			// checkpoint, the usual previous compaction, arrives whole, with
+			// every partner message it kept, and the rest of the budget stays
+			// for the turns it precedes. A longer one keeps its head, where
+			// both summary prompts put the permissions and holds it quotes.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString(truncText(t.Message.Text(), maxCheckpointChars))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent

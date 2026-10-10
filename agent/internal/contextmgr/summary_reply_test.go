@@ -212,7 +212,9 @@ func TestForceCompact_PartnerSteeringReachesTheSummarizer(t *testing.T) {
 	userSteer := schema.NewTurn(schema.TurnSteering, llm.User("PARTNER_STEER_SENTINEL"))
 	userSteer.SteeringSource = events.SteeringSourceUser
 	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+		// A long original request puts the steer well past the start of the
+		// checkpoint the summarizer reads.
+		schema.NewTurn(schema.TurnUserInput, llm.User("start "+strings.Repeat("requirement ", 400))),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 		userSteer,
 		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
