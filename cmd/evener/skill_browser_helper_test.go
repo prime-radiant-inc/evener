@@ -22,14 +22,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -49,6 +52,16 @@ const skillBrowserFixturePluginDir = "fixture-plugin"
 // skillBrowserFixturePluginName matches the fixture plugin's manifest name
 // and the --enabled-plugins selection the helper passes to serve.
 const skillBrowserFixturePluginName = "pkg"
+
+// serveTestTurnSeq mints a UNIQUE client mutation ID per fixture turn. The
+// daemon dedupes turn/start by that ID and rejects a reused ID carrying a
+// different payload, so a constant ID would strand every turn after the first
+// (the background guard starts six sustained turns on one daemon).
+var serveTestTurnSeq atomic.Int64
+
+// serveTestCommunicateSeq mints a unique communicate tool-call ID per turn so
+// the daemon's per-call bookkeeping never confuses two turns' terminal calls.
+var serveTestCommunicateSeq atomic.Int64
 
 // skillBrowserHelperConfig is the private JSON file -skill-browser-config
 // names. The Go owner (TestSkillComposerBrowser) writes it before launching
@@ -132,6 +145,15 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 	entry := waitForSkillBrowserRendezvous(t, cfg.RunDir)
 
 	controls := newSkillBrowserControls(cfg.ControlPath, adapter)
+	controls.startTurn = func(ctx context.Context, prompt string) error {
+		if prompt == "" {
+			prompt = backgroundTargetPrompt
+		}
+		return startServeTestDaemonTurn(ctx, controls.observerCtx, entry.Address, entry.SessionID, prompt,
+			func(ref, turnID, status string, ok bool, errMsg string) {
+				adapter.ackTurnComplete(ref, turnID, prompt, ok, status, errMsg)
+			})
+	}
 	controlDone := controls.run(t)
 
 	select {
@@ -171,6 +193,126 @@ func TestSkillBrowserDaemonHelper(t *testing.T) {
 // developer's real home; this makes the two helpers the browser guard starts
 // isolated from each other too, so neither's config/cache/plugin state can
 // collide with the other's.
+// startServeTestDaemonTurn dials THIS daemon's own AppWire and dispatches a
+// real turn/start, exactly as a UI client would. The fixture uses it to produce
+// the target session's text while its web pane is never opened, so the web app
+// observes it only through its background subscription.
+func startServeTestDaemonTurn(
+	setupCtx, observeCtx context.Context,
+	address, sessionID, text string,
+	ack func(ref, turnID, status string, ok bool, errMsg string),
+) error {
+	transport, err := appwire.DialWebSocket(setupCtx, "ws://"+address+"/rpc", http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(setupCtx))
+	if _, err := client.Initialize(setupCtx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-test-turn", Version: "test"},
+	}); err != nil {
+		return err
+	}
+	threads, err := client.ThreadList(setupCtx, appwire.ThreadListParams{})
+	if err != nil {
+		return err
+	}
+	if len(threads.Data) > 0 {
+		sessionID = threads.Data[0].ID
+	}
+	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	// Subscribe BEFORE TurnStart so this connection captures the thread's
+	// subscription and receives its lifecycle pushes (thread/status/changed);
+	// a plain thread/read is snapshot-only and pushes nothing.
+	read, err := client.ThreadRead(setupCtx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, Subscribe: true})
+	if err != nil {
+		return err
+	}
+	started, err := client.TurnStart(setupCtx, appwire.TurnStartParams{
+		Ref:                ref,
+		ClientMutationID:   fmt.Sprintf("fixture_background_turn_start_%d", serveTestTurnSeq.Add(1)),
+		ExpectedInstanceID: read.Thread.Evener.InstanceID,
+		Input:              []appwire.InputItem{{Type: "text", Text: text}},
+	})
+	if err != nil {
+		return err
+	}
+	turnID := started.Turn.ID
+	if turnID == "" {
+		ack(ref, "", "", false, "turn/start returned no turn id")
+		return nil
+	}
+	status, ok, errMsg := observeServeTestTurn(observeCtx, client, ref, turnID)
+	ack(ref, turnID, status, ok, errMsg)
+	return nil
+}
+
+// observeServeTestTurn waits until the SUBMITTED turn reaches a terminal state,
+// read from the daemon's own thread/status/changed push and a thread/read of
+// that exact turn. An accepted turn/start, a historical prompt match, a global
+// write, or a bare idle is not success: only the turn's own terminal status is.
+func observeServeTestTurn(ctx context.Context, client *appwire.Client, ref, turnID string) (string, bool, string) {
+	for {
+		select {
+		case n, ok := <-client.Notifications():
+			if !ok {
+				return "", false, "appwire notifications closed before the turn completed"
+			}
+			if n.Method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			var params appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(n.Params, &params); err != nil {
+				continue
+			}
+			if params.Ref != ref || params.Status.Type == appwire.ThreadStatusActive {
+				continue
+			}
+			// The session left active. The idle push can precede the
+			// transcript settling, so poll the turn's own status briefly; this
+			// is a bounded condition-watch, not a widened deadline.
+			for attempt := 0; attempt < 20; attempt++ {
+				status, found, errMsg := readServeTestTurnOutcome(ctx, client, ref, turnID)
+				if errMsg != "" {
+					return "", false, errMsg
+				}
+				if found && status != appwire.TurnStatusInProgress {
+					if status == appwire.TurnStatusCompleted {
+						return status, true, ""
+					}
+					return status, false, fmt.Sprintf("turn %s ended %s", turnID, status)
+				}
+				select {
+				case <-ctx.Done():
+					return "", false, "completion observer cancelled"
+				case <-time.After(250 * time.Millisecond):
+				}
+			}
+			return "", false, fmt.Sprintf("turn %s never reached a terminal transcript state", turnID)
+		case <-ctx.Done():
+			return "", false, "completion observer cancelled"
+		}
+	}
+}
+
+// readServeTestTurnOutcome reads the submitted turn's status from a fresh
+// thread/read, bounded so a stalled read cannot outlive teardown.
+func readServeTestTurnOutcome(ctx context.Context, client *appwire.Client, ref, turnID string) (string, bool, string) {
+	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	read, err := client.ThreadRead(readCtx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		return "", false, fmt.Sprintf("thread/read after idle: %v", err)
+	}
+	for _, turn := range read.Thread.Turns {
+		if turn.ID == turnID {
+			return turn.Status, true, ""
+		}
+	}
+	return "", false, ""
+}
+
 func isolateSkillBrowserHelperEnv(t *testing.T, cfg skillBrowserHelperConfig) {
 	t.Helper()
 	home := filepath.Join(cfg.StateDir, "helper-home")
@@ -278,7 +420,56 @@ type skillBrowserAdapter struct {
 	seq       int
 	holdArmed bool
 	gate      chan struct{}
+
+	// streaming is the explicit fixture mode for the whole-journey guard.
+	// The skill guard never arms it (it writes no background command), so its
+	// turns keep taking the Complete path exactly as before.
+	streaming bool
+	// phases holds one one-shot release channel per named background phase.
+	// The Go owner releases a phase through the control file only after it has
+	// observed the milestone the phase gates on.
+	phases map[string]chan struct{}
+	// role selects the scripted turn shape: "sustained" emits the large
+	// workload before any phase release (so it fills the resident budget), and
+	// "target" (the default) emits the before text small and then a real tool
+	// call after the after-eviction release.
+	role string
+	// autoPhases, when set, releases every background phase immediately, so
+	// history and gap turns complete without the driver gating each one. The
+	// batching scenario leaves it off and uses acknowledged held phases.
+	autoPhases bool
 }
+
+// Fixture sentinels scripted across the provider boundary by the whole-journey
+// guard. They are opaque data, never prose: the Go owner
+// (TestBackgroundTranscriptsBrowser) asserts its own copies independently.
+const (
+	backgroundBeforeEviction = "BACKGROUND_BEFORE_EVICTION"
+	backgroundAfterEviction  = "BACKGROUND_AFTER_EVICTION"
+	backgroundToolOutput     = "BACKGROUND_TOOL_OUTPUT"
+	backgroundToolDone       = "BACKGROUND_TOOL_DONE"
+	// backgroundToolCommand is the real shell invocation the scripted model
+	// requests; its stdout is the tool output the driver asserts in the pane.
+	backgroundToolCommand = "printf " + backgroundToolOutput
+	// backgroundTargetPrompt is the user text the fixture sends to start the
+	// target session's turn while its web pane stays unopened.
+	backgroundTargetPrompt = "BACKGROUND_TARGET_PROMPT"
+	// backgroundTurnDone is the short text the terminal communicate carries.
+	// It is distinct from every asserted sentinel so it cannot double a
+	// before/after/tool count, and it never repeats the streamed payload.
+	backgroundTurnDone = "BACKGROUND_TURN_DONE"
+	// backgroundHistoryReply is the history role's neutral assistant text. It
+	// must NOT reuse the target's before/after sentinels, or those gates would
+	// pass on history content instead of the target's own turn.
+	backgroundHistoryReply = "BACKGROUND_HISTORY_REPLY"
+)
+
+// backgroundWorkload is the deterministic payload one sustained turn appends.
+// It stays under the injected 32 KiB PENDING budget on purpose: a single
+// recorded assistant update larger than that is rejected by the residency
+// (`accept` revokes the ref), so the pressure must accumulate across several
+// completing turns to exceed the injected 64 KiB RESIDENT budget.
+var backgroundWorkload = strings.Repeat("W", 16*1024)
 
 func newSkillBrowserAdapter(requestLog string) (*skillBrowserAdapter, error) {
 	f, err := os.OpenFile(requestLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -354,8 +545,274 @@ func (a *skillBrowserAdapter) Complete(ctx context.Context, req llm.Request) (ll
 	return scriptedCommunicate(skillBrowserReply), nil
 }
 
-func (a *skillBrowserAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
+// Stream is the channel-backed boundary the whole-journey guard scripts. It is
+// inert (ErrStreamUnsupported, so the daemon falls back to Complete) unless the
+// explicit background fixture mode has been armed through the control file, so
+// the existing skill guard's Complete behavior is unchanged.
+func (a *skillBrowserAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if !a.isStreamingRequest(req) {
+		return nil, llm.ErrStreamUnsupported
+	}
+	a.record(req)
+	streamCtx, cancel := context.WithCancel(ctx)
+	st := llm.NewChanStream(cancel)
+	go a.scriptBackgroundStream(streamCtx, st, req)
+	return st, nil
+}
+
+// isStreamingRequest reports whether the background fixture mode is armed and
+// this request is an ordinary turn (never the session namer, which always
+// resolves through Complete).
+func (a *skillBrowserAdapter) isStreamingRequest(req llm.Request) bool {
+	a.mu.Lock()
+	streaming := a.streaming
+	a.mu.Unlock()
+	if !streaming {
+		return false
+	}
+	return !a.isSessionNamerRequest(req)
+}
+
+// scriptBackgroundStream produces one scripted turn. The initial request emits
+// the before-eviction text, waits for the fixture's after-eviction phase, emits
+// the after-eviction text and a real structured shell tool call; the follow-up
+// request (carrying the tool result) waits for the finish phase and completes.
+// Every wait returns false only when the stream context is cancelled, so a
+// cancelled turn never emits a stray terminal event.
+func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *llm.ChanStream, req llm.Request) {
+	defer st.CloseSend()
+	role := a.backgroundRole()
+	st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+	if role == "history" {
+		// History turns exist to build volume and carry their own user sentinel
+		// (BACKGROUND_HISTORY_NN); their assistant text is neutral so the
+		// target's before/after/tool gates and exactly-once checks cannot pass
+		// on history content. They complete immediately, without phase gates.
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundHistoryReply})
+		sendScriptedCommunicate(st)
+		return
+	}
+	if hasToolResults(req) {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundToolDone})
+		if !a.waitBackgroundPhase(ctx, "finish") {
+			return
+		}
+		sendScriptedCommunicate(st)
+		return
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundBeforeEviction})
+	if role == "sustained" {
+		// The sustained session's large payload lands BEFORE any phase release,
+		// so its resident model alone exceeds the injected budget and evicts the
+		// unopened target before the after-eviction phase is ever released.
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundWorkload})
+	}
+	if !a.waitBackgroundPhase(ctx, "after-eviction") {
+		return
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundAfterEviction})
+	if role == "sustained" {
+		sendScriptedCommunicate(st)
+		return
+	}
+	call := llm.ToolCallData{
+		ID:        "background_tool_call",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"` + backgroundToolCommand + `","mode":"foreground"}`),
+		Type:      "function",
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+// sendScriptedCommunicate ends a scripted streaming turn the way the daemon
+// requires: a real `communicate` tool call, the provider schema
+// scriptedCommunicate (scripted_provider_test.go) uses. decideNoToolCalls
+// (agent/session_tool_round.go) steers a bare-text finish back and eventually
+// fails the turn, so a streaming script MUST end with a tool call. The
+// already-streamed text is preserved; this only ends the turn and carries a
+// short, distinct message that never repeats the streamed payload.
+func sendScriptedCommunicate(st *llm.ChanStream) {
+	args, _ := json.Marshal(map[string]any{
+		"message":  backgroundTurnDone,
+		"end_turn": true,
+		"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+	})
+	call := llm.ToolCallData{
+		ID:        fmt.Sprintf("background_communicate_%d", serveTestCommunicateSeq.Add(1)),
+		Name:      "communicate",
+		Arguments: args,
+		Type:      "function",
+	}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+}
+
+// backgroundRole returns the adapter's scripted role under the lock.
+func (a *skillBrowserAdapter) backgroundRole() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.role
+}
+
+// setBackgroundRole selects the scripted turn shape. It must run before the
+// turn starts; the control tail processes it at daemon startup.
+func (a *skillBrowserAdapter) setBackgroundRole(role string) {
+	a.mu.Lock()
+	a.role = role
+	a.mu.Unlock()
+}
+
+// setAutoPhases releases every background phase immediately, for the history
+// and gap turns that must complete without driver gating.
+func (a *skillBrowserAdapter) setAutoPhases(auto bool) {
+	a.mu.Lock()
+	a.autoPhases = auto
+	var toRelease []string
+	if auto {
+		for phase := range a.phases {
+			toRelease = append(toRelease, phase)
+		}
+	}
+	a.mu.Unlock()
+	for _, phase := range toRelease {
+		a.releaseBackgroundPhase(phase)
+	}
+}
+
+// resetPhases clears the one-shot phase channels at the start of a new turn,
+// so a channel closed for a previous turn cannot release a phase of this one.
+// It runs when a start-turn control command is dispatched, BEFORE the turn's
+// stream waits; an early release for THIS turn is still remembered because
+// releaseBackgroundPhase creates the channel when the waiter has not yet.
+func (a *skillBrowserAdapter) resetPhases() {
+	a.mu.Lock()
+	a.phases = nil
+	a.mu.Unlock()
+}
+
+// hasToolResults reports whether THIS request's current turn already carries a
+// tool result (the follow-up leg after the scripted shell call). It scans only
+// from the LATEST user message, so a previous turn's shell or communicate
+// result cannot select the follow-up branch of a new turn.
+func hasToolResults(req llm.Request) bool {
+	start := 0
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == llm.RoleUser {
+			start = i
+			break
+		}
+	}
+	for _, message := range req.Messages[start:] {
+		if message.Role == llm.RoleTool {
+			return true
+		}
+		for _, part := range message.Content {
+			if part.Kind == llm.ContentToolResult {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// waitBackgroundPhase waits for the named one-shot phase release, or the stream
+// context's cancellation. It returns true only when that phase was released.
+func (a *skillBrowserAdapter) waitBackgroundPhase(ctx context.Context, phase string) bool {
+	a.mu.Lock()
+	if a.autoPhases {
+		a.mu.Unlock()
+		return true
+	}
+	if a.phases == nil {
+		a.phases = map[string]chan struct{}{}
+	}
+	ch, ok := a.phases[phase]
+	if !ok {
+		ch = make(chan struct{})
+		a.phases[phase] = ch
+	}
+	a.mu.Unlock()
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// releaseBackgroundPhase closes the named phase channel, creating and closing
+// it if the release arrived before the waiter did, so the one-shot release is
+// never lost to ordering.
+func (a *skillBrowserAdapter) releaseBackgroundPhase(phase string) {
+	a.mu.Lock()
+	if a.phases == nil {
+		a.phases = map[string]chan struct{}{}
+	}
+	ch, ok := a.phases[phase]
+	if !ok {
+		ch = make(chan struct{})
+		a.phases[phase] = ch
+	}
+	a.mu.Unlock()
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+// enableStreaming arms the explicit background fixture mode.
+func (a *skillBrowserAdapter) enableStreaming() {
+	a.mu.Lock()
+	a.streaming = true
+	a.mu.Unlock()
+}
+
+// ackBackgroundPhase records the fixture's acknowledgment of a released phase
+// in the request log the Go owner reads, so the release has observable
+// evidence independent of the driver.
+func (a *skillBrowserAdapter) ackBackgroundPhase(phase string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	data, err := json.Marshal(map[string]any{
+		"event": "background-phase-ack",
+		"phase": phase,
+		"at":    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return
+	}
+	if _, err := a.log.Write(append(data, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "skill browser helper: write phase ack: %v\n", err)
+	}
+}
+
+// ackTurnComplete records one submitted turn's REAL outcome in the request log
+// the Go owner reads, so completion is correlated to the particular turn rather
+// than to a historical prompt match, an accepted turn/start, or an unrelated
+// global write. ok is true only when the daemon reported the turn completed.
+func (a *skillBrowserAdapter) ackTurnComplete(ref, turnID, prompt string, ok bool, status, errMsg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	data, err := json.Marshal(map[string]any{
+		"event":  "turn-complete",
+		"ref":    ref,
+		"turnId": turnID,
+		"prompt": prompt,
+		"ok":     ok,
+		"status": status,
+		"error":  errMsg,
+		"at":     time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return
+	}
+	if _, err := a.log.Write(append(data, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "skill browser helper: write turn-complete ack: %v\n", err)
+	}
 }
 
 // writeEvent appends a non-request lifecycle event to the same log so the Go
@@ -395,9 +852,12 @@ func (a *skillBrowserAdapter) releaseHold() {
 }
 
 // skillBrowserControlCommand is the fixture IPC command set: hold, release,
-// shutdown. Never production RPC.
+// shutdown, and the whole-journey guard's background-mode/background-phase.
+// Never production RPC.
 type skillBrowserControlCommand struct {
 	Command string `json:"command"`
+	// Phase names the background phase a "background-phase" command releases.
+	Phase string `json:"phase,omitempty"`
 }
 
 // skillBrowserControls tails the control JSONL file and dispatches commands to
@@ -409,15 +869,28 @@ type skillBrowserControls struct {
 	shutdown chan struct{}
 	stopCh   chan struct{}
 	done     chan struct{}
+	// startTurn, when set, starts a REAL turn on this daemon's own session
+	// through its real AppWire — the unopened producer the whole-journey guard
+	// needs, so the target's text is produced without its web pane ever opening.
+	startTurn func(context.Context, string) error
+	// observerCtx outlives one turn: a held turn (the target waits for phases)
+	// must not be cancelled by the short setup deadline. stop() cancels it and
+	// joins every observer so teardown settles owned work.
+	observerCtx    context.Context
+	observerCancel context.CancelFunc
+	observerWg     sync.WaitGroup
 }
 
 func newSkillBrowserControls(path string, adapter *skillBrowserAdapter) *skillBrowserControls {
+	observerCtx, observerCancel := context.WithCancel(context.Background())
 	return &skillBrowserControls{
-		path:     path,
-		adapter:  adapter,
-		shutdown: make(chan struct{}),
-		stopCh:   make(chan struct{}),
-		done:     make(chan struct{}),
+		path:           path,
+		adapter:        adapter,
+		shutdown:       make(chan struct{}),
+		stopCh:         make(chan struct{}),
+		done:           make(chan struct{}),
+		observerCtx:    observerCtx,
+		observerCancel: observerCancel,
 	}
 }
 
@@ -437,6 +910,10 @@ func (c *skillBrowserControls) stop() {
 	default:
 		close(c.stopCh)
 	}
+	if c.observerCancel != nil {
+		c.observerCancel()
+	}
+	c.observerWg.Wait()
 }
 
 // tail reads the control file from byte zero and then follows appends via
@@ -550,6 +1027,47 @@ func (c *skillBrowserControls) dispatchLine(t *testing.T, line []byte) {
 		c.adapter.armHold()
 	case "release":
 		c.adapter.releaseHold()
+	case "background-mode":
+		// The explicit fixture mode: scripted channel-backed streaming turns
+		// replace Complete for the whole-journey guard. The skill guard never
+		// sends this, so its behavior is unchanged.
+		c.adapter.enableStreaming()
+	case "background-phase":
+		if cmd.Phase == "" {
+			fmt.Fprintln(os.Stderr, "skill browser helper: background-phase command without a phase")
+			return
+		}
+		c.adapter.releaseBackgroundPhase(cmd.Phase)
+		c.adapter.ackBackgroundPhase(cmd.Phase)
+	case "background-start-turn":
+		// The unopened producer: start a real turn on this daemon's own session
+		// through its real AppWire, so the web app only ever sees it as a
+		// background subscription (its pane is never opened to drive it). Each
+		// turn gets fresh one-shot phase channels; the short ctx below bounds
+		// only the AppWire setup, while the observer runs until the turn is
+		// terminal or teardown cancels it.
+		if c.startTurn == nil {
+			fmt.Fprintln(os.Stderr, "skill browser helper: background-start-turn is not wired for this helper")
+			return
+		}
+		c.adapter.resetPhases()
+		c.observerWg.Add(1)
+		go func() {
+			defer c.observerWg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := c.startTurn(ctx, cmd.Phase); err != nil {
+				fmt.Fprintf(os.Stderr, "skill browser helper: background-start-turn: %v\n", err)
+			}
+		}()
+	case "background-role":
+		// Selects this helper's scripted turn shape ("sustained" or "target").
+		c.adapter.setBackgroundRole(cmd.Phase)
+	case "background-auto":
+		// Releases every background phase immediately, so history/gap turns
+		// complete without the driver gating each one. phase:"off" turns it off
+		// again for the held-phase batching scenario.
+		c.adapter.setAutoPhases(cmd.Phase != "off")
 	case "shutdown":
 		select {
 		case <-c.shutdown:

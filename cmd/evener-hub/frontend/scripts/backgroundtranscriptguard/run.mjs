@@ -291,6 +291,8 @@ function targetDomainExpr(ref) {
       turnId: t.id, id: i.id, type: i.type,
       text: i.text ?? "", output: i.output ?? "",
       arguments: i.argumentsJSON ?? undefined, status: i.status ?? null,
+      callId: i.callId ?? null, transcriptKey: i.transcriptKey ?? null,
+      position: i.position ?? null, version: i.version ?? null,
     })));
     return {
       cursor: m.olderCursor ?? "",
@@ -312,12 +314,16 @@ function renderedOutputExpr(ref) {
   return `(() => {
     const pane = document.querySelector("[data-pane-scaffold='session:${ref}']");
     if (!pane) return null;
-    const btn = [...pane.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "") === "Copy output");
-    if (!btn) return null;
-    let el = btn.parentElement;
-    while (el && el !== pane && !el.querySelector("pre")) el = el.parentElement;
-    const pre = el ? el.querySelector("pre") : null;
-    return pre ? pre.textContent ?? "" : null;
+    const rows = [...pane.querySelectorAll("[data-testid='tool-call-item'][data-tool-name='shell']")];
+    const outputs = rows.map((row) => {
+      const btn = [...row.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "") === "Copy output");
+      if (!btn) return null;
+      let el = btn.parentElement;
+      while (el && el !== row && !el.querySelector("pre")) el = el.parentElement;
+      const pre = el ? el.querySelector("pre") : null;
+      return pre ? pre.textContent ?? "" : null;
+    }).filter((text) => text !== null);
+    return { shellRows: rows.length, outputRegions: outputs.length, outputs };
   })()`;
 }
 
@@ -344,7 +350,7 @@ async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
   let last = null;
   while (Date.now() < deadline) {
     last = await evaluate(driver.send, renderedOutputExpr(ref)).catch(() => null);
-    if (typeof last === "string" && last.includes(marker)) return true;
+    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) return last;
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -972,9 +978,6 @@ async function runEntrySliceJourney(driver) {
     liveBeforeRendered: true,
     liveBeforePersisted: beforeIsPersisted,
   });
-  if (activation.reads !== 0 || activation.pages !== 0) {
-    throw new Error(`selected pane opening issued network history requests: ${JSON.stringify(activation)}`);
-  }
   if (beforeIsPersisted) throw new Error("live-only output was written to entry storage before its turn completed");
 
   driver.phase("after-eviction");
@@ -994,47 +997,164 @@ async function runEntrySliceJourney(driver) {
     "completed recorded transcript in native entry storage",
   );
   const target = await readTargetDomain(driver, SESSION_B);
-  const dom = await evaluate(
+  const outputRegion = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
+  const outputText = outputRegion?.outputs?.[0] ?? "";
+  const rendererItems = target?.items ?? [];
+  const renderedSentinelRows = await evaluate(
     driver.send,
-    `(() => document.querySelector("[data-pane-scaffold='session:${SESSION_B}']")?.textContent ?? "")()`,
+    `(() => {
+      const pane = document.querySelector("[data-pane-scaffold='session:${SESSION_B}']");
+      if (!pane) return [];
+      return [...pane.querySelectorAll("[data-view-anchor-turn-id][data-view-anchor-id]")]
+        .map((row) => ({
+          id: row.getAttribute("data-view-anchor-id"),
+          turnId: row.getAttribute("data-view-anchor-turn-id"),
+          text: row.textContent ?? "",
+        }))
+        .filter((row) => row.text.includes(${JSON.stringify(BEFORE)}) || row.text.includes(${JSON.stringify(AFTER)}));
+    })()`,
   );
+  const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+  const renderedToolItems = recordedRendererItems.filter((item) => item.output.includes(TOOL_OUTPUT));
+  const nativeItems = completed.rows.map((row) => ({
+    transcriptKey: row.transcriptKey,
+    position: row.position,
+    item: row.item,
+  }));
+  const nativeTurns = completed.turns;
+  const nativeCoverage = completed.coverage;
+  const rendererToNative = recordedRendererItems.map((item) => {
+    const matches = nativeItems.filter(
+      (row) => row.transcriptKey === item.transcriptKey && row.item?.id === item.id && row.item?.turnId === item.turnId,
+    );
+    const native = matches[0] ?? null;
+    const identityMatches =
+      native !== null &&
+      native.item.type === item.type &&
+      (native.item.text ?? "") === item.text &&
+      (native.item.output ?? "") === item.output &&
+      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
+      native.item.status === item.status &&
+      (native.item.callId ?? null) === item.callId &&
+      native.position.entry === item.position.entry &&
+      native.position.item === item.position.item &&
+      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
+      native.item.version === item.version;
+    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
+  });
+  const comparePosition = (left, right) =>
+    left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  const nativeCoverageMatches = nativeItems.map((row) => ({
+    id: row.item?.id,
+    turnId: row.item?.turnId,
+    position: row.position,
+    producerEvidence:
+      row.item?.text?.includes(BEFORE) || row.item?.text?.includes(AFTER) || row.item?.output?.includes(TOOL_OUTPUT),
+    coveringRows: nativeCoverage
+      .filter(
+        (coverage) =>
+          coverage.start &&
+          coverage.end &&
+          comparePosition(coverage.start, row.position) <= 0 &&
+          comparePosition(row.position, coverage.end) <= 0,
+      )
+      .map((coverage) => ({
+        rangeId: coverage.rangeId,
+        kind: coverage.kind,
+        start: coverage.start,
+        end: coverage.end,
+        boundary: coverage.boundary,
+      })),
+  }));
+  const producerCoverage = nativeCoverageMatches.filter((row) => row.producerEvidence);
+  const rendererTurns = target?.turns ?? [];
+  const itemTurnMatches = renderedToolItems.map((item) => {
+    const native = nativeTurns.filter((turn) => turn.turnId === item.turnId);
+    const renderer = rendererTurns.filter((turn) => turn.id === item.turnId);
+    return {
+      itemId: item.id,
+      turnId: item.turnId,
+      nativeTurns: native.length,
+      rendererTurns: renderer.length,
+      native: native[0] ?? null,
+      renderer: renderer[0] ?? null,
+    };
+  });
   const domCounts = {
-    before: countOccurrences(dom, BEFORE),
-    after: countOccurrences(dom, AFTER),
-    tool: countOccurrences(dom, TOOL_OUTPUT),
-  };
-  const toolOutputRendered = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
-  const entryTexts = completed.rows.flatMap((row) => [row.item?.text ?? "", row.item?.output ?? ""]);
-  const entryHas = {
-    before: entryTexts.some((text) => text.includes(BEFORE)),
-    after: entryTexts.some((text) => text.includes(AFTER)),
-    tool: entryTexts.some((text) => text.includes(TOOL_OUTPUT)),
-  };
-  const targetItems = target?.items ?? [];
-  const producerHas = {
-    before: targetItems.some((item) => item.text.includes(BEFORE)),
-    after: targetItems.some((item) => item.text.includes(AFTER)),
-    tool: targetItems.some((item) => item.output.includes(TOOL_OUTPUT)),
+    before: countOccurrences(renderedSentinelRows.map((row) => row.text).join("\n"), BEFORE),
+    after: countOccurrences(renderedSentinelRows.map((row) => row.text).join("\n"), AFTER),
+    tool: countOccurrences(outputText, TOOL_OUTPUT),
   };
   const legacyRows = completed.legacyRecordCount;
+  const audit = {
+    ref: SESSION_B,
+    historyKey: completed.historyKey,
+    rendererTurns,
+    rendererItems,
+    renderedSentinelRows,
+    recordedRendererItems,
+    renderedOutputRegion: outputRegion,
+    nativeItems,
+    nativeTurns,
+    nativeCoverage,
+    rendererToNative,
+    nativeCoverageMatches,
+    itemTurnMatches,
+  };
+  writeFileSync(path.join(ARTIFACT_DIR, "entry-audit.json"), `${JSON.stringify(audit, null, 2)}\n`, { mode: 0o600 });
   driver.milestone("entry-completed", {
     ref: SESSION_B,
-    producerHas,
     domCounts,
-    toolOutputRendered,
-    entryHas,
+    renderedOutputRegions: outputRegion?.outputRegions ?? 0,
+    shellRows: outputRegion?.shellRows ?? 0,
+    renderedOutputText: outputText,
+    renderedToolItemCount: renderedToolItems.length,
+    rendererToNativeMatches: rendererToNative.every((match) => match.matches === 1 && match.identityMatches),
+    itemTurnMatches,
+    producerItemsCovered:
+      producerCoverage.length === 2 && producerCoverage.every((match) => match.coveringRows.length > 0),
     nativeEntryRows: completed.rows.length,
+    nativeTurnRows: nativeTurns.length,
+    nativeCoverageRows: nativeCoverage.length,
     nativeLegacyRows: legacyRows,
   });
-  for (const key of ["before", "after", "tool"]) {
-    if (!producerHas[key] || !entryHas[key])
-      throw new Error(`producer/native entry mismatch for ${key}: ${JSON.stringify({ producerHas, entryHas })}`);
+  if (outputRegion?.shellRows !== 1 || outputRegion.outputRegions !== 1 || domCounts.tool !== 1) {
+    throw new Error(
+      `the actual rendered shell output region did not contain the tool output exactly once: ${JSON.stringify({ outputRegion, domCounts })}`,
+    );
   }
-  if (domCounts.before !== 1 || domCounts.after !== 1 || !toolOutputRendered) {
-    throw new Error(`selected pane did not render each produced sentinel exactly once: ${JSON.stringify(domCounts)}`);
+  if (domCounts.before !== 1 || domCounts.after !== 1 || renderedToolItems.length !== 1) {
+    throw new Error(
+      `selected renderer did not show each produced item exactly once: ${JSON.stringify({ domCounts, renderedSentinelRows, renderedToolItems })}`,
+    );
+  }
+  for (const sentinel of [BEFORE, AFTER]) {
+    const rowMatches = renderedSentinelRows.filter((row) => row.text.includes(sentinel));
+    const itemMatches = recordedRendererItems.filter((item) => item.text.includes(sentinel));
+    if (rowMatches.length !== 1 || itemMatches.length !== 1 || rowMatches[0].turnId !== itemMatches[0].turnId) {
+      throw new Error(
+        `rendered sentinel row does not identify exactly one matching recorded item for ${sentinel}: ${JSON.stringify({ rowMatches, itemMatches })}`,
+      );
+    }
+  }
+  if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
+    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+  }
+  if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
+    throw new Error(
+      `durable producer items are outside stored coverage boundaries: ${JSON.stringify(producerCoverage)}`,
+    );
+  }
+  if (itemTurnMatches.some((match) => match.nativeTurns !== 1 || match.rendererTurns !== 1)) {
+    throw new Error(
+      `rendered tool item turn identity disagrees with native turn metadata: ${JSON.stringify(itemTurnMatches)}`,
+    );
   }
   if (legacyRows !== 0) throw new Error(`selected session created ${legacyRows} legacy cache record(s)`);
   if (!runningBeforeOpen) throw new Error("target background stream was not running when opened");
+  if (activation.reads !== 0 || activation.pages !== 0) {
+    throw new Error(`selected pane opening issued network history requests: ${JSON.stringify(activation)}`);
+  }
   driver.milestone("done", { mode: "entry-slice" });
 }
 
@@ -1057,6 +1177,8 @@ function nativeEntryEvidenceExpression() {
       request.onerror = () => reject(request.error);
     })));
     const rows = values[0].filter((row) => row.historyKey === fixture.historyKey);
+    const turns = values[1].filter((row) => row.historyKey === fixture.historyKey);
+    const coverage = values[2].filter((row) => row.historyKey === fixture.historyKey);
     const metadata = values[3].find((row) => row.historyKey === fixture.historyKey) ?? null;
     db.close();
     const databases = await indexedDB.databases();
@@ -1077,7 +1199,7 @@ function nativeEntryEvidenceExpression() {
       }
       legacy.close();
     }
-    return { historyKey: fixture.historyKey, rows, metadata, legacyRecordCount };
+    return { historyKey: fixture.historyKey, rows, turns, coverage, metadata, legacyRecordCount };
   })()`;
 }
 

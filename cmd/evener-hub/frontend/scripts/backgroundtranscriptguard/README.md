@@ -62,11 +62,17 @@ selects only session B for the isolated version-3 entry database; the full test
 keeps its existing workload and assertions. The browser captures a trace byte
 offset after the background baseline, opens the selected pane through the rail,
 and proves that the activation interval contains no target `thread/read` or
-`thread/turns/list` request. It inspects native IndexedDB item rows directly,
-compares them with the producer model and rendered sentinels, verifies a live
-streaming sentinel is absent from entry rows until completion, and checks that
-the selected ref has no legacy record. The Go owner independently parses the
-real hub trace window and rejects a missing initial subscribed read.
+`thread/turns/list` request. It retains raw renderer items and native IndexedDB
+item, turn, and coverage rows in `entry-audit.json`, then checks their keyed
+identities and producer-item positions against the recorded coverage boundaries.
+It reads output from the rendered shell output `<pre>`, not the command label.
+The Go owner independently reads and retains the daemon's
+`target-producer-transcript.jsonl`, compares the provider turn and tool-call
+identity/content with those rows, and checks the expanded shell output region
+contains the exact tool output once. The journey also verifies a live
+streaming sentinel is absent from entry rows until completion, and that the
+selected ref has no legacy record. The Go owner independently parses the real
+hub trace window and rejects a missing initial subscribed read.
 
 ## Auth and proxy prerequisites
 
@@ -100,6 +106,10 @@ control files live in the guard's private temporary directory.
 - `appwire-trace.jsonl` — every real hub AppWire frame (the Go test reads it).
 - `helper-<name>-requests.jsonl` — actual provider requests plus phase acks.
 - the daemons' durable `*.transcript.jsonl` under the fixture state root.
+- `entry-audit.json` — raw renderer, rendered-row, output-region, native item,
+  turn, and coverage records for the selected entry-store journey.
+- `target-producer-transcript.jsonl` — the selected daemon's raw durable
+  transcript copied by the Go owner for independent producer assertions.
 - `milestones.jsonl`, screenshots and `*.dump.json` in the artifact directory.
 
 The artifact directory survives a failing run for triage and is removed on a

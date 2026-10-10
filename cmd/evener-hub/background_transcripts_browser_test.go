@@ -303,13 +303,14 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	lt := backgroundDriverLifetime{Configured: backgroundDriverTimeout, Join: backgroundDriverJoinReserve, Cleanup: backgroundHelperCleanupReserve}
 	deadline, hasDeadline := t.Deadline()
 	launch := backgroundDriverLaunchForMode(t, fixture, hub.URL, hubedge.AuthURLFor(hub.URL, hex.EncodeToString(tokenBytes)), milestones, entries, true)
-	if err := runOwnedBackgroundDriver(t, deadline, hasDeadline, lt, launch); err != nil {
-		t.Fatalf("%v\nfull artifacts (logs, screenshots, dumps): %s", err, fixture.artifact)
-	}
+	driverErr := runOwnedBackgroundDriver(t, deadline, hasDeadline, lt, launch)
 	for i := range entries {
 		skillGuardStopHelper(t, i)
 	}
 	assertBackgroundEntrySlice(t, fixture, milestones)
+	if driverErr != nil {
+		t.Errorf("%v\nfull artifacts (logs, screenshots, dumps): %s", driverErr, fixture.artifact)
+	}
 }
 
 // runBackgroundDriver launches the Node driver. --hub-url is the fixture hub's
@@ -1011,31 +1012,322 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 		t.Errorf("trace has no initial subscribed background read for target: %+v", target)
 	}
 	var completed struct {
-		ProducerHas        map[string]bool `json:"producerHas"`
-		DOMCounts          map[string]int  `json:"domCounts"`
-		ToolOutputRendered bool            `json:"toolOutputRendered"`
-		EntryHas           map[string]bool `json:"entryHas"`
-		NativeEntryRows    int             `json:"nativeEntryRows"`
-		NativeLegacyRows   int             `json:"nativeLegacyRows"`
+		DOMCounts               map[string]int `json:"domCounts"`
+		RenderedOutputRegions   int            `json:"renderedOutputRegions"`
+		ShellRows               int            `json:"shellRows"`
+		RenderedOutputText      string         `json:"renderedOutputText"`
+		RenderedToolItemCount   int            `json:"renderedToolItemCount"`
+		RendererToNativeMatches bool           `json:"rendererToNativeMatches"`
+		ProducerItemsCovered    bool           `json:"producerItemsCovered"`
+		NativeEntryRows         int            `json:"nativeEntryRows"`
+		NativeTurnRows          int            `json:"nativeTurnRows"`
+		NativeCoverageRows      int            `json:"nativeCoverageRows"`
+		NativeLegacyRows        int            `json:"nativeLegacyRows"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "entry-completed", &completed) {
 		t.Fatal("entry completed milestone missing")
 	}
-	for _, key := range []string{"before", "after", "tool"} {
-		if !completed.ProducerHas[key] || !completed.EntryHas[key] {
-			t.Errorf("producer/native entry disagree for %s: %+v", key, completed)
-		}
+	if completed.DOMCounts["before"] != 1 || completed.DOMCounts["after"] != 1 || completed.DOMCounts["tool"] != 1 ||
+		completed.RenderedOutputRegions != 1 || completed.ShellRows != 1 || completed.RenderedToolItemCount != 1 {
+		t.Errorf("renderer did not show each produced item exactly once in its real tool output region: %+v", completed)
 	}
-	if completed.DOMCounts["before"] != 1 || completed.DOMCounts["after"] != 1 || !completed.ToolOutputRendered {
-		t.Errorf("renderer did not show each sentinel and real tool output: %+v", completed)
+	if !completed.RendererToNativeMatches || !completed.ProducerItemsCovered {
+		t.Errorf("renderer and native item/coverage records disagree: %+v", completed)
 	}
-	if completed.NativeEntryRows == 0 {
-		t.Error("native entry store contains no selected-session rows")
+	if completed.NativeEntryRows == 0 || completed.NativeTurnRows == 0 || completed.NativeCoverageRows == 0 {
+		t.Errorf("native entry item, turn, or coverage store is empty: %+v", completed)
 	}
 	if completed.NativeLegacyRows != 0 {
 		t.Errorf("selected session has %d legacy rows", completed.NativeLegacyRows)
 	}
+	transcript, err := backgroundTranscriptsFor(t, fixture.stateRoot, strings.TrimPrefix(opened.Ref, "local:"))
+	if err != nil {
+		t.Fatalf("read independent durable producer transcript: %v", err)
+	}
+	producerPath := filepath.Join(fixture.artifact, "target-producer-transcript.jsonl")
+	if err := os.WriteFile(producerPath, []byte(transcript), 0o600); err != nil {
+		t.Fatalf("retain raw producer transcript: %v", err)
+	}
+	producer, err := parseBackgroundEntryProducer(transcript)
+	if err != nil {
+		t.Fatalf("parse independent durable producer transcript: %v", err)
+	}
+	var audit struct {
+		RenderedSentinelRows []struct {
+			ID     string `json:"id"`
+			TurnID string `json:"turnId"`
+			Text   string `json:"text"`
+		} `json:"renderedSentinelRows"`
+		RecordedRendererItems []struct {
+			ID            string `json:"id"`
+			TurnID        string `json:"turnId"`
+			Type          string `json:"type"`
+			Text          string `json:"text"`
+			Output        string `json:"output"`
+			Arguments     string `json:"arguments"`
+			Status        string `json:"status"`
+			CallID        string `json:"callId"`
+			TranscriptKey string `json:"transcriptKey"`
+			Version       int    `json:"version"`
+			Position      struct {
+				Entry int `json:"entry"`
+				Item  int `json:"item"`
+				Sub   int `json:"sub"`
+			} `json:"position"`
+		} `json:"recordedRendererItems"`
+		NativeItems []struct {
+			TranscriptKey string `json:"transcriptKey"`
+			Item          struct {
+				ID        string `json:"id"`
+				TurnID    string `json:"turnId"`
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				Output    string `json:"output"`
+				Arguments string `json:"argumentsJSON"`
+				Status    string `json:"status"`
+				CallID    string `json:"callId"`
+				Version   int    `json:"version"`
+				Position  struct {
+					Entry int `json:"entry"`
+					Item  int `json:"item"`
+					Sub   int `json:"sub"`
+				} `json:"position"`
+			} `json:"item"`
+			Position struct {
+				Entry int `json:"entry"`
+				Item  int `json:"item"`
+				Sub   int `json:"sub"`
+			} `json:"position"`
+		} `json:"nativeItems"`
+		NativeTurns []struct {
+			TurnID string `json:"turnId"`
+		} `json:"nativeTurns"`
+		NativeCoverage []struct {
+			RangeID string `json:"rangeId"`
+			Kind    string `json:"kind"`
+			Start   *struct {
+				Entry int `json:"entry"`
+				Item  int `json:"item"`
+			} `json:"start"`
+			End *struct {
+				Entry int `json:"entry"`
+				Item  int `json:"item"`
+			} `json:"end"`
+			Boundary string `json:"boundary"`
+		} `json:"nativeCoverage"`
+		RenderedOutputRegion struct {
+			OutputRegions int      `json:"outputRegions"`
+			ShellRows     int      `json:"shellRows"`
+			Outputs       []string `json:"outputs"`
+		} `json:"renderedOutputRegion"`
+	}
+	auditData, err := os.ReadFile(filepath.Join(fixture.artifact, "entry-audit.json"))
+	if err != nil {
+		t.Fatalf("read raw browser audit: %v", err)
+	}
+	if err := json.Unmarshal(auditData, &audit); err != nil {
+		t.Fatalf("decode raw browser audit: %v", err)
+	}
+	if producer.assistantTurnID == "" || producer.toolCallID == "" || producer.toolResultCallID != producer.toolCallID {
+		t.Fatalf("durable producer call identity is incomplete or mismatched: %+v", producer)
+	}
+	if !strings.Contains(completed.RenderedOutputText, producer.toolResultOutput) ||
+		strings.Count(completed.RenderedOutputText, backgroundToolOutput) != 1 {
+		t.Errorf("rendered output region does not contain the durable producer output exactly once: output=%q producer=%q", completed.RenderedOutputText, producer.toolResultOutput)
+	}
+	if audit.RenderedOutputRegion.OutputRegions != 1 || audit.RenderedOutputRegion.ShellRows != 1 ||
+		len(audit.RenderedOutputRegion.Outputs) != 1 || audit.RenderedOutputRegion.Outputs[0] != completed.RenderedOutputText {
+		t.Errorf("retained rendered output region differs from milestone: %+v", audit.RenderedOutputRegion)
+	}
+	producerIdentityMatched := false
+	for _, item := range audit.RecordedRendererItems {
+		if item.TurnID == producer.assistantTurnID && item.TranscriptKey != "" &&
+			strings.Contains(item.Text, producer.assistantText) {
+			producerIdentityMatched = true
+		}
+	}
+	producerOutputMatched := false
+	for _, item := range audit.RecordedRendererItems {
+		if item.CallID == producer.toolCallID && item.TurnID == producer.assistantTurnID &&
+			strings.Contains(item.Output, backgroundToolOutput) {
+			producerOutputMatched = true
+		}
+	}
+	if !producerIdentityMatched || !producerOutputMatched {
+		t.Errorf("renderer item identity/content disagrees with durable producer turn/call: identity=%v output=%v producer=%+v", producerIdentityMatched, producerOutputMatched, producer)
+	}
+	for _, rendered := range audit.RecordedRendererItems {
+		matches := 0
+		for _, native := range audit.NativeItems {
+			if native.TranscriptKey != rendered.TranscriptKey || native.Item.ID != rendered.ID || native.Item.TurnID != rendered.TurnID {
+				continue
+			}
+			matches++
+			if native.Item.Type != rendered.Type || native.Item.Text != rendered.Text || native.Item.Output != rendered.Output ||
+				native.Item.Arguments != rendered.Arguments || native.Item.Status != rendered.Status ||
+				native.Item.CallID != rendered.CallID || native.Item.Version != rendered.Version ||
+				native.Position != rendered.Position || native.Item.Position != rendered.Position {
+				t.Errorf("native item content or position differs from renderer item %q: renderer=%+v native=%+v", rendered.ID, rendered, native)
+			}
+			isProducerItem := rendered.TurnID == producer.assistantTurnID &&
+				(strings.Contains(rendered.Text, backgroundBeforeEviction) || strings.Contains(rendered.Text, backgroundAfterEviction) ||
+					(rendered.CallID == producer.toolCallID && strings.Contains(rendered.Output, backgroundToolOutput)))
+			if isProducerItem {
+				positionCovered := false
+				for _, coverage := range audit.NativeCoverage {
+					if coverage.Start == nil || coverage.End == nil {
+						continue
+					}
+					atOrAfterStart := native.Position.Entry > coverage.Start.Entry ||
+						(native.Position.Entry == coverage.Start.Entry && native.Position.Item >= coverage.Start.Item)
+					atOrBeforeEnd := native.Position.Entry < coverage.End.Entry ||
+						(native.Position.Entry == coverage.End.Entry && native.Position.Item <= coverage.End.Item)
+					if atOrAfterStart && atOrBeforeEnd {
+						positionCovered = true
+					}
+				}
+				if !positionCovered {
+					t.Errorf("durable producer item %q at %+v is outside native coverage boundaries", rendered.ID, native.Position)
+				}
+			}
+		}
+		if matches != 1 {
+			t.Errorf("renderer item %q matched %d native item rows, want exactly one", rendered.ID, matches)
+		}
+	}
+	for _, sentinel := range []string{backgroundBeforeEviction, backgroundAfterEviction} {
+		var matches int
+		for _, row := range audit.RenderedSentinelRows {
+			if strings.Contains(row.Text, sentinel) {
+				matches++
+				if row.ID == "" || row.TurnID != producer.assistantTurnID {
+					t.Errorf("rendered row for %q does not identify durable producer turn %q: %+v", sentinel, producer.assistantTurnID, row)
+				}
+			}
+		}
+		if matches != 1 {
+			t.Errorf("rendered DOM contains %d rows for %q, want exactly one: %+v", matches, sentinel, audit.RenderedSentinelRows)
+		}
+	}
+	nativeIdentityMatched := false
+	for _, item := range audit.NativeItems {
+		if item.Item.TurnID == producer.assistantTurnID &&
+			(strings.Contains(item.Item.Text, producer.assistantText) ||
+				(item.Item.CallID == producer.toolCallID && strings.Contains(item.Item.Output, backgroundToolOutput))) {
+			nativeIdentityMatched = true
+		}
+	}
+	nativeTurnMatched := false
+	for _, turn := range audit.NativeTurns {
+		if turn.TurnID == producer.assistantTurnID {
+			nativeTurnMatched = true
+		}
+	}
+	if !nativeIdentityMatched || !nativeTurnMatched {
+		t.Errorf("native item/turn rows do not carry durable producer identity: item=%v turn=%v producer=%+v", nativeIdentityMatched, nativeTurnMatched, producer)
+	}
+	if len(audit.NativeCoverage) == 0 {
+		t.Error("raw browser audit contains no native coverage boundaries")
+	}
+	for _, coverage := range audit.NativeCoverage {
+		if coverage.RangeID == "" || coverage.Boundary == "" || coverage.Start == nil || coverage.End == nil {
+			t.Errorf("raw browser audit contains an incomplete coverage boundary: %+v", coverage)
+		}
+	}
 	t.Logf("entry-slice artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
+}
+
+type backgroundEntryProducer struct {
+	assistantTurnID  string
+	assistantText    string
+	toolCallID       string
+	toolCallName     string
+	toolResultCallID string
+	toolResultOutput string
+}
+
+func TestBackgroundEntryProducerReadsNestedTurnIdentity(t *testing.T) {
+	transcript := strings.Join([]string{
+		`{"kind":"entry","seq":203,"turn":{"kind":"ASSISTANT","turn_id":"turn_m41","message":{"content":[{"kind":"text","text":"BACKGROUND_BEFORE_EVICTIONBACKGROUND_AFTER_EVICTION"},{"kind":"tool_call","tool_call":{"id":"background_tool_call","name":"shell"}}]}}}`,
+		`{"kind":"entry","seq":204,"turn":{"kind":"TOOL_RESULTS","turn_id":"turn_m41","message":{"content":[{"kind":"tool_result","tool_result":{"tool_call_id":"background_tool_call","content":"BACKGROUND_TOOL_OUTPUT\n[exit 0]"}}]}}}`,
+	}, "\n")
+	got, err := parseBackgroundEntryProducer(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.assistantTurnID != "turn_m41" || got.toolCallID != "background_tool_call" || got.toolResultCallID != got.toolCallID {
+		t.Fatalf("producer identities = %+v", got)
+	}
+}
+
+func parseBackgroundEntryProducer(transcript string) (backgroundEntryProducer, error) {
+	type part struct {
+		Kind     string `json:"kind"`
+		Text     string `json:"text"`
+		ToolCall struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"tool_call"`
+		ToolResult struct {
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+		} `json:"tool_result"`
+	}
+	type record struct {
+		Kind   string `json:"kind"`
+		TurnID string `json:"turn_id"`
+		Turn   struct {
+			Kind    string `json:"kind"`
+			TurnID  string `json:"turn_id"`
+			Message struct {
+				Content []part `json:"content"`
+			} `json:"message"`
+		} `json:"turn"`
+	}
+	var got backgroundEntryProducer
+	for lineNumber, line := range strings.Split(transcript, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var row record
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return backgroundEntryProducer{}, fmt.Errorf("line %d: %w", lineNumber+1, err)
+		}
+		if row.Kind != "entry" {
+			continue
+		}
+		turnID := row.TurnID
+		if turnID == "" {
+			turnID = row.Turn.TurnID
+		}
+		switch row.Turn.Kind {
+		case "ASSISTANT":
+			for _, content := range row.Turn.Message.Content {
+				if content.Kind == "text" && strings.Contains(content.Text, backgroundBeforeEviction) && strings.Contains(content.Text, backgroundAfterEviction) {
+					got.assistantTurnID = turnID
+					got.assistantText = content.Text
+				}
+				if content.Kind == "tool_call" && content.ToolCall.Name == "shell" {
+					got.toolCallID = content.ToolCall.ID
+					got.toolCallName = content.ToolCall.Name
+				}
+			}
+		case "TOOL_RESULTS":
+			for _, content := range row.Turn.Message.Content {
+				if content.Kind == "tool_result" && content.ToolResult.ToolCallID == got.toolCallID {
+					got.toolResultCallID = content.ToolResult.ToolCallID
+					got.toolResultOutput = content.ToolResult.Content
+				}
+			}
+		}
+	}
+	if got.assistantTurnID == "" || got.toolCallID == "" || got.toolCallName != "shell" || got.toolResultCallID == "" ||
+		strings.Count(got.assistantText, backgroundBeforeEviction) != 1 ||
+		strings.Count(got.assistantText, backgroundAfterEviction) != 1 ||
+		strings.Count(got.toolResultOutput, backgroundToolOutput) != 1 {
+		return backgroundEntryProducer{}, fmt.Errorf("durable transcript does not contain one complete expected provider turn: %+v", got)
+	}
+	return got, nil
 }
 
 // countTargetThreadReads decodes the real hub AppWire trace window and counts

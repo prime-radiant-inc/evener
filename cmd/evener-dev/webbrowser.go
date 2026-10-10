@@ -23,12 +23,17 @@ import (
 )
 
 // browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard"}
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard", backgroundTranscriptGuard}
 
 const (
 	skillGuard      = "skillguard"
 	cascadeGuard    = "cascadeguard"
 	retirementGuard = "retirementguard"
+	// backgroundTranscriptGuard is the whole-journey guard: cmd/evener-hub's
+	// TestBackgroundTranscriptsBrowser (browserguard build tag) drives the real
+	// background-to-disk-to-pane journey in real Chrome through a real hub and
+	// two real `evener serve` daemons.
+	backgroundTranscriptGuard = "backgroundtranscriptguard"
 )
 
 // newBrowserGate is the browser gate over its guards; the caller supplies
@@ -38,8 +43,8 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
-		needsBuild:    []string{skillGuard, cascadeGuard},
-		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard},
+		needsBuild:    []string{skillGuard, cascadeGuard, backgroundTranscriptGuard},
+		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard, backgroundTranscriptGuard},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
@@ -81,6 +86,19 @@ func browserGuardSpec(guard, root string) guardSpec {
 			dir:           frontendDir,
 			env:           []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
 			privateGoHome: true,
+		}
+	case backgroundTranscriptGuard:
+		// backgroundtranscriptguard's contract is cmd/evener-hub's
+		// TestBackgroundTranscriptsBrowser (browserguard build tag): the real
+		// background-to-disk-to-pane journey in real Chrome through a real hub
+		// and two real `evener serve` daemons. Like the skill guard it is a go
+		// test, so its driver, Chrome and helper daemons are cleaned up by the
+		// test binary's own t.Cleanup.
+		return guardSpec{
+			name: guard,
+			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsBrowser$", "-count=1"},
+			dir:  ".",
+			env:  []string{vite},
 		}
 	default:
 		return guardSpec{

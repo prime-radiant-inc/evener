@@ -365,20 +365,20 @@ func TestBrowserGateBuildFailureFailsOnlyTheProductionGuards(t *testing.T) {
 	launcher.buildStatus = 17
 	launcher.buildOutput = "vite build exploded\n"
 	tg := startTestGate(t, launcher, len(browserGuards), true)
-	for range len(browserGuards) - 2 {
+	for range len(browserGuards) - 3 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	r := tg.await(t)
 	if r.status != 17 {
 		t.Fatalf("status = %d, want the build's 17", r.status)
 	}
-	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil {
+	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil || launcher.guard(backgroundTranscriptGuard) != nil {
 		t.Fatal("a production guard started without a built frontend")
 	}
 	if !strings.Contains(tg.stderr.String(), "FAIL  web-skillguard (frontend build, exit 17)") || !strings.Contains(tg.stdout.String(), "vite build exploded") {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
-	for _, guard := range browserGuards[:len(browserGuards)-2] {
+	for _, guard := range browserGuards[:len(browserGuards)-3] {
 		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+" (0.0s)\n") {
 			t.Errorf("web-%s did not reach its verdict", guard)
 		}
@@ -441,7 +441,7 @@ func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 		t.Fatal("the gate did not build the missing frontend")
 	}
 	var want strings.Builder
-	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard…\n")
+	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundtranscriptguard…\n")
 	for _, guard := range browserGuards {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
@@ -482,7 +482,7 @@ func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.buildStatus = 17
 	tg := startTestGate(t, launcher, 1, true)
-	for range len(browserGuards) - 2 {
+	for range len(browserGuards) - 3 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	if r := tg.await(t); r.status != 17 {
@@ -544,7 +544,7 @@ func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 // each is a go test (the retirement guard's behind npm) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which
 // a TERM would skip, and a TERM to npm alone would orphan.
-var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard}
+var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundTranscriptGuard}
 
 // An interrupt TERMs every running guard except the go-test guards, and waits
 // for all of them before the gate exits.
@@ -746,9 +746,12 @@ func TestBrowserGateLaunchesEachGuardContained(t *testing.T) {
 			t.Errorf("%s shares its Vite cache with %s", guard, other)
 		}
 		vites[vite] = guard
-		if guard == skillGuard || guard == cascadeGuard {
+		if spec.argv[0] == "go" {
+			// go-test guards (skill, cascade, background transcript) carry the
+			// browserguard tag and no Node/Vite environment of their own beyond
+			// the isolated Vite cache checked above.
 			if !slices.Equal(spec.argv[:4], []string{"go", "test", "-tags", "browserguard"}) {
-				t.Errorf("skill guard argv = %q", spec.argv)
+				t.Errorf("%s argv = %q", guard, spec.argv)
 			}
 			continue
 		}
@@ -777,5 +780,51 @@ func TestExportedByKeepsOnlyWhatTheStepSet(t *testing.T) {
 	got := exportedBy(before, after)
 	if want := []string{"HOME=/private", "GOCACHE=/cache"}; !slices.Equal(got, want) {
 		t.Fatalf("exportedBy = %q, want %q", got, want)
+	}
+}
+
+// backgroundTranscriptGuard is registered like the other go-test guards: the
+// whole-journey proof drives the real web app in real Chrome against real
+// daemons, so it is never signalled mid-cleanup (its go test's own t.Cleanup
+// owns the driver, Chrome and the helper daemons) and it gets its own Vite dep
+// cache, since the guards run side by side and two Vite processes optimizing
+// into one cache race (issue #1586).
+func TestBackgroundTranscriptBrowserGuardLaunchContract(t *testing.T) {
+	if !slices.Contains(browserGuards, backgroundTranscriptGuard) {
+		t.Fatalf("%s is not registered in browserGuards: %v", backgroundTranscriptGuard, browserGuards)
+	}
+	gate := newBrowserGate(1, false)
+	if !slices.Contains(gate.needsBuild, backgroundTranscriptGuard) {
+		t.Errorf("needsBuild = %v, want it to name %s: the journey proof needs the embedded production frontend", gate.needsBuild, backgroundTranscriptGuard)
+	}
+	if !slices.Contains(gate.unsignalled, backgroundTranscriptGuard) {
+		t.Errorf("unsignalled = %v, want %s: a TERM would skip its go test's t.Cleanup", gate.unsignalled, backgroundTranscriptGuard)
+	}
+
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, len(browserGuards), false)
+	for _, g := range startAll(t, launcher) {
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("gate result = %+v", r)
+	}
+	spec := launcher.specs[backgroundTranscriptGuard]
+	wantArgv := []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsBrowser$", "-count=1"}
+	if !slices.Equal(spec.argv, wantArgv) {
+		t.Errorf("argv = %q, want %q", spec.argv, wantArgv)
+	}
+	if spec.dir != "." {
+		t.Errorf("dir = %q, want . (the repository root)", spec.dir)
+	}
+	vite := ""
+	for _, entry := range spec.env {
+		if name, value, ok := strings.Cut(entry, "="); ok && name == "BROWSER_GUARD_VITE_CACHE_DIR" {
+			vite = value
+		}
+	}
+	root := filepath.Join(tg.gate.scratch, backgroundTranscriptGuard)
+	if !strings.HasPrefix(vite, root+string(os.PathSeparator)) {
+		t.Errorf("Vite cache = %q, want it inside %s so it is isolated from every other guard", vite, root)
 	}
 }
