@@ -16,6 +16,7 @@ import { settleProjectionWorkForTests } from "./projectionWork";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   clearCachedSessions,
@@ -598,8 +599,8 @@ function checkpoint(owner: string, itemId: string, entry: number): CurrentSessio
 it("ordinary current-only migration converts each owner checkpoint once without certifying its older seeds", async () => {
   const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
   try {
-    expect((await legacy.putCurrent(checkpoint("old-owner-a", "current-a", 0))).outcome).toBe("written");
-    expect((await legacy.putCurrent(checkpoint("old-owner-b", "current-b", 1))).outcome).toBe("written");
+    expect((await legacy.putCurrent(checkpoint("old-owner-a", "current-a", 0), Date.now())).outcome).toBe("written");
+    expect((await legacy.putCurrent(checkpoint("old-owner-b", "current-b", 1), Date.now())).outcome).toBe("written");
     expect(await legacyCounts()).toEqual([0, 2]);
     connect(response("local:a", [turn("live-current", 3)]));
     await threadsStore.getState().ensureThread("local:a");
@@ -623,7 +624,9 @@ it("ordinary current-only migration converts each owner checkpoint once without 
 it("ordinary current-only migration leaves an aborted checkpoint intact and retries explicit opening", async () => {
   const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
   try {
-    expect((await legacy.putCurrent(checkpoint("retry-owner", "retry-current", 0))).outcome).toBe("written");
+    expect((await legacy.putCurrent(checkpoint("retry-owner", "retry-current", 0), Date.now())).outcome).toBe(
+      "written",
+    );
     const originalPut = IDBObjectStore.prototype.put;
     let aborted = false;
     const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
@@ -654,6 +657,58 @@ it("ordinary current-only migration leaves an aborted checkpoint intact and retr
     ]);
     expect(await legacyCounts()).toEqual([0, 0]);
   } finally {
+    legacy.close();
+  }
+});
+
+it("ordinary migration does not read a second legacy blob while the first source is still in flight", async () => {
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
+  for (const ref of ["local:a", "local:b"]) {
+    const record = cachedSessionRecord(
+      hydrateThread(response(ref, [turn(`legacy-${ref}`, 0)]), ref, Date.now()),
+      Date.now(),
+    );
+    if (!record) throw new Error("fixture must encode a source blob");
+    expect((await legacy.put(record, 0, Date.now())).outcome).toBe("written");
+  }
+  const get = IDBObjectStore.prototype.get;
+  let secondSourceReads = 0;
+  const observed = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
+    if (this.name === "records" && key === "local:b") secondSourceReads += 1;
+    return get.call(this, key);
+  });
+  const first = holdNextTransaction(["records", "current", "meta"], "readonly");
+  try {
+    const client = connect();
+    client.on("thread/read", (params) => {
+      const ref = params.ref ?? "local:a";
+      const read = response(ref, [turn(`live-${ref}`, 3)]);
+      if (ref === "local:b") {
+        read.thread.id = "thread-b";
+        read.thread.sessionId = "session-b";
+      }
+      return { ...read, requestGeneration: params.requestGeneration };
+    });
+    await threadsStore.getState().ensureThread("local:a");
+    await first.reached;
+    await threadsStore.getState().ensureThread("local:b");
+    // Storage has completed A's readonly transaction. Only the source owner's
+    // settlement is held, so B could read if the production scheduler let it.
+    expect(secondSourceReads).toBe(0);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:b")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.transcriptKey),
+    ).toContain("live-local:b");
+    first.release();
+    await Promise.all([settleEntryTranscriptForTests("local:a"), settleEntryTranscriptForTests("local:b")]);
+    expect(secondSourceReads).toBe(2);
+    expect(await legacyCounts()).toEqual([0, 0]);
+  } finally {
+    first.release();
+    observed.mockRestore();
     legacy.close();
   }
 });
