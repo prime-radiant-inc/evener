@@ -1529,6 +1529,26 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 	})
 }
 
+// The parent's delegation guidance lists a role's tools; it never lists a save
+// tool, because no delegate can call one.
+func TestMemoryDelegateToolSummaryOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MaxSubagentDepth: 2}))
+	for _, agentType := range []string{"explorer", "default"} {
+		summary := s.defaultToolSummaryForAgent(s.pluginAgents[agentType])
+		for _, name := range memorySaveToolNames {
+			if strings.Contains(summary, name) {
+				t.Errorf("%s summary lists %s: %s", agentType, name, summary)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !strings.Contains(summary, name) {
+				t.Errorf("%s summary lacks %s: %s", agentType, name, summary)
+			}
+		}
+	}
+}
+
 func TestMemoryDisableProfilePlaceholders(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range []SessionConfig{{}, {MemoryStateRoot: t.TempDir(), DisableMemory: true}} {
