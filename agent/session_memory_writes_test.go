@@ -275,6 +275,10 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	if got := search(map[string]any{"path": "MEMORY.md"}); got != "" {
 		t.Fatalf("search of the root index itself: %q", got)
 	}
+	// A confined scope searches one named page (#4137).
+	if got := search(map[string]any{"path": "p.md", "output_mode": "files_with_matches"}); got != "." {
+		t.Fatalf("search of one named page: %q", got)
+	}
 	// Naming the index still checks the pattern and the glob's braces.
 	for _, bad := range []map[string]any{{"pattern": "["}, {"glob_filter": "{a,b"}} {
 		args := map[string]any{"scope": "personal", "pattern": "opaque-needle", "path": "memory.md"}
