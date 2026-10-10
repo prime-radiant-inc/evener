@@ -166,9 +166,16 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// Only on an overlay-capable host (this dev box's bubblewrap lacks overlay, so
 	// CacheStrategy is CacheSessionPrivate here and the env floor redirects the
 	// cache vars into the session tmp instead — same no-poisoning floor, cold).
+	//
+	// A cache root that does not exist yet has no lower to overlay and a mount
+	// target bwrap cannot create in the read-only tree; NewWrapper creates the
+	// missing ones (prepareCacheRoots), so one is skipped here only when that
+	// failed.
 	if rp.CacheStrategy == CacheOverlay {
 		for _, c := range rp.CacheRoots {
-			if pathExists(c) {
+			// Only a directory can be an overlay lower; overlayfs rejects anything
+			// else and bwrap would abort the whole sandbox over it.
+			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
 				add("--overlay-src", c, "--tmp-overlay", c)
 			}
 		}

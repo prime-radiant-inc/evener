@@ -38,7 +38,7 @@ func (b Backend) String() string {
 	}
 }
 
-// CacheStrategy is how cache roots (~/.cache, ~/go/pkg, ~/.npm, ~/.cargo, …) are
+// CacheStrategy is how cache roots (~/.cache, ~/.npm, ~/.cargo, Go's, …) are
 // served so a sandboxed session can never poison a cache a later build consumes.
 type CacheStrategy int
 
@@ -122,8 +122,8 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
-	// CacheRoots are the absolute language cache directories (~/.cache, ~/go/pkg,
-	// ~/.npm, ~/.cargo) served under the cache strategy: overlaid read-real/
+	// CacheRoots are the absolute language cache directories (~/.cache, ~/.npm,
+	// ~/.cargo and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
 	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
 	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
 	// needed (off, read-only). Populated for the writable modes.
@@ -400,7 +400,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host.Home),
+		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
@@ -509,22 +509,60 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME.
-var defaultCacheRoots = []string{".cache", "go/pkg", ".npm", ".cargo"}
+// strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
+// set, and Go's roots follow the host's go settings (goCacheRoots).
+var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
-// serve caches (overlaid or redirected), off/read-only need none.
-func cacheRootsFor(mode Mode, home string) []string {
+// serve caches (overlaid or redirected), off/read-only need none. Every root
+// passes the shared-tree guard, and none lies inside the worktree: an overlay
+// over the worktree, a directory holding it, the home directory or a temp root
+// would hide the real files behind an upper layer discarded at session end, so
+// edits there would silently vanish.
+func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots))
-		for _, rel := range defaultCacheRoots {
-			out = append(out, filepath.Join(home, rel))
+		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
+		// write it whatever XDG says.
+		out := []string{filepath.Join(host.Home, ".cache")}
+		if filepath.IsAbs(host.XDGCacheHome) {
+			out = append(out, host.XDGCacheHome)
 		}
-		return out
+		for _, rel := range defaultCacheRoots {
+			out = append(out, filepath.Join(host.Home, rel))
+		}
+		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		roots = slices.DeleteFunc(roots, func(r string) bool {
+			return pathUnder(r, worktree) || pathUnder(CanonicalPath(r), worktree)
+		})
+		return dedupeRoots(roots)
 	default:
 		return nil
 	}
+}
+
+// goCacheRoots are the directories the go command writes caches to: pkg under
+// the first GOPATH entry, which holds the default module cache and the checksum
+// database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
+// somewhere else. A relative
+// value, which the go command refuses, contributes nothing.
+func goCacheRoots(host HostFacts) []string {
+	var roots []string
+	if entries := goPathEntries(host); len(entries) > 0 {
+		roots = append(roots, filepath.Join(entries[0], "pkg"))
+	}
+	// Go's default stays served alongside a custom GOPATH: a spawn whose
+	// environment does not carry that GOPATH (or the GOENV that set it) falls
+	// back to $HOME/go.
+	if def := goPathEntries(HostFacts{Home: host.Home}); len(def) > 0 {
+		roots = append(roots, filepath.Join(def[0], "pkg"))
+	}
+	for _, dir := range []string{host.GoModCache, host.GoCache} {
+		if filepath.IsAbs(dir) {
+			roots = append(roots, dir)
+		}
+	}
+	return roots
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a

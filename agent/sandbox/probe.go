@@ -2,8 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,12 +115,23 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
-	// GoPath is the go command's GOPATH as configured on this host, in the
-	// environment or with `go env -w` (see goEnvValue), resolved once at session
-	// start. Empty means unset, and goPathEntries applies Go's $HOME/go default.
-	// It grants nothing: it is the ambient GOPATH the env floor keeps behind the
-	// session scratch.
-	GoPath string
+	// GoPath, GoModCache and GoCache are the go command's settings as configured
+	// on this host, in the environment or with `go env -w` (see goEnvValue),
+	// resolved once at session start. Empty means unset: Go's own default
+	// applies, and goPathEntries holds GOPATH's. They grant nothing: they place
+	// the overlaid Go cache roots and the ambient GOPATH the env floor keeps
+	// behind the session scratch.
+	GoPath     string
+	GoModCache string
+	GoCache    string
+
+	// GoEnvUnreadable reports that the go env file exists but was refused (not
+	// a small regular file), so the go command's settings could not be known.
+	GoEnvUnreadable bool
+
+	// XDGCacheHome is $XDG_CACHE_HOME, which moves ~/.cache and with it Go's
+	// default GOCACHE; empty when unset.
+	XDGCacheHome string
 
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
 	// so the env floor can tell whether a spawn's go would read the same one.
@@ -263,6 +276,10 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
+	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
+	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
+	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
+	facts.GoEnvUnreadable = goEnvFileUnreadable(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -374,6 +391,17 @@ func goEnvFile(system probeSystem) string {
 		file = filepath.Join(dir, "go", "env")
 	}
 	return file
+}
+
+// goEnvFileUnreadable reports that the go env file exists but was refused (see
+// hostProbeSystem.readFile), so the go command's settings cannot be known.
+func goEnvFileUnreadable(system probeSystem) bool {
+	file := goEnvFile(system)
+	if file == "" {
+		return false
+	}
+	_, err := system.readFile(file)
+	return err != nil && !errors.Is(err, fs.ErrNotExist)
 }
 
 // goPathEntries returns the GOPATH entries the go command uses on this host: the
