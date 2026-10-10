@@ -5520,6 +5520,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const capturedCursor = model.olderCursor;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
       const capturedPageGeneration = olderPageGenerations.get(ref) ?? 0;
+      // The entry fixture's repository owns recorded ingestion for its one
+      // selected ref. Where its certified coverage reaches below the current
+      // oldest row, serve the older page locally; a gap or ambiguous frontier
+      // falls through to the real server request below, never presenting as
+      // exhausted history.
+      const fixture = entryTranscriptFixtureForTests;
+      if (fixture?.ref === ref && fixture.repository) {
+        const outcome = await fixture.repository.loadOlderPage(TRANSCRIPT_ITEM_PAGE_SIZE, fixture.lifetime);
+        if (outcome.kind === "local" || outcome.kind === "exhausted") {
+          putThreadModel(ref, outcome.model);
+          return;
+        }
+      }
       let resp: ThreadTurnsListResponse;
       try {
         resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
@@ -5559,7 +5572,21 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       )
         return;
       olderPageGenerations.set(ref, capturedPageGeneration + 1);
-      putThreadModel(ref, mergeOlderItemPage(current, resp));
+      let accepted = false;
+      if (fixture?.ref === ref && fixture.repository) {
+        accepted = fixture.repository.acceptPage(resp, {
+          lifetime: fixture.lifetime,
+          readId: `fixture-page-${++fixture.readSequence}`,
+          boundary: `fixture-page-boundary-${fixture.readSequence}`,
+          requestCursor: capturedCursor,
+        });
+      }
+      if (accepted) {
+        const snapshot = fixture?.repository?.getSnapshot();
+        if (snapshot) putThreadModel(ref, snapshot);
+      } else {
+        putThreadModel(ref, mergeOlderItemPage(current, resp));
+      }
     } finally {
       await endHistoryHold(ref);
     }

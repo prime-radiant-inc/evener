@@ -206,6 +206,36 @@ optional `olderCursor` at history end, while an unavailable model stays `undefin
 existing history store remains responsible for merging pages and scroll anchors.
 Typed client-upgrade and deleted-target rejections remain explained failures.
 
+### Entry-backed older pages and the baseline authority
+
+The browser's entry repository (an isolated fixture route today, not the
+production path) extends the same reader intent with a persistent cache. It
+mints an opaque *baseline identity* from its tab-local binding lifetime and its
+source revision; the identity changes when an authoritative read or an identity
+change advances the source revision, so a reconnect or replacement begins a new
+baseline while a same-connection reader close/reopen keeps the old one. Callers
+treat it as opaque and never decode it.
+
+Every accepted older page is recorded as a page certificate under
+`page:<readId>:<boundary>`, carrying the captured request cursor (the opaque
+cursor the page answered, kept only as the successor edge to the certificate
+whose `serverCursor` it equals), the page's request boundary, its returned
+range and the baseline identity as `authority`. A cursor is never decoded or
+invented. `mergeOlderItemPage` remains the versioned page merge, so a page's
+older copy never wins over a newer held item.
+
+The cache's older-window query anchors only certificates belonging to the
+caller's authority, so one connection's baseline can never be stitched onto
+another's chain. A query with no connected certificate, or with an ambiguous
+unconsumed frontier, returns `complete: false, stale: true`; callers must run
+the real server request rather than present that gap as exhausted history, and
+re-certify the returned page through the same acceptance owner. A certified
+chain that ends with no remaining cursor is the only true history end.
+
+This contract is verified against the accepted cache at the store level; the
+production browser cutover that selects this repository for all sessions is a
+later task and is not claimed here.
+
 ## Session activity demand and subscriptions
 
 `SessionActivityStore` owns typed activity for one connection, public session ref,

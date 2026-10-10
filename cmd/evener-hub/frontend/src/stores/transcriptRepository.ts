@@ -10,6 +10,7 @@ import {
   hydrateThread,
   type ItemModel,
   invalidateHistory,
+  mergeOlderItemPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
@@ -18,6 +19,7 @@ import {
   type ThreadItemPosition,
   type ThreadModel,
   type ThreadReadResponse,
+  type ThreadTurnsListResponse,
   type TurnModel,
 } from "@evener/appwire-client";
 import type { TranscriptItemRow, TranscriptResolvedIdentity, TranscriptSessionMetadata } from "./sessionCacheSchema";
@@ -96,6 +98,7 @@ export class TranscriptRepository {
   #model: ThreadModel | undefined;
   #boundary = 0;
   #sourceRevision = 0;
+  #baselineIdentity = "";
   #readerCount = 0;
   #coverageBoundary: string | undefined;
   #coverageReadId: string | undefined;
@@ -119,6 +122,7 @@ export class TranscriptRepository {
     const { seedModel, ...scalarBinding } = binding;
     this.#cache = cache;
     this.#binding = scalarBinding;
+    this.#baselineIdentity = this.#mintBaseline();
     if (seedModel) {
       const history = seedModel.history;
       const authority = binding.seedAuthority;
@@ -143,6 +147,17 @@ export class TranscriptRepository {
   }
 
   getSnapshot = (): ThreadModel | undefined => this.#model;
+
+  /**
+   * Opaque baseline identity for the accepted cache contract's `authority`.
+   * It binds the tab-local connection/read lifetime to the repository's source
+   * revision: reads and notifications from one uninterrupted connection share
+   * one token, and an authoritative reconciliation or an identity change mints
+   * a new one. Callers must treat it as opaque and never decode it.
+   */
+  getBaselineIdentity(): string {
+    return this.#baselineIdentity;
+  }
 
   /** @internal Reports ownership scalars without exposing or copying transcript bodies. */
   getRetentionSnapshotForTesting(): { bindingHasSeedModel: boolean } {
@@ -198,7 +213,7 @@ export class TranscriptRepository {
       previousHistory.failed !== undefined ||
       response.authoritative === true
     ) {
-      this.#sourceRevision++;
+      this.#advanceSourceRevision();
     }
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
     this.#coverageBoundary = request.boundary;
@@ -275,7 +290,7 @@ export class TranscriptRepository {
     this.#model = next;
     this.#boundary++;
     const authorityBlocked = next.history?.invalidatedAtGeneration !== undefined || next.history?.failed !== undefined;
-    if (authorityBlocked) this.#sourceRevision++;
+    if (authorityBlocked) this.#advanceSourceRevision();
     const rows = authorityBlocked ? [] : this.#notificationRows(notification);
     const history =
       notification.method === "history/updated" ? (notification.params as { snapshot: { length: number } }) : undefined;
@@ -314,6 +329,97 @@ export class TranscriptRepository {
     }
     if (!hasRecordedInput) this.#reclaimBackgroundModel();
     return true;
+  }
+
+  /**
+   * Accept a complete older page below the current window under its captured
+   * reader lifetime. The page merges by the shared version rules, publishes to
+   * attached readers and queues its recorded rows. `request.requestCursor` is
+   * the opaque cursor this page answered; it is kept as the cache page
+   * certificate's successor edge and is never decoded. The certificate carries
+   * this repository's opaque baseline identity as `authority`.
+   */
+  acceptPage(
+    response: ThreadTurnsListResponse,
+    request: {
+      lifetime: number;
+      readId: string;
+      boundary: string;
+      before?: ThreadItemPosition;
+      requestCursor?: string;
+    },
+  ): boolean {
+    if (!this.#acceptsLifetime(request.lifetime)) return false;
+    if (response.snapshot && response.snapshot.incarnation !== this.#binding.identity.incarnation) return false;
+    const current = this.#model;
+    if (!current) return false;
+    const before = request.before ?? this.#oldestPosition(current);
+    const candidate = mergeOlderItemPage(current, response);
+    this.#model = candidate;
+    this.#boundary++;
+    const rows = this.#pageItemRows(response, candidate);
+    const turns = this.#pageTurnRows(response, candidate);
+    for (const row of rows) this.#pending.set(row.transcriptKey, row);
+    const positions = rows.map((row) => row.position).sort(comparePosition);
+    if (candidate !== current) this.#publish();
+    this.#queueWrite({
+      historyKey: this.#binding.historyKey,
+      clearEpoch: this.#binding.clearEpoch,
+      items: rows,
+      turns,
+      coverage: {
+        kind: "page",
+        readId: request.readId,
+        before: before ?? null,
+        start: positions[0] ?? null,
+        end: positions.at(-1) ?? null,
+        representedSnapshot: response.snapshot?.length ?? candidate.history?.length ?? 0,
+        ...(response.nextCursor === undefined ? {} : { serverCursor: response.nextCursor }),
+        ...(request.requestCursor === undefined ? {} : { requestCursor: request.requestCursor }),
+        authority: this.#baselineIdentity,
+        boundary: request.boundary,
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Serve an older page from the certified local cache where this baseline's
+   * coverage permits. `server` means no connected certificate reaches below the
+   * current oldest row, or the frontier is ambiguous: the caller must run the
+   * real server request rather than present the gap as exhausted history.
+   * `exhausted` means the certified chain ended with no older rows.
+   */
+  async loadOlderPage(
+    limit: number,
+    lifetime: number,
+  ): Promise<{ kind: "local"; model: ThreadModel } | { kind: "exhausted"; model: ThreadModel } | { kind: "server" }> {
+    if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+    const current = this.#model;
+    if (!current) return { kind: "server" };
+    const before = this.#oldestPosition(current);
+    if (!before) return { kind: "server" };
+    const window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
+    if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+    if (window.stale) return { kind: "server" };
+    if (window.rows.length === 0) {
+      // Certified local coverage below the oldest row ended. Only a frontier
+      // with no server cursor is real history end; a cursor means more history
+      // remains on the network.
+      if (window.complete && window.serverCursor === undefined) {
+        return { kind: "exhausted", model: { ...current, olderCursor: undefined } };
+      }
+      return { kind: "server" };
+    }
+    const turnIds = this.#turnIDsForRows(window.rows, []);
+    const turnMetadata = await this.#readTurnMetadata(turnIds);
+    if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+    const restored = this.#restoreWindow(current, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
+    if (!restored) return { kind: "server" };
+    const model: ThreadModel = window.complete ? { ...restored, olderCursor: window.serverCursor } : restored;
+    this.#model = model;
+    this.#publish();
+    return { kind: "local", model };
   }
 
   attachReader(): TranscriptReader {
@@ -487,6 +593,15 @@ export class TranscriptRepository {
     return !this.#disposed && !this.#invalidated && lifetime === this.#binding.lifetime;
   }
 
+  #mintBaseline(): string {
+    return JSON.stringify([this.#binding.lifetime, this.#sourceRevision]);
+  }
+
+  #advanceSourceRevision(): void {
+    this.#sourceRevision++;
+    this.#baselineIdentity = this.#mintBaseline();
+  }
+
   #matchesRead(response: ThreadReadResponse): boolean {
     return (
       response.thread.id === this.#binding.threadId &&
@@ -531,6 +646,38 @@ export class TranscriptRepository {
         (turn.items ?? []).map((item) => ({ ...item, turnId: item.turnId ?? turn.id })),
       ),
     ];
+  }
+
+  #pageItemRows(response: ThreadTurnsListResponse, model: ThreadModel): TranscriptItemRow<CachedSessionItem>[] {
+    const recordedItems = model.history?.turns.flatMap((turn) => turn.items) ?? [];
+    const inputs = (response.data ?? []).flatMap((turn) =>
+      (turn.items ?? []).map((item) => ({ ...item, turnId: item.turnId ?? turn.id })),
+    );
+    return inputs.flatMap((wire) => {
+      const key = wire.transcriptKey ?? wire.id;
+      const item = recordedItems.find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
+      const row = item ? this.#row(item) : undefined;
+      return row ? [row] : [];
+    });
+  }
+
+  #pageTurnRows(response: ThreadTurnsListResponse, model: ThreadModel): TurnModel[] {
+    const ids = new Set([
+      ...(response.data ?? []).map((turn) => turn.id),
+      ...(response.data ?? []).flatMap((turn) => (turn.items ?? []).map((item) => item.turnId ?? turn.id)),
+    ]);
+    return model.turns.filter((turn) => ids.has(turn.id)).map((turn) => ({ ...turn, items: [] }));
+  }
+
+  #oldestPosition(model: ThreadModel): ThreadItemPosition | undefined {
+    let oldest: ThreadItemPosition | undefined;
+    for (const turn of model.history?.turns ?? []) {
+      for (const item of turn.items) {
+        if (!item.position) continue;
+        if (!oldest || comparePosition(item.position, oldest) < 0) oldest = item.position;
+      }
+    }
+    return oldest;
   }
 
   #readTurns(response: ThreadReadResponse, model: ThreadModel): TurnModel[] {

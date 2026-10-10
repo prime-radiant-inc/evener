@@ -157,7 +157,7 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
           snapshotLength: seedModel.history.length,
         }
       : undefined,
-    now: () => 100,
+    now: () => Date.now(),
   });
 }
 
@@ -1156,7 +1156,7 @@ it("requires explicit current source authority and cache coverage through a vali
       incarnation: seed.history!.incarnation ?? "",
       snapshotLength: seed.history!.length,
     },
-    now: () => 100,
+    now: () => Date.now(),
   });
   const reader = owner.attachReader();
 
@@ -1186,7 +1186,7 @@ it("does not treat a valid-looking seed as trusted when its caller omits source 
     clearEpoch: 0,
     lifetime: 2,
     seedModel: seed,
-    now: () => 100,
+    now: () => Date.now(),
   });
   const reader = owner.attachReader();
 
@@ -1479,7 +1479,7 @@ it("releases opening bodies while the real turn metadata lookup remains held", a
       incarnation: seed.history!.incarnation ?? "",
       snapshotLength: seed.history!.length,
     },
-    now: () => 100,
+    now: () => Date.now(),
   });
   const writeGate = gateEntryCommit(fixture.cache, "item-pending");
   owner.accept(historyUpdate("pending", 46), { lifetime: 2 });
@@ -1530,7 +1530,7 @@ it.each(["before open", "during lookup", "after lookup"] as const)(
         incarnation: seed.history!.incarnation ?? "",
         snapshotLength: seed.history!.length,
       },
-      now: () => 100,
+      now: () => Date.now(),
     });
     const writeGate = gateEntryCommit(fixture.cache, "item-pending");
     owner.accept(historyUpdate("pending", 46), { lifetime: 2 });
@@ -1598,7 +1598,7 @@ it("drops the seed reference from binding ownership after reader disposal and wr
       incarnation: seed.history!.incarnation ?? "",
       snapshotLength: seed.history!.length,
     },
-    now: () => 100,
+    now: () => Date.now(),
   });
   const reader = owner.attachReader();
   expect(reader.getSnapshot()).toBe(seed);

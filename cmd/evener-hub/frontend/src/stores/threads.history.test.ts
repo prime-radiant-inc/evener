@@ -17,7 +17,15 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "./connection";
-import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
+import {
+  acquireBackgroundThread,
+  installEntryTranscriptFixtureForTests,
+  resetThreadsStoreForTests,
+  settleBackgroundTranscriptsForTests,
+  threadsStore,
+} from "./threads";
 
 const REF = "ref_h";
 const THREAD_ID = "thr_h";
@@ -294,5 +302,101 @@ describe("versioned history: below-floor held snapshot", () => {
       ?.turns.map((t) => t.id);
     expect(turnIds).not.toContain("turn_old");
     expect(turnIds).toEqual(["turn_recovered"]);
+  });
+});
+
+describe("entry repository: older paging", () => {
+  const SELECTED = "local:entry-paging";
+  const entryIdentity: TranscriptResolvedIdentity = {
+    clientId: "fixture-client",
+    hostId: "fixture-host",
+    sessionId: "sess_h",
+    incarnation: "inc_a",
+  };
+  const entryHistory = entryHistoryKey(entryIdentity);
+
+  function pageItems(entries: number[], turnId: string): ThreadTurnsListResponse["data"][number]["items"] {
+    return entries.map((entry) => ({
+      type: "agentMessage" as const,
+      id: `item-${entry}`,
+      transcriptKey: `item-${entry}`,
+      turnId,
+      position: { entry, item: 0 },
+      version: entry,
+      text: `row-${entry}`,
+    }));
+  }
+
+  test("a server page is accepted into the repository, persisted, and keeps the captured cursor for the next request", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-int-${crypto.randomUUID()}` });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: SELECTED,
+      cache: entryCache,
+      clientId: entryIdentity.clientId,
+      hostId: entryIdentity.hostId,
+    });
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      fake.on("thread/read", (params) => {
+        const response = read("entry-paging-initial", { requestGeneration: params.requestGeneration, length: 8 });
+        response.thread.turns = [
+          {
+            id: "turn_top",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([6, 7, 8], "turn_top"),
+          },
+        ];
+        response.thread.evener.ref = SELECTED;
+        return { ...response, olderCursor: "cursor_1" };
+      });
+      fake.on("thread/turns/list", () => {
+        pageCalls += 1;
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      });
+
+      await lease.ready;
+      expect(fixture.inspect().model).toBeDefined();
+      expect(pageCalls).toBe(0);
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+      await fixture.settled();
+
+      const rows = await entryCache.getLatest(entryHistory, 40);
+      expect(rows.map((row) => row.position.entry).sort((left, right) => left - right)).toEqual([3, 4, 5, 6, 7, 8]);
+
+      const model = threadsStore.getState().threads.get(SELECTED);
+      expect(model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+        expect.arrayContaining(["row-3", "row-4", "row-5"]),
+      );
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      const lastPage = fake.calls.filter((call) => call.method === "thread/turns/list").at(-1);
+      expect((lastPage?.params as { cursor?: string } | undefined)?.cursor).toBe("cursor_2");
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
   });
 });
