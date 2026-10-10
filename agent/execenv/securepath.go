@@ -322,6 +322,12 @@ func (s *sandboxFS) underMasked(abs string) bool {
 	return s.policy.Masks(abs)
 }
 
+// underMaskedForWrite is underMasked for a write: the carve-outs are read-only,
+// so a write into one is denied like a write into the rest of the mask.
+func (s *sandboxFS) underMaskedForWrite(abs string) bool {
+	return s.policy.MasksWrite(abs)
+}
+
 // isGrantedRoot reports whether abs is exactly one of the policy's granted roots
 // (file-tool read or write roots). Such a root exists by construction even when
 // its parent lies outside the policy.

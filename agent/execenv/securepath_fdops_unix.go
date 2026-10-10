@@ -216,7 +216,11 @@ func (s *sandboxFS) openAnywhereMinusMasked(tool, abs string, flags int) (int, e
 // tolerating a symlinked ancestor of the root itself, and enforces the masked
 // denylist both textually before the open and against the fd's canonical path after.
 func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, error) {
-	if s.underMasked(abs) {
+	masked := s.underMasked
+	if flags&(unix.O_WRONLY|unix.O_RDWR|unix.O_CREAT|unix.O_TRUNC) != 0 {
+		masked = s.underMaskedForWrite // the carve-outs are read-only
+	}
+	if masked(abs) {
 		return -1, s.deny(tool, abs, denyReasonMasked)
 	}
 	rootFd, err := s.rootFd(root)
@@ -227,7 +231,7 @@ func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, err
 	if err != nil {
 		return -1, s.mapOpenErr(tool, abs, err)
 	}
-	if rerr := s.recheckMaskedFd(tool, abs, fd); rerr != nil {
+	if rerr := s.recheckFdAgainst(tool, abs, fd, masked); rerr != nil {
 		_ = unix.Close(fd)
 		return -1, rerr
 	}
@@ -242,6 +246,12 @@ func (s *sandboxFS) openInRoot(tool, abs, root, rel string, flags int) (int, err
 // Where canonicalization is unavailable it fails closed only on platforms that
 // require it (darwin); on Linux the textual pre-check already held.
 func (s *sandboxFS) recheckMaskedFd(tool, orig string, fd int) error {
+	return s.recheckFdAgainst(tool, orig, fd, s.underMasked)
+}
+
+// recheckFdAgainst is recheckMaskedFd with the masking question supplied (the
+// write variant for a write).
+func (s *sandboxFS) recheckFdAgainst(tool, orig string, fd int, masked func(string) bool) error {
 	canon, err := canonicalPathForFd(fd)
 	if err != nil || canon == "" {
 		if canonicalRecheckRequired {
@@ -249,7 +259,7 @@ func (s *sandboxFS) recheckMaskedFd(tool, orig string, fd int) error {
 		}
 		return nil
 	}
-	if s.underMasked(canon) {
+	if masked(canon) {
 		return s.deny(tool, orig, denyReasonMasked)
 	}
 	return nil
@@ -269,7 +279,7 @@ func (s *sandboxFS) recheckWriteTargetFd(tool, orig string, parentFd int, leaf s
 		return nil
 	}
 	target := filepath.Join(canon, leaf)
-	if s.underMasked(target) {
+	if s.underMaskedForWrite(target) {
 		return s.deny(tool, orig, denyReasonMasked)
 	}
 	if s.underProtected(target) {
@@ -301,7 +311,7 @@ func (s *sandboxFS) openWriteParent(tool, abs string, create bool) (int, string,
 	if !ok {
 		return -1, "", s.deny(tool, abs, denyReasonOutsideWrite)
 	}
-	if s.underMasked(abs) {
+	if s.underMaskedForWrite(abs) {
 		return -1, "", s.deny(tool, abs, denyReasonMasked)
 	}
 	if s.underProtected(abs) {
@@ -340,7 +350,7 @@ func (s *sandboxFS) openWriteParent(tool, abs string, create bool) (int, string,
 // The leaf's own symlink refusal is enforced by writeFile's AT_SYMLINK_NOFOLLOW
 // Fstatat, exactly as for an in-root write.
 func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
-	if s.underMasked(abs) {
+	if s.underMaskedForWrite(abs) {
 		return -1, "", s.deny(tool, abs, denyReasonMasked)
 	}
 	if s.underProtected(abs) {
@@ -599,7 +609,7 @@ func (s *sandboxFS) mkdirAll(tool, abs string) error {
 	if !ok {
 		return s.deny(tool, abs, denyReasonOutsideWrite)
 	}
-	if s.underMasked(abs) {
+	if s.underMaskedForWrite(abs) {
 		return s.deny(tool, abs, denyReasonMasked)
 	}
 	if s.underProtected(abs) {

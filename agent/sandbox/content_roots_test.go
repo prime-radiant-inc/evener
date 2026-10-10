@@ -416,3 +416,49 @@ func TestEvenerContentRootsHonourAnExplicitConfigMask(t *testing.T) {
 		t.Errorf("an explicit ~/.config/evener mask must keep its content masked, got %v", rp.UnmaskedRoots)
 	}
 }
+
+// An explicit denylist entry naming the real location of a symlinked config
+// root is the user's boundary under both spellings, so nothing is carved.
+func TestEvenerContentRootsHonourAnExplicitMaskOfTheRealConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	realConfig := filepath.Join(clean(t.TempDir()), "real-evener")
+	if err := os.MkdirAll(filepath.Join(realConfig, "plugins", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{realConfig}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("an explicit mask of the real config root must keep its content masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// A content root that does not exist yet still gets its resolved spelling
+// registered (from its existing ancestors), so content installed mid-session
+// under a symlinked home reads by its canonical path too.
+func TestEvenerContentRootsRegisterAMissingRootsResolvedSpelling(t *testing.T) {
+	root := mainRepo(t)
+	realHome := clean(t.TempDir())
+	linkHome := filepath.Join(clean(t.TempDir()), "home-link")
+	if err := os.Symlink(realHome, linkHome); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realHome, ".config", "evener", "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = linkHome
+	host.EvenerContentRoots = []string{filepath.Join(linkHome, ".config", "evener", "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if rp.Masks(filepath.Join(realHome, ".config", "evener", "plugins", "cache", "new", "SKILL.md")) {
+		t.Errorf("a missing root's resolved spelling must be carved out too: %v", rp.UnmaskedRoots)
+	}
+}

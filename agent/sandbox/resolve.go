@@ -265,6 +265,13 @@ func insideGitDir(path, root string) bool {
 // letter case).
 func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
 
+// MasksWrite reports whether a write to path is denied by the masked set. The
+// carve-outs (UnmaskedRoots) are read-only, so unlike Masks it makes no
+// exception for them.
+func (rp ResolvedPolicy) MasksWrite(path string) bool {
+	return isUnderAnyRoot(path, rp.MaskedPaths)
+}
+
 // FileToolEnforceable reports whether this OS has an in-process file-tool
 // enforcement implementation. Its race-safe primitives (openat2 /
 // RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only
@@ -743,8 +750,16 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	cr := filepath.Clean(host.EvenerConfigRoot)
 	// A config root the user denylisted themselves stays theirs: it is masked,
 	// and nothing is carved from it, since their own entries win.
+	sameDir := func(a, b string) bool {
+		if a == b {
+			return true
+		}
+		ra, aerr := filepath.EvalSymlinks(a)
+		rb, berr := filepath.EvalSymlinks(b)
+		return aerr == nil && berr == nil && ra == rb
+	}
 	for _, a := range policy.DenylistAdd {
-		if added := resolveHomePath(a, host.Home); added == def || added == cr {
+		if added := resolveHomePath(a, host.Home); sameDir(added, def) || sameDir(added, cr) {
 			configMasks = nil
 		}
 	}
@@ -786,6 +801,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		}
 	}
 	var out []string
+	at := map[string]string{}
 	for _, root := range guardedHostRoots(candidates, home, worktree) {
 		switch {
 		case isUnderAnyRoot(root, defaultPseudoFSPaths),
@@ -794,35 +810,34 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, root) || pathUnder(root, w) }):
 			continue
 		}
-		if at, err := filepath.EvalSymlinks(root); err == nil && slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, at) || pathUnder(at, w) }) {
-			continue
-		}
+		// Resolved once: every check below, the pinned location and the
+		// resolved spelling all use this same answer, so a swap in between
+		// cannot slip a different location in.
 		resolved, err := filepath.EvalSymlinks(root)
-		if err == nil && carveOutEscapes(resolved, root, masked) {
+		exists := err == nil
+		if !exists {
+			// Not created yet: its resolved spelling is where creating it would
+			// land, from its existing ancestors.
+			resolved = StripDataVolumeAlias(canonicalizeLongestPrefix(root, filepath.EvalSymlinks))
+		}
+		if slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, resolved) || pathUnder(resolved, w) }) ||
+			carveOutEscapes(resolved, root, masked) {
 			continue
 		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
 		// the skills dir) would make its secrets readable through the carve-out.
 		if slices.ContainsFunc(masked, func(m string) bool {
 			rm, merr := filepath.EvalSymlinks(m)
-			return merr == nil && (pathUnder(rm, root) || err == nil && pathUnder(rm, resolved))
+			return merr == nil && (pathUnder(rm, root) || pathUnder(rm, resolved))
 		}) {
 			continue
 		}
-		out = append(out, root)
-	}
-	// The admitted roots are exempt under their resolved spelling too, which is
-	// how the file tools see a directory they opened (its canonical path), and
-	// each existing root is held to the location it resolves to now.
-	at := map[string]string{}
-	for _, r := range slices.Clone(out) {
-		resolved, err := filepath.EvalSymlinks(r)
-		if err != nil {
-			continue
-		}
-		at[r], at[resolved] = resolved, resolved
-		if resolved != r {
-			out = append(out, resolved)
+		// The root is exempt under its resolved spelling too, which is how the
+		// file tools see a directory they opened (its canonical path); one that
+		// exists is held to this location (CarveOutResolvesTo).
+		out = append(out, root, resolved)
+		if exists {
+			at[root], at[resolved] = resolved, resolved
 		}
 	}
 	return dedupeRoots(out), at

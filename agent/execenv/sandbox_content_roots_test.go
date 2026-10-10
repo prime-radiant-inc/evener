@@ -197,3 +197,37 @@ func TestFileToolsReadACarveOutUnderBothSpellings(t *testing.T) {
 		}
 	}
 }
+
+// The carve-out is read-only however a write reaches it: a writable root that
+// becomes a symlink to the plugin cache after resolution must not let the file
+// tools write into the cache.
+func TestFileToolsNeverWriteACarveOutThroughAWritableAlias(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	for _, dir := range []string{worktree, cache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(home, "alias")
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{cache}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, ExtraWritableRoots: []string{alias}}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := os.Symlink(cache, alias); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	for _, p := range []string{filepath.Join(cache, "planted.md"), filepath.Join(alias, "planted.md")} {
+		_, err := env.WriteFile(p, "x")
+		mustDenied(t, err, "write_file %s into the carve-out", p)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "planted.md")); !os.IsNotExist(err) {
+		t.Errorf("nothing may be written into the carve-out: %v", err)
+	}
+}
