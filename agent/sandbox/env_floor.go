@@ -76,7 +76,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 			out = append(out,
 				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
 				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
-				envvars.GoPath.Assignment(sessionGoPath(env, sessionScratch)),
+				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
 				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
 				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
 			)
@@ -87,27 +87,35 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
 // first, because Go writes the checksum database and `go install` output only to
-// the first entry, then the ambient GOPATH (Go's $HOME/go default when unset) so
-// GOPATH-mode builds still find the packages already there, read-only.
-func sessionGoPath(env []string, sessionScratch string) string {
-	entries := []string{filepath.Join(sessionScratch, goPathDirName)}
-	ambient, home := "", ""
+// the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
+// (Go's $HOME/go default when unset) follows, so GOPATH-mode builds still find
+// the packages already there, read-only; restricted mode cannot read it, so it
+// gets the scratch alone. Entries inside the scratch are dropped from the ambient
+// value, so flooring an already-floored env does not repeat them.
+func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) string {
+	scratchGoPath := filepath.Join(sessionScratch, goPathDirName)
+	if policy.Spawned.Read != ReadAnywhere {
+		return scratchGoPath
+	}
+	var ambient []string
+	home := ""
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
 		switch name {
 		case envvars.GoPath.Name:
-			ambient = val
+			for _, entry := range filepath.SplitList(val) {
+				if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
+					ambient = append(ambient, entry)
+				}
+			}
 		case "HOME":
 			home = val
 		}
 	}
-	switch {
-	case ambient != "":
-		entries = append(entries, ambient)
-	case home != "":
-		entries = append(entries, filepath.Join(home, "go"))
+	if len(ambient) == 0 && home != "" {
+		ambient = []string{filepath.Join(home, "go")}
 	}
-	return strings.Join(entries, string(filepath.ListSeparator))
+	return strings.Join(append([]string{scratchGoPath}, ambient...), string(filepath.ListSeparator))
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.

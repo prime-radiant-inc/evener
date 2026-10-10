@@ -407,9 +407,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
   session scratch as its first entry too: Go records the checksum database's tree
   heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. The ambient GOPATH (or Go's
-  `$HOME/go` default) stays after it, so GOPATH-mode builds still find the packages
-  already there.
+  module or toolchain download needs it writable. In `workspace-write` the ambient
+  GOPATH (or Go's `$HOME/go` default) stays after it, so GOPATH-mode builds still
+  find the packages already there; `restricted` cannot read it and gets the
+  scratch alone.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning

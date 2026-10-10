@@ -81,27 +81,38 @@ func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 
 // Go keeps the checksum database's tree heads in $GOPATH/pkg/sumdb, a path
 // GOMODCACHE does not move, and a cold download needs to write there (#4177).
-// Go writes only to the first GOPATH entry, so the session scratch goes first and
-// the ambient GOPATH (Go's $HOME/go default when unset) stays after it for
-// GOPATH-mode source lookups.
+// Go writes only to the first GOPATH entry, so the session scratch goes first.
+// Where the spawned layer reads anywhere, the ambient GOPATH (Go's $HOME/go
+// default when unset) stays after it for GOPATH-mode source lookups; restricted
+// mode cannot read it, so it gets the scratch alone.
 func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
 	scratchGoPath := tmp + "/gopath"
 	sep := string(filepath.ListSeparator)
+	readAnywhere := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}}
+	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}}
 	for _, tc := range []struct {
-		name string
-		in   []string
-		want string
+		name   string
+		policy ResolvedPolicy
+		in     []string
+		want   string
 	}{
-		{"ambient", []string{"GOPATH=/custom/a" + sep + "/custom/b", "HOME=/home/u"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
-		{"default", []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
-		{"no home", nil, scratchGoPath},
+		{"ambient", readAnywhere, []string{"GOPATH=/custom/a" + sep + "/custom/b", "HOME=/home/u"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
+		{"default", readAnywhere, []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
+		{"no home", readAnywhere, nil, scratchGoPath},
+		{"restricted", restricted, []string{"GOPATH=/custom/a", "HOME=/home/u"}, scratchGoPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out := ApplyEnvFloor(tc.in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
+			out := ApplyEnvFloor(tc.in, tc.policy, tmp)
 			// envValue reads the first GOPATH, so a kept ambient entry fails here too.
 			if v, _ := envValue(out, "GOPATH"); v != tc.want {
 				t.Errorf("GOPATH = %q, want %q", v, tc.want)
+			}
+			// A spawn site may floor an env that was already floored; the scratch
+			// entry must not repeat.
+			again := ApplyEnvFloor(out, tc.policy, tmp)
+			if v, _ := envValue(again, "GOPATH"); v != tc.want {
+				t.Errorf("re-floored GOPATH = %q, want %q", v, tc.want)
 			}
 		})
 	}

@@ -68,6 +68,10 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
+//
+// The answer is fixed at allocation: s.Dir is set once by the allocator and
+// never re-read from disk, and scratchTreeOf is purely lexical, so renaming the
+// directory on disk cannot change it.
 func (s *SessionScratch) Named() bool {
 	return s != nil && scratchTreeOf(s.Dir) != ""
 }

@@ -94,6 +94,13 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// handed files from their parent's scratch, so the shell must see it too. The
 	// rest of the host /tmp stays private for its Unix sockets (docs/sandboxing.md
 	// explains the private /tmp in its Modes section).
+	//
+	// Accepted residual, documented there too: a read-only bind does not block
+	// connect(), so a socket another session of the same root put in its own
+	// scratch is reachable from this shell. It reaches only what that session's
+	// sandbox already allows, and an unsandboxed root's TMPDIR is not in the tree.
+	// Binding only chosen files would not avoid it (a socket is a file), and
+	// hiding the tree is what #4170 reported as friction.
 	candidates := append([]string{cwd}, sp.ReadRoots...)
 	if sp.Read == ReadAnywhere {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
