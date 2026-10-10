@@ -26,7 +26,7 @@
         },
         {
           "name": "fix committed",
-          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; test -z \"$(git status --porcelain)\" && ! { git show HEAD:money.go | cmp -s - \"$fx/money.go\" && git show HEAD:receipt.go | cmp -s - \"$fx/receipt.go\"; }"
+          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; git rev-parse --verify -q HEAD >/dev/null || exit 1; st=$(git status --porcelain) || exit 1; test -z \"$st\" || exit 1; m=$(git show HEAD:money.go) || exit 1; r=$(git show HEAD:receipt.go) || exit 1; ! { printf '%s\\n' \"$m\" | cmp -s - \"$fx/money.go\" && printf '%s\\n' \"$r\" | cmp -s - \"$fx/receipt.go\"; }"
         },
         {
           "name": "at most 1 memory page",
