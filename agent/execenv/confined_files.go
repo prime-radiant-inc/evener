@@ -18,6 +18,19 @@ func (e *LocalExecutionEnvironment) RemoveConfinedFile(path string) error {
 	return layer.removeRegularFile("memory_delete", e.resolve(path))
 }
 
+// RemoveConfinedEmptyDirectory removes path when it is an empty directory,
+// through the same captured-parent confinement as RemoveConfinedFile. A
+// missing path or parent is a no-op. Anything else, such as a nonempty
+// directory or a symlink, is left in place and its removal error returned.
+func (e *LocalExecutionEnvironment) RemoveConfinedEmptyDirectory(path string) error {
+	layer := e.sandbox()
+	if layer == nil {
+		return errors.New("directory removal requires a confined environment")
+	}
+	defer layer.release()
+	return layer.removeEmptyDirectory("memory_delete", e.resolve(path))
+}
+
 // LinkConfinedFile gives the file at oldPath the second name newPath, never
 // replacing a file: an existing newPath fails with an error matching
 // fs.ErrExist. It requires captured filesystem authority, never an
