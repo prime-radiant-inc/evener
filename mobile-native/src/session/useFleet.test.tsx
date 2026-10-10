@@ -91,10 +91,11 @@ it("classifies the fleet with the Board's seen function", async () => {
 	await settleMicrotasks();
 	const { bands, sources } = hook.result.current;
 	expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["local:fail"]);
-	// A session already opened is Idle; one not opened since it changed is
-	// Finished.
-	expect(bands.idle.map((item) => item.row.ref)).toEqual(["local:read"]);
-	expect(bands.finished.map((item) => item.row.ref)).toEqual(["local:unread"]);
+	// Both rest Idle; one not opened since it changed carries the blue dot.
+	expect(bands.idle.map((item) => [item.row.ref, item.unseen])).toEqual([
+		["local:unread", true],
+		["local:read", false],
+	]);
 	expect(sources?.map((source) => source.label)).toEqual(["Laptop"]);
 	hook.unmount();
 });
