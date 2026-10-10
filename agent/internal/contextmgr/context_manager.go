@@ -1076,6 +1076,29 @@ type checkpointData struct {
 	lastShellResults []string
 	conversation     []checkpointConversationEntry
 	workingNotes     []string
+	// earlierSummaries are LLM summaries the checkpoint folds, kept whole: a
+	// summary is the only record of the conversation it replaced, including
+	// the permissions and holds it quotes.
+	earlierSummaries []string
+}
+
+// collectCompaction carries a previous compaction turn's text into the new
+// checkpoint so it survives repeated compactions. From a checkpoint it carries
+// the conversation, working notes and earlier summaries it holds. From an LLM
+// summary (summary is true) it carries the summary whole as an earlier summary;
+// the model's own text is not mined for working notes.
+//
+// This is the deterministic checkpoint's carry, which the default compaction
+// paths use. Opt-in strategies that write their own checkpoints (session-log,
+// OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
+func (d *checkpointData) collectCompaction(text string, summary bool) {
+	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
+	if summary {
+		d.earlierSummaries = append(d.earlierSummaries, text)
+		return
+	}
+	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
+	d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
 }
 
 // checkpointWriteStatus classifies a write tool call by the outcome of its
@@ -1117,10 +1140,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			// Extract user messages and working notes from previous compaction turns
-			// so they survive across repeated compactions.
-			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
-			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
+			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
 
 		case schema.TurnSteering:
 			// Steering the human partner sent during a turn is their message
@@ -1134,10 +1154,10 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			if text == "" {
 				continue
 			}
-			// Old-format checkpoint/summary stored as TurnUserInput — extract
-			// user messages from them just like typed compaction turns.
+			// Old-format checkpoint/summary stored as TurnUserInput — carry it
+			// just like a typed compaction turn.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.conversation = append(data.conversation, extractCheckpointConversation(text)...)
+				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -1326,9 +1346,34 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Budget for variable content (conversation + working notes as Markdown).
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
-	// and the Markdown section headings.
-	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
-	variableBudget := max(maxChars-overhead, 1000)
+	// earlier summaries, and the Markdown section headings. The variable
+	// content always gets at least minVariableBudget.
+	const minVariableBudget = 1000
+	frame := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
+
+	// Earlier summaries get up to half the checkpoint, and never so much that
+	// the variable content's floor would push it past maxChars. The newest are
+	// kept, the last one trimmed from its tail: summaries put permissions and
+	// holds first.
+	summaryBudget := min(maxChars/2, maxChars-frame-minVariableBudget)
+	summaries := data.earlierSummaries
+	summariesMarkdown := renderCheckpointEarlierSummaries(summaries)
+	for len(summaries) > 1 && len(summariesMarkdown) > summaryBudget {
+		summaries = summaries[1:]
+		summariesMarkdown = renderCheckpointEarlierSummaries(summaries)
+	}
+	if len(summaries) == 1 && len(summariesMarkdown) > summaryBudget {
+		summary := truncateRendered(summaries[0], summaryBudget, func(text string) int {
+			return len(renderCheckpointEarlierSummaries([]string{text}))
+		})
+		summariesMarkdown = renderCheckpointEarlierSummaries([]string{summary})
+		if len(summariesMarkdown) > summaryBudget {
+			// The fixed metadata leaves no room for even a trimmed summary.
+			summariesMarkdown = ""
+		}
+	}
+
+	variableBudget := max(maxChars-frame-len(summariesMarkdown), minVariableBudget)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
 	// first — they may be shed entirely — then the oldest messages after the
@@ -1394,6 +1439,9 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// Assemble final checkpoint.
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT]\n")
+	// Earlier summaries come first so the summarizer, which reads a previous
+	// compaction from its head, sees them before anything else.
+	b.WriteString(summariesMarkdown)
 	b.WriteString(fixedStr)
 	if conversationMarkdown != "" {
 		b.WriteString("\n")
@@ -1931,7 +1979,10 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 		switch t.Kind {
 		case schema.TurnUserInput:
 			// Preserve user messages verbatim. Cap at 5k to protect the cheap
-			// model's context — normal messages are well under this.
+			// model's context — normal messages are well under this. On the
+			// MaybeCompact and ForceCompact paths the checkpoint layer has
+			// already folded these turns, so their user messages arrive inside
+			// the checkpoint (a previous compaction) instead of here.
 			text := t.Message.Text()
 			if len(text) > 5000 {
 				text = text[:5000] + "..."
@@ -1941,9 +1992,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// A previous compaction is the only record of the conversation it
-			// folded, so it gets up to a checkpoint's size: a deterministic
-			// checkpoint, the usual previous compaction, arrives whole, with
-			// every partner message it kept, and the rest of the budget stays
+			// folded. It gets up to a checkpoint's size, so a deterministic
+			// checkpoint (earlier summaries first, then the newest folded
+			// conversation) always arrives whole; the rest of the budget stays
 			// for the turns it precedes. A longer one keeps its head, where
 			// both summary prompts put the permissions and holds it quotes.
 			b.WriteString("Previous compaction: ")
@@ -1993,6 +2044,11 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		}
+		// The cap is checked after each turn, so the history can run past it
+		// by the last turn written. Every turn kind but steering has its own
+		// cap (a previous compaction's is maxCheckpointChars), which
+		// bounds that overrun; it is a soft limit protecting the summarizer's
+		// context, not a hard one.
 		if b.Len() > maxHistoryChars {
 			b.WriteString("\n[... truncated ...]\n")
 			break
