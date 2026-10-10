@@ -16,11 +16,19 @@ import (
 // turnEnds against seen, keyed by session ID.
 func seenLiveRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen hubcore.SessionSeenSnapshot) map[string]hubapi.NavigationSessionSummary {
 	t.Helper()
+	return seenRows(t, now, turnEnds, seen, true)
+}
+
+// seenRows is seenLiveRows with the choice of whether the hub reports the
+// sessions live: with markLive false they still have a live entry, but their
+// rows are not live.
+func seenRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen hubcore.SessionSeenSnapshot, markLive bool) map[string]hubapi.NavigationSessionSummary {
+	t.Helper()
 	var metas []schema.SessionMeta
 	var live []hubcore.LiveEntry
 	liveIDs := make(map[string]bool)
 	for id, ended := range turnEnds {
-		liveIDs[id] = true
+		liveIDs[id] = markLive
 		metas = append(metas, schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
 		live = append(live, hubcore.LiveEntry{PID: len(live) + 1, SessionID: id, Status: appwire.ThreadStatusIdle, LastTurnEndedAt: ended})
 	}
@@ -174,19 +182,12 @@ func TestNavigationRowsCarrySeenThrough(t *testing.T) {
 		}
 	}
 
-	tree := hubcore.BuildTreeAt([]schema.SessionMeta{{ID: "01NOTLIVE", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}, []hubcore.LiveEntry{{PID: 1, SessionID: "01NOTLIVE", Status: appwire.ThreadStatusIdle}}, nil, now)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen})
-	if err != nil {
-		t.Fatal(err)
-	}
-	notLive := projection.LivePage(0, 0).Sessions
-	if len(notLive) == 0 {
+	notLive, ok := seenRows(t, now, map[string]time.Time{"01NOTLIVE": {}}, seen, false)["01NOTLIVE"]
+	if !ok {
 		t.Fatal("no row for the session that isn't live")
 	}
-	for _, row := range notLive {
-		if _, present := navigationSummaryJSONFields(t, row)["seen_through"]; present {
-			t.Errorf("%s: seen_through present on a row that isn't live", row.SessionID)
-		}
+	if _, present := navigationSummaryJSONFields(t, notLive)["seen_through"]; present {
+		t.Error("seen_through present on a row that isn't live")
 	}
 
 	for id, row := range seenLiveRows(t, now, turnEnds, hubcore.SessionSeenSnapshot{}) {

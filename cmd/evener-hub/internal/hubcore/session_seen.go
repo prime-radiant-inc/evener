@@ -63,11 +63,10 @@ func (s SessionSeenSnapshot) Unseen(key ArchiveKey, turnEndedAt time.Time) bool 
 	if s.Epoch.IsZero() || turnEndedAt.IsZero() {
 		return false
 	}
-	record := s.Records[key]
-	if record.Unread {
+	if s.Records[key].Unread {
 		return true
 	}
-	return turnEndedAt.After(s.Epoch) && turnEndedAt.After(record.SeenThrough)
+	return turnEndedAt.After(s.SeenThrough(key))
 }
 
 // SeenThrough is the session's seen-through mark floored at the store's
