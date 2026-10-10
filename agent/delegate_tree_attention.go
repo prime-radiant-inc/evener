@@ -538,6 +538,24 @@ func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggrega
 	}
 }
 
+// forgetConsumedDelegateAttention drops the wake IDs a delegate generation
+// consumed because its settled requests presented them (finishAttentionTurn).
+// No attention reservation reports that consumption, and a consumed ID left
+// among the wakes would make a later Stop try to discard it, a conflicting
+// resolution that leaves the stop outstanding. The needs-attention flag is the
+// finalize tail's to lower, once nothing is pending.
+func (c *delegateTreeController) forgetConsumedDelegateAttention(delegateID string, attentionIDs []string) {
+	if c == nil || delegateID == "" || len(attentionIDs) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, attentionID := range attentionIDs {
+		c.forgetDelegateAttentionLocked(delegateID, attentionID)
+	}
+	c.evidenceVersion++
+}
+
 // delegateAttentionWakeIDsLocked returns a copy of delegateID's noted wake IDs.
 func (c *delegateTreeController) delegateAttentionWakeIDsLocked(delegateID string) map[string]struct{} {
 	if state := c.attention[delegateID]; state != nil {

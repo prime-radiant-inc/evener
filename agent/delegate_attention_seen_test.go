@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -186,6 +187,90 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 		aggregate := controller.durable[fixture.delegateID]
 		return aggregate != nil && !aggregate.NeedsAttention
 	})
+}
+
+// A generation that consumed attention it presented while later attention is
+// still pending must not leave the consumed item among the delegate's wakes:
+// a Stop admitted before the successor generation discards every noted wake,
+// and discarding an already-consumed item is a conflicting resolution that
+// would leave the stop outstanding.
+func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttentionPending(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm") },
+		func(llm.Request) llm.Response {
+			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:presented", "gate job finished: exit 0")
+			return communicateResponse(false, "running gates")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "gate job finished") {
+				t.Errorf("second request of the turn did not present the attention")
+			}
+			// Built after this request: still pending when the generation ends.
+			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:late", "review finished: approved")
+			return finalResponse("gates passed")
+		},
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// Hold the successor attention drive so the Stop lands before it.
+	driveReached := make(chan struct{})
+	releaseDrive := make(chan struct{})
+	var reachOnce, releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseDrive) }) })
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionBeforeDriveClaim = func(child *subagent) {
+			// Earlier drives (the mid-run one for the presented item) pass.
+			if pending, err := child.sess.pendingDelegateAttentionIDs(); err != nil || !slices.Equal(pending, []string{"attention:late"}) {
+				return
+			}
+			reachOnce.Do(func() { close(driveReached) })
+			<-releaseDrive
+		}
+	})
+	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
+	select {
+	case <-driveReached:
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the successor attention drive was not reached")
+	}
+	if resolution, _ := childAttentionResolution(t, sub, "attention:presented"); resolution != delegateAttentionConsumed {
+		t.Fatalf("presented attention resolution = %q, want consumed", resolution)
+	}
+
+	controller := root.delegateController
+	result, cancelPlan, _, err := controller.StopSubtree(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	for range 4 {
+		plans, err := controller.Reconcile(emptyDelegateReconcileEvidence(controller))
+		if err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		for _, plan := range plans.attention {
+			if err := controller.executeDelegateAttentionCleanup(plan); err != nil {
+				t.Fatalf("discard %q for the stop: %v", plan.attentionID, err)
+			}
+		}
+		if delegateStopDone(controller.stop) {
+			break
+		}
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop did not complete")
+	}
+	if resolution, _ := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionDiscarded {
+		t.Fatalf("late attention resolution = %q, want discarded by the stop", resolution)
+	}
+	releaseOnce.Do(func() { close(releaseDrive) })
 }
 
 // attentionRunStarts counts the fixture delegate's generations its journal

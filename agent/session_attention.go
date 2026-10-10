@@ -808,11 +808,17 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if s.isRootDelegateAttentionReceiver() {
 		return s.finishRootDelegateAttentionTurn(ids, turnErr)
 	}
+	var covered []string
 	if turnErr == nil {
-		if covered := s.unionCoveredAttention(ids); len(covered) != 0 {
-			return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
-		}
+		covered = s.unionCoveredAttention(ids)
 	}
+	if len(covered) == 0 {
+		return nil
+	}
+	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
+		return err
+	}
+	s.delegateController.forgetConsumedDelegateAttention(s.owningDelegateID, covered)
 	return nil
 }
 
