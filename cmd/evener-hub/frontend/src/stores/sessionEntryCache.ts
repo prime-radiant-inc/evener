@@ -93,6 +93,13 @@ export type EntryCoverageInput =
       end: ThreadItemPosition | null;
       representedSnapshot: number;
       serverCursor?: string;
+      // The opaque request cursor this page consumed, when it answered a
+      // cursor request rather than a position-only request. It is the
+      // successor edge to the certificate whose `serverCursor` it equals.
+      requestCursor?: string;
+      // Opaque equality token for the source authority that owns the chain
+      // this certificate belongs to (the repository binding lifetime).
+      authority?: string;
       boundary: string;
     };
 
@@ -274,6 +281,10 @@ function positionCoveredBy(position: ThreadItemPosition, cert: TranscriptCoverag
 
 function certsConnected(left: TranscriptCoverageRow, right: TranscriptCoverageRow): boolean {
   if (left.rangeId === right.rangeId) return true;
+  // A certificate may only ever continue a chain owned by the same authority:
+  // a replacement or reconnect that begins a fresh baseline must not have its
+  // older pages stitched onto the outgoing chain, whatever their positions.
+  if (left.authority !== right.authority) return false;
   if (
     left.start !== null &&
     left.end !== null &&
@@ -316,40 +327,71 @@ function connectedCoverage(
   return component;
 }
 
-// The cursor that continues an exhausted older window: the connected
-// certificate reaching deepest. Each certificate's depth is its lowest known
-// position, whether a certified range start/end or the boundary an empty page
-// probed below. A probe below the same depth supersedes the range above it, so
-// an empty page fetched against the deepest start wins over that range.
-function chooseFrontierCursor(chain: readonly TranscriptCoverageRow[]): string | undefined {
-  let best: TranscriptCoverageRow | undefined;
-  let bestBottom: ThreadItemPosition | undefined;
-  let bestProbe = false;
+// The deepest point a certificate reaches, whether a certified range boundary
+// or the exclusive boundary an empty page probed below. A probe below a range
+// at the same depth supersedes that range, because the empty page was fetched
+// against it.
+function certificateBottom(cert: TranscriptCoverageRow): { point: ThreadItemPosition; probe: boolean } | undefined {
+  const points: Array<{ point: ThreadItemPosition; probe: boolean }> = [];
+  if (cert.start !== null) points.push({ point: cert.start, probe: false });
+  if (cert.end !== null) points.push({ point: cert.end, probe: false });
+  if (cert.before !== null && cert.before !== undefined) points.push({ point: cert.before, probe: true });
+  const first = points[0];
+  if (!first) return undefined;
+  let bottom = first;
+  for (const candidate of points) {
+    if (comparePosition(candidate.point, bottom.point) < 0) bottom = candidate;
+  }
+  return bottom;
+}
+
+// The frontier of an exhausted chain, resolved from recorded successor edges
+// alone: cert S is the successor of P iff same authority, `S.requestCursor`
+// is defined, `P.serverCursor` is defined and they are equal. No commit order,
+// timestamp, lexeme, position or snapshot tie-break. At the deepest depth a
+// probe is preferred, matching the empty-page authority the older paging
+// contract already established. `verified` false means the chain is ambiguous
+// (zero or several unconsumed certificates, or conflicting cursors), and
+// uncertainty must never present as exhausted history.
+function chooseFrontier(chain: readonly TranscriptCoverageRow[]): { cursor?: string; verified: boolean } {
+  let deepestPoint: ThreadItemPosition | undefined;
   for (const cert of chain) {
-    const points: Array<{ point: ThreadItemPosition; probe: boolean }> = [];
-    if (cert.start !== null) points.push({ point: cert.start, probe: false });
-    if (cert.end !== null) points.push({ point: cert.end, probe: false });
-    if (cert.before !== null && cert.before !== undefined) points.push({ point: cert.before, probe: true });
-    const first = points[0];
-    if (!first) continue;
-    let bottom = first;
-    for (const candidate of points) {
-      if (comparePosition(candidate.point, bottom.point) < 0) bottom = candidate;
-    }
-    const deeper = bestBottom === undefined || comparePosition(bottom.point, bestBottom) < 0;
-    const sameDepth = bestBottom !== undefined && comparePosition(bottom.point, bestBottom) === 0;
-    const replace =
-      deeper ||
-      (sameDepth &&
-        ((bottom.probe && !bestProbe) ||
-          (bottom.probe === bestProbe && best !== undefined && cert.rangeId < best.rangeId)));
-    if (replace) {
-      best = cert;
-      bestBottom = bottom.point;
-      bestProbe = bottom.probe;
+    const bottom = certificateBottom(cert);
+    if (!bottom) continue;
+    if (deepestPoint === undefined || comparePosition(bottom.point, deepestPoint) < 0) {
+      deepestPoint = bottom.point;
     }
   }
-  return best?.serverCursor;
+  if (deepestPoint === undefined) return { verified: true };
+  const depth = deepestPoint;
+  const atDepth = chain.filter((cert) => {
+    const bottom = certificateBottom(cert);
+    return bottom !== undefined && comparePosition(bottom.point, depth) === 0;
+  });
+  const probes = atDepth.filter((cert) => certificateBottom(cert)?.probe === true);
+  const deepest = probes.length > 0 ? probes : atDepth;
+  const consumed = new Set<string>();
+  for (const predecessor of chain) {
+    if (predecessor.serverCursor === undefined) continue;
+    const hasSuccessor = chain.some(
+      (successor) =>
+        successor.rangeId !== predecessor.rangeId &&
+        successor.authority === predecessor.authority &&
+        successor.requestCursor !== undefined &&
+        successor.requestCursor === predecessor.serverCursor,
+    );
+    if (hasSuccessor) consumed.add(predecessor.rangeId);
+  }
+  const unconsumed = deepest.filter((cert) => !consumed.has(cert.rangeId));
+  const first = unconsumed[0];
+  if (!first) return { verified: false };
+  if (unconsumed.length === 1) {
+    return first.serverCursor === undefined ? { verified: true } : { verified: true, cursor: first.serverCursor };
+  }
+  const consistent =
+    first.serverCursor !== undefined &&
+    unconsumed.every((cert) => cert.serverCursor !== undefined && cert.serverCursor === first.serverCursor);
+  return consistent ? { verified: true, cursor: first.serverCursor } : { verified: false };
 }
 
 // The anchor certificate for an older-window query. Anchoring uses exact
@@ -1158,6 +1200,8 @@ export class SessionEntryCache {
         before: input.before,
         representedSnapshot: input.representedSnapshot,
         ...(input.serverCursor === undefined ? {} : { serverCursor: input.serverCursor }),
+        ...(input.requestCursor === undefined ? {} : { requestCursor: input.requestCursor }),
+        ...(input.authority === undefined ? {} : { authority: input.authority }),
         readId: input.readId,
         boundary: input.boundary,
       };
@@ -1168,7 +1212,9 @@ export class SessionEntryCache {
         comparePosition(current.end, row.end) === 0 &&
         comparePosition(current.before ?? null, row.before ?? null) === 0 &&
         current.representedSnapshot === row.representedSnapshot &&
-        current.serverCursor === row.serverCursor
+        current.serverCursor === row.serverCursor &&
+        current.requestCursor === row.requestCursor &&
+        current.authority === row.authority
       ) {
         return { result: "unchanged", byteDelta: 0 };
       }
@@ -1346,8 +1392,19 @@ export class SessionEntryCache {
    * not hand any cursor to the network, so certified local rows are never
    * skipped. A requested boundary with no connected certificate returns
    * `stale: true` rather than stitching across an uncertified gap.
+   *
+   * When `authority` is supplied, anchors and the connected component are
+   * scoped to certificates carrying that opaque token, so a caller can never
+   * anchor into another connection/read lifetime's chain. Scoping is defense
+   * in depth: certificates of different authority never continue one another
+   * even when no filter is passed.
    */
-  async getOlderWindow(historyKey: string, before: ThreadItemPosition, limit: number): Promise<EntryWindow> {
+  async getOlderWindow(
+    historyKey: string,
+    before: ThreadItemPosition,
+    limit: number,
+    authority?: string,
+  ): Promise<EntryWindow> {
     if (!isPosition(before)) throw new RangeError("entry older window requires a real boundary position");
     if (!Number.isInteger(limit) || limit < 0)
       throw new RangeError("entry window limit must be a non-negative integer");
@@ -1357,11 +1414,12 @@ export class SessionEntryCache {
     try {
       const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
       const itemIndex = transaction.objectStore(ENTRY_ITEM_STORE).index("historyKey_position");
-      const ranges = await requestResult(
+      const allRanges = await requestResult(
         coverageStore.getAll(this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"])) as IDBRequest<
           TranscriptCoverageRow[]
         >,
       );
+      const ranges = authority === undefined ? allRanges : allRanges.filter((row) => row.authority === authority);
       const anchor = chooseOlderAnchor(ranges, before);
       if (!anchor) {
         await complete;
@@ -1394,18 +1452,18 @@ export class SessionEntryCache {
         rows.length < limit ||
         (oldestStart !== null && rows.length > 0 && comparePosition(rows[0]?.position ?? null, oldestStart) === 0);
       const isComplete = limit === 0 ? emptyChain : emptyChain || reachedBottom;
-      // The continuation cursor belongs to the connected certificate that
-      // reaches deepest. An empty page fetched against the deepest boundary is
-      // that certificate even when it names no positions: it supersedes the
-      // cursor of the range above it, and continues via its own cursor if any.
-      const frontier = isComplete ? chooseFrontierCursor(chain) : undefined;
+      // The continuation belongs to the deepest unconsumed certificate,
+      // resolved from recorded successor edges. A fully-exhausted chain that is
+      // ambiguous is unverified, never presented as terminated history.
+      const frontier = isComplete ? chooseFrontier(chain) : undefined;
+      const verifiedComplete = isComplete && (frontier?.verified ?? false);
       return {
         rows,
         coverage: chain,
-        complete: isComplete,
-        stale: false,
+        complete: verifiedComplete,
+        stale: isComplete && !(frontier?.verified ?? false),
         boundary: anchor.boundary,
-        ...(frontier !== undefined ? { serverCursor: frontier } : {}),
+        ...(verifiedComplete && frontier?.cursor !== undefined ? { serverCursor: frontier.cursor } : {}),
       };
     } catch (error) {
       await complete.catch(() => {});

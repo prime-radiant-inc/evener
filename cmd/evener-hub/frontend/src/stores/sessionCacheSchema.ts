@@ -43,6 +43,16 @@ export interface TranscriptCoverageRow {
   // page was fetched against, the provenance link between consecutive pages.
   // Never parsed as an opaque cursor.
   before?: ThreadItemPosition | null;
+  // Recorded only for a page certificate: the opaque request cursor the page
+  // consumed (`ThreadTurnsListParams.cursor`), undefined for a position-only
+  // request. Together with `serverCursor` it forms the successor edge that
+  // establishes continuation authority; never parsed.
+  requestCursor?: string;
+  // Opaque equality token for the source authority that owns this certificate's
+  // chain (the repository binding's tab-local connection/read lifetime). Two
+  // certificates may only continue one another when their tokens are equal;
+  // never parsed, and undefined when the writer supplied none.
+  authority?: string;
 }
 
 export interface TranscriptRequestedRef {
