@@ -1739,3 +1739,246 @@ it("publishes item rows, coverage, and totals together after a held transaction 
   expect(totals.historyBytes).toBeGreaterThan(0);
   expect(totals.aggregateBytes).toBe(totals.historyBytes);
 });
+
+function newEntryCache() {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  return { cache, factory, name };
+}
+
+function itemRow(historyKey: string, entry: number) {
+  return {
+    historyKey,
+    transcriptKey: `row-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `row-${entry}`, turnId: "turn-1", type: "assistant", text: `body-${entry}` },
+  };
+}
+
+function seedPage(
+  cache: SessionEntryCache,
+  historyKey: string,
+  page: {
+    readId: string;
+    before: { entry: number; item: number } | null;
+    start: { entry: number; item: number } | null;
+    end: { entry: number; item: number } | null;
+    representedSnapshot: number;
+    serverCursor?: string;
+    boundary: string;
+  },
+) {
+  return cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "page",
+      readId: page.readId,
+      before: page.before,
+      start: page.start,
+      end: page.end,
+      representedSnapshot: page.representedSnapshot,
+      ...(page.serverCursor === undefined ? {} : { serverCursor: page.serverCursor }),
+      boundary: page.boundary,
+    },
+  });
+}
+
+it("walks provenance-linked page certificates below a boundary and refuses an uncertified gap", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-walk";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 11, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page2",
+    boundary: "page-2",
+  });
+
+  const full = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(full.stale).toBe(false);
+  expect(full.complete).toBe(true);
+  expect(full.rows.map((row) => row.position.entry)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  // The continuation cursor belongs to the oldest connected certificate, not
+  // to the newest one the query happened to anchor on.
+  expect(full.serverCursor).toBe("cursor-page2");
+
+  const gap = await cache.getOlderWindow(historyKey, { entry: 21, item: 0 }, 100);
+  expect(gap.stale).toBe(true);
+  expect(gap.rows).toEqual([]);
+  expect(gap.serverCursor).toBeUndefined();
+
+  const topOnly = await cache.getOlderWindow(historyKey, { entry: 10, item: 0 }, 100);
+  expect(topOnly.rows.map((row) => row.position.entry)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  expect(topOnly.complete).toBe(true);
+});
+
+it("truncates an older window to the limit and withholds the cursor until certified coverage is exhausted", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-limit";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-1",
+  });
+
+  const first = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 5);
+  expect(first.rows.map((row) => row.position.entry)).toEqual([16, 17, 18, 19, 20]);
+  expect(first.complete).toBe(false);
+  expect(first.serverCursor).toBeUndefined();
+
+  const second = await cache.getOlderWindow(historyKey, { entry: 16, item: 0 }, 5);
+  expect(second.rows.map((row) => row.position.entry)).toEqual([11, 12, 13, 14, 15]);
+  expect(second.complete).toBe(true);
+  expect(second.serverCursor).toBe("cursor-page1");
+
+  const zero = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 0);
+  expect(zero).toMatchObject({ rows: [], complete: false, stale: false });
+});
+
+it("distinguishes an empty terminal page, no certificate, and a zero limit", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-terminal";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 5, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 5,
+    boundary: "terminal",
+  });
+
+  const terminal = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 10);
+  expect(terminal).toMatchObject({ rows: [], complete: true, stale: false, boundary: "terminal" });
+  expect(terminal.serverCursor).toBeUndefined();
+
+  const zero = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 0);
+  expect(zero).toMatchObject({ rows: [], complete: true, stale: false });
+
+  const missing = await cache.getOlderWindow(historyKey, { entry: 9, item: 0 }, 10);
+  expect(missing).toMatchObject({ rows: [], complete: false, stale: true });
+  expect(missing.boundary).toBeUndefined();
+});
+
+it("picks the most specific page certificate deterministically when several share a boundary", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-deterministic";
+  await cache.putItems(Array.from({ length: 12 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 5, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-sibling",
+    boundary: "page-sibling",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 12, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-anchor",
+    boundary: "page-anchor",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual([11, 12]);
+  expect(window.serverCursor).toBe("cursor-anchor");
+});
+
+it("never lets a page certificate hijack the latest window selection", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-latest";
+  await cache.putItems([100, 101, 102, 103, 104, 105, 106].map((entry) => itemRow(historyKey, entry)));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-latest",
+      start: { entry: 100, item: 0 },
+      end: { entry: 106, item: 0 },
+      representedSnapshot: 106,
+      serverCursor: "read-cursor",
+      boundary: "read-latest",
+    },
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-latest",
+    before: { entry: 60, item: 0 },
+    start: { entry: 50, item: 0 },
+    end: { entry: 59, item: 0 },
+    representedSnapshot: 99_999,
+    serverCursor: "page-cursor",
+    boundary: "page-99",
+  });
+
+  const latest = await cache.getLatestWindow(historyKey, 3);
+  expect(latest).toMatchObject({ complete: true, stale: false, boundary: "read-latest", serverCursor: "read-cursor" });
+  expect(latest.rows.map((row) => row.position.entry)).toEqual([104, 105, 106]);
+
+  const explicit = await cache.getLatestWindow(historyKey, 3, "read-latest");
+  expect(explicit).toMatchObject({ boundary: "read-latest", serverCursor: "read-cursor" });
+  await expect(cache.getLatest(historyKey, 3)).resolves.toMatchObject([
+    { position: { entry: 104, item: 0 } },
+    { position: { entry: 105, item: 0 } },
+    { position: { entry: 106, item: 0 } },
+  ]);
+});
+
+it("keeps page certificates when a later read commits", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-persist";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-page1",
+    boundary: "page-keep",
+  });
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-later",
+      start: { entry: 21, item: 0 },
+      end: { entry: 24, item: 0 },
+      representedSnapshot: 24,
+      boundary: "shorter-read",
+    },
+  });
+  await expect(cache.getCoverage(historyKey, "page:read-1:page-keep")).resolves.toMatchObject({
+    kind: "page",
+    boundary: "page-keep",
+    serverCursor: "cursor-page1",
+  });
+});

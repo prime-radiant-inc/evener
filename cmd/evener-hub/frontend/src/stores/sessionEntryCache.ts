@@ -53,6 +53,20 @@ export type EntryCoverageInput =
       end: ThreadItemPosition | null;
       representedSnapshot: number;
       serverCursor?: string;
+    }
+  | {
+      // One independently persisted older-page certificate. `boundary` is the
+      // page's unique identity (rangeId `page:<readId>:<boundary>`), so a retry
+      // updates in place and a later read never erases it. `before` is the
+      // captured exclusive request boundary and is provenance only.
+      kind: "page";
+      readId: string;
+      before: ThreadItemPosition | null;
+      start: ThreadItemPosition | null;
+      end: ThreadItemPosition | null;
+      representedSnapshot: number;
+      serverCursor?: string;
+      boundary: string;
     };
 
 export interface EntryBatch {
@@ -116,6 +130,158 @@ function sessionMetadataPayload(
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
   if (!left || !right) return left ? -1 : right ? 1 : 0;
   return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+}
+
+function isPosition(value: ThreadItemPosition | null): value is ThreadItemPosition {
+  return (
+    value !== null &&
+    Number.isSafeInteger(value.entry) &&
+    value.entry >= 0 &&
+    Number.isSafeInteger(value.item) &&
+    value.item >= 0 &&
+    (value.sub === undefined || (Number.isSafeInteger(value.sub) && value.sub >= 0))
+  );
+}
+
+function positionKey(position: ThreadItemPosition): [number, number, number] {
+  return [position.entry, position.item, position.sub ?? 0];
+}
+
+function compareNullablePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  return comparePosition(left, right);
+}
+
+function positionCoveredBy(position: ThreadItemPosition, cert: TranscriptCoverageRow): boolean {
+  if (cert.start === null || cert.end === null) return false;
+  return comparePosition(cert.start, position) <= 0 && comparePosition(position, cert.end) <= 0;
+}
+
+function certsConnected(left: TranscriptCoverageRow, right: TranscriptCoverageRow): boolean {
+  if (left.rangeId === right.rangeId) return true;
+  if (
+    left.start !== null &&
+    left.end !== null &&
+    right.start !== null &&
+    right.end !== null &&
+    comparePosition(left.start, right.end) <= 0 &&
+    comparePosition(right.start, left.end) <= 0
+  ) {
+    return true;
+  }
+  // Provenance joins, not numeric adjacency: a page fetched against the
+  // boundary of another certified range continues it, and that boundary is
+  // recorded explicitly rather than inferred from neighbouring positions.
+  if (left.before !== null && left.before !== undefined && positionCoveredBy(left.before, right)) return true;
+  if (right.before !== null && right.before !== undefined && positionCoveredBy(right.before, left)) return true;
+  return false;
+}
+
+// The connected certified component anchored at `anchor`: every certificate
+// reachable through range overlap or recorded page provenance. Later reads
+// never erase a page certificate, so this walks the full certified older
+// history below the requested boundary within one query.
+function connectedCoverage(
+  ranges: readonly TranscriptCoverageRow[],
+  anchor: TranscriptCoverageRow,
+): TranscriptCoverageRow[] {
+  const component = [anchor];
+  const seen = new Set([anchor.rangeId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const candidate of ranges) {
+      if (seen.has(candidate.rangeId)) continue;
+      if (!component.some((member) => certsConnected(candidate, member))) continue;
+      component.push(candidate);
+      seen.add(candidate.rangeId);
+      added = true;
+    }
+  }
+  return component;
+}
+
+// The anchor certificate for an older-window query. Anchoring uses exact
+// position equality and range containment, never numeric adjacency: two
+// ranges whose endpoints merely follow one another numerically are not
+// stitched, so an uncertified gap stays visibly uncertified.
+function chooseOlderAnchor(
+  ranges: readonly TranscriptCoverageRow[],
+  before: ThreadItemPosition,
+): TranscriptCoverageRow | undefined {
+  const pickMostSpecific = (candidates: readonly TranscriptCoverageRow[]): TranscriptCoverageRow | undefined => {
+    let best: TranscriptCoverageRow | undefined;
+    for (const candidate of candidates) {
+      if (!best) {
+        best = candidate;
+        continue;
+      }
+      const startDiff = compareNullablePosition(candidate.start, best.start);
+      const endDiff = compareNullablePosition(candidate.end, best.end);
+      if (
+        startDiff > 0 ||
+        (startDiff === 0 && endDiff > 0) ||
+        (startDiff === 0 &&
+          endDiff === 0 &&
+          (candidate.representedSnapshot > best.representedSnapshot ||
+            (candidate.representedSnapshot === best.representedSnapshot && candidate.rangeId < best.rangeId)))
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
+  };
+  const exactPages = ranges.filter(
+    (row) =>
+      row.kind === "page" &&
+      row.before !== null &&
+      row.before !== undefined &&
+      comparePosition(row.before, before) === 0,
+  );
+  if (exactPages.length > 0) return pickMostSpecific(exactPages);
+  const containing = ranges.filter(
+    (row) =>
+      row.start !== null &&
+      row.end !== null &&
+      comparePosition(row.start, before) <= 0 &&
+      comparePosition(before, row.end) <= 0,
+  );
+  return pickMostSpecific(containing);
+}
+
+// Newest stored rows strictly below `before` accepted by `accept`, ascending.
+// Scans descending and stops at `limit` accepted rows rather than loading the
+// whole history; uncertified rows in the scan are skipped, never returned.
+function acceptedRowsDescending<T>(
+  index: IDBIndex,
+  range: IDBKeyRange,
+  limit: number,
+  accept: (row: TranscriptItemRow<T>) => boolean,
+): Promise<TranscriptItemRow<T>[]> {
+  if (limit === 0) return Promise.resolve([]);
+  const rows: TranscriptItemRow<T>[] = [];
+  return new Promise((resolve, reject) => {
+    const request = index.openCursor(range, "prev");
+    request.addEventListener("error", () => reject(request.error ?? new Error("entry cursor failed")), { once: true });
+    request.addEventListener("success", () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(rows.reverse());
+        return;
+      }
+      const { positionSub: _positionSub, ...row } = cursor.value as TranscriptItemRow<T> & { positionSub?: number };
+      if (accept(row as TranscriptItemRow<T>)) {
+        rows.push(row as TranscriptItemRow<T>);
+        if (rows.length === limit) {
+          resolve(rows.reverse());
+          return;
+        }
+      }
+      cursor.continue();
+    });
+  });
 }
 
 function itemIndexRange(
@@ -366,6 +532,40 @@ export class SessionEntryCache {
       return { result: "extended", byteDelta: encodedBytes(row) - (current ? encodedBytes(current) : 0) };
     }
 
+    if (input.kind === "page") {
+      if (input.before !== null && !isPosition(input.before)) throw new Error("invalid page request boundary");
+      if (input.start !== null && !isPosition(input.start)) throw new Error("invalid page start position");
+      if (input.end !== null && !isPosition(input.end)) throw new Error("invalid page end position");
+      const rangeId = `page:${input.readId}:${input.boundary}`;
+      const key: IDBValidKey = [historyKey, rangeId];
+      const current = await requestResult(store.get(key) as IDBRequest<TranscriptCoverageRow | undefined>);
+      const row: TranscriptCoverageRow = {
+        historyKey,
+        rangeId,
+        kind: "page",
+        start: input.start,
+        end: input.end,
+        before: input.before,
+        representedSnapshot: input.representedSnapshot,
+        ...(input.serverCursor === undefined ? {} : { serverCursor: input.serverCursor }),
+        readId: input.readId,
+        boundary: input.boundary,
+      };
+      if (
+        current &&
+        current.kind === "page" &&
+        comparePosition(current.start, row.start) === 0 &&
+        comparePosition(current.end, row.end) === 0 &&
+        comparePosition(current.before ?? null, row.before ?? null) === 0 &&
+        current.representedSnapshot === row.representedSnapshot &&
+        current.serverCursor === row.serverCursor
+      ) {
+        return { result: "unchanged", byteDelta: 0 };
+      }
+      store.put(row);
+      return { result: "extended", byteDelta: encodedBytes(row) - (current ? encodedBytes(current) : 0) };
+    }
+
     const baselineKey: IDBValidKey = [historyKey, `read:${input.readId}`];
     const baseline = await requestResult(store.get(baselineKey) as IDBRequest<TranscriptCoverageRow | undefined>);
     const suffixKey: IDBValidKey = [historyKey, `suffix:${input.readId}`];
@@ -465,7 +665,10 @@ export class SessionEntryCache {
               return;
             }
             const row = cursor.value as TranscriptCoverageRow;
-            if (!selected || row.representedSnapshot >= selected.representedSnapshot) selected = row;
+            // Page certificates are independent older ranges; they never
+            // describe the latest window and must not hijack its selection.
+            if (row.kind !== "page" && (!selected || row.representedSnapshot >= selected.representedSnapshot))
+              selected = row;
             cursor.continue();
           });
           return;
@@ -478,11 +681,19 @@ export class SessionEntryCache {
         request.addEventListener("error", () => reject(request.error ?? new Error("coverage cursor failed")), {
           once: true,
         });
-        request.addEventListener(
-          "success",
-          () => resolve((request.result?.value as TranscriptCoverageRow | undefined) ?? undefined),
-          { once: true },
-        );
+        request.addEventListener("success", () => {
+          const cursor = request.result;
+          if (!cursor) {
+            resolve(undefined);
+            return;
+          }
+          const row = cursor.value as TranscriptCoverageRow;
+          if (row.kind === "page") {
+            cursor.continue();
+            return;
+          }
+          resolve(row);
+        });
       });
       let coverage = best ? [best] : [];
       if (best?.kind === "suffix" && best.readId !== undefined) {
@@ -505,6 +716,87 @@ export class SessionEntryCache {
               ...(best.kind === "read" && best.serverCursor !== undefined ? { serverCursor: best.serverCursor } : {}),
             }
           : {}),
+      };
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
+  }
+
+  /**
+   * The newest stored rows strictly below `before`, ascending, drawn only from
+   * certificates connected to the requested boundary by exact provenance or
+   * range overlap (never numeric adjacency). Coverage authority and rows are
+   * read in one readonly transaction.
+   *
+   * `serverCursor` is returned ONLY when `complete` is true: then the connected
+   * certified coverage below the returned rows is exhausted and the cursor may
+   * continue on the network. When `complete` is false the query was
+   * limit-truncated; continue locally with `before = rows[0].position` and do
+   * not hand any cursor to the network, so certified local rows are never
+   * skipped. A requested boundary with no connected certificate returns
+   * `stale: true` rather than stitching across an uncertified gap.
+   */
+  async getOlderWindow(historyKey: string, before: ThreadItemPosition, limit: number): Promise<EntryWindow> {
+    if (!isPosition(before)) throw new RangeError("entry older window requires a real boundary position");
+    if (!Number.isInteger(limit) || limit < 0)
+      throw new RangeError("entry window limit must be a non-negative integer");
+    const database = await this.#connection.open();
+    const transaction = database.transaction([ENTRY_ITEM_STORE, ENTRY_COVERAGE_STORE], "readonly");
+    const complete = transactionCompletion(transaction);
+    try {
+      const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+      const itemIndex = transaction.objectStore(ENTRY_ITEM_STORE).index("historyKey_position");
+      const ranges = await requestResult(
+        coverageStore.getAll(this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"])) as IDBRequest<
+          TranscriptCoverageRow[]
+        >,
+      );
+      const anchor = chooseOlderAnchor(ranges, before);
+      if (!anchor) {
+        await complete;
+        return { rows: [], coverage: [], complete: false, stale: true };
+      }
+      const chain = connectedCoverage(ranges, anchor);
+      let oldestStart: ThreadItemPosition | null = null;
+      for (const cert of chain) {
+        if (cert.start === null || cert.end === null) continue;
+        if (oldestStart === null || comparePosition(cert.start, oldestStart) < 0) oldestStart = cert.start;
+      }
+      const certified = oldestStart !== null;
+      let rows: TranscriptItemRow<unknown>[] = [];
+      if (oldestStart !== null && limit > 0) {
+        const range = this.#keyRange.bound(
+          [historyKey, ...positionKey(oldestStart)],
+          [historyKey, ...positionKey(before)],
+          false,
+          true,
+        );
+        rows = await acceptedRowsDescending<unknown>(itemIndex, range, limit, (row) =>
+          chain.some((cert) => positionCoveredBy(row.position, cert)),
+        );
+      }
+      await complete;
+      const emptyChain = !certified;
+      const reachedBottom =
+        rows.length < limit ||
+        (oldestStart !== null && rows.length > 0 && comparePosition(rows[0]?.position ?? null, oldestStart) === 0);
+      const isComplete = limit === 0 ? emptyChain : emptyChain || reachedBottom;
+      const spanStart = oldestStart;
+      const frontier =
+        spanStart === null
+          ? undefined
+          : chain.find(
+              (cert) =>
+                cert.start !== null && comparePosition(cert.start, spanStart) === 0 && cert.serverCursor !== undefined,
+            );
+      return {
+        rows,
+        coverage: chain,
+        complete: isComplete,
+        stale: false,
+        boundary: anchor.boundary,
+        ...(isComplete && frontier?.serverCursor !== undefined ? { serverCursor: frontier.serverCursor } : {}),
       };
     } catch (error) {
       await complete.catch(() => {});

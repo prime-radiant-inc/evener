@@ -30,7 +30,7 @@ export interface TranscriptTurnRow {
 export interface TranscriptCoverageRow {
   historyKey: string;
   rangeId: string;
-  kind: "read" | "suffix";
+  kind: "read" | "suffix" | "page";
   start: ThreadItemPosition | null;
   end: ThreadItemPosition | null;
   representedSnapshot: number;
@@ -39,6 +39,10 @@ export interface TranscriptCoverageRow {
   continuityId?: string;
   boundary: string;
   suffixBlocked?: boolean;
+  // Recorded only for a page certificate: the exclusive request boundary the
+  // page was fetched against, the provenance link between consecutive pages.
+  // Never parsed as an opaque cursor.
+  before?: ThreadItemPosition | null;
 }
 
 export interface TranscriptRequestedRef {
