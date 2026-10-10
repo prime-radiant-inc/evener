@@ -569,11 +569,14 @@ class SessionMemoryWritesTest(unittest.TestCase):
         os.makedirs(os.path.join(self.trial, "xdg"))
         os.makedirs(os.path.join(self.trial, "sessions", "A"))
 
-    def grade(self, name, session, tools, max_writes, earlier):
-        """Grades stage name, whose root session ran the given tool calls, against a memory_writes check."""
+    def grade(self, name, session, tools, max_writes, earlier, refused=()):
+        """Grades stage name, whose root session ran the given tool calls, against a memory_writes check.
+        The calls at the indexes in refused end with an error."""
         lines = [event("SESSION_START", session=session)]
-        lines += [event("TOOL_CALL_START", session=session, tool_name=t, call_id=f"c{i}", arguments_json="{}")
-                  for i, t in enumerate(tools)]
+        for i, t in enumerate(tools):
+            lines.append(event("TOOL_CALL_START", session=session, tool_name=t, call_id=f"c{i}", arguments_json="{}"))
+            end = {"error": "invalid frontmatter"} if i in refused else {"output": "ok"}
+            lines.append(event("TOOL_CALL_END", session=session, tool_name=t, call_id=f"c{i}", **end))
         events = events_file(self, lines)
         session_info = {"work": os.path.join(self.trial, "work"), "xdg": os.path.join(self.trial, "xdg"),
                         "env": dict(os.environ), "state": os.path.join(self.trial, "sessions", "A"),
@@ -586,6 +589,10 @@ class SessionMemoryWritesTest(unittest.TestCase):
         b = self.grade("B", "s1", ["memory_edit"], 2, [a])
         c = self.grade("C", "s1", ["memory_write", "memory_delete"], 2, [a, b])
         self.assertEqual([g["checks"]["few writes"] for g in (a, b, c)], [True, True, False])
+
+    def test_a_refused_write_counts_because_it_is_a_transcript_entry(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 1, [], refused={0})
+        self.assertFalse(a["checks"]["few writes"])
 
     def test_a_fresh_session_starts_its_own_count(self):
         a = self.grade("A", "s1", ["memory_write", "memory_write"], 2, [])

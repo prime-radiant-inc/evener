@@ -134,7 +134,7 @@ The header of `memory-lab` documents every field. In short:
   - `transcripts`: a regex over every transcript, delegates included
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
-  - `memory_writes`: `max`, the most `memory_write` plus `memory_edit` calls the stage's root session may have made so far, counting this turn and every earlier stage resumed into the same session
+  - `memory_writes`: `max`, the most `memory_write` plus `memory_edit` calls the stage's root session may have made so far, counting this turn and every earlier stage resumed into the same session. Refused calls count too: the check measures transcript and context clutter, and a refused write is an entry there
 
 Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself, that its fixture and seed dirs exist, and that evener reads every seeded page's frontmatter (through `bin/memscope`; an unquoted value holding `: ` is invalid YAML, so quote it), prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 

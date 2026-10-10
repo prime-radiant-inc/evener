@@ -551,12 +551,16 @@ def grade_delegate_calls(spec, inputs):
                for name, args in inputs["delegate_calls"])
 
 
-# The memory calls that change a page and leave an entry in the transcript the partner reads.
+# The memory calls that change a page and leave an entry in the transcript the partner reads. The write
+# checks and the writes+edits table count calls, refused ones included: what they measure is how much memory
+# work clutters the transcript and context, and a refused write is an entry there too (it usually comes back
+# as a second attempt).
 MEMORY_CHANGE_TOOLS = ("memory_write", "memory_edit")
 
 
 def memory_change_count(grade):
-    """The memory writes and edits a graded stage's root session made in that stage."""
+    """The memory_write and memory_edit calls, refused ones included, a graded stage's root session made in
+    that stage."""
     return sum(grade["memory_calls"].get(t, 0) for t in MEMORY_CHANGE_TOOLS)
 
 
