@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/fuzz/oracle"
 )
 
@@ -204,11 +205,11 @@ func FuzzEgrepGrepNative(f *testing.F) {
 			t.Fatalf("grepNative capped content errored: %v", err)
 		}
 		eff := egrep_effMax(fuzzMax)
-		capped := refContent
-		if len(capped) > eff {
-			capped = append(capped[:eff:eff], grepTruncationNote(eff))
+		wantCapped := strings.Join(refContent, "\n")
+		if len(refContent) > eff {
+			wantCapped = searchresult.WithNotes(strings.Join(refContent[:eff], "\n"), grepTruncationNote(eff))
 		}
-		if wantCapped := strings.Join(capped, "\n"); gotCapped != wantCapped {
+		if gotCapped != wantCapped {
 			t.Fatalf("cap consistency broken (max=%d eff=%d)\n got =%q\n want=%q",
 				fuzzMax, eff, gotCapped, wantCapped)
 		}
@@ -216,7 +217,8 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		// Soundness spot-check independent of the reference: every emitted content
 		// line is a genuine regex hit at its claimed position.
 		if gotCapped != "" {
-			for ln := range strings.SplitSeq(strings.TrimSuffix(gotCapped, "\n"+grepTruncationNote(eff)), "\n") {
+			entries, _ := searchresult.Split(gotCapped)
+			for ln := range strings.SplitSeq(entries, "\n") {
 				egrep_verifyMatchLine(t, ln, refRe, visible)
 			}
 		}

@@ -307,7 +307,8 @@ root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
 still an error. A search result names a file whose path holds a control
 character as a JSON string, so each result stays one line. A search cut off at
-its result cap ends with a line saying so and how to see the rest. `memory_write`,
+its result cap ends, after a blank line, with a note saying so and how to see
+the rest. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an

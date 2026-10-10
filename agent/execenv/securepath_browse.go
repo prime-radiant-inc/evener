@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // This file holds the platform-independent browse logic (the writability
@@ -246,12 +248,27 @@ func grepFileSelected(name, rel string, globFilters []string, skip func(rel stri
 	return matchesAnyGrepFilter(name, globFilters)
 }
 
-// finish renders the accumulated results in the requested output mode, ending
-// with grepTruncationNote when the cap left results out.
+// finish renders the accumulated results in the requested output mode, then
+// grepTruncationNote as a note (searchresult.WithNotes) when the cap left
+// results out.
 func (a *grepAccum) finish() string {
 	out := a.render()
 	if a.truncated {
-		out += "\n" + grepTruncationNote(a.maxResults)
+		return searchresult.WithNotes(out, grepTruncationNote(a.maxResults))
+	}
+	return out
+}
+
+// finishWalk is finish for a walk that left excludedByIgnore paths out.
+// Silent-empty is the enemy (D2): when the walk found nothing, a note tells
+// "no matches among the files searched, but N were skipped by the default
+// dotfile/gitignore exclusion" from "genuinely no matches". grep has no
+// include_ignored knob, so this is informational rather than a suggestion to
+// retry.
+func (a *grepAccum) finishWalk(excludedByIgnore int) string {
+	out := a.finish()
+	if out == "" && excludedByIgnore > 0 {
+		return searchresult.WithNotes("", fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
 	}
 	return out
 }
@@ -274,8 +291,8 @@ func (a *grepAccum) render() string {
 	return strings.Join(a.results, "\n")
 }
 
-// grepTruncationNote is the last line of a grep result the cap cut short, so
-// a model never reads the results it got as all there are.
+// grepTruncationNote is the note on a grep result the cap cut short, so a
+// model never reads the results it got as all there are.
 func grepTruncationNote(maxResults int) string {
 	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
 }

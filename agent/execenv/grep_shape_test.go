@@ -113,7 +113,7 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 		}},
 		{name: "no empty line past the last one", path: "ctx/eof", pattern: "^$", ordered: true, want: []string{""}},
 		{name: "the cap counts context lines and separators", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 4, ordered: true, want: []string{
-			"1:hit 1", "2-x", "--", "4-z", grepTruncationNote(4),
+			"1:hit 1", "2-x", "--", "4-z", "", grepTruncationNote(4),
 		}},
 		{name: "output exactly at the cap has no note", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 5, ordered: true, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",

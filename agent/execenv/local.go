@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/execsupport/procgroup"
@@ -2196,7 +2197,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// context_lines a cut can fall inside a match's context.
 		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
 		if len(lines) > maxResults {
-			lines = append(lines[:maxResults], grepTruncationNote(maxResults))
+			return searchresult.WithNotes(strings.Join(lines[:maxResults], "\n"), grepTruncationNote(maxResults)), nil
 		}
 		return strings.Join(lines, "\n"), nil
 	}
@@ -2396,15 +2397,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	result := a.finish()
-	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
-	// "no matches among the files searched, but N were skipped by the
-	// default dotfile/gitignore exclusion" — grep has no include_ignored
-	// knob, so this is informational rather than a suggestion to retry.
-	if result == "" && excludedByIgnore > 0 {
-		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
-	}
-	return result, nil
+	return a.finishWalk(excludedByIgnore), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,

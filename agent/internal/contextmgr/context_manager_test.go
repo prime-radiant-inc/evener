@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -270,6 +271,44 @@ func TestSummarizeToolResult_Glob(t *testing.T) {
 	want := `[glob: "*.go" → 3 files]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestSummarizeToolResult_SearchNotes summarizes real grep and glob results
+// (agent/testdata/toolwire): a note the tool puts after a blank line is not a
+// match, and the summary keeps it, so a compacted search still says it was cut
+// short or left paths out (#4186).
+func TestSummarizeToolResult_SearchNotes(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/toolwire/calls.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []struct {
+			CallID        string `json:"callId"`
+			ArgumentsJSON string `json:"argumentsJson"`
+			Output        string `json:"output"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	args, outputs := map[string]string{}, map[string]string{}
+	for _, item := range fixture.Items {
+		if item.ArgumentsJSON != "" {
+			args[item.CallID] = item.ArgumentsJSON
+		}
+		if item.Output != "" {
+			outputs[item.CallID] = item.Output
+		}
+	}
+	for _, tc := range []struct{ call, tool, want string }{
+		{"call_grep_capped", "grep", `[grep: "package|func" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`},
+		{"call_glob_excluded", "glob", `[glob: "**/plan.md" → 0 files; 0 matches after excluding 1 dotfile/gitignored path(s); set include_ignored to include them]`},
+	} {
+		if got := summarizeToolResult(tc.tool, outputs[tc.call], json.RawMessage(args[tc.call])); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.call, got, tc.want)
+		}
 	}
 }
 
