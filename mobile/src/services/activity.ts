@@ -23,6 +23,8 @@ import {
 
 // --- view model types --------------------------------------------------------
 
+// "done" names the terminal group; its count is settled tasks (done plus
+// cancelled), the finished set the open count's complement describes.
 export type TaskGroupStatus = "active" | "open" | "done";
 
 export interface TaskGroup {
