@@ -33,8 +33,8 @@ var envelopeKinds = []struct {
 // RunStarted payload rode along on a differently-kinded event, say. The rule is
 // deliberately strict: exactly one payload, and it must be the kind's own.
 //
-// Enumerating the cross product is the point. Ten kinds against 1,024 payload
-// combinations is far more than a table of hand-written cases covers, and the
+// Enumerating the cross product is the point. Every kind against every payload
+// combination is far more than a table of hand-written cases covers, and the
 // switch in validateEventEnvelope is maintained by hand — a kind added to the
 // enum but forgotten there is exactly what this finds.
 func FuzzDelegateEventEnvelope(f *testing.F) {

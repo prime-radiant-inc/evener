@@ -1287,8 +1287,8 @@ Required event kinds are:
 - delegate_run_finished;
 - delegate_resumability_closed;
 - delegate_subtree_stop_requested;
-- delegate_subtree_stop_completed; and
-- delegate_update_posted;
+- delegate_subtree_stop_completed;
+- delegate_update_posted; and
 - delegate_delivery_acknowledged.
 
 No event kind exists for a delegate activation JobRecord, current/latest job

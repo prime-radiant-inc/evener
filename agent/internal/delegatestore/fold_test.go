@@ -1014,15 +1014,13 @@ func TestApplyUpdatePostedQueuesAheadOfTheGenerationReport(t *testing.T) {
 	)
 
 	got := state["dlg_alpha"].PendingDeliveries
+	// applyEvents numbers events from 1, so the updates are events 4 and 5.
 	want := []PendingDelivery{
 		{DeliveryID: "dlg_alpha/update/4", Generation: 1, OwnerDelegateID: "dlg_parent", Packet: TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"first question"`)}},
 		{DeliveryID: "dlg_alpha/update/5", Generation: 1, OwnerDelegateID: "dlg_parent", Packet: TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"second question"`)}},
 	}
 	if len(got) != 3 || !reflect.DeepEqual(got[:2], want) || got[2].DeliveryID != "dlg_alpha/delivery/1" {
 		t.Fatalf("pending deliveries = %#v, want both updates in order, then the report", got)
-	}
-	if UpdateDeliveryID("dlg_alpha", 4) != "dlg_alpha/update/4" {
-		t.Fatalf("UpdateDeliveryID = %q", UpdateDeliveryID("dlg_alpha", 4))
 	}
 	// An update is never the generation's outcome.
 	if latest := state["dlg_alpha"].LatestPacket; latest == nil || latest.Kind != PacketReported {
@@ -1035,7 +1033,7 @@ func TestApplyUpdatePostedIsAcknowledgedAsTheHead(t *testing.T) {
 	state := applyEvents(t,
 		createdEvent("dlg_alpha", ""),
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
-		updatePostedEvent("dlg_alpha", 1, "question"),
+		updatePostedEvent("dlg_alpha", 1, "question"), // event 3
 		Event{Kind: EventDelegateDeliveryAcknowledged, DelegateID: "dlg_alpha", DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "dlg_alpha/update/3"}},
 	)
 	if got := state["dlg_alpha"].PendingDeliveries; len(got) != 0 {

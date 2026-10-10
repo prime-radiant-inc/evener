@@ -548,11 +548,11 @@ func TestStoreRoundTripsUpdatePosted(t *testing.T) {
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
 		updatePostedEvent("dlg_alpha", 1, "which table?"),
 	})
-	if closeErr := store.Close(); err == nil {
-		err = closeErr
-	}
 	if err != nil {
 		t.Fatalf("AppendBatch: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 	events, err := ReadEvents(path)
 	if err != nil {
@@ -562,8 +562,12 @@ func TestStoreRoundTripsUpdatePosted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fold: %v", err)
 	}
-	pending := state["dlg_alpha"].PendingDeliveries
-	if len(pending) != 1 || pending[0].DeliveryID != UpdateDeliveryID("dlg_alpha", appended[2].Seq) || pending[0].Packet.Kind != PacketUpdate || string(pending[0].Packet.Message) != `"which table?"` {
-		t.Fatalf("folded pending deliveries = %#v", pending)
+	want := []PendingDelivery{{
+		DeliveryID: UpdateDeliveryID("dlg_alpha", appended[2].Seq),
+		Generation: 1,
+		Packet:     TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"which table?"`)},
+	}}
+	if got := state["dlg_alpha"].PendingDeliveries; !reflect.DeepEqual(got, want) {
+		t.Fatalf("folded pending deliveries = %#v, want %#v", got, want)
 	}
 }

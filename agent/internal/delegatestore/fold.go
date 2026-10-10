@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -489,7 +488,7 @@ func applyUpdatePosted(state State, event Event) error {
 // queues. The event's journal sequence is unique for the life of the journal,
 // so the receiver's attention id for an update never repeats.
 func UpdateDeliveryID(delegateID string, seq uint64) string {
-	return delegateID + "/update/" + strconv.FormatUint(seq, 10)
+	return fmt.Sprintf("%s/update/%d", delegateID, seq)
 }
 
 func validateEventEnvelope(event Event) error {
