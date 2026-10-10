@@ -2098,6 +2098,35 @@ test("fresh accumulator replaces duplicate rows in their original order without 
   expect(store.getSnapshot().jobs.issues).toEqual([]);
 });
 
+test("an authoritative refresh keeps two served rows that share a delegate id", async () => {
+  const client = activityClient();
+  // The real hub serves a delegate id once per child, so an authoritative page
+  // can carry two rows under one delegate id. The fresh walk must keep both as
+  // the read returned them, not collapse them to the identity key.
+  const twins = (): SessionDelegate[] => [
+    delegateFixture("shared-id"),
+    { ...delegateFixture("shared-id"), childRef: "remote:shared-id-other" },
+  ];
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: twins(),
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().delegates.rows.map((row) => row.childRef)).toEqual([
+    "remote:shared-id",
+    "remote:shared-id-other",
+  ]);
+  await store.refresh("delegates");
+  expect(store.getSnapshot().delegates.rows.map((row) => row.childRef)).toEqual([
+    "remote:shared-id",
+    "remote:shared-id-other",
+  ]);
+});
+
 test.each([false, true])(
   "explicit later-page coverage survives root recovery (queued during refresh: %s)",
   async (queued) => {

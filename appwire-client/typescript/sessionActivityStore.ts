@@ -64,7 +64,12 @@ interface ActivityPage {
 }
 interface RefreshWalk {
   advance: boolean;
-  rows: Map<string, ActivityRow>;
+  rows: ActivityRow[];
+  /** Identity -> the position of its row in `rows`. A row a *later* page
+   * re-serves replaces that position, preserving first-seen order; the set is
+   * never consulted for a duplicate within one served page, so two rows an
+   * authoritative read returned under the same identity both survive. */
+  index: Map<string, number>;
   issues: readonly SessionActivityIssue[];
 }
 interface ResourceRead {
@@ -401,7 +406,7 @@ export class SessionActivityStore {
         // A stale cursor/reconnect restarts the fresh walk, not its original
         // displayed boundary: provisional rows must not extend that boundary.
         read.boundary ??= last ? rowIdentity(resource, last) : undefined;
-        read.refresh = read.boundary ? { advance: false, rows: new Map(), issues: [] } : null;
+        read.refresh = read.boundary ? { advance: false, rows: [], index: new Map(), issues: [] } : null;
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
@@ -482,9 +487,21 @@ export class SessionActivityStore {
           let reachedBoundary = false;
           if (walk) {
             reachedBoundary = page.page.complete;
+            // A served page is authoritative: keep every row it returned,
+            // including two rows that share a delegate id. Only a row a later
+            // page re-serves replaces its earlier occurrence, in first-seen
+            // order; `pageSeen` keeps an intra-page duplicate from aliasing.
+            const pageSeen = new Set<string>();
             for (const row of page.rows) {
               const identity = rowIdentity(resource, row);
-              walk.rows.set(identity, row);
+              const at = pageSeen.has(identity) ? undefined : walk.index.get(identity);
+              if (at !== undefined) {
+                walk.rows[at] = row;
+              } else {
+                if (!walk.index.has(identity)) walk.index.set(identity, walk.rows.length);
+                walk.rows.push(row);
+              }
+              pageSeen.add(identity);
               if (identity === read.boundary) reachedBoundary = true;
             }
             walk.issues = mergeIssues(walk.issues, page.page.issues);
@@ -496,7 +513,7 @@ export class SessionActivityStore {
           let rows: readonly ActivityRow[];
           let reconciled = false;
           if (walk && reachedBoundary && freshIssues.length === 0) {
-            rows = [...walk.rows.values()];
+            rows = [...walk.rows];
             reconciled = true;
           } else if (!walk && root && freshIssues.length === 0) {
             rows = page.rows;

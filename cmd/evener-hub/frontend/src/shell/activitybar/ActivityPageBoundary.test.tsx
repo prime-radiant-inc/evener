@@ -1,8 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
-
-afterEach(cleanup);
 
 const base = {
   resource: "delegates" as const,
