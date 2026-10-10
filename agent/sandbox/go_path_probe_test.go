@@ -14,6 +14,7 @@ type goPathProbeSystem struct {
 	stubProbeSystem
 	configDir string
 	files     map[string]string
+	refuse    map[string]bool
 }
 
 func (s goPathProbeSystem) userConfigDir() (string, error) {
@@ -24,6 +25,9 @@ func (s goPathProbeSystem) userConfigDir() (string, error) {
 }
 
 func (s goPathProbeSystem) readFile(path string) ([]byte, error) {
+	if s.refuse[path] {
+		return nil, errors.New("not a regular file of at most 64 KiB")
+	}
 	if data, ok := s.files[path]; ok {
 		return []byte(data), nil
 	}
@@ -83,5 +87,19 @@ func TestGoPathEntriesApplyGosDefault(t *testing.T) {
 				t.Errorf("goPathEntries = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A go env file that exists but is refused (not a small regular file) leaves the
+// session unable to know go's settings, which the probe records.
+func TestProbeRecordsAnUnreadableGoEnvFile(t *testing.T) {
+	t.Parallel()
+	const config = "/home/u/.config"
+	refused := goPathProbeSystem{configDir: config, files: map[string]string{}, refuse: map[string]bool{filepath.Join(config, "go", "env"): true}}
+	if !goEnvFileUnreadable(refused) {
+		t.Error("a refused go env file must be recorded as unreadable")
+	}
+	if goEnvFileUnreadable(goPathProbeSystem{configDir: config}) {
+		t.Error("an absent go env file is not unreadable")
 	}
 }

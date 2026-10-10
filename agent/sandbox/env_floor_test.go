@@ -122,10 +122,10 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 }
 
 func TestEnvFloorKeepsRealCacheUnderOverlay(t *testing.T) {
-	// With an overlay cache strategy the real cache paths stay (bwrap overlays
-	// them read-real/write-private); the floor must not redirect the env.
+	// With an overlay cache strategy the real cache paths the overlay serves stay
+	// (bwrap overlays them read-real/write-private); the floor must not redirect.
 	in := []string{"GOCACHE=/home/u/.cache/go-build"}
-	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay}, "/tmp/s")
+	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache"}}, "/tmp/s")
 	if v, _ := envValue(out, "GOCACHE"); v != "/home/u/.cache/go-build" {
 		t.Errorf("overlay strategy must not redirect GOCACHE, got %q", v)
 	}
@@ -240,6 +240,36 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 	} {
 		if got, _ := envValue(out, name); got != want {
 			t.Errorf("%s = %q, want unchanged %q", name, got, want)
+		}
+	}
+}
+
+// Under the overlay strategy a Go cache variable the overlay does not serve (its
+// root was dropped, say inside the worktree) would stay persistently writable,
+// so it goes to the session scratch like the session-private strategy's. One the
+// overlay serves keeps its real path.
+func TestEnvFloorRedirectsGoCacheVarsTheOverlayDoesNotServe(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/go/pkg", "/home/u/.cache"}}
+	out := ApplyEnvFloor([]string{"GOMODCACHE=/work/project/.mod", "GOCACHE=/home/u/.cache/go-build"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("an unserved GOMODCACHE must move into the session scratch, got %q", v)
+	}
+	if v, _ := envValue(out, "GOCACHE"); v != "/home/u/.cache/go-build" {
+		t.Errorf("a served GOCACHE must keep its real path, got %q", v)
+	}
+}
+
+// When the go env file exists but could not be read at session start, the
+// overlay cannot know where go will write, so the Go caches go to the session
+// scratch instead.
+func TestEnvFloorRedirectsGoCachesWhenTheGoEnvFileWasUnreadable(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/go/pkg"}, resolveHost: HostFacts{GoEnvUnreadable: true}}
+	out := ApplyEnvFloor(nil, policy, tmp)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if v, ok := envValue(out, name); !ok || !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("%s must move into the session scratch, got %q (ok=%v)", name, v, ok)
 		}
 	}
 }

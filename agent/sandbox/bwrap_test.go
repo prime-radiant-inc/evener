@@ -246,6 +246,26 @@ func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 	}
 }
 
+// A custom GOPATH's pkg tree (its module cache and checksum database) gets the
+// read-real/write-private overlay, not the default $HOME/go/pkg (#4188).
+func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
+	home := t.TempDir()
+	goPkg := filepath.Join(t.TempDir(), "pkg")
+	if err := os.MkdirAll(goPkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoPath: filepath.Dir(goPkg)}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, "/tmp/s", cwd); !hasSeq(args, "--overlay-src", goPkg, "--tmp-overlay", goPkg) {
+		t.Errorf("expected a read-real/write-private overlay for the GOPATH pkg %q: %v", goPkg, args)
+	}
+}
+
 func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
 	// The default fixture host lacks overlay → session-private cache → no overlay
 	// mounts in the argv (the env floor redirects the cache vars instead).
@@ -444,5 +464,52 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 				t.Errorf("the session's own scratch must be bound writable after the tree: %v", args)
 			}
 		})
+	}
+}
+
+// A configured Go cache directory that does not exist yet has no lower to
+// overlay, and bwrap cannot create its mount target in the read-only tree. The
+// wrapper creates it (empty, as the go command itself would) so it is overlaid
+// rather than left read-only under a GOMODCACHE still pointing at it.
+func TestNewWrapperCreatesAMissingCacheRootSoItIsOverlaid(t *testing.T) {
+	home := t.TempDir()
+	modCache := filepath.Join(t.TempDir(), "absent", "modcache")
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoModCache: modCache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	if fi, err := os.Stat(modCache); err != nil || !fi.IsDir() {
+		t.Fatalf("the missing cache root must be created: %v", err)
+	}
+	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); !hasSeq(args, "--overlay-src", modCache, "--tmp-overlay", modCache) {
+		t.Errorf("the created cache root must be overlaid: %v", args)
+	}
+}
+
+// A configured cache "root" that is a file cannot be overlaid; overlayfs would
+// reject it and abort the sandbox, so it is skipped (and never created over).
+func TestBuildBwrapArgvSkipsANonDirectoryCacheRoot(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "gocache-is-a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: file}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); slices.Contains(args, file) {
+		t.Errorf("a non-directory cache root must not be overlaid: %v", args)
 	}
 }

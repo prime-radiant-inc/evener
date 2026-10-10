@@ -386,26 +386,74 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 	}
 }
 
-// TestCacheRootsCoverDefaultGoModCache verifies the overlay strategy's coverage
-// claim for GOMODCACHE: cacheRootsFor grants a FIXED $HOME/go/pkg (it does not
-// read the actual GOPATH), so overlay coverage of GOMODCACHE holds only when
-// GOPATH is at its default ($HOME/go, so GOMODCACHE defaults to
-// $HOME/go/pkg/mod). This pins that the default case is covered; a custom
-// GOPATH under the overlay strategy is a known, unaddressed residual (Linux-only
-// — this host's Seatbelt backend always uses CacheSessionPrivate, which
-// isRedirectedCacheVar now covers unconditionally, so the residual has no
-// exposure on macOS or in restricted mode on any host).
-func TestCacheRootsCoverDefaultGoModCache(t *testing.T) {
+// The overlay serves Go's cache roots where the go command will write: pkg under
+// the first GOPATH entry (the default module cache and the checksum database),
+// plus a GOMODCACHE or GOCACHE configured elsewhere, so a custom location is
+// writable-private rather than read-only (#4188). Relative values, which the go
+// command refuses, contribute nothing.
+func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 	home := "/home/tester"
-	defaultGoModCache := filepath.Join(home, "go", "pkg", "mod")
-	roots := cacheRootsFor(ModeWorkspaceWrite, home)
-	if !isUnderAnyRoot(defaultGoModCache, roots) {
-		t.Errorf("default-GOPATH GOMODCACHE %q must fall under a cache root, got roots %v", defaultGoModCache, roots)
+	sep := string(filepath.ListSeparator)
+	for _, tc := range []struct {
+		name string
+		host HostFacts
+		want []string
+	}{
+		// Go's default stays served too: a spawn whose environment does not carry
+		// the custom GOPATH (or the GOENV that set it) falls back to it.
+		{"custom GOPATH", HostFacts{Home: home, GoPath: "/custom/gopath" + sep + "/other"}, []string{"/custom/gopath/pkg", filepath.Join(home, "go", "pkg")}},
+		{"default GOPATH", HostFacts{Home: home}, []string{filepath.Join(home, "go", "pkg")}},
+		{"relative GOPATH", HostFacts{Home: home, GoPath: "relative/gopath"}, []string{filepath.Join(home, "go", "pkg")}},
+		{"explicit caches", HostFacts{Home: home, GoModCache: "/custom/modcache", GoCache: "/custom/gocache"}, []string{"/custom/modcache", "/custom/gocache"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roots := cacheRootsFor(ModeWorkspaceWrite, tc.host, "/work/project")
+			for _, want := range tc.want {
+				if !slices.Contains(roots, want) {
+					t.Errorf("cache roots %v must include %q", roots, want)
+				}
+			}
+		})
 	}
+	// An explicit GOPATH equal to Go's default is served once, not overlaid twice.
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoPath: filepath.Join(home, "go")}, "/work/project"); len(roots) != len(dedupeRoots(roots)) {
+		t.Errorf("cache roots must not repeat: %v", roots)
+	}
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}, "/work/project"); slices.Contains(roots, "relative") {
+		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)
+	}
+}
 
-	customGoModCache := "/custom/gopath/pkg/mod"
-	if isUnderAnyRoot(customGoModCache, roots) {
-		t.Errorf("custom-GOPATH GOMODCACHE %q unexpectedly fell under a cache root %v — the known residual has been closed elsewhere; update this test's comment", customGoModCache, roots)
+// Go's default GOCACHE is under $XDG_CACHE_HOME when that is set, so the
+// overlay serves $XDG_CACHE_HOME in place of ~/.cache.
+func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
+	if !slices.Contains(roots, "/xdg/cache") || slices.Contains(roots, "/home/tester/.cache") {
+		t.Errorf("cache roots %v must serve XDG_CACHE_HOME in place of ~/.cache", roots)
+	}
+}
+
+// An overlay over a directory that holds the worktree would hide the real
+// worktree behind a discarded upper layer, so edits would vanish at session end.
+// A cache root at, above or inside the worktree (or at or above home, or a
+// temp root) is dropped.
+func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
+	const worktree = "/home/tester/src/project"
+	for _, host := range []HostFacts{
+		{Home: "/home/tester", GoModCache: "/home/tester/src"},
+		{Home: "/home/tester", GoCache: worktree},
+		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
+		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
+		// A cache inside the worktree is workspace the session writes for good;
+		// an overlay there would discard those writes too.
+		{Home: "/home/tester", GoModCache: worktree + "/.cache/mod"},
+		{Home: "/home/tester", GoPath: worktree + "/gopath"},
+	} {
+		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
+			if pathUnder(worktree, r) || pathUnder(r, worktree) || r == host.Home {
+				t.Errorf("cache root %q covers the worktree %q or home (host %+v)", r, worktree, host)
+			}
+		}
 	}
 }
 
@@ -633,5 +681,22 @@ func TestWriteBlockedOffGrantsSessionScratch(t *testing.T) {
 	// layer, so a scratch grant would be a meaningless (and misleading) root.
 	if plain := mustResolve(t, SandboxPolicy{Mode: ModeOff}, bareLinuxHost(), dir).WithSessionScratch(scratch); len(plain.FileTool.WriteRoots) != 0 {
 		t.Fatalf("plain off gained a file-tool write root: %v", plain.FileTool.WriteRoots)
+	}
+}
+
+// A cache root spelled through a symlink that resolves inside the worktree is
+// dropped too: the overlay would land on worktree data all the same.
+func TestCacheRootsNeverCoverTheWorktreeThroughASymlink(t *testing.T) {
+	worktree := clean(t.TempDir())
+	link := filepath.Join(clean(t.TempDir()), "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "mod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: filepath.Join(link, "mod")}, worktree)
+	if slices.Contains(roots, filepath.Join(link, "mod")) {
+		t.Errorf("a cache root resolving inside the worktree must be dropped: %v", roots)
 	}
 }

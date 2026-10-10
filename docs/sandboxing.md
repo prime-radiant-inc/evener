@@ -396,29 +396,37 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, `~/go/pkg`,
-  `~/.npm`, `~/.cargo`, plus any you add) as a **read-real, write-private overlay**
-  where the host's bubblewrap supports it: builds read warm from the real cache, but
-  writes land in a per-session tmpfs that is discarded at session end.
+- `workspace-write` serves the language cache roots (`~/.cache`, or
+  `$XDG_CACHE_HOME` when set, `~/.npm`, `~/.cargo`, the `pkg` directory of your
+  first GOPATH entry and of Go's `$HOME/go` default, and a `GOMODCACHE` or
+  `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where the
+  host's bubblewrap supports it: builds read warm from the real cache, but writes
+  land in a per-session tmpfs that is discarded at session end. The Go settings
+  are the host's, resolved once at session start (see the GOPATH note below). A
+  root at, above or inside the worktree, at or above your home directory or a
+  temp root, or one that is not a directory, is never overlaid; a root that does
+  not exist yet is created empty at session start (as the go command itself
+  would) so it can be. A `GOCACHE` or `GOMODCACHE` the overlay does not serve is
+  redirected into the session scratch instead, and so are all three Go settings
+  when the go env file exists but cannot be read, since the overlay then cannot
+  know where go will write.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
-  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
-  granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
-  session scratch as its first entry too: Go records the checksum database's tree
-  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH stays after it, so GOPATH-mode builds still find the packages already
-  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
-  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
-  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
-  `$HOME/go`). Evener reads that file rather than running `go env`, which would
-  run whichever go is first on PATH, and any toolchain it downloads, before the
-  sandbox exists. A spawn whose environment gives go no way to find those
-  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
-  does `restricted`, which cannot read it.
+  redirected alongside GOCACHE, because an ambient value can name any directory.
+  `GOPATH` gets the session scratch as its first entry too: Go records the checksum
+  database's tree heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE`
+  says, so a cold module or toolchain download needs it writable. In
+  `workspace-write` the ambient GOPATH stays after it, so GOPATH-mode builds still
+  find the packages already there: the spawn's own `$GOPATH`, else the host's
+  resolved once at session start the way the go command resolves it (`$GOPATH`,
+  then a `go env -w` setting in the go env file `$GOENV` names,
+  `<user config dir>/go/env` by default, then `$HOME/go`). Evener reads that file
+  rather than running `go env`, which would run whichever go is first on PATH, and
+  any toolchain it downloads, before the sandbox exists. A spawn whose environment
+  gives go no way to find those settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`)
+  gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
