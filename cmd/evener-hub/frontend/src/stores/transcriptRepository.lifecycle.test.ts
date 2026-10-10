@@ -395,6 +395,14 @@ test("a live owner's registered demand prefers its history for disk retention", 
     incarnation: "i",
   });
   const keyFor = (sessionId: string) => entryHistoryKey(identityFor(sessionId));
+  const metadataFor = (sessionId: string, stamp: number) => ({
+    historyKey: keyFor(sessionId),
+    requestedRefs: [{ clientId: "c", ref: `local:${sessionId}` }],
+    resolvedIdentity: identityFor(sessionId),
+    savedAt: stamp,
+    accessedAt: stamp,
+    formatVersion: 3,
+  });
   const rowsFor = (historyKeyValue: string) =>
     [1, 2].map((entry) => ({
       historyKey: historyKeyValue,
@@ -407,6 +415,11 @@ test("a live owner's registered demand prefers its history for disk retention", 
   const keyA = keyFor("a");
   const keyB = keyFor("b");
   const keyC = keyFor("c");
+  // B is the OLDEST identity (smallest access stamp), so plain LRU would evict
+  // B first: only a real registered preference can keep B and take A.
+  const metaA = metadataFor("a", 2_000);
+  const metaB = metadataFor("b", 1_000);
+  const metaC = metadataFor("c", 2_000);
   const measure = new SessionEntryCache({
     indexedDB: factory,
     keyRange: IDBKeyRange,
@@ -415,15 +428,17 @@ test("a live owner's registered demand prefers its history for disk retention", 
     now: () => 1_000,
   });
   try {
-    await measure.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA) });
+    await measure.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA), sessionMetadata: metaA });
+    await measure.commitBatch({ historyKey: keyB, clearEpoch: 0, items: rowsFor(keyB), sessionMetadata: metaB });
     const bytesA = (await measure.getByteTotals(keyA)).historyBytes;
+    const bytesB = (await measure.getByteTotals(keyB)).historyBytes;
     measure.close();
 
     const cache = new SessionEntryCache({
       indexedDB: factory,
       keyRange: IDBKeyRange,
       databaseName: name,
-      maxBytes: bytesA * 2 + 1,
+      maxBytes: bytesA + bytesB,
       ttlMs: Number.MAX_SAFE_INTEGER,
       now: () => 1_000,
     });
@@ -438,10 +453,10 @@ test("a live owner's registered demand prefers its history for disk retention", 
       lifetime: 1,
       isPreferred: () => true,
     });
-    await cache.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA) });
-    await cache.commitBatch({ historyKey: keyB, clearEpoch: 0, items: rowsFor(keyB) });
+    await cache.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA), sessionMetadata: metaA });
+    await cache.commitBatch({ historyKey: keyB, clearEpoch: 0, items: rowsFor(keyB), sessionMetadata: metaB });
     // A third identity forces exactly one eviction.
-    await cache.commitBatch({ historyKey: keyC, clearEpoch: 0, items: rowsFor(keyC) });
+    await cache.commitBatch({ historyKey: keyC, clearEpoch: 0, items: rowsFor(keyC), sessionMetadata: metaC });
 
     await expect(cache.getLatest(keyB, 10)).resolves.toMatchObject([
       { transcriptKey: "row-1" },
