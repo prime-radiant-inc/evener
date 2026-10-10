@@ -416,10 +416,11 @@ test("desktop delegate rows build six nested edges beside the mounted center and
       expect(inspector.id).toBe(inspectorId);
       expect(inspector.slot).toBe("secondary");
       await screen.findByText(`${child} real content`);
-      // The first drill's immediate parent is the mounted origin itself, so
-      // it collapses to a spine; deeper drills keep two readable columns.
+      // The mounted origin root never renders: the first drill shows only the
+      // drilled leaf, level 2 keeps the readable pair with no spines, and
+      // deeper levels collapse the earlier non-origin ancestors to spines.
       expect(screen.getAllByTestId("cascade-column")).toHaveLength(index === 0 ? 1 : 2);
-      expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(index === 0 ? 1 : index);
+      expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(Math.max(0, index - 1));
       expect(currentSessionRef(workspaceStore.getState())).toBe(child);
       expect(
         within(conversation.getByTestId("statusbar")).getByRole("button", {
@@ -433,7 +434,7 @@ test("desktop delegate rows build six nested edges beside the mounted center and
         }),
       ).toBeTruthy();
     }
-    expect(screen.getAllByTestId("cascade-spine")).toHaveLength(5);
+    expect(screen.getAllByTestId("cascade-spine")).toHaveLength(4);
     expect(workspaceStore.getState().panes).toHaveLength(2);
     expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
     const parent = screen.getAllByTestId("cascade-column")[0];
@@ -456,15 +457,19 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(currentSessionRef(workspaceStore.getState())).toBe("remote:child");
     fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-remote:child");
-    fireEvent.click(sidebar.getByRole("button", { name: "root work" }));
-    await sidebar.findByRole("button", { name: /Open remote:child/ });
-    expect(activitySidebarStore.getState().tab).toBe("agents");
-    fireEvent.click(sidebar.getByRole("button", { name: /Open remote:child/ }));
-    await sidebar.findByText("wire-remote:child");
+    // The origin root never renders in the pane, so its crumb is not offered
+    // and the cascade cannot pop to it: the drilled branch stays selected.
+    expect(sidebar.queryByRole("button", { name: "root work" })).toBeNull();
     expect(currentSessionRef(workspaceStore.getState())).toBe("remote:child");
     expect(activitySidebarStore.getState().tab).toBe("about");
-    fireEvent.click(sidebar.getByRole("button", { name: "root work" }));
-    await sidebar.findByRole("button", { name: /Open remote:child/ });
+    // Re-drilling from the retained Agents view keeps the per-scope view
+    // state working across the ref change.
+    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
+    fireEvent.click(await sidebar.findByRole("button", { name: /Open remote:grandchild/ }));
+    await waitFor(() => expect(currentSessionRef(workspaceStore.getState())).toBe("remote:grandchild"));
+    expect(activitySidebarStore.getState().tab).toBe("agents");
+    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    await sidebar.findByText("wire-remote:grandchild");
     const returnButton = screen.getByRole("button", { name: "Return to previous view" });
     returnButton.focus();
     await act(async () => fireEvent.click(returnButton));

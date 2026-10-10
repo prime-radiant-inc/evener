@@ -88,6 +88,14 @@
   padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
 }
 
+/* A pane that owns its scrolling internally (the cascade's columns) renders
+ * flush: the padded scroll allocation would only add a second, unit-level
+ * scroll surface around it. */
+.bodyNoScroll {
+  padding: 0;
+  overflow: hidden;
+}
+
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-5);

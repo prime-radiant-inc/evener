@@ -133,10 +133,19 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
   return { ancestryKnown: true, scopes };
 }
 
-/** The index of the first readable scope in the cascade track. The leaf and
- * its immediate parent are readable, except when that parent is the cascade's
- * live origin conversation: its pane is already on screen, so the cascade does
- * not repeat it and the leaf stays the only readable scope. */
+/** The scopes rendered in the cascade track. A live origin conversation never
+ * renders — its pane is already on screen — so both its readable column and
+ * its spine are removed from the track. Without a live origin every scope
+ * renders. */
+export function renderedScopes(scopes: CascadeScope[], originRef: string | null): CascadeScope[] {
+  if (originRef === null) return scopes;
+  return scopes.filter((scope) => scope.requestedRef !== originRef);
+}
+
+/** The index of the first readable scope in the cascade track, over the full
+ * path. The leaf and its immediate parent are readable, except when that
+ * parent is the cascade's live origin conversation: it never renders, so the
+ * leaf stays the only readable scope. */
 export function firstReadableIndex(scopes: CascadeScope[], originRef: string | null): number {
   const parent = scopes[scopes.length - 2];
   const duplicateOrigin = originRef !== null && parent !== undefined && parent.requestedRef === originRef;

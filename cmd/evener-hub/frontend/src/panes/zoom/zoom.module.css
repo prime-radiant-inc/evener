@@ -7,21 +7,17 @@
   overflow: hidden;
 }
 
-.path {
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--space-2);
-  overflow-x: auto;
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--edge);
-}
-
 .hint {
   flex: 0 0 auto;
   margin: 0;
   padding: var(--space-2) var(--space-3);
   color: var(--ink-low);
   font-size: var(--font-size-caption);
+}
+
+.returnRow {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
 }
 
 .track {
@@ -113,7 +109,10 @@
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  /* Each column's transcript viewport scrolls internally; the column's
+   * header above and activity controls below stay fixed within the column. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .spine {
@@ -161,7 +160,7 @@
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--edge);
+  border-top: 1px solid var(--edge);
 }
 
 .activityChip {

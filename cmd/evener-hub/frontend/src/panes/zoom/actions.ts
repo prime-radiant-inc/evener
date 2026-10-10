@@ -130,6 +130,10 @@ export function popAgentCascade(paneId: string, ref: string): void {
   if (!pane) return;
   const params = intentFor(pane);
   if (!params) return;
+  // The origin conversation never renders in the pane, so no surface can pop
+  // the cascade to it: selecting it would leave an empty track.
+  const origin = params.inspection ? cascadeOrigin(pane) : null;
+  if (origin && refParam(origin.params) === ref) return;
   const next = popZoomIntent(params, ref, pathFor(params));
   if (next !== params) updateIntent(pane, next, true);
 }

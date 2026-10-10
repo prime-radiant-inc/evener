@@ -27,26 +27,23 @@ import {
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
 import { cascadeOrigin } from "./inspectionOrigin";
-import { type CascadeScope, deriveCascadePath, firstReadableIndex, type SessionZoomParams } from "./intent";
+import {
+  type CascadeScope,
+  deriveCascadePath,
+  firstReadableIndex,
+  renderedScopes,
+  type SessionZoomParams,
+} from "./intent";
 import styles from "./zoom.module.css";
 
 const CLASS = {
   body: requireClass(styles.body, "zoom.module.css", "body"),
-  path: requireClass(styles.path, "zoom.module.css", "path"),
   hint: requireClass(styles.hint, "zoom.module.css", "hint"),
+  returnRow: requireClass(styles.returnRow, "zoom.module.css", "returnRow"),
   track: requireClass(styles.track, "zoom.module.css", "track"),
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
 };
-
-function CascadePathButton({ paneId, scope }: { paneId: string; scope: CascadeScope }) {
-  const title = useScopeTitle(scope.requestedRef, scope.title);
-  return (
-    <Button variant="quiet" size="xs" onClick={() => popAgentCascade(paneId, scope.requestedRef)}>
-      {title}
-    </Button>
-  );
-}
 
 function ScopeConversation({
   pane,
@@ -54,6 +51,7 @@ function ScopeConversation({
   scope,
   readable,
   leaf,
+  only,
   mobile,
   userTransition,
 }: {
@@ -62,6 +60,7 @@ function ScopeConversation({
   scope: CascadeScope;
   readable: boolean;
   leaf: boolean;
+  only: boolean;
   mobile: boolean;
   userTransition: boolean;
 }) {
@@ -99,7 +98,9 @@ function ScopeConversation({
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
-  const width = mobile ? "100%" : desktopWidth;
+  // A lone column fills the pane so the first drill reads as the subagent's
+  // own conversation; deeper shapes keep the fixed column and spine widths.
+  const width = mobile || only ? "100%" : desktopWidth;
   return (
     <m.section
       className={readable ? CLASS.column : CLASS.spine}
@@ -142,6 +143,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const reducedMotion = useReducedMotion();
   const track = useRef<HTMLDivElement>(null);
   const userTransition = params !== undefined && hasCascadeUserTransition(params);
+  const selectedTitle = useScopeTitle(params?.ref ?? "", params?.ref ?? "");
   // A drill or pop reveals the leaf at the track's right end, and the track
   // keeps to its end while it is there: the pane can narrow just after (a
   // sidebar opening alongside it on a narrow desktop), and columns keep
@@ -191,12 +193,17 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   if (!pane || !params) return null;
   const lifetime = conversationPaneLifetime(pane);
   const path = deriveCascadePath(params, snapshot?.context ?? null);
-  const scopes = mobile ? path.scopes.slice(-1) : path.scopes;
-  // Don't repeat the origin conversation: the inspector was opened from it,
-  // so its pane is already on screen. While that origin pane stays live,
-  // firstReadableIndex collapses the immediate parent that would duplicate it.
+  // The origin conversation never renders in the pane — no column, no spine —
+  // while its pane stays live beside the cascade. Closing it retires the
+  // association and the full path renders again.
   const origin = cascadeOrigin(pane);
-  const firstReadable = firstReadableIndex(scopes, origin && refParam(origin.params));
+  const originRef = origin ? refParam(origin.params) : null;
+  const renderedPath = renderedScopes(path.scopes, originRef);
+  const scopes = mobile ? renderedPath.slice(-1) : renderedPath;
+  // The readable set stays over the full path: the leaf and its immediate
+  // parent, with the parent dropped when it is the removed origin.
+  const firstReadable = firstReadableIndex(path.scopes, originRef);
+  const readableRefs = new Set(path.scopes.slice(firstReadable).map((scope) => scope.requestedRef));
   const returnAction = (
     <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
       Return to previous view
@@ -206,9 +213,10 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
     <PaneScaffold
       paneId={paneId}
       focused={focused}
-      title="Agent cascade"
+      mobileTitle={selectedTitle}
       publishTabTitle={false}
       scaffoldMarker="cascade"
+      bodyScroll={false}
       actions={mobile ? undefined : returnAction}
       edgeFooter={
         <StatusBar
@@ -216,7 +224,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
           paneId={paneId}
           leading={
             <ScopeCrumbs
-              path={path.scopes.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
+              path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
               onNavigate={(ref) => popAgentCascade(paneId, ref)}
             />
           }
@@ -224,12 +232,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       }
     >
       <div className={CLASS.body}>
-        {mobile && returnAction}
-        <nav className={CLASS.path} aria-label="Agent path">
-          {path.scopes.map((scope) => (
-            <CascadePathButton key={scope.requestedRef} paneId={paneId} scope={scope} />
-          ))}
-        </nav>
+        {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
         <div ref={track} className={CLASS.track}>
           {scopes.map((scope, index) => (
@@ -238,8 +241,9 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
               pane={pane}
               lifetime={lifetime}
               scope={scope}
-              readable={index >= firstReadable}
+              readable={readableRefs.has(scope.requestedRef)}
               leaf={index === scopes.length - 1}
+              only={scopes.length === 1}
               mobile={mobile}
               userTransition={userTransition && reducedMotion !== true}
             />
