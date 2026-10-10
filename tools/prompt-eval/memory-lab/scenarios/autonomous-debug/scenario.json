@@ -1,0 +1,49 @@
+{
+  "arms": [
+    "on"
+  ],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "TestTotal is failing and receipts are printing the wrong totals. Please hand this to a subagent rather than working on it yourself: it should find and fix the cause, get the tests passing, add an entry to the changelog with scripts/changelog.sh \"Fix receipt totals\", and commit. When it reports back, tell me what it found.",
+      "before": "if sed --version >/dev/null 2>&1; then echo 'autonomous-debug needs BSD sed (macOS): with GNU sed, scripts/changelog.sh works as written, so there is no environment quirk to hit'; exit 1; fi",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "held-out ParsePrice",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage receipts\n\nimport \"testing\"\n\nfunc TestHeldoutParsePrice(t *testing.T) {\n\tfor in, want := range map[string]int{\"2.5\": 250, \"12.05\": 1205, \"3\": 300, \"0.40\": 40} {\n\t\tif got, err := ParsePrice(in); err != nil || got != want {\n\t\t\tt.Errorf(\"ParsePrice(%q) = %d, %v; want %d\", in, got, err, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        },
+        {
+          "name": "changelog entry",
+          "run": "grep -q 'Fix receipt totals' CHANGELOG.md"
+        },
+        {
+          "name": "at most 1 memory page",
+          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
+        }
+      ],
+      "trace": [
+        {
+          "name": "delegated",
+          "tool": "delegate",
+          "regex": "."
+        }
+      ],
+      "memory": [
+        {
+          "name": "no page restating the code",
+          "absent": true,
+          "regex": "(?i)ParsePrice|fraction|decimal|zero.?pad|cents? digits?|strconv"
+        },
+        {
+          "name": "no generalized lesson page",
+          "absent": true,
+          "regex": "(?i)lesson|root cause|symptom|always (check|verify|trace|test)|don'?t assume|before (blaming|assuming)|off.by"
+        }
+      ]
+    }
+  ]
+}
