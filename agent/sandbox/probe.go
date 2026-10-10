@@ -120,6 +120,10 @@ type HostFacts struct {
 	// session scratch.
 	GoPath string
 
+	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
+	// so the env floor can tell whether a spawn's go would read the same one.
+	GoEnvFile string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -258,6 +262,7 @@ func probeHost(system probeSystem) HostFacts {
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
+	facts.GoEnvFile = goEnvFile(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -337,16 +342,9 @@ func goEnvValue(system probeSystem, name string) string {
 	if value := system.getenv(name); value != "" {
 		return value
 	}
-	file := system.getenv(envvars.GoEnv.Name)
-	switch file {
-	case "off":
+	file := goEnvFile(system)
+	if file == "" {
 		return ""
-	case "":
-		dir, err := system.userConfigDir()
-		if err != nil || dir == "" {
-			return ""
-		}
-		file = filepath.Join(dir, "go", "env")
 	}
 	data, err := system.readFile(file)
 	if err != nil {
@@ -359,6 +357,23 @@ func goEnvValue(system probeSystem, name string) string {
 		}
 	}
 	return value
+}
+
+// goEnvFile returns the go env file the go command reads: $GOENV, or
+// <user config dir>/go/env, or "" when GOENV=off or the directory is unknown.
+func goEnvFile(system probeSystem) string {
+	file := system.getenv(envvars.GoEnv.Name)
+	switch file {
+	case "off":
+		return ""
+	case "":
+		dir, err := system.userConfigDir()
+		if err != nil || dir == "" {
+			return ""
+		}
+		file = filepath.Join(dir, "go", "env")
+	}
+	return file
 }
 
 // goPathEntries returns the GOPATH entries the go command uses on this host: the

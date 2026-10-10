@@ -88,21 +88,25 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 	readAnywhere := func(host HostFacts) ResolvedPolicy {
 		return ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
 	}
-	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}, resolveHost: HostFacts{GoPath: "/from/go/env"}}
+	host := HostFacts{OS: "linux", Home: "/home/u", GoPath: "/from/go/env", GoEnvFile: "/home/u/.config/go/env"}
+	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}, resolveHost: host}
 	for _, tc := range []struct {
 		name   string
 		policy ResolvedPolicy
 		in     []string
 		want   string
 	}{
-		{"spawn env", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
-		{"go env -w", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/from/go/env"},
-		{"default", readAnywhere(HostFacts{Home: "/home/u"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
-		{"no home", readAnywhere(HostFacts{}), []string{"HOME=/home/u"}, scratchGoPath},
+		{"spawn env", readAnywhere(host), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
+		{"go env -w", readAnywhere(host), []string{"HOME=/home/u"}, scratchGoPath + sep + "/from/go/env"},
+		// A command run with its own HOME or GOENV would read a different env
+		// file, so it gets Go's default for its own HOME, not the host's setting.
+		{"overridden HOME", readAnywhere(host), []string{"HOME=/tmp/isolated"}, scratchGoPath + sep + "/tmp/isolated/go"},
+		{"overridden GOENV", readAnywhere(host), []string{"HOME=/home/u", "GOENV=/other/env"}, scratchGoPath + sep + "/home/u/go"},
+		{"default", readAnywhere(HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "/home/u/.config/go/env"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},
 		// A clean environment (EnvPolicyNone) carries neither the host's GOPATH
 		// nor anything a go command could find its env file or default with, so
 		// the host's settings stay out of it too.
-		{"clean env", readAnywhere(HostFacts{Home: "/home/u", GoPath: "/from/go/env"}), nil, scratchGoPath},
+		{"clean env", readAnywhere(host), nil, scratchGoPath},
 		{"restricted", restricted, []string{"GOPATH=/custom/a"}, scratchGoPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

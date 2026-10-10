@@ -54,6 +54,9 @@ func TestGoEnvValueFollowsTheGoCommandsPrecedence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// env is promoted from stubProbeSystem; Go 1.27 (go.mod) allows a
+			// promoted field in a composite literal, and modernize's embedlit asks
+			// for this form.
 			system := goPathProbeSystem{env: tc.env, configDir: config, files: tc.files}
 			if got := goEnvValue(system, "GOPATH"); got != tc.want {
 				t.Errorf("goEnvValue(GOPATH) = %q, want %q", got, tc.want)
