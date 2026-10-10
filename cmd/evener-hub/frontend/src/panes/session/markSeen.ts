@@ -16,17 +16,16 @@ export function seenThroughToMark(
   return Number.isFinite(seenThrough) ? seenThrough : undefined;
 }
 
-/** The mark an opening pane sends, as the phone does: through the later of
- * an unseen turn end and the session's last motion (the activity read's
- * lastMovedAt) when that motion came after the hub's seen_through, so output
- * that streamed after the turn ended is seen too. Undefined when neither has
- * anything new. */
+/** The mark an opening pane sends: through the later of an unseen turn end
+ * and the session's last motion (the activity read's lastMovedAt) when that
+ * motion came after the hub's seen_through, so output that streamed after the
+ * turn ended is seen too. Undefined when neither has anything new. */
 export function seenThroughWithMotion(
   summary: Pick<NavigationSessionSummary, "unseen" | "turn_ended_at" | "seen_through"> | undefined,
   lastMovedAt: number | undefined,
 ): number | undefined {
   const turn = seenThroughToMark(summary);
-  const mark = summary?.seen_through === undefined ? Number.NaN : Date.parse(summary.seen_through);
+  const mark = Date.parse(summary?.seen_through ?? "");
   const motion = lastMovedAt !== undefined && Number.isFinite(mark) && lastMovedAt > mark ? lastMovedAt : undefined;
   if (turn === undefined) return motion;
   return motion === undefined ? turn : Math.max(turn, motion);

@@ -202,17 +202,18 @@ test("opening a pane marks a session seen through output that streamed after its
   expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
 });
 
-test("a failed activity read still marks the unseen turn, and a session with nothing new sends nothing", async () => {
+test("a failed activity read still marks the unseen turn", async () => {
   showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
   const failing = connectFake();
   failing.on(ACTIVITY_READ, () => {
     throw new Error("request timed out");
   });
-  const failed = renderHook(() => useMarkSessionSeenOnOpen(REF));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
   await settle();
   expect(marks(failing)).toEqual([markFor(FIRST_TURN)]);
-  failed.unmount();
+});
 
+test("a session with nothing new since its seen mark sends nothing", async () => {
   showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
   const quiet = connectFake();
   quiet.on(ACTIVITY_READ, () => activityFor(Date.parse(SEEN_MARK) - 1));
