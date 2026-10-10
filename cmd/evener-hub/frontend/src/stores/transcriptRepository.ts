@@ -23,6 +23,7 @@ import {
   type TurnModel,
 } from "@evener/appwire-client";
 import { type EntryRetainedBody, type EntryWriteAdmission, entryWriteAdmissionFor } from "./entryWriteAdmission";
+import { SESSION_CACHE_LOOKUP_DEADLINE_MS } from "./sessionCacheIndexedDB";
 import type { TranscriptItemRow, TranscriptResolvedIdentity, TranscriptSessionMetadata } from "./sessionCacheSchema";
 import { entryHistoryKey } from "./sessionCacheSchema";
 import type { EntryCoverageInput, SessionEntryCache } from "./sessionEntryCache";
@@ -772,6 +773,10 @@ export class TranscriptRepository {
     // An authoritative reconciliation during the lookup retires this window's
     // authority; never publish it into the new baseline.
     if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    // A committed Clear during the lookup retires this window's authority even
+    // when the client and source identity are unchanged: never publish rows a
+    // cleared epoch no longer owns.
+    if (!(await this.#clearEpochUnchanged())) return { kind: "reconcile" };
     // Only a connected-but-unverified chain is genuine uncertainty. Empty
     // coverage below the oldest row is an ordinary network continuation.
     if (window.stale) return window.coverage.length > 0 ? { kind: "reconcile" } : { kind: "server" };
@@ -878,6 +883,12 @@ export class TranscriptRepository {
           const turnIds = this.#turnIDsForRows(cut.cacheRows, cut.pendingRows);
           const turnMetadata = await this.#readTurnMetadata(turnIds);
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+            return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
+          }
+          // A committed Clear during the reads retires the snapshot's authority
+          // even when client and source identity are unchanged: never publish a
+          // locally opened window the cleared epoch no longer owns.
+          if (!(await this.#clearEpochUnchanged())) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           const current = cut.model ?? this.#model;
@@ -1024,6 +1035,30 @@ export class TranscriptRepository {
       this.#binding.lifetime,
       this.#sourceRevision,
     ]);
+  }
+
+  /**
+   * Whether the durable Clear epoch this binding captured is still current. An
+   * asynchronous lookup that began before a committed Clear must not publish the
+   * rows it read under the old epoch, even when the client and source identity
+   * are unchanged. Bounded by the lookup deadline; an unreadable or held-out
+   * epoch is treated as unchanged, and only a proven different epoch refuses.
+   */
+  async #clearEpochUnchanged(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const epoch = await Promise.race([
+        this.#cache.getClearEpoch(),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+        }),
+      ]);
+      return epoch === undefined || epoch === this.#binding.clearEpoch;
+    } catch {
+      return true;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   #advanceSourceRevision(): void {

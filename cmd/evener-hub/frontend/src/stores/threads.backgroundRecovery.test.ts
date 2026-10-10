@@ -4,7 +4,7 @@
 // the real store, the real reducer and a real IndexedDB adapter; the seams only
 // hold real storage results at deterministic transaction boundaries.
 import "fake-indexeddb/auto";
-import type { ThreadTurnsListResponse } from "@evener/appwire-client";
+import type { AnyNotification, ThreadTurnsListResponse } from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -1922,6 +1922,37 @@ describe("background transcript recovery", () => {
 
       // Re-entering with the holder alive neither hydrates nor restarts caching.
       await threadsStore.getState().ensureThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+
+      // A real persistence attempt under the old (pre-sibling-Clear) epoch is
+      // refused: the sibling Clear's suppression stands without a new
+      // acquisition, while the readable model is retained.
+      const threadId = threadsStore.getState().threads.get(selected)?.threadId;
+      if (!threadId) throw new Error("expected the held model");
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "holder-live", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "holder-live-item",
+              transcriptKey: "holder-live-item",
+              turnId: "holder-live",
+              version: 2,
+              text: "HOLDER_LIVE_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
       await settleBackgroundTranscriptsForTests();
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
       expect(threadsStore.getState().threads.get(selected)).toBeDefined();

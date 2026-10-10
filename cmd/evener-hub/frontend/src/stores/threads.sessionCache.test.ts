@@ -26,7 +26,7 @@ import type {
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { deleteSession } from "../shell/rail/actions";
@@ -3869,11 +3869,7 @@ describe("exclusive entry transcript fixture route", () => {
       // refused rather than resurrecting the rows.
       expect(await entryCache.getHistoryGeneration(historyKey)).toBe(generationBefore + 1);
       expect(readComposerDraft(selected).text).toBe("keep me");
-      await expect(outbox.getOutbox(outboxRecord.clientMutationId)).resolves.toMatchObject({
-        clientMutationId: outboxRecord.clientMutationId,
-        targetRef: selected,
-        state: outboxRecord.state,
-      });
+      await expect(outbox.getOutbox(outboxRecord.clientMutationId)).resolves.toEqual(outboxRecord);
       outbox.close();
       // The store's own model is gone and the route retires without touching an
       // unrelated ref.
@@ -3927,7 +3923,16 @@ describe("exclusive entry transcript fixture route", () => {
       if (!historyKey) throw new Error("expected the fixture's resolved history key");
 
       // Delete while the authority read is in flight, then let it read the new
-      // generation. The old response must not be relabelled fresh.
+      // generation. The old response must not be relabelled fresh. A queued
+      // outbox mutation must survive the delete untouched.
+      const outbox = new MutationOutboxIndexedDB({ createMutationId: () => "task4-held-outbox" });
+      const outboxRecord = await outbox.enqueueIntent({
+        targetRef: selected,
+        method: "turn/queue",
+        payload: { ref: selected, expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+        attachments: [],
+        optimisticDisplay: { text: "queued" },
+      });
       markCacheSessionsDeleted([selected]);
       await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
       expect(await realGeneration(historyKey)).toBe(1);
@@ -3939,6 +3944,8 @@ describe("exclusive entry transcript fixture route", () => {
       await expect(entryCache.getCoverage(historyKey, "read:fixture-read-1")).resolves.toBeUndefined();
       // No replacement repository was installed with the old response.
       expect(fixture.inspect().model).toBeUndefined();
+      await expect(outbox.getOutbox(outboxRecord.clientMutationId)).resolves.toEqual(outboxRecord);
+      outbox.close();
     } finally {
       fixture.dispose();
       entryCache.close();
@@ -4101,6 +4108,254 @@ describe("exclusive entry transcript fixture route", () => {
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
       entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a same-tab Clear retires the entry route immediately, before its transactions resolve", async () => {
+    const selected = "local:entry-clear-immediate";
+    const entryDatabase = "entry-clear-immediate-test";
+    const legacy = new SessionCacheIndexedDB();
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-clear-immediate", "CLEAR_IMMEDIATE_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-clear-immediate-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      const publishedBefore = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+
+      // Hold the legacy clear so the entry route's claims must retire BEFORE the
+      // clear transactions resolve.
+      let releaseClear!: () => void;
+      const clearGate = new Promise<void>((resolve) => {
+        releaseClear = resolve;
+      });
+      const realClear = legacy.clear.bind(legacy);
+      const clearSpy = vi.spyOn(legacy, "clear").mockImplementation(async () => {
+        await clearGate;
+        return realClear();
+      });
+      const clearing = clearCachedSessions();
+      await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
+      // Immediate retirement: the installed repository is gone while the clear
+      // window is still open.
+      expect(fixture.inspect().model).toBeUndefined();
+
+      // A notification delivered in the window neither publishes nor persists.
+      requireConnectedClient("entry fixture notification").emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId: `thr_${selected}`,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-clear-window", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "clear-window-item",
+              transcriptKey: "clear-window-item",
+              turnId: "entry-clear-window",
+              version: 2,
+              text: "CLEAR_WINDOW_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toBe(publishedBefore);
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      releaseClear();
+      await expect(clearing).resolves.toEqual({ committed: true });
+      clearSpy.mockRestore();
+
+      // Recovery: a fresh explicit acquisition re-caches.
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a same-tab Clear whose entry transaction aborts is reported incomplete and keeps the entry rows", async () => {
+    const selected = "local:entry-clear-abort";
+    const entryDatabase = "entry-clear-abort-test";
+    const legacy = new SessionCacheIndexedDB();
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-clear-abort", "CLEAR_ABORT_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-clear-abort-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      // Abort only the entry cache's clear transaction: the legacy clear still
+      // commits.
+      const originalClear = IDBObjectStore.prototype.clear;
+      const clearSpy = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementation(function (
+        this: IDBObjectStore,
+        ...args: Parameters<IDBObjectStore["clear"]>
+      ) {
+        if (this.transaction.objectStoreNames.contains("transcriptItems")) throw new Error("entry clear fault");
+        return originalClear.apply(this, args);
+      });
+      const result = await clearCachedSessions();
+      clearSpy.mockRestore();
+
+      // The outer result is honest about the incomplete clear, and the entry
+      // rows it failed to remove remain.
+      expect(result).toEqual({ committed: false });
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      expect(await entryCache.getClearEpoch()).toBe(0);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("a rejected old completion does not dispossess a replacement owner", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const selected = "local:entry-rejected-no-dispossess";
+    const entryDatabase = "entry-rejected-no-dispossess-test";
+    const legacy = new SessionCacheIndexedDB();
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-rejected", "REJECTED_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-rejected-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      // Park acquisition A's authority getters.
+      const releases: Array<() => void> = [];
+      const realEpoch = entryCache.getClearEpoch.bind(entryCache);
+      const realGeneration = entryCache.getHistoryGeneration.bind(entryCache);
+      entryCache.getClearEpoch = (() =>
+        new Promise<number>((resolve, reject) => {
+          releases.push(() => void realEpoch().then(resolve, reject));
+        })) as typeof entryCache.getClearEpoch;
+      entryCache.getHistoryGeneration = ((historyKeyValue: string) =>
+        new Promise<number>((resolve, reject) => {
+          releases.push(() => void realGeneration(historyKeyValue).then(resolve, reject));
+        })) as typeof entryCache.getHistoryGeneration;
+
+      const openingA = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
+      // Restore the real getters so the Clear and reacquisition read normally.
+      entryCache.getClearEpoch = realEpoch;
+      entryCache.getHistoryGeneration = realGeneration;
+
+      // Complete the same-tab Clear, then release and reacquire so acquisition B
+      // installs its own repository.
+      await expect(clearCachedSessions()).resolves.toEqual({ committed: true });
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      expect(fixture.inspect().model).toBeDefined();
+
+      // Release A's parked getters: A is rejected and must not dispose B's route.
+      for (const release of releases.splice(0)) release();
+      await openingA;
+      await settleBackgroundTranscriptsForTests();
+      expect(fixture.inspect().model).toBeDefined();
+
+      // B still publishes an accepted recorded notification.
+      const threadId = threadsStore.getState().threads.get(selected)?.threadId;
+      if (!threadId) throw new Error("expected B's published model");
+      requireConnectedClient("entry fixture notification").emitNotification({
+        method: "history/updated",
+        params: {
+          ref: selected,
+          threadId,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 2 },
+          turns: [{ id: "entry-B-survives", status: "completed", itemsView: "full", version: 2 }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "b-survives-item",
+              transcriptKey: "b-survives-item",
+              turnId: "entry-B-survives",
+              version: 2,
+              text: "B_SURVIVES_BODY",
+              position: { entry: 2, item: 0 },
+            },
+          ],
+        },
+      } as AnyNotification);
+      await fixture.settled();
+      await settleProjectionWorkForTests();
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("B_SURVIVES_BODY");
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
+      vi.useRealTimers();
       await deleteIndexedDatabase(entryDatabase);
     }
   });

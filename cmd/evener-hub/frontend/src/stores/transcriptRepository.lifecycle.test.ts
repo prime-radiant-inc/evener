@@ -213,7 +213,9 @@ function holdNextEntryWrite(cache: SessionEntryCache, transcriptKey: string) {
   };
 }
 
-// Holds the real cache's older-window lookup until released.
+// Starts the real cache's older-window query immediately and holds its RESULT
+// delivery until released, so a Clear can land while the query is genuinely in
+// flight (unlike holding before the call, which would start the query after).
 function holdOlderWindowLookup() {
   const original = SessionEntryCache.prototype.getOlderWindow;
   let releaseGate!: () => void;
@@ -228,8 +230,9 @@ function holdOlderWindowLookup() {
     this: SessionEntryCache,
     ...args: Parameters<typeof original>
   ) {
+    const result = original.apply(this, args);
     markCalled();
-    return gate.then(() => original.apply(this, args));
+    return gate.then(() => result);
   } as typeof original);
   return {
     whenCalled: called,
@@ -343,7 +346,7 @@ test("an authoritative read after a fresh baseline restores current use and usab
 // Behaviour 2: two cache connections.
 // ---------------------------------------------------------------------------
 
-test("equal item versions preserve the shared merge and a shorter same-identity window cannot erase committed coverage", async () => {
+test("a newer shared-item version wins and a shorter same-identity window cannot erase committed coverage", async () => {
   const name = `entry-lifecycle-tabs-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
   const tabA = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
@@ -404,6 +407,25 @@ test("equal item versions preserve the shared merge and a shorter same-identity 
     expect(merged).toHaveLength(4);
     expect(merged.find((row) => row.transcriptKey === "item-1")?.version).toBe(5);
     await expect(tabB.getLatestWindow(historyKey, 40, "long")).resolves.toMatchObject({ complete: true });
+
+    // An equal-version recommit of the same item is a no-op: the shared merge
+    // keeps the committed version rather than rewriting identical content.
+    await expect(
+      tabB.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        items: [
+          {
+            historyKey,
+            transcriptKey: "item-1",
+            position: { entry: 1, item: 0 },
+            version: 5,
+            item: { id: "item-1", turnId: "turn_1", type: "agentMessage", text: "row-1-newer" },
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ outcome: "committed" });
+    expect((await tabB.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-1")?.version).toBe(5);
   } finally {
     tabA.close();
     tabB.close();
@@ -741,6 +763,9 @@ test("committed rows reopen as a stale seed with no overlay, and a source read r
   fixtures.push(fixture);
   const committed = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-A" });
   committed.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await committed.settled();
+  const seed = committed.getSnapshot();
+  if (!seed) throw new Error("expected a committed seed");
   // Uncommitted live overlay work that the crash will lose.
   committed.accept(
     {
@@ -772,17 +797,31 @@ test("committed rows reopen as a stale seed with no overlay, and a source read r
 
   // The committed rows are a readable stale seed on disk; the uncommitted
   // overlay did not survive memory.
-  const seeded = await fixture.cache.getLatestWindow(historyKey, 40);
-  expect(seeded.rows.map((row) => row.transcriptKey)).toEqual(["item-6", "item-7", "item-8"]);
-  expect(seeded.stale).toBe(false);
+  const seededWindow = await fixture.cache.getLatestWindow(historyKey, 40);
+  expect(seededWindow.rows.map((row) => row.transcriptKey)).toEqual(["item-6", "item-7", "item-8"]);
+  expect(seededWindow.stale).toBe(false);
 
-  const reopened = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-A" });
-  expect(reopened.getSnapshot()).toBeUndefined();
-  const preRead = await reopened.attachReader().openLocal(40);
+  // A crash reopen has the committed rows as a readable stale seed with NO
+  // overlay, before any source recovery.
+  const reopened = repository(fixture.cache, {
+    lifetime: 1,
+    sessionNonce: "browser-lifetime-A",
+    seedModel: seed,
+    omitSeedAuthority: true,
+  });
+  const preReader = reopened.attachReader();
+  const preRead = await preReader.openLocal(40);
   expect(preRead.status).not.toBe("current");
+  expect(orderedPositions(preRead.model)).toEqual([6, 7, 8]);
+  expect(JSON.stringify(preRead.model ?? null)).not.toContain("CRASH_OVERLAY_BODY");
+  preReader.dispose();
 
-  // A source read restores currentness.
-  reopened.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r2", boundary: "b2" });
+  // A source read restores currentness (issued after the invalidation).
+  reopened.acceptRead(readOf([6, 7, 8], { length: 8, requestGeneration: 1 }), {
+    lifetime: 1,
+    readId: "r2",
+    boundary: "b2",
+  });
   await reopened.settled();
   const reader = reopened.attachReader();
   const restored = await reader.openLocal(40);
@@ -799,16 +838,58 @@ test("a write held in flight across a delete is refused and cannot resurrect the
   owner.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
   await owner.settled();
 
-  // Hold a real in-flight batch, delete the history under it, then release.
+  // Hold a real in-flight batch, queue a second behind it, delete the history
+  // under both, then release.
   const gate = holdNextEntryWrite(fixture.cache, "item-9");
   owner.accept(historyUpdate(9, 9, "in-flight", 9), { lifetime: 1 });
   await gate.reached;
+  owner.accept(historyUpdate(10, 10, "queued", 10), { lifetime: 1 });
   expect(await fixture.cache.deleteHistory(historyKey)).toBe(true);
   gate.release();
   await owner.settled();
   await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
   await expect(fixture.cache.getHistoryGeneration(historyKey)).resolves.toBe(1);
   owner.dispose();
+});
+
+test("a write held across a replacement cannot republish into the replacement", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const outgoing = repository(fixture.cache, { lifetime: 1 });
+  // A reader keeps the outgoing write on the foreground (immediate) path so the
+  // two repositories do not contend for the shared background drain.
+  const outgoingReader = outgoing.attachReader();
+  outgoing.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await outgoing.settled();
+
+  // Hold a real outgoing write, then install the replacement binding.
+  const gate = holdNextEntryWrite(fixture.cache, "item-9");
+  outgoing.accept(historyUpdate(9, 9, "outgoing-held", 9), { lifetime: 1 });
+  await gate.reached;
+  const replacement = repository(fixture.cache, { lifetime: 2 });
+  const replacementReader = replacement.attachReader();
+  replacement.acceptRead(readOf([6, 7, 8], { length: 8, authoritative: true, requestGeneration: 1 }), {
+    lifetime: 2,
+    readId: "r2",
+    boundary: "b2",
+  });
+  // The replacement publishes its model synchronously; its write queues behind
+  // the held outgoing batch, so settle only after the gate releases.
+  const replacementBefore = JSON.stringify(replacement.getSnapshot() ?? null);
+
+  // The outgoing held write releases after the replacement exists: it must not
+  // re-enter or mutate the replacement's model.
+  gate.release();
+  await outgoing.settled();
+  await replacement.settled();
+  expect(JSON.stringify(replacement.getSnapshot() ?? null)).toBe(replacementBefore);
+  // The replacement still owns its own publication.
+  expect(replacement.accept(historyUpdate(10, 10, "replacement", 10), { lifetime: 2 })).toBe(true);
+  expect(JSON.stringify(replacement.getSnapshot() ?? null)).toContain("replacement");
+  replacementReader.dispose();
+  outgoingReader.dispose();
+  replacement.dispose();
+  outgoing.dispose();
 });
 
 test("an older-page lookup held across a real Clear publishes no stale page", async () => {
@@ -831,15 +912,18 @@ test("an older-page lookup held across a real Clear publishes no stale page", as
   const unsubscribe = repo.subscribe(() => publications.push(orderedPositions(repo.getSnapshot()).length));
   const lookup = repo.loadOlderPage(40, 1);
   await gate.whenCalled;
-  // Clear with unchanged client/source identity while the lookup is held.
+  // The real older-window query is genuinely in flight now; Clear lands while it
+  // is running, with unchanged client and source identity.
   await expect(fixture.cache.clear()).resolves.toEqual({ committed: true, epoch: 1 });
   const publishedBeforeRelease = publications.length;
+  const releasedAt = Date.now();
   gate.release();
   const outcome = await lookup;
-  // The held lookup publishes no stale page: the certified chain it was reading
-  // was cleared, so it falls back to a server continuation and the already
+  // The held lookup publishes no stale page: the durable Clear epoch it read
+  // under has moved, so it routes to the bounded reconciliation and the already
   // loaded display rows are untouched.
-  expect(outcome.kind).not.toBe("local");
+  expect(outcome.kind).toBe("reconcile");
+  expect(Date.now() - releasedAt).toBeLessThan(2_000);
   expect(publications.length).toBe(publishedBeforeRelease);
   expect(orderedPositions(repo.getSnapshot())).toEqual([3, 4, 5, 6, 7, 8]);
   unsubscribe();
