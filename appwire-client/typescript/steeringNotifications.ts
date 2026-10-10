@@ -601,8 +601,9 @@ function compactStringArray(value: unknown): string[] {
 // callers, so every client reads plain text and never decodes again
 // (issue #3086).
 //
-// Residual asymmetry, documented not fixed: shell/delegate job OUTPUT
-// excerpts also ride the body through escapeNotificationBody ("<"-only), so
+// Residual asymmetry, documented not fixed (issue #4245): shell/delegate job
+// OUTPUT excerpts and delegate update messages (kind="update") also ride the
+// body through escapeNotificationBody ("<"-only), so
 // literal "&lt;" / "&amp;" / "&quot;" / "&#39;" in job output still
 // over-decodes here (there is no "&"-first pre-escape on that lane, and
 // adding one would change the wire format in agent/job_notify.go, out of

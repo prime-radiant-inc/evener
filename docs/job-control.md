@@ -1368,8 +1368,10 @@ terminal packet:
 A mid-work update (`communicate(end_turn=false)`) is
 `<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
 the delegate's message as the body, `<` escaped so it can neither close the
-frame nor open another. The `name` attribute appears only for a named
-delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
+frame nor open another. Clients decode the body's entities once, so a
+literal entity the delegate types, such as `&amp;`, reads as the character it
+names; job output excerpts share this remainder. The `name` attribute appears
+only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
 conversation stays available through the delegate's `transcript_ref`. A
 `delegate_send` reply that carries an update ahead of its result lists it in
