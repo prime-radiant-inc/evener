@@ -417,7 +417,8 @@ func communicateRawFallbackText(s string) string {
 // ProjectTurnParts is ProjectTurn plus, for each item, the index of the entry
 // content part it came from. Each part projects at most one item, so the index
 // names an item within its entry. A kind that projects the whole entry as one
-// item reports part 0. Hidden parts (an echoed communicate, empty text) still
+// item reports part 0; a memory-context entry, one part split into a section
+// per item, reports 0..n-1. Hidden parts (an echoed communicate, empty text) still
 // occupy their index, so a part's index never depends on its neighbours.
 func ProjectTurnParts(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector) ([]appwire.ThreadItem, []int) {
 	var parts []int
@@ -576,7 +577,13 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		if text == "" {
 			return nil
 		}
-		return memoryContextItems(turnID, turnIndex, text)
+		items := memoryContextItems(turnID, turnIndex, text)
+		// The message is one content part split into a section per item;
+		// each section takes its own index so it names one item.
+		for i := range items {
+			recordPart(parts, i)
+		}
+		return items
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:
 		// the whole point of persisting it is that a returning reader can tell
