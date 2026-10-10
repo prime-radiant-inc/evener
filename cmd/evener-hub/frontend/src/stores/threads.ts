@@ -1998,6 +1998,9 @@ function unpinMutationRef(ref: string): void {
   pinnedMutationRefs.delete(ref);
   syncTranscriptResidencyOwners(ref);
   retireCanonicalThreadIfUnowned(ref);
+  // Hand the last pin's existing wire lease to final retirement before syncing
+  // membership. Starting the drain later would unsubscribe and re-subscribe.
+  retireEntryTranscriptIfUnowned(ref);
   syncThreadSubscription(ref);
 }
 
