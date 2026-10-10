@@ -2359,13 +2359,6 @@ func TestAPILogTranscriptResultIdentity(t *testing.T) {
 // fmt usage / error messages
 // ---------------------------------------------------------------------------
 
-func TestRangeAcceptedGrammar(t *testing.T) {
-	t.Parallel()
-	if rangeAcceptedGrammar != "N-M | last:N | start:N" {
-		t.Fatalf("rangeAcceptedGrammar = %q", rangeAcceptedGrammar)
-	}
-}
-
 func TestTranscriptSourceConstants(t *testing.T) {
 	t.Parallel()
 	if transcriptSource != "transcript" {

@@ -21,6 +21,7 @@ import {
   NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
+  navigationParamsToResourceKey,
   navigationRootContainerKey,
   navigationViewScope,
   type ResourceKey,
@@ -1651,5 +1652,32 @@ test("v3 deltas reject session-owned child edges without replacing flat authorit
     expect(materializeNavigationResource(installed)).toEqual(
       materializeSnapshot(fixture.key, decodedSnapshot(fixture.key, fixture.snapshot)),
     );
+  }
+});
+
+// A catalog-narrowed read round-trips: its key carries the catalog from the
+// read's params, and the hub's catalog-suffixed scope is the one the codec
+// expects, while a key without the catalog rejects that snapshot.
+test("codec decodes a catalog-narrowed project read under its catalog scope", () => {
+  for (const params of [
+    { representationVersion: 3, resource: "project", projectKey: "no-project", catalog: "test_runs" },
+    {
+      representationVersion: 3,
+      resource: "project_page",
+      projectKey: "no-project",
+      catalog: "test_runs",
+      tier: "current",
+      offset: 0,
+      limit: 50,
+    },
+  ]) {
+    const key = navigationParamsToResourceKey(params);
+    expect(navigationViewScope(key)).toMatch(/\/catalog\/test_runs$/);
+    const snapshot = sessionBoundSnapshot(key, 2);
+    expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
+    const { catalog: _catalog, ...unnarrowed } = key as ResourceKey & { catalog?: string };
+    expect(() =>
+      decodeNavigationResponse(unnarrowed as ResourceKey, undefined, snapshotResponse(key, snapshot)),
+    ).toThrow();
   }
 });

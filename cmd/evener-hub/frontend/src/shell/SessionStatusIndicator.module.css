@@ -1,0 +1,35 @@
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.statusDot[data-status="needs-you"] {
+  background: var(--attention);
+}
+
+.statusDot[data-status="failed"] {
+  background: var(--danger);
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.statusSpinner {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--ink-mid);
+  border-top-color: transparent;
+  border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .statusSpinner {
+    animation: sessionStatusSpin 800ms linear infinite;
+  }
+}
+
+@keyframes sessionStatusSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}

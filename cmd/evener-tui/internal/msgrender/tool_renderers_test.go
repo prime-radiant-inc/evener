@@ -1,9 +1,13 @@
 package msgrender
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/appwire"
 )
 
 func TestRendererRegistryHasReadFile(t *testing.T) {
@@ -463,5 +467,42 @@ func TestDiffResultText(t *testing.T) {
 				t.Errorf("diffResultText(%q, %q) = %q, want %q", tc.output, tc.errStr, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSearchRenderersCountEntriesOfRecordedResults reads real grep and glob
+// results (agent/testdata/toolwire): a note the tool puts after a blank line
+// (the cap cut the result, paths were left out) is not a hit (#4186).
+func TestSearchRenderersCountEntriesOfRecordedResults(t *testing.T) {
+	raw, err := os.ReadFile("../../../../agent/testdata/toolwire/calls.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []appwire.ThreadItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	outputs := map[string]string{}
+	for _, item := range fixture.Items {
+		if item.Output != "" {
+			outputs[item.CallID] = item.Output
+		}
+	}
+	for _, tc := range []struct{ call, tool, want string }{
+		{"call_grep", "grep", "2 hits"},
+		{"call_grep_capped", "grep", "1 hits"},
+		{"call_glob", "glob", "2 matches"},
+		{"call_glob_excluded", "glob", "0 matches"},
+	} {
+		output, ok := outputs[tc.call]
+		if !ok {
+			t.Fatalf("no recorded output for %s", tc.call)
+		}
+		r, _ := lookupToolRenderer(tc.tool)
+		if got := r.Result(ToolArgs{}, output, "", 0); got != tc.want {
+			t.Errorf("%s: Result(%q) = %q, want %q", tc.call, output, got, tc.want)
+		}
 	}
 }

@@ -8,7 +8,7 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -92,7 +92,6 @@ let memory: DocumentMemory;
 let runtime: NativeMutationRuntime;
 let status = "idle";
 let resumeRequired = false;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -173,17 +172,10 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const tree = render(
@@ -192,7 +184,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }
@@ -235,6 +226,11 @@ it("names where the review goes, lists the comments, and waits for a verdict", a
 	expect(renderedText(tree)).not.toContain("Choose one to send your review.");
 	expect(pressable(tree, "Request changes")?.props.accessibilityState).toMatchObject({ selected: true });
 	expect(sendDisabled(tree)).toBe(false);
+});
+
+it("lets a drag of the sheet put the keyboard away", async () => {
+	const tree = await mount();
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
 });
 
 it("keeps a chosen verdict's words where they were, centred, at the same weight", async () => {

@@ -35,7 +35,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { hasQueuedNonSend, resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
+import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
@@ -44,6 +44,7 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
+import { carryComposerDraft } from "./composer/draft";
 import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { RepoLocation } from "./composer/RepoLocation";
@@ -103,13 +104,24 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 // user to send would ask them to redo what they just did, so that window
 // reports the wait instead and confirms the message arrived.
 //
+// Copy for the version-mismatch (degraded) state. The footer notice and the
+// empty transcript co-render for a fenced session with no saved messages, so
+// they must stay in step. Their one deliberate difference: the notice carries
+// the saved-work and interruption guarantees, which an empty session has no
+// saved work to promise about.
+const DEGRADED_VERSION_NOTICE =
+  "This session is still working, and everything already saved is kept. It's running a different Evener version than this app, so it can't receive new messages. To use it again, use Force shutdown in the session menu to stop it (interrupting anything still in progress), then send your next message to start it.";
+const DEGRADED_VERSION_EMPTY_TITLE = "This session is on a different Evener version";
+const DEGRADED_VERSION_EMPTY_HINT =
+  "To use it, stop it with Force shutdown in the session menu, then send a message to start it.";
+
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. An incompatible session needs a restart;
-// other empty sessions invite their first message.
+// exactly the mid-first-turn window. An incompatible session is on a different
+// Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+    return <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} />;
   }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
@@ -139,42 +151,15 @@ function RestartRequiredNotice({
     setRefreshing(true);
     setError(null);
     try {
-      let refreshedRef = sessionRef;
       if (resumeRequired) {
-        const { client, state } = connectionStore.getState();
-        if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        // Baseline every Stop generation BEFORE the resume starts: the resume
-        // may return a different identity, and that new ref can be named by a
-        // Stop while the resume RPC is still in flight (any surface already
-        // tracking the resumed ref records it). A fence captured after the
-        // resolve would take that Stop as its baseline and never fire, so both
-        // refs are checked against their pre-resume generations.
-        const stopBaseline = resumeStopBaseline();
-        // beforeRequest runs before the resumed identity is knowable, so a
-        // per-ref fence cannot name it: a Stop acknowledged against ANY ref in
-        // the reconnect window (the resumed identity among them) suppresses
-        // the resume RPC. Once the RPC resolves and the new identity exists,
-        // the checks below name both refs exactly.
-        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopBaseline });
-        refreshedRef = thread.evener.ref;
-        // During the post-resume hydration the pane still shows the old ref
-        // (the navigate below has not run), so a Stop against EITHER ref must
-        // cancel it: the old ref is what the visible Stop names, the new one
-        // is what another holder of the resumed session names.
-        const identityFence = () => {
-          stopBaseline(sessionRef);
-          stopBaseline(refreshedRef);
-        };
-        identityFence();
-        await threadsStore.getState().refreshThread(refreshedRef, identityFence);
-        identityFence();
-        if (refreshedRef !== sessionRef) {
-          const url = paneToURL("session", { ref: refreshedRef });
-          if (url !== null) navigate(url, { replace: true });
-        }
-      } else {
-        await threadsStore.getState().refreshThread(refreshedRef);
+        // The store owns the ONE resume sequence. Its identity-follow effect
+        // carries the draft and navigates, and its resumeFailures slice (the
+        // composer's toast) is the one failure channel - so this branch keeps no
+        // inline sequence, navigation, or error of its own.
+        await threadsStore.getState().resumeSession(sessionRef);
+        return;
       }
+      await threadsStore.getState().refreshThread(sessionRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -187,12 +172,13 @@ function RestartRequiredNotice({
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
+          : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {!resumeRequired && !ownerRef && <SessionForceStopRecovery sessionRef={sessionRef} />}
-      <Button disabled={refreshing} onClick={() => void refresh()}>
-        {resumeRequired ? "Resume session" : "Refresh session"}
-      </Button>
+      {(resumeRequired || ownerRef) && (
+        <Button disabled={refreshing} onClick={() => void refresh()}>
+          {resumeRequired ? "Resume session" : "Refresh session"}
+        </Button>
+      )}
       {error && <span>{error}</span>}
     </div>
   );
@@ -313,6 +299,25 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
+  // Identity follow-up for a store-driven resume (a Send on the Send-resumes
+  // face): the store cannot navigate, so it publishes the resumed identity and
+  // this pane follows it. The transcript is already hydrated under the new ref
+  // (the driver's refreshThread), and navigate() replaces the route so the
+  // workspace opens the resumed session rather than leaving this one on a stale
+  // identity. Read at the top with the rest of the store hooks, ahead of the
+  // deleted/!model early returns, per the rules of hooks.
+  const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
+  useEffect(() => {
+    if (resumedIdentity === undefined) return;
+    threadsStore.getState().clearResumedIdentity(ref);
+    // Carry this pane's draft to the resumed identity before navigating: the
+    // incoming pane's composer is keyed by the new ref, so a message typed
+    // while the resume was in flight would otherwise be dropped (R09's "any
+    // newer draft is preserved").
+    carryComposerDraft(ref, resumedIdentity);
+    const url = paneToURL("session", { ref: resumedIdentity });
+    if (url !== null) navigate(url, { replace: true });
+  }, [resumedIdentity, ref]);
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -401,9 +406,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
+    viewId: readView?.id ?? paneId,
+    keepViewRemount: () =>
+      workspaceStore
+        .getState()
+        .panes.some(
+          (pane) => pane.id === paneId && pane.type === "session" && (pane.params as SessionPaneParams).ref === ref,
+        ),
     model,
     listRef: virtualListRef,
     initialViewCapture: readView?.getCapture(),
+    onReaderIntent: readView?.supersedePositioning,
+    onReaderMovement: readView?.syncPositioningMovement,
     loadOlder,
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
@@ -446,6 +460,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     listRef: virtualListRef,
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
+    onPositioningCommand: readView?.supersedePositioning,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -546,31 +561,29 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     />
   );
 
-  const recoveryOwnerRef =
-    !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:")
-      ? model.parentRef
-      : undefined;
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
-  // A merely-resumable session (a shut-down snapshot the hub overlays
-  // resumeRequired on, no Stop in flight) needs no special UI: sending a prompt
-  // resumes it. It drops the standalone Resume action and its notice. The other
-  // two causes of the obligation keep the notice - a restartRequired daemon and
-  // a session with uncertain messages still carry reconciliation the Resume
-  // action performs - so only the clean resume case is carved out. The uncertain
-  // -message signal is read here so a resumable snapshot whose outbox still
-  // holds delivery-uncertain rows keeps both the notice and the fence.
-  const resumeOnlyLocal = recoveryFence(ref, model, restartPending, {
+  // Neither face of the fence that Send now drives needs the notice: the
+  // merely-resumable fold (the hub folds the resume into turn/start) and the
+  // Send-resumes face (the store's driver runs the resume the standalone button
+  // used to). Both drop the notice and the Resume control. The reasons that
+  // remain the notice's are shapes Send cannot drive - a restartRequired
+  // daemon, a session retained by its owner, a draining Stop, and a blocked-rows
+  // shape on a non-local ref. The uncertain-message signal is read here so a
+  // blocked-rows snapshot that Send CAN drive is distinguished from one it
+  // cannot.
+  const fence = recoveryFence(ref, model, restartPending, {
     uncertainMessages: blockedMutations.length > 0,
     stopInFlight: stopping,
     queuedNonSend: hasQueuedNonSend(ref),
-  }).resumeOnly;
+    mutationStateAuthoritative,
+  });
   const showRestartNotice =
     model.status.type === "restartRequired" ||
-    (restartPending && !resumeOnlyLocal) ||
-    (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
+    (restartPending && !fence.sendDriven) ||
+    (blockedMutations.length > 0 &&
+      (model.status.type === "notLoaded" || !mutationStateAuthoritative) &&
+      !fence.sendDriven);
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -595,8 +608,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         surface="live"
         disclosureScope={readView?.id ?? paneId}
         sessionRef={ref}
+        sourcePaneId={paneId}
         viewId={readView?.id}
         initialViewCapture={readView?.getCapture()}
+        readView={readView ?? undefined}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -655,6 +670,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     <PaneScaffold
       paneId={paneId}
       focused={paneFocused}
+      focusSelector='[data-composer] [role="textbox"]'
       scaffoldMarker={`session:${ref}`}
       title={title}
       cadence={cadence}
@@ -703,7 +719,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       edgeFooter={edgeFooter}
     >
       <div className={styles.contentColumn}>
-        <TopNotesPanel sessionRef={ref} model={model} />
+        <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={paneId} />
         <SandboxEscalationRail sessionRef={ref} />
         {/* The held-steer ghosts' ONE live region, same rule as the ask
             dock's: outside the virtual list, announcing only real

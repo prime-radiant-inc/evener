@@ -115,7 +115,8 @@ function holdSessionPane(...refs: string[]) {
 
 function openPanel(model: ThreadModel) {
   holdSessionPane(model.ref);
-  render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  const sourcePaneId = workspaceStore.getState().panes.find((pane) => pane.type === "session")?.id;
+  render(<NotesPanelBody sessionRef={model.ref} model={model} sourcePaneId={sourcePaneId} />);
 }
 
 function editor(): HTMLTextAreaElement {
@@ -570,6 +571,18 @@ test("notes panel is read-only under the recovery fence and keeps a dirty draft 
   // draft is editable again rather than having been discarded or submitted.
   panel.rerender(<NotesPanelBody sessionRef={model.ref} model={{ ...model, resumeRequired: false }} />);
   expect(editor().value).toBe("draft written before the fence");
+});
+
+// The whiteboards keep their line breaks (the agent's is a paragraph, a "Now:"
+// line and "Next:" lines), so the read-only body carries each line as written;
+// the prose class's `white-space: pre-wrap` draws them (jsdom applies no CSS
+// module styles, so this test pins the text the browser receives).
+test("multi-line whiteboards render with their line structure", () => {
+  const agentNote = "Fixing the importer for the reporting team.\nNow: checking the exporter.\nNext: report back.";
+  const humanNote = "Ship by Friday.\n\nAsk me before touching the schema.";
+  openPanel(testModel({ status: { type: "ended" }, humanNote, agentNote }));
+  expect(screen.getByTestId("shared-notes-agent").textContent).toBe(agentNote);
+  expect(screen.getByTestId("shared-notes-human").textContent).toBe(humanNote);
 });
 
 test("ended-empty session shows inert text with no editor", () => {

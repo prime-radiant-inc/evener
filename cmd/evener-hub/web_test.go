@@ -174,8 +174,8 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 	if got := stateLabel("errored", false); got != "Error" {
 		t.Fatalf("stateLabel(errored) = %q, want Error", got)
 	}
-	if got := stateLabel("awaiting", false); got != "Your move" {
-		t.Fatalf("stateLabel(awaiting) = %q, want \"Your move\"", got)
+	if got := stateLabel("awaiting", false); got != "Needs you" {
+		t.Fatalf("stateLabel(awaiting) = %q, want \"Needs you\"", got)
 	}
 }
 

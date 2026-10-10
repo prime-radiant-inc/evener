@@ -1513,7 +1513,7 @@ func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 }
 
 // kindedSteeringTurn is a daemon steering turn of one kind (a job
-// notification reminder, a task nudge), owned by the turn it lands in.
+// notification reminder, a task-inactive reminder), owned by the turn it lands in.
 func kindedSteeringTurn(text, kind, owningTurnID string) schema.Turn {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
@@ -1550,10 +1550,22 @@ func (s *Session) hasPendingSteering() bool {
 // (issue #174) -- so it counts neither as work to wake for nor as autonomy
 // that keeps the session from resting awaiting.
 func (s *Session) hasRunnableUserSteering() bool {
-	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
-		return false
-	}
-	return s.hasPendingUserSteering()
+	held := s.userSteeringHeld()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runnableUserSteeringLocked(held)
+}
+
+// userSteeringHeld reads the Stop-parked steering flag. It lives in the client
+// mutation store, so a caller reads it before taking s.mu.
+func (s *Session) userSteeringHeld() bool {
+	return s.clientMutations != nil && s.clientMutations.steeringHeld()
+}
+
+// runnableUserSteeringLocked is hasRunnableUserSteering for a caller holding
+// s.mu, given the held flag it read before taking the lock.
+func (s *Session) runnableUserSteeringLocked(steeringHeld bool) bool {
+	return !steeringHeld && s.hasPendingUserSteeringLocked()
 }
 
 // hasPendingUserSteering reports whether any queued steering came from the

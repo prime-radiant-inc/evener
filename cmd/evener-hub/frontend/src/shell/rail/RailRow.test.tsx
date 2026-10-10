@@ -25,9 +25,9 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { cadenceStateFor } from "../SessionStatusIndicator";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
-  cadenceStateFor,
   watchGloss as domainWatchGloss,
   RailRow,
   type RailRowActions,
@@ -48,6 +48,10 @@ import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+const STATUS_CSS = readModuleCss(import.meta.url, "../SessionStatusIndicator.module.css").replace(
+  /\/\*[\s\S]*?\*\//g,
+  " ",
+);
 
 function nestedRuleBlock(css: string, selector: string): string {
   const selectorStart = css.indexOf(selector);
@@ -130,6 +134,52 @@ beforeAll(() => {
       title: () => id,
       component: lazy(() => Promise.resolve({ default: PaneFixture })),
     });
+  }
+});
+
+test.each([
+  { title: "Short", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "A much longer nested session title", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "Short", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+  { title: "A much longer nested session title", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+])("session card measures sidebar and owning row for $title", ({ title, sidebarRight, rowHeight, left, top }) => {
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  const activate = vi.fn();
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-sidebar-rail")) return new DOMRect(0, 0, sidebarRight, 800);
+    if (this.getAttribute("role") === "treeitem") return new DOMRect(20, 300, 220, rowHeight);
+    return new DOMRect(80, 310, title.length * 5, 16);
+  });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div data-sidebar-rail>
+        <div role="treeitem" tabIndex={0}>
+          <RailRow node={sessionRailNode(apiNode({ title }))} info={info({ activate })} actions={actions()} />
+        </div>
+      </div>,
+    );
+    const row = screen.getByRole("treeitem");
+    const card = hoverForTooltip(screen.getByRole("button", { name: title }));
+    expect(card.style.left).toBe(left);
+    expect(card.style.top).toBe(top);
+    expect(card.parentElement).toBe(document.body);
+    expect(activate).not.toHaveBeenCalled();
+    expect(within(card).getByText("Proj")).toBeTruthy();
+
+    fireEvent.mouseLeave(screen.getByRole("button", { name: title }));
+    act(() => row.focus());
+    expect(screen.getByRole("tooltip").style.left).toBe(left);
+    expect(row.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+    expect(document.activeElement).toBe(row);
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    rect.mockRestore();
+    width.mockRestore();
+    height.mockRestore();
   }
 });
 
@@ -417,17 +467,52 @@ describe("compact session status", () => {
     expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("broken descendants outrank needs-you and running work", () => {
+  test("failed descendants do not hide running work", () => {
     const session = apiNode({
-      state: "awaiting",
+      state: "idle",
       running_job_count: 2,
       subagents: { running: 1, failed: 1, done: 0 },
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  });
+
+  test.each([
+    ["active", "Running"],
+    ["idle", null],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+  ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, subagents: { running: 0, failed: 3, done: 46 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
+    if (expected === null) expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    else expect(screen.getByRole("img", { name: expected })).toBeTruthy();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("3 failed, 46 done")).toBeTruthy();
+  });
+
+  test.each(["awaiting", "warning"])("a %s question stays visible with running and failed children", (state) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: true, subagents: { running: 1, failed: 1, done: 0 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Broken" })).toBeNull();
   });
 
   test("a running descendant gives an otherwise quiet session the spinner", () => {
@@ -450,14 +535,12 @@ describe("compact session status", () => {
   });
 
   test.each([
-    ["awaiting", "job", { running_job_count: 1 }],
-    ["warning", "job", { running_job_count: 1 }],
-    ["awaiting", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-    ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-  ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
+    ["job", { running_job_count: 1 }],
+    ["subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+  ] as const)("a non-blocking warning yields to running %s work", (_workKind, work) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state, ask_pending: false, ...work }))}
+        node={sessionRailNode(apiNode({ state: "warning", ask_pending: false, ...work }))}
         info={info()}
         actions={actions()}
       />,
@@ -469,10 +552,15 @@ describe("compact session status", () => {
     expect(within(panel).getByText("Running")).toBeTruthy();
   });
 
-  test("a pending question outranks running work", () => {
+  // Awaiting without a question is a turn that ended on needs_response: it
+  // waits on a person as a question does, so it outranks work too (#4093).
+  test.each([
+    ["pending question", true, "Question waiting"],
+    ["needs_response rest", false, "Needs you"],
+  ] as const)("a %s outranks running work", (_name, askPending, expected) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: askPending, running_job_count: 1 }))}
         info={info()}
         actions={actions()}
       />,
@@ -481,7 +569,7 @@ describe("compact session status", () => {
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Question waiting")).toBeTruthy();
+    expect(within(panel).getByText(expected)).toBeTruthy();
   });
 
   test("a pending approval outranks running work", () => {
@@ -604,7 +692,7 @@ describe("compact session status", () => {
 
   test.each([
     ["warning", { state: "warning" }, "Warning"],
-    ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
+    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Needs you"],
     ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
     ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
   ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
@@ -848,14 +936,14 @@ describe("row alignment", () => {
   });
 
   test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toMatch(
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
+    expect(topRuleBlock(STATUS_CSS, '.statusDot[data-status="failed"]')).toMatch(
       /border-radius:\s*1px;[^}]*rotate\(45deg\)/,
     );
-    const motionRules = mediaBlock(RAIL_CSS, "prefers-reduced-motion: no-preference");
+    const motionRules = mediaBlock(STATUS_CSS, "prefers-reduced-motion: no-preference");
     expect(nestedRuleBlock(motionRules, ".statusSpinner")).toMatch(/animation:/);
-    const baseSpinner = topRuleBlock(RAIL_CSS, ".statusSpinner");
+    const baseSpinner = topRuleBlock(STATUS_CSS, ".statusSpinner");
     expect(baseSpinner).not.toContain("animation:");
   });
 

@@ -9,7 +9,7 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import type { DraftStorage } from "./newSession";
 import { bindCreation, creationStore } from "./newSession/creations";
-import { render } from "./renderNative.testkit";
+import { render, settle } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	secure: new Map<string, string>(),
@@ -35,10 +35,6 @@ vi.mock("./nativeReaderPosition", () => ({ readerPositions: { removeHub: () => {
 vi.mock("./nativeOrganization", () => ({ removeOrganizationData: () => {} }));
 
 const noDrafts: DraftStorage = () => ({ read: () => null, write: () => {}, clear: () => {} });
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 /** A client whose requests never answer, as a connection that has gone quiet. */
 const quietClient = () => ({ request: () => new Promise(() => {}) }) as unknown as ConversationClientLike;
 
@@ -85,7 +81,6 @@ it("retires a removed hub's New session store with the rest of its data", async 
 	await settle();
 	expect(store.getState().retired).toBe(true);
 	expect(creationStore(hubId, noDrafts)).not.toBe(store);
-	app.tree.unmount();
 });
 
 it("lets go of a start bound to a client the connection has left", async () => {
@@ -105,5 +100,4 @@ it("lets go of a start bound to a client the connection has left", async () => {
 	harness.client = quietClient();
 	await app.rerender();
 	expect(store.getState()).toMatchObject({ submitting: false, unconfirmedCreation: true });
-	app.tree.unmount();
 });

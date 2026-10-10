@@ -464,19 +464,15 @@ func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, root
 // hub's ThreadRead RPC this serves has no pagination/continuation concept
 // at all, so the epoch scanRootDelegateState returns is simply discarded
 // here.
-func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
+//
+// It lists sessionID's subtree (sessionSubtreeDelegateIDs), as the live
+// DetailedStatus does.
+func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, rootSessionID, sessionID string) (map[string]delegateSnapshot, []string, error) {
 	state, _, diagnostics, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, nil, err
 	}
-	ids := make([]string, 0, len(state))
-	for id, aggregate := range state {
-		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != ownerSessionID {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := sessionSubtreeDelegateIDs(state, sessionID)
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
 		// The delegate journal scan above is itself ctx-aware, but a root

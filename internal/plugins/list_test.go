@@ -33,7 +33,9 @@ func TestList_FlagsBroken(t *testing.T) {
 	}
 }
 
-func TestUpdateAll_UpgradesGitBackedSkipsRelative(t *testing.T) {
+// UpdateAll asks every plugin that can upgrade, a relative one (upgraded from
+// its marketplace clone) as well as a git-backed one.
+func TestUpdateAll_UpgradesGitBackedAndRelative(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -79,9 +81,8 @@ func TestUpdateAll_UpgradesGitBackedSkipsRelative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateAll: %v", err)
 	}
-	// only the git-backed plugin upgrades; the relative one is skipped.
-	if len(updated) != 1 {
-		t.Fatalf("UpdateAll upgraded %d plugins, want 1 (git-backed only): %+v", len(updated), updated)
+	if len(updated) != 2 {
+		t.Fatalf("UpdateAll upgraded %d plugins, want both the git-backed and the relative one: %+v", len(updated), updated)
 	}
 }
 

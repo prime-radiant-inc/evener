@@ -92,15 +92,19 @@
   gap: var(--space-1);
 }
 
-.row {
+.rowContent {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  padding: 3px var(--space-1);
   min-width: 0;
   color: inherit;
   font: inherit;
   text-align: left;
+}
+
+.row {
+  composes: rowContent;
+  padding: var(--space-1) var(--space-2);
 }
 
 .rowBtn {

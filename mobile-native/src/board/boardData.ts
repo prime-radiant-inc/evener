@@ -5,6 +5,7 @@ import type {
 	NavigationPinSectionDescriptor,
 	NavigationSessionSummary,
 } from "@evener/appwire-client";
+import { isMethodNotFound } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	isSequenceGap,
@@ -15,7 +16,6 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { NavigationPages } from "../navigationPages";
-import { isMethodNotFound } from "../wireErrors";
 
 type Page<T> = ReturnType<NavigationPages<T>["getSnapshot"]>;
 export interface BoardSnapshot {

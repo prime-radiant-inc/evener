@@ -52,6 +52,9 @@ func (m *Manager) markStoreChanged(changed StoreChanged) {
 	defer m.storeChangedMu.Unlock()
 	m.pendingStoreChanged.Plugins = m.pendingStoreChanged.Plugins || changed.Plugins
 	m.pendingStoreChanged.Marketplaces = m.pendingStoreChanged.Marketplaces || changed.Marketplaces
+	if changed.Marketplaces {
+		m.forgetChecks()
+	}
 }
 
 // takeStoreChanged takes and clears the Manager's current lock session, and

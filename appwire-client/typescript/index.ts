@@ -2,7 +2,6 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
-  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -15,7 +14,6 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
-  activityDelegateBranch,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
@@ -30,7 +28,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
   ActivityDelegateState,
@@ -57,6 +54,12 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export {
+  APPROVAL_DECISION_EVENT_KIND,
+  type ApprovalDecision,
+  approvalDecisionOf,
+  approvalDecisionText,
+} from "./approvalDecision";
 export type {
   ArchivedList,
   ArchivedListCatalog,
@@ -164,11 +167,14 @@ export {
   delegateTiming,
 } from "./delegateDetails";
 export {
+  type DelegateSendEarlierResponse,
   type DelegateSendFooterInfo,
   type DelegateSendRawState,
   type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
+  delegateSendEarlierLabel,
+  delegateSendEarlierResponses,
   delegateSendFooter,
   delegateSendResponse,
   delegateSendSummary,
@@ -224,6 +230,7 @@ export {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
+  isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
@@ -281,8 +288,8 @@ export {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
-export type { JobLogTail } from "./jobOutput";
-export { parseJobLogTail } from "./jobOutput";
+export type { DecodedJobOutputPage } from "./jobOutput";
+export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,
@@ -398,6 +405,30 @@ export {
   schemaPathKind,
 } from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+export {
+  MEMORY_CONTEXT_EVENT_KIND,
+  MEMORY_CONTEXT_LABEL,
+  MEMORY_CONTEXT_SCOPES,
+  MEMORY_CONTEXT_STATES,
+  type MemoryContextObservation,
+  type MemoryContextScope,
+  type MemoryContextState,
+  memoryContextEmptyText,
+  memoryContextScopeLabel,
+  memoryContextStateLabel,
+  parseMemoryContext,
+} from "./memoryContext";
+export {
+  type MemoryStep,
+  memoryDeleteSummary,
+  memoryEditSummary,
+  memoryFileTarget,
+  memoryMutation,
+  memoryProgress,
+  memoryReadSummary,
+  memorySearchSummary,
+  memoryWriteSummary,
+} from "./memorySteps";
 export type {
   CapabilitySource,
   HistoryState,
@@ -424,7 +455,7 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
-export { approvalWaiting, humanizeState } from "./railSessionState";
+export { approvalWaiting, humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
@@ -540,7 +571,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
-export { composeStepWords, type StepWords } from "./stepWords";
+export { BINARY_PAYLOAD_HEADER, composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -564,7 +595,7 @@ export {
 } from "./submitRouting";
 export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
-export { parseTaskListData, taskAggregateLabel } from "./taskListData";
+export { parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
 export {
@@ -608,6 +639,7 @@ export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
+  capitalized,
   clip,
   clipJobID,
   formatByteCount,
@@ -631,7 +663,6 @@ export {
 export {
   applyPatchSummary,
   askUserSummary,
-  BINARY_PAYLOAD_HEADER,
   delegateSummary,
   editFileSummary,
   fallbackToolSummary,
@@ -737,7 +768,7 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,

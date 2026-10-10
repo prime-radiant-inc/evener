@@ -21,7 +21,11 @@ func TestSessionActivitySubtreeJobsPreserveEqualKeysAcrossOwners(t *testing.T) {
 	for i := range 2 {
 		id := fmt.Sprintf("dlg_equal_owner_%d", i)
 		ownerID, store := newSessionActivityChildJournal(t, s, id, at)
-		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, OwnerSessionID: ownerID, TS: at, StartedAt: &at, Command: fmt.Sprintf("owner-%d", i)}); err != nil {
+		if err := store.AppendBatch([]jobstore.Event{
+			{Kind: jobstore.EventJobStarted, JobID: "job_unmarked_before", Type: jobstore.JobShell, OwnerSessionID: ownerID, TS: at, StartedAt: &at},
+			{Kind: jobstore.EventJobStarted, JobID: "job_equal", Type: jobstore.JobShell, Background: true, OwnerSessionID: ownerID, TS: at, StartedAt: &at, Command: fmt.Sprintf("owner-%d", i)},
+			{Kind: jobstore.EventJobStarted, JobID: "job_unmarked_after", Type: jobstore.JobShell, OwnerSessionID: ownerID, TS: at, StartedAt: &at},
+		}); err != nil {
 			t.Fatal(err)
 		}
 		owner := encodeRef("", ownerID)
@@ -30,8 +34,16 @@ func TestSessionActivitySubtreeJobsPreserveEqualKeysAcrossOwners(t *testing.T) {
 		if err != nil || len(direct.Jobs) != 1 || direct.Jobs[0].OwnerRef != owner || direct.Jobs[0].JobID != "job_equal" {
 			t.Fatalf("direct owner %s: jobs=%+v error=%v", owner, direct.Jobs, err)
 		}
+		summary, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: owner})
+		if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 1 || summary.Jobs.Active != 1 {
+			t.Fatalf("direct counts include excluded jobs or siblings: counts=%+v error=%v", summary.Jobs, err)
+		}
 	}
 	ref := encodeRef("", s.ID())
+	direct, err := s.ListActivityJobs(t.Context(), appwire.SessionActivityListParams{Ref: ref})
+	if err != nil || len(direct.Jobs) != 0 || !direct.Page.Complete {
+		t.Fatalf("root direct scope includes child jobs: %+v error=%v", direct, err)
+	}
 	for _, limit := range []int{1, 2} {
 		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
 			params := appwire.SessionActivityListParams{Ref: ref, Scope: appwire.SessionActivityScopeSubtree, Limit: limit}

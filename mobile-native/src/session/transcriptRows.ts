@@ -12,6 +12,7 @@ import {
 	type AskUserQuestion,
 	housekeepingAction,
 	mcpToolParts,
+	memoryMutation,
 	parseAskUserQuestions,
 	skillName,
 	type ThreadModel,
@@ -23,6 +24,7 @@ import {
 } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
+import type { SessionAccounting } from "../transcriptPresentation";
 import { type RunStep, rowTurnId, type TimelineRow, timelineGap } from "../timeline";
 import { compactDuration } from "./format";
 import { type Ghost, shownGhosts } from "./ghosts";
@@ -125,26 +127,35 @@ export function sessionRows(
  * sees them. */
 export type GhostRow = { kind: "ghost"; id: string; ghost: Ghost } | { kind: "moreQueued"; id: string; count: number };
 
-export type SessionListRow = TimelineRow | GhostRow;
+/** The conversation's usage lines (token counts, estimated cost) as a list
+ * row. Like a ghost row, it is the list's and never the conversation's. */
+export type UsageListRow = { kind: "usage"; id: string; usage: SessionAccounting };
 
-/** The transcript list's rows: the conversation's, then everything waiting to
- * reach the agent, so the ghosts sit after its last row, a streaming reply
- * included, and scroll with it. */
-export function withGhostRows(rows: readonly TimelineRow[], all: readonly Ghost[]): readonly SessionListRow[] {
-	if (all.length === 0) return rows;
+export type SessionListRow = TimelineRow | UsageListRow | GhostRow;
+
+/** The transcript list's rows: the conversation's, its usage lines when they
+ * show, then everything waiting to reach the agent, so the ghosts sit after
+ * its last row, a streaming reply included, and scroll with it. */
+export function withGhostRows(
+	rows: readonly TimelineRow[],
+	all: readonly Ghost[],
+	usage: SessionAccounting | null = null,
+): readonly SessionListRow[] {
+	if (all.length === 0 && usage === null) return rows;
 	const { shown, moreQueued } = shownGhosts(all);
 	const ghostRows: GhostRow[] = shown.map((ghost) => ({ kind: "ghost", id: `ghost:${ghost.key}`, ghost }));
 	if (moreQueued > 0) ghostRows.push({ kind: "moreQueued", id: "ghost:moreQueued", count: moreQueued });
-	return [...rows, ...ghostRows];
+	const usageRows: UsageListRow[] = usage === null ? [] : [{ kind: "usage", id: "usage", usage }];
+	return [...rows, ...usageRows, ...ghostRows];
 }
 
 export function isGhostRow(row: SessionListRow): row is GhostRow {
 	return row.kind === "ghost" || row.kind === "moreQueued";
 }
 
-/** A list row's key: a transcript row's reader key, or a ghost row's own id. */
+/** A list row's key: a transcript row's reader key, or a list row's own id. */
 export function sessionListKey(row: SessionListRow): string {
-	return isGhostRow(row) ? row.id : readerKey(row);
+	return isGhostRow(row) || row.kind === "usage" ? row.id : readerKey(row);
 }
 
 // What a ghost lands as: a message of yours.
@@ -156,6 +167,9 @@ const LANDED_GHOST: TimelineRow = { kind: "user", id: "", text: "" };
 export function sessionListGap(row: SessionListRow, next: SessionListRow | undefined): number {
 	if (next === undefined) return 0;
 	if (isGhostRow(row)) return 8;
+	if (row.kind === "usage") return 24;
+	// The usage lines bring their own room above them (TranscriptUsage).
+	if (next.kind === "usage") return 0;
 	return timelineGap(row, isGhostRow(next) ? LANDED_GHOST : next);
 }
 
@@ -359,6 +373,9 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
+	/** How many calls in the part attempted a memory mutation (the package's
+	 * memoryMutation): a part with any changed a page, not only read one. */
+	memoryMutations: number;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
 }
@@ -422,6 +439,12 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "memory": {
+			const mutated = group.memoryMutations > 0;
+			const count = mutated ? group.memoryMutations : n;
+			const countText = count === 1 ? "" : mutated && count === 2 ? " twice" : ` ${count} times`;
+			return `${mutated ? "updated" : "read"} memory${countText}`;
+		}
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
 		case "sessions":
@@ -464,7 +487,16 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
+			group = {
+				...part,
+				count: 0,
+				failed: 0,
+				names: new Set(),
+				unnamed: 0,
+				changedTasks: false,
+				memoryMutations: 0,
+				questions: 0,
+			};
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -473,6 +505,9 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		if (part.family === "memory" && memoryMutation(step.label)) {
+			group.memoryMutations += 1;
+		}
 		// A call whose questions don't parse still asked one.
 		if (part.family === "ask")
 			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;

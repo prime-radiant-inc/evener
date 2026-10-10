@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,12 +172,17 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		return nil, outcome.result.Err
 	}
 	if outcome.commit != nil {
+		commits := append(slices.Clone(outcome.earlierCommits), outcome.commit)
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
-			_, _ = outcome.commit.Complete(false)
+			for _, commit := range commits {
+				_, _ = commit.Complete(false)
+			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		s.queueDelegateDeliveryCommit(callID, outcome.commit)
+		for _, commit := range commits {
+			s.queueDelegateDeliveryCommit(callID, commit)
+		}
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
@@ -920,7 +926,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range postResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
-				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
+				// Keep the tool state: a turn-ending communicate's records the
+				// end reason restore reads (endedOnNeedsResponse).
+				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true, ToolState: res.ToolState}
 			}
 		}
 		for _, m := range postResult.UserMessages {
@@ -1233,18 +1241,25 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	}
 	var completionErrs []error
 	requeue := false
-	for _, binding := range commits {
-		if binding.commit == nil {
+	// commits come grouped by tool call; each call's run completes in order.
+	var run []*delegateToolResultCommit
+	for i, binding := range commits {
+		if binding.commit != nil {
+			run = append(run, binding.commit)
+		}
+		if i+1 < len(commits) && commits[i+1].toolCallID == binding.toolCallID {
 			continue
 		}
-		plans, err := binding.commit.Complete(true)
+		completed, err := completeDelegateDeliveryCommits(run)
+		run = nil
 		if err != nil {
 			completionErrs = append(completionErrs, err)
 			requeue = true
-			continue
 		}
-		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			completionErrs = append(completionErrs, err)
+		for _, plans := range completed {
+			if err := s.executeDelegateMutationPlans(plans); err != nil {
+				completionErrs = append(completionErrs, err)
+			}
 		}
 	}
 	if requeue {
@@ -1330,6 +1345,8 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	// keep the advertised capability set aligned with the unconditional grant
 	// guard rather than the parent's interactive-root registry.
 	canonical = removeStrings(canonical, protectedGrantTools())
+	// No delegate can save memory (filterUnavailableMemoryTools).
+	canonical = removeStrings(canonical, memorySaveToolNames)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -1502,6 +1519,9 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
+			if s.hasHumanPartnerToAsk() {
+				defs[i] = tool.WithCommunicateEndReason(defs[i])
+			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
@@ -1534,6 +1554,10 @@ func (s *Session) trackReadFile(path string) {
 // readBeforeWriteWarning returns a warning string if the file exists but hasn't
 // been read in this session. Returns "" for new files or previously-read files.
 func (s *Session) readBeforeWriteWarning(path string) string {
+	return s.readBeforeWriteWarningIn(s.currentEnv(), path)
+}
+
+func (s *Session) readBeforeWriteWarningIn(env execenv.ExecutionEnvironment, path string) string {
 	abs := s.resolveFilePath(path)
 	s.readFilesMu.RLock()
 	_, seen := s.readFiles[abs]
@@ -1542,7 +1566,7 @@ func (s *Session) readBeforeWriteWarning(path string) string {
 		return ""
 	}
 	// New file creation is exempt from the warning.
-	if !s.currentEnv().FileExists(path) {
+	if !env.FileExists(path) {
 		return ""
 	}
 	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
@@ -1601,29 +1625,18 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 	totalRounds := s.totalRounds
 	lastRound := s.taskToolLastRound
 	everUsed := s.taskToolEverUsed
-	nudgeFired := s.taskNudgeFired
 	s.mu.Unlock()
 
 	roundsSinceUse := totalRounds - lastRound
-	canUseTaskList := s.canInstructTool("task_list")
 
-	// Trigger 3: never used task_list, 10+ rounds in. A session without the
-	// tool is told nothing: this reminder is nothing but a call suggestion.
-	if canUseTaskList && !everUsed && !nudgeFired && totalRounds >= 10 {
-		s.mu.Lock()
-		s.taskNudgeFired = true
-		s.mu.Unlock()
-		return taskReminderNudge(), events.SteeringKindTaskNudge
-	}
-
-	// Trigger 2: tasks exist, not used in 25+ rounds.
+	// Tasks exist, not used in 25+ rounds.
 	if everUsed && roundsSinceUse >= 25 {
 		store := s.getOrCreateTaskStore()
 		if len(store.View()) > 0 {
 			s.mu.Lock()
 			s.taskToolLastRound = totalRounds
 			s.mu.Unlock()
-			return taskReminderForInactivity(store, canUseTaskList), events.SteeringKindTaskInactive
+			return taskReminderForInactivity(store, s.canInstructTool("task_list")), events.SteeringKindTaskInactive
 		}
 	}
 

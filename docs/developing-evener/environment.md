@@ -36,7 +36,7 @@ set them by hand.
 | `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
 | `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
-| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
+| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one session, at `<tmp>/evener-scratch-<root session id>/<session id>`. It is kept across the session's ends and reopened on resume, with its Go (including its private GOPATH), npm and cargo caches pruned at each end; it is deleted when the hub archives or deletes the root session (by an explicit archive, by age, or by archiving its project) and its daemon is not running. Move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
 
@@ -103,12 +103,13 @@ process environments.
 | Variable | Description |
 |---|---|
 | `XDG_CACHE_HOME` | Base for Evener cache data. |
-| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery. |
+| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery; inherited by core-only command environments, so a spawned `go` finds the same go env file the sandbox read. |
 | `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
+| `GOENV` | Inherited by core-only command environments; a sandboxed session reads the go env file it names (`off` disables it) at start to find Go settings made with `go env -w` (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
-| `GOPATH` | Inherited by core-only command environments. |
+| `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
 | `HOMEDRIVE` | Windows home drive fallback. |
 | `HOMEPATH` | Windows home path fallback. |

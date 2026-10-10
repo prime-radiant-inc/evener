@@ -9,9 +9,10 @@
 // implements against actions.ts + the tree store's refresh().
 //
 // The rail is a TRIAGE surface. Broken is red, needs-you is yellow, and running
-// work is a grey spinner. Broken and blocked attention outrank work; plain
-// awaiting and warning yield to work already in flight. Idle and ended rows
-// have no indicator. The stable one-line rhythm keeps the
+// work is a grey spinner. Broken attention and anything waiting on a person
+// (a question, an approval, or an awaiting rest after a needs_response turn)
+// outrank work; a warning yields to work already in flight. Idle and ended
+// rows have no indicator. The stable one-line rhythm keeps the
 // title list scannable while the HoverCard preserves project, host, branch,
 // jobs, subagents, watches, tier, and age without permanent visual noise.
 //
@@ -31,7 +32,6 @@
 // with no hover to reveal them).
 
 import {
-  approvalWaiting,
   humanizeState,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
@@ -48,13 +48,14 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, type CadenceState, Chevron, IconButton } from "../../widgets";
+import { Badge, Chevron, IconButton } from "../../widgets";
 import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
+import { CADENCE_LABEL, cadenceStateFor, SessionStatusIndicator, SIGNAL_STATES } from "../SessionStatusIndicator";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import styles from "./RailRow.module.css";
 import {
@@ -85,8 +86,6 @@ const CLASS = {
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
   sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
-  statusDot: requireClass(styles.statusDot, "RailRow.module.css", "statusDot"),
-  statusSpinner: requireClass(styles.statusSpinner, "RailRow.module.css", "statusSpinner"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextKind: requireClass(styles.contextKind, "RailRow.module.css", "contextKind"),
@@ -106,51 +105,6 @@ const CLASS = {
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
-};
-
-// Maps hubcore's normalized session state (cmd/evener-hub/internal/hubcore/
-// tree.go's NormalizeState / the State field's own doc comment: "errored" |
-// "awaiting" | "active" | "warning" | "idle" | "ended", plus a "notLoaded"
-// fallback) onto Cadence's four-family state space. "awaiting" is exactly
-// what makes a row NeedsYou-eligible server-side, so it maps to
-// "needs-you"; "warning" has no dedicated Cadence family (attention/alive/
-// danger/neutral) and is the next rung down from "active" in
-// hubapi.AttentionRank, so it shares "needs-you" rather than downgrading to
-// neutral. Exported for direct testing - this mapping is exactly the kind
-// of one-to-many judgment call worth pinning down explicitly.
-export function cadenceStateFor(wireState: string): CadenceState {
-  switch (wireState) {
-    case "errored":
-      return "failed";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// The Cadence states worth spending a dot on: a row is working, a human is
-// needed, or something failed. idle/ended are deliberately absent - a sidebar
-// full of identical grey dots trains the eye to ignore the one dot that
-// matters, and an EMPTY gutter beside a grey age already reads as "nothing
-// happening here" without a glyph asserting it. This is the RAIL asking for
-// less, not the widget changing: every other Cadence surface still renders all
-// five states.
-//
-const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
-
-const CADENCE_LABEL: Record<CadenceState, string> = {
-  working: "Running",
-  "needs-you": "Needs you",
-  failed: "Broken",
-  ended: "Ended",
-  idle: "Idle",
 };
 
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
@@ -178,13 +132,7 @@ function Signal({ wireState }: { wireState: string }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      <span
-        role="img"
-        aria-label={CADENCE_LABEL[state]}
-        data-testid={state === "working" ? "rail-status-spinner" : "rail-status-dot"}
-        data-status={state === "working" ? undefined : state}
-        className={state === "working" ? CLASS.statusSpinner : CLASS.statusDot}
-      />
+      <SessionStatusIndicator state={state} testIdPrefix="rail" />
     </RowGutter>
   );
 }
@@ -487,13 +435,16 @@ function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
 function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
-  if (presented === "errored" || (tally?.failed ?? 0) > 0) return "errored";
-  // Only blocked attention outranks work. Plain awaiting ("Your move") and a
-  // warning share the amber dot family, but running jobs remain what is happening.
+  if (presented === "errored") return "errored";
+  // Only attention that waits on a person outranks work: a question, a turn
+  // that ended on needs_response (awaiting without a question, #4093), an
+  // approval (which displayState presents as awaiting), or a restart. A
+  // warning shares the amber dot family, but running jobs remain what is
+  // happening.
   const attentionOutranksWork =
-    session.state === "restartRequired" ||
-    (session.state === "awaiting" && session.ask_pending === true) ||
-    approvalWaiting(session.state, session.approval_pending === true);
+    presented === "awaiting" ||
+    presented === "restartRequired" ||
+    (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
     return "active";
@@ -596,11 +547,18 @@ function SessionTitle({
   notStarted: boolean;
   focusTarget: () => HTMLElement | null;
 }) {
+  const sideAnchor = useCallback(() => {
+    const row = focusTarget();
+    const rail = row?.closest<HTMLElement>("[data-sidebar-rail]");
+    if (!row || !rail) return null;
+    return { rowRect: row.getBoundingClientRect(), sideRight: rail.getBoundingClientRect().right };
+  }, [focusTarget]);
   return (
     <span className={CLASS.sessionTitle}>
       <HoverCard
         label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
         focusTarget={focusTarget}
+        sideAnchor={sideAnchor}
         longPressEnabled
       >
         {({ describedBy }) => (

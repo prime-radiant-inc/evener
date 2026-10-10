@@ -8,7 +8,13 @@
 // - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
 
-import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  type MethodTypes,
+  type Thread,
+  type ThreadCapabilities,
+  type ThreadReadResponse,
+  WireError,
+} from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
@@ -1002,7 +1008,9 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   expect(message.textContent).toBe("next draft");
 });
 
-test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
+// A refused durable write sends directly; the paused write keeps that send in
+// flight while focus moves, and the daemon's refusal is what the person sees.
+test("ordinary Send retains draft and reports a refused send without late focus theft", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   let failCommit: (() => void) | undefined;
@@ -1011,9 +1019,12 @@ test("ordinary Send retains draft and reports local failure without late focus t
   });
   const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
     await failure;
-    throw new Error("focus proof storage failure");
+    throw new DOMException("storage full", "QuotaExceededError");
   });
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  fake.on("turn/start", () => {
+    throw new WireError("focus proof send refusal", -32000);
+  });
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
@@ -1028,15 +1039,13 @@ test("ordinary Send retains draft and reports local failure without late focus t
     await user.click(elsewhere);
     await act(async () => failCommit?.());
     await waitFor(() =>
-      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain(
-        "focus proof storage failure",
-      ),
+      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain("focus proof send refusal"),
     );
     await flushPendingTurnsProjectionForTests();
     expect(message.textContent).toBe("kf");
     expect(readDraft("ref_a")).toBe("kf");
     expect(send.disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     expect(document.activeElement).toBe(elsewhere);
   } finally {
     failCommit?.();
@@ -1811,6 +1820,136 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+});
+
+// RoboRev round-7 Medium: the composer's Stop button is a Stop call site too
+// (handleInterruptClick -> threadsStore.interrupt), and interrupt lacked the
+// mid-swap sweep forceStop and shutdown already had. A live fenced local session
+// (active snapshot plus the resumeRequired overlay) keeps its Stop button while
+// the resume moves the parked row to the resumed ref; pressing Stop then let the
+// moved row deliver. This drives the REAL button and the REAL stores.
+test("the composer's Stop button cancels the row a mid-swap resume moved to the resumed ref", async () => {
+  const user = userEvent.setup();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  const ref = "local:btn-stop-from";
+  const toRef = "local:btn-stop-to";
+  const fromShape = () =>
+    readResponse(ref, {
+      status: { type: "active" },
+      evener: {
+        ref,
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        resumeRequired: true,
+        queue: { revision: 0 },
+        activeTurnId: "turn_1",
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The resumed ref's snapshot is fenced too, so the row the retarget moves onto
+  // it parks (unattempted) and only the sweep can cancel it.
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...FULL_CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+  // The drive settles first, then its trailing drain runs on a later task.
+  // Holding that pass open is the window the reviewer names: no fence runs again,
+  // so the drive's own catch compensation is gone and only the Stop call sites'
+  // sweep can cancel the moved row.
+  let drainHeld = false;
+  let releaseDrain!: () => void;
+  const drainGate = new Promise<void>((resolve) => {
+    releaseDrain = resolve;
+  });
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    // Only the trailing drain's pass runs after the drive published the resumed
+    // identity; hold it before the move so the registration stays live.
+    if (!drainHeld && threadsStore.getState().resumedIdentities.has(ref)) {
+      drainHeld = true;
+      await drainGate;
+    }
+    return realRetarget.call(this, from, to, identity);
+  });
+  fake.on("thread/read", (params) => (params.ref === toRef ? toFenced() : fromShape()));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+  }));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${params.ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    // Arm the resumed ref's restart obligation first: the retarget then moves the
+    // parked row onto a ref that is already fenced, so it parks unattempted.
+    await threadsStore.getState().ensureThread(toRef);
+    render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+    expect(screen.getByTestId("composer-stop")).toBeTruthy();
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    await user.click(editor);
+    await user.type(editor, "stop me");
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(drainHeld).toBe(true));
+    // The drive settled; its retarget already moved the parked row to the resumed
+    // ref, where it waits because that ref is fenced.
+    const moved = await storage.listOutbox(toRef);
+    expect(moved).toHaveLength(1);
+    const movedId = moved[0]?.clientMutationId;
+    // Press Stop on the still-visible old ref, in the held drain window.
+    await user.click(screen.getByTestId("composer-stop"));
+    await flushPendingTurnsProjectionForTests();
+    // The press reached interrupt: its own turn/interrupt row parks under the
+    // fenced old ref. The sweep is the only thing that can reach toRef now.
+    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
+    releaseDrain();
+    await flushPendingTurnsProjectionForTests();
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    // The moved row is durably canceled under the resumed ref; the interrupt's
+    // own row lands there too once the released drain moves it, and stays queued.
+    expect(outbox.find((record) => record.clientMutationId === movedId)?.state).toBe("canceled");
+  } finally {
+    releaseDrain();
+    spy.mockRestore();
+  }
 });
 
 test("mobile composer omits the working path and repository without a git lookup", async () => {

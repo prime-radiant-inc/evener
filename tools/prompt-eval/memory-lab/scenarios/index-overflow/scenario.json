@@ -1,0 +1,44 @@
+{
+  "arms": [
+    "on",
+    "off"
+  ],
+  "fixture_from": "migration",
+  "stages": [
+    {
+      "name": "B",
+      "seed_project_memory": "seed",
+      "prompt": "Add ApplyCoupons(total int, percents []int) int to the shop package: it applies a cart's coupons to its total, in cents. Add tests.",
+      "checks": [
+        {
+          "name": "tests pass",
+          "run": "go test ./..."
+        },
+        {
+          "name": "held-out largest coupon only",
+          "run": "cat > zz_heldout_test.go <<'EOF'\npackage shop\n\nimport \"testing\"\n\nfunc TestHeldoutApplyCouponsLargestOnly(t *testing.T) {\n\tfor _, c := range []struct {\n\t\ttotal    int\n\t\tpercents []int\n\t\twant     int\n\t}{\n\t\t{1000, []int{10, 20}, 800},\n\t\t{1000, []int{20, 10}, 800},\n\t\t{1000, nil, 1000},\n\t\t{1000, []int{50, 50}, 500},\n\t} {\n\t\tif got := ApplyCoupons(c.total, c.percents); got != c.want {\n\t\t\tt.Errorf(\"ApplyCoupons(%d, %v) = %d, want %d\", c.total, c.percents, got, c.want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
+        },
+        {
+          "name": "new pages reuse seeded tags",
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --tags-subset-of api,cart,catalog,ci,coupons,docs,indexeddb,logging,pricing,release,tests,vitest"
+        },
+        {
+          "name": "new pages have a description",
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-description"
+        }
+      ],
+      "trace": [
+        {
+          "name": "read the coupon page",
+          "tool": "memory_read",
+          "regex": "coupon"
+        },
+        {
+          "name": "searched memory for coupons",
+          "tool": "memory_search",
+          "regex": "(?i)coupon"
+        }
+      ]
+    }
+  ]
+}

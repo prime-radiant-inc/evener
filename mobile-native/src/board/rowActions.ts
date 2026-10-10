@@ -10,12 +10,10 @@ import type { ClassifiedRow } from "./attention";
 import { journalOperation, organizationFree } from "./organizationCheck";
 import type { ProjectMenuAction } from "./projectMenu";
 
-export type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename";
+export type RowAction = "pin" | "stop" | "shutDown" | "archive" | "unarchive" | "rename";
 
 export const ROW_ACTION_LABELS: Record<RowAction, string> = {
 	pin: "Pin to category…",
-	markRead: "Mark as read",
-	markUnread: "Mark as unread",
 	stop: "Stop",
 	shutDown: "Shut down",
 	archive: "Archive",
@@ -56,8 +54,6 @@ export function archiveTarget(row: NavigationSessionSummary): Omit<ArchiveParams
 export function rowMenuActions({ row, state }: ClassifiedRow, context: RowActionContext): RowAction[] {
 	const actions: RowAction[] = [];
 	if (isTopLevel(row)) actions.push("pin");
-	if (state === "finished") actions.push("markRead");
-	if (state === "idle") actions.push("markUnread");
 	if (state === "working") actions.push("stop");
 	if (row.live && !row.offline && row.state !== "restartRequired") actions.push("shutDown");
 	if (archiveTarget(row)) actions.push(context.archived ? "unarchive" : "archive");

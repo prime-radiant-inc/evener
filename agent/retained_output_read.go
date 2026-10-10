@@ -72,16 +72,18 @@ func readRetainedPage(r io.ReaderAt, retainedStart, total, offset int64) (retain
 		}
 	}
 	page.BytesReturned = n
-	if utf8.Valid(content) {
-		page.Data = string(content)
-	} else {
-		page.Encoding = "base64"
-		page.Data = base64.StdEncoding.EncodeToString(content)
-	}
+	page.Encoding, page.Data = encodeRawOutputBytes(content)
 	if end := offset + n; end < total {
 		page.Continuation = &retainedContinuation{OffsetBytes: end}
 	}
 	return page, nil
+}
+
+func encodeRawOutputBytes(content []byte) (encoding, data string) {
+	if utf8.Valid(content) {
+		return "utf8", string(content)
+	}
+	return "base64", base64.StdEncoding.EncodeToString(content)
 }
 
 // searchSource supplies stable, forward, lifetime-offset raw windows. Concrete

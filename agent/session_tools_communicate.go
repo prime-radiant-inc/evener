@@ -29,6 +29,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
+	if deps.offersEndReason {
+		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
+	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
@@ -44,6 +47,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			endTurn, ok := args["end_turn"].(bool)
 			if !ok {
 				return nil, errors.New("communicate requires end_turn")
+			}
+			// The registry's schema has already held end_reason to its enum.
+			endReason := ""
+			if endTurn && deps.offersEndReason {
+				endReason, _ = args["end_reason"].(string)
+				if endReason == "" {
+					endReason = tool.CommunicateEndReasonDone
+				}
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -71,9 +82,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:  callIDFromContext(ctx),
-				EndTurn: endTurn,
-				Message: message,
+				CallID:    callIDFromContext(ctx),
+				EndTurn:   endTurn,
+				Message:   message,
+				EndReason: endReason,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing
@@ -123,7 +135,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 						capturedOutput = json.RawMessage(`null`)
 					}
 				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
 			}
 
 			resp := map[string]any{
@@ -137,9 +149,22 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				}
 			}
 			b, _ := json.Marshal(resp)
+			if accepted && endReason != "" {
+				// The accepted end reason rides the result's tool state, which
+				// restore reads (endedOnNeedsResponse): the result text can be
+				// truncated or carry a repeated-call nudge.
+				return tool.StateResult{Output: string(b), State: communicateEndState{EndReason: endReason}}, nil
+			}
 			return string(b), nil
 		},
 	})
+}
+
+// communicateEndState is the tool state of the turn-ending communicate call
+// the input accepted.
+type communicateEndState struct {
+	// The key is communicate's own, so no other tool's state can match it.
+	EndReason string `json:"communicate_end_reason"`
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this

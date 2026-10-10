@@ -13,7 +13,7 @@ import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "./sheet/sheetHosts";
 import { Toast, type ToastMessage, useToast } from "./Toast";
-import { Action } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export interface QueueHost {
 	/** The session's queued messages, every one of them. */
@@ -78,16 +78,16 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 					/>
 				))}
 				{steerAll ? (
-					<Action
+					<Button
+						text
+						label="Steer all now"
 						disabled={host.disabled}
 						onPress={() => {
 							void steerAll().then((message) => {
 								if (message) toast.show(message);
 							});
 						}}
-					>
-						Steer all now
-					</Action>
+					/>
 				) : null}
 			</ScrollView>
 		</Sheet>

@@ -52,6 +52,42 @@ losing the conversation that made the evidence relevant.
   investigate without rebuilding their place. See
   [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
   and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Let filename Open own its placement.** On a settled session route, opening
+  or reopening a filename selects its document beside the exact living source
+  promoted to main, including a secondary session or read-only transcript.
+  The canonical document binding retains that source for Back. Reconnect and
+  settled location refresh do not replay the old route over this selection.
+  Route reconciliation waits until the opening stack finishes when document
+  hydration publishes a reference before the exact source owner arrives.
+  New or pending URL intent still takes precedence. Generic documents and
+  stale or mismatched source bindings do not override route placement. See
+  [document Open](../../cmd/evener-hub/frontend/src/panes/doc/openDoc.ts) and
+  [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
+- **Return to reading, not a fresh end landing.** The pane-lifetime transcript
+  read view retains the source's measured entry and offset while a document is
+  open. On readonly remount,
+  [ReadOnlyThreadContent](../../cmd/evener-hub/frontend/src/panes/transcript/ReadOnlyThreadContent.tsx)
+  admits that capture through the existing transcript registry before scroll
+  initialization, including when content arrives after hydration. The shared
+  body and VirtualList still own committed measurement and restoration. A
+  retained away reader does not acquire end-follow intent from an unmeasured
+  port. Fresh readers still land at the latest content, and newer reader
+  movement supersedes the retained capture.
+- **Reconstruct the host, not the workspace.** Switching from a living phone
+  workspace to desktop, including its first desktop mount, restores dockview
+  geometry around the exact living pane records, their current slots and the
+  latest selection. Document Back owners, captured
+  file references and reopen generations stay with those records, outside pane
+  params and saved layouts. Phone-created panes survive; closed panes do not
+  return from stale geometry. Cold layout restoration creates fresh records and
+  honors route intent without resurrecting runtime owners. Programmatic slot
+  moves do not count as user selection. DockHost moves only panes whose logical
+  slots change, keeping the promoted main isolated and leaving unchanged-slot
+  panes in their user-chosen groups. Params, document-binding and pane add/remove
+  publications do not collect secondary splits into one group. Cold and live
+  restore retain saved group geometry; live slot changes made on phone reconcile
+  against saved placements without moving unaffected panes. See
+  [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
 - **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
   enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,
   and semantic color distinguishes attention, activity, failure and selection with text or
@@ -127,11 +163,24 @@ rules, not permission to fabricate a summary or rewrite stored evidence.
 
 ## Agent cascade
 
-Desktop Agents rows drill in place. Keep the selected child and immediate parent
-readable; earlier ancestors become live 52px spines. The parent is 400px wide.
+Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
+Keep the original center conversation mounted with its composer and reading position.
+Keep the selected child and immediate parent readable; earlier ancestors become
+live 52px spines. The parent is 400px wide.
 The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
 and reveal the selected leaf instead of squeezing either reader. Parent and
 leaf transcript scrollers remain independent.
+
+Only ancestor spines use the session list's shared
+[SessionStatusIndicator](../../cmd/evener-hub/frontend/src/shell/SessionStatusIndicator.tsx):
+a gray spinning ring for active work, an amber dot for attention and a red diamond
+for failure. Idle and ended states have no glyph. The ring remains static under
+reduced motion. Each spine maps its own raw runtime status through
+`cadenceStateForStatus`: `systemError` means failure and `closed` means ended;
+unknown values remain quiet. Hover and visually hidden text preserve the runtime
+label, including unknown states, rather than replacing it with the indicator's
+family label. Readable parent and leaf columns keep their full status labels.
+Counts, focus and activity ownership remain unchanged.
 
 Ancestor controls open a scoped peek. Keyboard activation of a delegate replaces
 the path after that ancestor. Tasks remains inside the peek. One Escape closes
@@ -143,10 +192,13 @@ and late ancestry updates preserve geometry and focus. Reduced motion makes
 geometry changes immediate. Unknown ancestry stays visible rather than inventing
 a root or discarding the retained path.
 
-Return restores the original panel and source work. Open conversation opens an
-independent ordinary session pane. Saved intent preserves the selected ref,
-edges and return descriptor without serializing transcript payloads or image
-bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+Return closes only the inspector and focuses its exact surviving source lifetime.
+A session source receives editor focus without moving its reader. A retired source
+is never recreated or replaced by a reused pane ID. Existing saved cascades without
+separated-inspection intent retain their recorded Return behavior. Open conversation
+opens an independent ordinary session pane. Saved intent preserves the selected
+ref, edges, read-only source and origin locator without serializing transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
 read-only content and Return; ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
@@ -206,9 +258,10 @@ danger = failure/destruction; accent = links, focus and selection. No decorative
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior. The rail's running ring is the one state-driven navigation exception; it spins only
-while the navigation summary reports running work and becomes static under reduced motion. See §5
-for the exact budgets and exceptions.
+behavior. The shared rail and ancestor-spine running ring is the state-driven
+compact-status exception; it spins only while the owning status authority reports
+active work and becomes static under reduced motion. See §5 for the exact budgets
+and exceptions.
 
 **Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
 a surface has room and frame evidence: a state dot plus a 64×10px activity
@@ -231,6 +284,22 @@ host, branch, running jobs, subagent tally, watches, tier and age move into a sh
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
+
+Ancestor spines share this compact renderer, not the rail's status authority.
+The rail retains navigation-summary arbitration, including running jobs and
+descendants, and maps normalized `errored` and `ended` values through
+`cadenceStateFor`. Spines use runtime metadata from their existing scoped activity
+binding and the separate raw-status mapper. Sharing the glyph adds no activity
+read, subscription or retry owner.
+
+Session context cards float 12px beyond the sidebar's right edge, vertically centered on the
+owning row and shifted to keep 8px of viewport clearance. An open card follows the row while
+the sidebar is dragged to a new width. When the card cannot fit beside the
+sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
+and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
+pending reveals, including long presses; a fresh gesture reveals it at the new position.
+Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
+keep their default placement.
 
 ---
 
@@ -641,11 +710,12 @@ widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
-One navigation exception (2026-10-01): the browser rail's grey running ring rotates while the
-authoritative navigation summary reports active work, including running jobs or descendants. It
-communicates state, not frame throughput or percent complete. Broken and needs-you remain static,
-shape-distinct indicators: a diamond and a solid dot. Under `prefers-reduced-motion: reduce`, the
-ring remains visible but does not rotate.
+One compact-status exception: the shared grey running ring rotates in the browser
+rail while its authoritative navigation summary reports active work, including
+running jobs or descendants, and in ancestor spines while their own runtime status
+is active. It communicates state, not frame throughput or percent complete. Broken
+and needs-you remain static, shape-distinct indicators: a diamond and a solid dot.
+Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog

@@ -146,8 +146,8 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 			t.Fatalf("replayed response note = %q carries control rune %U", response.Note, r)
 		}
 	}
-	if response.Note != normalizeNote(payload) {
-		t.Fatalf("replayed response note = %q, want the normalized %q", response.Note, normalizeNote(payload))
+	if response.Note != normalizeWhiteboard(payload) {
+		t.Fatalf("replayed response note = %q, want the normalized %q", response.Note, normalizeWhiteboard(payload))
 	}
 }
 

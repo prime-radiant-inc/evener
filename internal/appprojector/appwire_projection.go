@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -134,6 +135,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		p.runningTurnID = ""
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
+	case events.EventStatusSettled:
+		// A resting session's state moved outside any turn (a needs_response
+		// rest arming awaiting after its quiet period). Only a resting state
+		// settles this way; the bridge ignores anything else, and so does
+		// this.
+		state := eventData[events.StatusSettledData](event.Data).State
+		if state != appwire.ThreadStatusAwaiting && state != appwire.ThreadStatusIdle {
+			return nil
+		}
+		return []AppNotification{p.threadStatus(state)}
 	case events.EventGoalUpdated:
 		data := eventData[events.GoalUpdatedData](event.Data)
 		var state *appwire.GoalState
@@ -372,7 +383,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return out
 	case events.EventDelegateUpdated:
 		data := eventData[events.DelegateUpdatedData](event.Data)
-		if data.OwnerSessionID != p.threadID || data.DelegateID == "" {
+		// The owner's (root's) thread lists every delegate; a subagent's lists
+		// the delegates in its subtree.
+		listed := data.OwnerSessionID == p.threadID || slices.Contains(data.AncestorSessionIDs, p.threadID)
+		if !listed || data.DelegateID == "" {
 			return nil
 		}
 		incoming := appwireDelegateInfo(data)

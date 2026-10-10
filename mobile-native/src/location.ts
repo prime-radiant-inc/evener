@@ -1,4 +1,5 @@
 import { isPlainObject } from "@evener/appwire-client";
+import type { FileReference } from "@evener/appwire-client/docContent";
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
 import { localSessionId } from "./sessionDeletionResult";
 import { isSheetRoute } from "./sheet/sheetRoutes";
@@ -7,7 +8,7 @@ import type { SyncStringStorage } from "./syncStringStorage";
 export interface SavedLocation {
 	hubId: string;
 	conversation?: { ref: string; title: string };
-	reader?: { sessionRef: string; path: string; updatedAt?: string };
+	reader?: { sessionRef: string; path: string; reference?: FileReference; updatedAt?: string };
 	pinAssignment?: true;
 	deleteSession?: true;
 	fork?: ForkTarget;
@@ -22,6 +23,18 @@ export interface SavedLocation {
 	};
 }
 const key = "evener.last-location";
+function fileReference(value: unknown): value is FileReference {
+	return (
+		isPlainObject(value) &&
+		typeof value.path === "string" &&
+		value.path !== "" &&
+		typeof value.cwd === "string" &&
+		value.cwd !== "" &&
+		typeof value.readTarget === "string" &&
+		value.readTarget.startsWith("/") &&
+		(value.provenance === "relative" || value.provenance === "absolute")
+	);
+}
 function conversation(value: unknown): value is { ref: string; title: string } {
 	return (
 		isPlainObject(value) && typeof value.ref === "string" && value.ref.length > 0 && typeof value.title === "string"
@@ -34,6 +47,7 @@ function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
 		value.sessionRef.length > 0 &&
 		typeof value.path === "string" &&
 		value.path.length > 0 &&
+		(value.reference === undefined || (fileReference(value.reference) && value.reference.path === value.path)) &&
 		(value.updatedAt === undefined || typeof value.updatedAt === "string")
 	);
 }
@@ -138,6 +152,7 @@ export class LocationRepository {
 						reader: {
 							sessionRef: value.reader.sessionRef,
 							path: value.reader.path,
+							...(value.reader.reference ? { reference: value.reader.reference } : {}),
 							...(value.reader.updatedAt === undefined ? {} : { updatedAt: value.reader.updatedAt }),
 						},
 					}
@@ -213,8 +228,13 @@ export function locationForRoute(
 	}
 	if (route.name === "Reader") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
-		const { sessionRef, path, sessionTitle, updatedAt } = route.params;
-		const destination = { sessionRef, path, ...(typeof updatedAt === "string" ? { updatedAt } : {}) };
+		const { sessionRef, path, sessionTitle, updatedAt, reference } = route.params;
+		const destination = {
+			sessionRef,
+			path,
+			...(fileReference(reference) ? { reference } : {}),
+			...(typeof updatedAt === "string" ? { updatedAt } : {}),
+		};
 		const session = { ref: sessionRef, title: sessionTitle };
 		return reader(destination) && conversation(session)
 			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
@@ -254,6 +274,7 @@ export function restoredStack(location: SavedLocation | null) {
 			tier?: "current" | "recent" | "archived";
 			sessionRef?: string;
 			path?: string;
+			reference?: FileReference;
 			sessionTitle?: string;
 			updatedAt?: string;
 		};
@@ -290,13 +311,14 @@ export function restoredStack(location: SavedLocation | null) {
 			name: "Conversation",
 			params: { hubId: location.hubId, ...location.conversation },
 		});
-	if (location?.reader && location.conversation)
+	if (location?.reader?.reference && location.conversation)
 		routes.push({
 			name: "Reader",
 			params: {
 				hubId: location.hubId,
 				sessionRef: location.reader.sessionRef,
 				path: location.reader.path,
+				reference: location.reader.reference,
 				sessionTitle: location.conversation.title,
 				...(location.reader.updatedAt === undefined ? {} : { updatedAt: location.reader.updatedAt }),
 			},

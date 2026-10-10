@@ -78,6 +78,12 @@ export interface ArchivedListParams {
   projectKey: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Revision is the revision of the list the caller holds (a response's
+   * Revision). When it is still the list's, the response says Unchanged and
+   * carries no rows. An older hub ignores it and answers the page.
+   */
+  revision?: string;
 }
 
 export interface ArchivedListResponse {
@@ -85,6 +91,19 @@ export interface ArchivedListResponse {
   nextCursor?: string;
   total: number;
   catalog?: string;
+  /**
+   * Revision fingerprints the whole list read, the same on every page of it;
+   * it changes when any row a page could show changes. An older hub sends
+   * none. It vouches for the rows a client holds only when every page it
+   * holds carried this same revision; a client whose pages carried
+   * different revisions holds none, and reads again.
+   */
+  revision?: string;
+  /**
+   * Unchanged is true when the request's Revision is still the list's: the
+   * response then carries no rows, and Total, Catalog and Revision stand.
+   */
+  unchanged?: boolean;
 }
 
 export interface AttentionChanged {
@@ -100,6 +119,13 @@ export interface AttentionChanged {
    * question's equivalent.
    */
   approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
   prevLevel: string;
 }
 
@@ -763,15 +789,15 @@ export interface EvenerThread {
    */
   goal?: GoalState;
   /**
-   * HumanNote carries the human's one-paragraph session whiteboard when set,
-   * else empty. It powers the shared-notes display without a bespoke
+   * HumanNote carries the human's session whiteboard, line breaks kept, when
+   * set, else empty. It powers the shared-notes display without a bespoke
    * transport — like Goal, it is structured per-session state read from the
    * already-fetched thread snapshot.
    */
   humanNote?: string;
   /**
-   * AgentNote carries the agent's one-paragraph session whiteboard when set,
-   * else empty. It is read from the already-fetched thread snapshot like
+   * AgentNote carries the agent's session whiteboard, line breaks kept, when
+   * set, else empty. It is read from the already-fetched thread snapshot like
    * HumanNote.
    */
   agentNote?: string;
@@ -1892,16 +1918,13 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
-export interface JobOutputTail {
-  tail: string;
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
   totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  /**
-   * HasEarlier is true when retained output exists before the window: a
-   * follow-up read with beforeBytes=RetainedStart returns the previous page.
-   */
-  hasEarlier?: boolean;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
 }
 
 export interface JobsGetParams {
@@ -1930,7 +1953,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: JobOutputTail;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {
@@ -2383,6 +2406,12 @@ export interface NavigationReadParams {
   resource: string;
   section?: string;
   sectionId?: string;
+  /**
+   * Catalog names a catalog read's catalog. On a project or project_page
+   * read it narrows the read to that catalog's project, as a location's
+   * catalog names it; an older hub refuses it there, and sends no location
+   * catalog to take it from.
+   */
   catalog?: string;
   projectKey?: string;
   tier?: string;
@@ -2425,6 +2454,14 @@ export interface NavigationSessionLocation {
   revision: number;
   ref: string;
   top_level_ref: string;
+  /**
+   * Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+   * whose project ProjectKey names: a key can be in several, and a project
+   * or project_page read naming this catalog returns the project holding
+   * the session. Absent outside a project, and from an older hub, which
+   * also refuses a catalog on those reads.
+   */
+  catalog?: string;
   project_key?: string;
   top_level: boolean;
   tier?: string;
@@ -2527,6 +2564,15 @@ export interface NavigationSessionSummary {
    * carries TurnEndedAt.
    */
   unseen?: boolean;
+  /**
+   * SeenThrough is the hub's seen-through mark for a live row, floored at
+   * the seen store's start, so a client can tell output that moved after it
+   * (an activity read's lastMovedAt) from output already seen, even
+   * mid-turn. It does not reflect an explicit "Mark as unread", so a client
+   * also reads Unseen. Absent on a row that isn't live, and from a hub with
+   * no seen store or an older hub.
+   */
+  seen_through?: string;
   /**
    * Own-session activity counts are captured before navigation fitting.
    * RunningJobCommand is the first available command, bounded for display.
@@ -2767,6 +2813,16 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer version: a newer remote commit for a git-backed plugin, or new
+   * contents in its marketplace, which the check refreshes first, for one
+   * stored in its marketplace's own repo. Absent means no known update: no check has run,
+   * the check found the plugin current or could not read its source, or the
+   * plugin is used in place from a directory. Clients offer Upgrade only when
+   * it is true.
+   */
+  updateAvailable?: boolean;
 }
 
 export interface PluginLaunchCandidate {
@@ -3078,7 +3134,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
@@ -3097,6 +3153,14 @@ export interface SessionActivity {
    * call, and when the daemon predates the field.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+   * motion (ThreadActivity.LastMovedAt). A client compares it with the
+   * session's seen_through to tell whether anything moved since the person
+   * last looked, mid-turn included. Absent until the tree has moved since
+   * its daemon began serving it, and from an older hub or daemon.
+   */
+  lastMovedAt?: number;
 }
 
 export interface SessionActivityAncestor {
@@ -3171,6 +3235,12 @@ export interface SessionActivitySummary {
   refreshPending?: boolean;
   context: SessionActivityContext;
   scope: SessionActivityScope;
+  /**
+   * Delegates counts a delegate as active while its run is open. For a root
+   * read at scope subtree, Active is the Live row's SubagentTally.Running
+   * and evener/activity/read's runningSubagents; scope session counts only
+   * direct children.
+   */
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
@@ -3615,6 +3685,12 @@ export interface ThreadActivity {
    * from a daemon that predates it.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is LastActivityAt counting only real motion: absent until
+   * the tree has moved since the daemon began serving the session, so a
+   * daemon restart is not news to a client comparing it with a seen mark.
+   */
+  lastMovedAt?: number;
 }
 
 export interface ThreadCapabilities {
@@ -4622,6 +4698,7 @@ export const METHOD_NAMES = [
   "evener/plugin/enable",
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
+  "evener/plugin/checkUpdates",
   "evener/command/list",
   "evener/spawn/slashCatalog",
   "evener/settings/overview",
@@ -4689,6 +4766,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/path/validate",
   "evener/paths/complete",
   "evener/plugin/checkNow",
+  "evener/plugin/checkUpdates",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -4784,7 +4862,6 @@ export const STEERING_KINDS = [
   "no-tool-calls",
   "loop-detected",
   "tasks-done",
-  "task-nudge",
   "task-inactive",
   "note-handoff",
   "goal-objective",
@@ -4818,6 +4895,8 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "notes-context",
   "warning",
   "interrupted",
+  "approval_decision",
+  "memory-context",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -4929,6 +5008,7 @@ export interface MethodTypes {
   "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/plugin/checkUpdates": { params: EmptyParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };

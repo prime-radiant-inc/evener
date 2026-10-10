@@ -27,7 +27,11 @@ export function CommentSheet({ route }: NativeStackScreenProps<Routes, "CommentS
 	};
 	return (
 		<Sheet title="Comment" onCancel={sheet.close} done={{ label: "Add", disabled: blank, onPress: add }}>
-			<ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+			<ScrollView
+				automaticallyAdjustKeyboardInsets
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 16, gap: 16 }}
+			>
 				<QuoteBlock words={quote} limit={QUOTE_SHOWN} size={15} lineHeight={21} />
 				<TextInput
 					accessibilityLabel="Comment"

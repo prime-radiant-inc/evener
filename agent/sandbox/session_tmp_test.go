@@ -459,13 +459,6 @@ func TestSessionTmpContainerReapedWhenWorkspaceContainsItsBase(t *testing.T) {
 // reported and left in place, and the sweep still reclaims the rest rather than
 // aborting the base.
 func TestSessionTmpSweepReportsUnremovableContainer(t *testing.T) {
-	if os.Geteuid() == 0 {
-		// Root bypasses a 0500 container with CAP_DAC_OVERRIDE, so the removal this
-		// test needs to fail would succeed and neither assertion would mean what it
-		// says. Same guard as the sibling permission-denial tests in
-		// scratch_retention_test.go.
-		t.Skip("an unremovable container cannot be created as root")
-	}
 	hostTempForTest(t)
 	isolateScratchBases(t)
 	workspace := t.TempDir()
@@ -478,13 +471,17 @@ func TestSessionTmpSweepReportsUnremovableContainer(t *testing.T) {
 	if err := stuck.Retain(); err != nil {
 		t.Fatalf("Retain: %v", err)
 	}
-	// With the container itself non-writable, its leaf cannot be unlinked from
-	// it, so removal must fail.
-	if err := os.Chmod(stuckContainer, 0o500); err != nil {
-		t.Fatal(err)
+	// The stuck container holds a tree this process cannot remove, as a subtree
+	// another uid planted in the world-writable leaf would be.
+	stuckTombstone := filepath.Base(crashedSessionScratchTombstone(stuckContainer))
+	sessionScratchRemoveTree = func(dir string) error {
+		if filepath.Base(dir) == stuckTombstone {
+			return errors.New("permission denied: a subtree another uid planted")
+		}
+		return removeTree(dir)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(stuckContainer, 0o711)
+		sessionScratchRemoveTree = removeTree
 		_ = os.RemoveAll(stuckContainer)
 	})
 	reapable, err := NewSessionTmp()

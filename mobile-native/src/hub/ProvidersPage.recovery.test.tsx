@@ -15,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
-import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { render, renderedText, screenConnection, unmountMountedTrees } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -45,6 +45,7 @@ vi.mock("@react-navigation/native", async () => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 

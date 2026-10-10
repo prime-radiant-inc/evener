@@ -17,7 +17,7 @@ import {
 import { createRef } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { createTestStack } from "../navigationTestStack.testkit";
+import { BlankPage, createTestStack } from "../navigationTestStack.testkit";
 import { render } from "../renderNative.testkit";
 
 vi.mock("react-native", async () => ({
@@ -37,7 +37,7 @@ function UnsavedLaunchDefaults() {
 function HubSheet() {
 	return (
 		<Hub.Navigator initialRouteName="LaunchSettings">
-			<Hub.Screen name="HubHome" component={() => null} />
+			<Hub.Screen name="HubHome" component={BlankPage} />
 			<Hub.Screen name="LaunchSettings" component={UnsavedLaunchDefaults} />
 		</Hub.Navigator>
 	);
@@ -48,7 +48,7 @@ it("asks before the Hub sheet goes while a page inside it holds an unsaved edit"
 	render(
 		<BaseNavigationContainer ref={navigation}>
 			<Root.Navigator initialRouteName="Sessions">
-				<Root.Screen name="Sessions" component={() => null} />
+				<Root.Screen name="Sessions" component={BlankPage} />
 				<Root.Screen name="Hub" component={HubSheet} />
 			</Root.Navigator>
 		</BaseNavigationContainer>,

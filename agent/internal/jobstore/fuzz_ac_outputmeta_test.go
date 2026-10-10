@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -169,12 +170,19 @@ func FuzzAcOutputMetaCodec(f *testing.F) {
 		if derr != nil || !dok {
 			t.Fatalf("grown pending sidecar rejected: ok=%v err=%v (F=%d metaR=%d L=%d)", dok, derr, F, metaR, L)
 		}
+		// The old file still starts at the final metadata's start (not a
+		// partial line), and readers see only from where the pending
+		// compaction will start; legacy pending metadata without a partial
+		// flag counts as partial whenever it dropped bytes.
 		wantD := outputMeta{
-			TotalBytes:     L,
-			RetainedStart:  0,
-			RetainedSHA256: hex.EncodeToString(sha256sum(output)),
+			TotalBytes:           L,
+			RetainedStart:        0,
+			RetainedStartPartial: new(false),
+			RetainedSHA256:       hex.EncodeToString(sha256sum(output)),
+			VisibleStart:         new(L - metaR),
+			VisibleStartPartial:  new(true),
 		}
-		if dgot != wantD {
+		if !reflect.DeepEqual(dgot, wantD) {
 			t.Fatalf("grown pending recovery mismatch:\n  got =%+v\n  want=%+v", dgot, wantD)
 		}
 	})

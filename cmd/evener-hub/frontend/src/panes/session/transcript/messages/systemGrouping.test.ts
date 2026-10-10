@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { ItemModel } from "@evener/appwire-client";
+import { type ItemModel, WarningCodeContextBudget } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import { shouldGroup, systemRunFor } from "./systemGrouping";
 
@@ -86,8 +86,12 @@ test("shouldGroup: a run longer than 3 groups", () => {
 // must never be foldable into a collapsed "N system events · <the FIRST item's
 // line>" disclosure - a summary that can describe something else entirely.
 
+function systemEvent(id: string, eventKind: string, raw?: unknown): ItemModel {
+  return { id, turnId: "turn_1", type: "systemMessage", text: `text-${id}`, eventKind, raw };
+}
+
 function failure(id: string): ItemModel {
-  return { id, turnId: "turn_1", type: "systemMessage", text: `text-${id}`, eventKind: "error" };
+  return systemEvent(id, "error");
 }
 
 test("a turn failure is its own run of one, and is first, so it always renders itself", () => {
@@ -125,4 +129,33 @@ test("a run's count excludes the failure that broke it", () => {
   const run = systemRunFor(items, "a");
   expect(run?.items).toHaveLength(2);
   expect(shouldGroup(run!)).toBe(false);
+});
+
+// An interrupted notice (a model round that ended with output or tool calls
+// never recorded) is a row a reader hunts for, like a failure: it stays its
+// own line and never folds into a group, matching the phone (#3821).
+test("an interrupted notice stands alone and breaks the run around it", () => {
+  const items = [
+    item("a", "systemMessage"),
+    item("b", "systemMessage"),
+    systemEvent("cut", "interrupted"),
+    item("c", "systemMessage"),
+    item("d", "systemMessage"),
+  ];
+  const own = systemRunFor(items, "cut");
+  expect(own?.items.map((i) => i.id)).toEqual(["cut"]);
+  expect(own?.isFirst).toBe(true);
+  expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "b"]);
+  expect(systemRunFor(items, "c")?.items.map((i) => i.id)).toEqual(["c", "d"]);
+});
+
+// An informational warning (a coded "no action needed" notice) is churn, not a
+// row a reader hunts for, so it still joins its neighbours' run.
+test("an informational warning joins the run around it", () => {
+  const items = [
+    item("a", "systemMessage"),
+    systemEvent("budget", "warning", { warning: { code: WarningCodeContextBudget } }),
+    item("b", "systemMessage"),
+  ];
+  expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "budget", "b"]);
 });

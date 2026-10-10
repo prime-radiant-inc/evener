@@ -203,8 +203,10 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
+		s.appHeldSettledEffect = nil
 		s.appReservedTurnID = ""
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
@@ -363,12 +365,21 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
+		supersededSettledStatus := event.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked()
+		if event.Kind == events.EventStatusSettled {
+			s.settledStatusLocked(event, supersededSettledStatus)
+		}
 		if started, ok := event.Data.(events.ExecutionStartedData); ok && started.TurnID != "" && started.TurnID == s.appPendingStableTurnID {
 			// The execution SetProcessingTurn published has started, so a
 			// terminal status from the input before it must not be replayed
 			// after this boundary.
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
+		}
+		if event.Kind == events.EventSessionEnd {
+			// Every SESSION_END ends the input that held a rest, including an
+			// interrupted one, whose status effect is nil and so can't drop it.
+			s.appHeldSettledEffect = nil
 		}
 		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
@@ -381,13 +392,32 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		pending = append(pending, s.activityChangeNotificationLocked(event)...)
+		history := s.appHistories.get(threadID)
+		if changed, ok := event.Data.(events.EnvironmentChangedData); ok && event.Kind == events.EventEnvironmentChanged {
+			s.appEnvelope.WorkingDir = changed.WorkingDir
+			s.appEnvelope.cwdCarrierGeneration++
+			resync := appwire.ThreadResyncParams{
+				ThreadID:       threadID,
+				Ref:            ref,
+				BootGeneration: s.appBootGeneration,
+			}
+			if history != nil {
+				resync.Epoch = history.Epoch()
+			}
+			pending = append(pending, pendingAppNotification{
+				threadID: threadID,
+				ref:      ref,
+				method:   appwire.NotifyEvenerThreadResync,
+				params:   resync,
+			})
+		}
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
 			// synchronously with the session loop. The projector's execution
 			// statuses reach the bridge later, and one from an execution that
 			// ended would land over the next one's active status.
-			if item.Method == appwire.NotifyThreadStatusChanged && isExecutionBoundary(event) {
+			if item.Method == appwire.NotifyThreadStatusChanged && (isExecutionBoundary(event) || supersededSettledStatus) {
 				continue
 			}
 			// A queued terminal event can end the input before an execution
@@ -471,7 +501,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 			})
 		}
-		history := s.appHistories.get(threadID)
 		s.mu.Unlock()
 		// The overlay's changes commit with the projector's, in the same
 		// order the session emitted the event.
@@ -540,8 +569,9 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 }
 
 // finishProcessing ends the running input and publishes the thread settled
-// (idle, or the awaiting or closed state already recorded), or the terminal
-// status its SESSION_END deferred, in one projection commit. A thread whose
+// (the state the session's events stored, or idle standing in for a
+// published turn's end that hasn't arrived yet), or the terminal status its
+// SESSION_END deferred, in one projection commit. A thread whose
 // processing already ended publishes nothing: the bridge's status effect for
 // a SESSION_END (applySessionEventStatus) clears processing, except for an
 // interrupted one, so after any other its status was the last word. After an
@@ -551,6 +581,10 @@ func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
+		// A published turn whose end the bridge hasn't reached yet: its
+		// SESSION_END will state the resting state, and until then idle
+		// stands in for it rather than the rest from before the turn.
+		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
@@ -564,12 +598,23 @@ func (s *Server) finishProcessing() {
 			pending = append(pending, item)
 		}
 		s.appDeferredTerminalNotifications = nil
+		held := s.appHeldSettledEffect
+		s.appHeldSettledEffect = nil
+		// A deferred terminal status comes from a published turn, and
+		// publishing a turn drops the held rest, so the two never meet.
+		if held != nil {
+			held(s)
+		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The session state still says what the input left running
-			// ("active") until serve samples it after this call: nothing runs
-			// now, so that reads as idle.
+			// The stored state is what the session's own events stated: a
+			// pass that ran no turn left it as it was, and a held rest or an
+			// interrupted turn's end restated it. Nothing runs once processing
+			// ends, so a stored active (a forecast that work would follow)
+			// reads idle, stored and published alike; work that does follow
+			// publishes its own turn.
 			status := appStatus(s.status.State, false, false)
-			if status == appwire.ThreadStatusActive {
+			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}
 			pending = append(pending, pendingAppNotification{
@@ -582,6 +627,25 @@ func (s *Server) finishProcessing() {
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, pending)
 	})
+}
+
+// settledStatusLocked applies a resting status that settled outside any turn
+// (EventStatusSettled) in the same lock hold that decides whether it is
+// published: applied when it can be published now; held for the end of
+// processing when an input is being taken and no turn is published or
+// reserved yet, since that input may end without a turn; dropped otherwise.
+// The caller holds s.mu.
+func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool) {
+	effect := sessionEventStatusEffect(event)
+	if effect == nil {
+		return
+	}
+	switch {
+	case !superseded:
+		effect(s)
+	case s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed):
+		s.appHeldSettledEffect = effect
+	}
 }
 
 // pendingRootStatus reports whether pending already holds a status change for
@@ -2467,6 +2531,10 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	access := cloneThreadAccess(envelope.Access)
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
+	workingDir := envelope.WorkingDir
+	if workingDir == "" && envelope.cwdCarrierGeneration == 0 {
+		workingDir = status.WorkingDir
+	}
 	if threadPreview == "" {
 		threadPreview = status.SessionID
 	}
@@ -2477,8 +2545,8 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Preview:       threadPreview,
 		ModelProvider: status.Model,
 		Status:        appwire.ThreadStatus{Type: statusType},
-		CWD:           status.WorkingDir,
-		Path:          filepath.Base(status.WorkingDir),
+		CWD:           workingDir,
+		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
 			Ref:                   ref,

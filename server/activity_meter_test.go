@@ -207,3 +207,26 @@ func TestActivityMeterRestartDropsTheIntent(t *testing.T) {
 		t.Fatalf("intent after restart = %q, want none", got)
 	}
 }
+
+// A meter that just started (its daemon began serving the session) reports no
+// moved time, though its quiet clock starts then: a restart is not news. The
+// first real motion sets it, and bookkeeping never does.
+func TestActivityMeterReportsAMovedTimeOnlyAfterRealMotion(t *testing.T) {
+	meter, clock := startedMeter()
+	if got := meter.snapshot(); got.LastMovedAt != 0 || got.LastActivityAt != activityTestStart.UnixMilli() {
+		t.Fatalf("fresh meter = moved %d, activity %d; want no moved time and the quiet clock at the start", got.LastMovedAt, got.LastActivityAt)
+	}
+	clock.now = clock.now.Add(time.Minute)
+	meter.observe(events.EventSessionStart)
+	if got := meter.snapshot().LastMovedAt; got != 0 {
+		t.Fatalf("moved after bookkeeping = %d, want none", got)
+	}
+	meter.observe(events.EventAssistantTextDelta)
+	if got, want := meter.snapshot().LastMovedAt, clock.now.UnixMilli(); got != want {
+		t.Fatalf("moved after streaming = %d, want %d", got, want)
+	}
+	meter.restart()
+	if got := meter.snapshot().LastMovedAt; got != 0 {
+		t.Fatalf("moved after a restart = %d, want none", got)
+	}
+}

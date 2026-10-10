@@ -138,6 +138,21 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = filled
 	}
+	// The tool's own normalizer runs before the schema gate, in the same
+	// place dispatch runs it, so values it removes (task_list placeholders)
+	// are gone before validation or generic repair can judge them. Dispatch
+	// runs it again; normalizers are idempotent. A normalizer error is a
+	// validation refusal, as at dispatch. read_transcript is the exception:
+	// preparation normalizes it above and after repair, recording each change,
+	// and its registered normalizer exists for the registry gate alone.
+	if t.NormalizeArgs != nil && t.Definition.Name != "read_transcript" {
+		normalized, err := t.NormalizeArgs(args)
+		if err != nil {
+			res.PrevalErr = err.Error()
+			return res
+		}
+		args = normalized
+	}
 	if t.PreValidate != nil {
 		if err := t.PreValidate(args); err != nil {
 			res.PrevalErr = err.Error()
@@ -154,7 +169,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
 			return res
 		}
-		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
+		healed, c := repair.RepairArgs(t.Definition.Parameters, args, handlerJudgedArgs(t.Definition.Name, args)...)
 		finalErrorArgs := args
 		// Scalar repair can turn provider-materialized strings such as
 		// expand_turn="0" into their neutral numeric forms. Normalize those
@@ -365,15 +380,25 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
 	jobRef := strings.HasPrefix(ref, "job:")
 	artifactRef := strings.HasPrefix(ref, "artifact:")
-	if !jobRef && !artifactRef {
-		return args, nil
-	}
 	normalized := make(map[string]any, len(args))
 	maps.Copy(normalized, args)
 	changes := make([]repair.Change, 0, 5)
 	remove := func(field string) {
 		delete(normalized, field)
 		changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: field, Detail: "removed neutral default"})
+	}
+	if !jobRef && !artifactRef {
+		// On a session ref an optional field sent as null means the model left
+		// it out. Generic repair's dropEmptyOptionals drops only a null the
+		// schema refuses, and these fields are schema-nullable, so this
+		// applies the same null-as-absent rule to them here. Empty strings
+		// and zeros stay for the handler to judge.
+		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+			if value, present := normalized[field]; present && value == nil {
+				remove(field)
+			}
+		}
+		return normalized, changes
 	}
 	if value, present := normalized["range"]; present && (value == nil || value == "") {
 		remove("range")
@@ -395,6 +420,24 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	return normalized, changes
 }
 
+// handlerJudgedArgs names the arguments whose explicit presence the tool's
+// handler judges, even when empty, so generic repair must not drop them.
+// read_transcript rejects every argument its retained ref kind doesn't accept
+// (retainedReadIncompatibleFields), an empty format on an artifact ref included.
+func handlerJudgedArgs(toolName string, args map[string]any) []string {
+	if toolName != "read_transcript" {
+		return nil
+	}
+	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	switch {
+	case strings.HasPrefix(ref, "artifact:"):
+		return retainedReadIncompatibleFields("artifact", args)
+	case strings.HasPrefix(ref, "job:"):
+		return retainedReadIncompatibleFields("job", args)
+	}
+	return nil
+}
+
 // normalizeRetainedReadArgsForValidation extends the typed retained-default
 // normalization just enough for provider stringified zero defaults to pass the
 // registry schema gate. It is used only by read_transcript's registered-tool
@@ -403,11 +446,6 @@ func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any
 	normalized, _ := normalizeRetainedReadArgs(args)
 	ref := strings.TrimSpace(stringArg(normalized, "transcript_ref"))
 	if !strings.HasPrefix(ref, "job:") && !strings.HasPrefix(ref, "artifact:") {
-		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
-			if value, present := normalized[field]; present && value == nil {
-				return nil, fmt.Errorf("invalid_request: %s cannot be null for session transcript refs", field)
-			}
-		}
 		return normalized, nil
 	}
 	copyNeeded := true

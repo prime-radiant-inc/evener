@@ -180,7 +180,7 @@ export function hidesDaemonSteering(content: ContentSelection): boolean {
   return content.kind === "preset" && content.level === "chat";
 }
 
-/** Internal snapshots stay out of Conversation, even with diagnostics on. */
+/** Internal snapshots stay out of the chat preset, even with diagnostics on. */
 export function sharedNotesVisible(config: TranscriptDisplayConfigV1): boolean {
   return config.advanced.systemEvents && !(config.content.kind === "preset" && config.content.level === "chat");
 }

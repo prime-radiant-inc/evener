@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-responsive",
-  "description": "the dense Activity tree keeps its single-pane column at desktop and mobile widths while sheet, body, and pane owners stay horizontally contained, deep row labels and detail-strip commands clip with ellipsis, and the continuation strip wraps instead of scrolling sideways",
+  "description": "the dense Activity tree keeps its single-pane column at desktop and mobile widths while sheet, body, and pane owners stay horizontally contained, and deep row labels clip with ellipsis while detail-strip commands wrap",
   "viewport": {
     "width": 1600,
     "height": 5200,
@@ -13,7 +13,6 @@
     "widgets/dialog/dialog.module.css",
     "widgets/sheet/sheet.module.css",
     "panes/session/chrome/activitypanel.module.css",
-    "widgets/button/button.module.css",
     "widgets/statusdot/statusdot.module.css"
   ],
   "mutation": {

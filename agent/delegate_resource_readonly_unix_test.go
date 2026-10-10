@@ -82,6 +82,15 @@ func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	outputPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs", "job_readonly.log")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outputPath, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	outputBefore := mustReadonlyFileState(t, outputPath)
+
 	if err := os.Chmod(path, 0o400); err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +106,11 @@ func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("historical activity projection constructed writable state: %v", err)
 	}
-	if _, found, err := LoadSessionJobOutputTail(stateDir, sessionID, "job_readonly", 0, 1); err != nil || !found {
-		t.Fatalf("historical output-tail projection: found=%v err=%v", found, err)
+	if _, found, err := LoadSessionJobOutputPage(stateDir, sessionID, "job_readonly", nil, 1); err != nil || !found {
+		t.Fatalf("historical output-page projection: found=%v err=%v", found, err)
+	}
+	if got := mustReadonlyFileState(t, outputPath); !reflect.DeepEqual(got, outputBefore) {
+		t.Fatalf("historical reads changed output bytes or metadata:\n got=%#v\nwant=%#v", got, outputBefore)
 	}
 	if got := mustReadonlyFileState(t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("historical reads changed journal bytes or metadata:\n got=%#v\nwant=%#v", got, want)

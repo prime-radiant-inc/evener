@@ -82,7 +82,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
 		committed = true
 		return true
 	}
@@ -124,7 +124,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
 		return true
@@ -219,7 +219,7 @@ func stoolCommunicateDeps() *toolDeps {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 	}
 }
 

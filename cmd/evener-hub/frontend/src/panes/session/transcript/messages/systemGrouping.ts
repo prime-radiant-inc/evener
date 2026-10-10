@@ -5,7 +5,14 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import { attentionWarningNotice, type ItemModel, isErrorEvent } from "@evener/appwire-client";
+import {
+  APPROVAL_DECISION_EVENT_KIND,
+  attentionWarningNotice,
+  type ItemModel,
+  isErrorEvent,
+  MEMORY_CONTEXT_EVENT_KIND,
+  type ThreadItemEventKind,
+} from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -21,6 +28,10 @@ export interface SystemRun {
 // scroll-liveness.md #12 / test-system-churn.js ("fewer than 3 adjacent
 // lifecycle events do not coalesce").
 const MIN_GROUP_SIZE = 3;
+
+// ItemModel.eventKind is a plain string; typing the constant keeps the
+// comparison in joinsRun checked against the wire's kinds.
+const INTERRUPTED_EVENT_KIND: ThreadItemEventKind = "interrupted";
 
 // A persisted turn failure arrives as a systemMessage item carrying the wire's
 // typed "error" eventKind (appwire.ThreadItemEventKindError; the package's
@@ -38,12 +49,21 @@ function isSystemMessage(item: ItemModel): boolean {
 // row of quiet at the cost of hiding the row a reader came for - behind a
 // summary that names the run's FIRST member, which need not be the failure at
 // all. So a failure both stays out of its neighbours' run and breaks it, and
-// so does a daemon warning a human should see (attentionWarningNotice).
-// Shared-notes snapshots stay separate under their own folded label.
+// so do a daemon warning a human should see (attentionWarningNotice) and an
+// interrupted notice (a model round whose output or tool calls were never
+// recorded), which stays its own line as on the phone. An informational
+// warning still folds. Shared-notes snapshots stay separate under their own
+// folded label. A human's Allow or Deny is a decision, not churn, so it stays
+// in view too. A memory refresh is a standalone notification (its own
+// collapsed "Refreshed my memory" disclosure), so it neither joins a run nor
+// lets one straddle it.
 function joinsRun(item: ItemModel): boolean {
   return (
     isSystemMessage(item) &&
     item.eventKind !== "notes-context" &&
+    item.eventKind !== MEMORY_CONTEXT_EVENT_KIND &&
+    item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
+    item.eventKind !== INTERRUPTED_EVENT_KIND &&
     !isErrorEvent(item) &&
     attentionWarningNotice(item) === null
   );

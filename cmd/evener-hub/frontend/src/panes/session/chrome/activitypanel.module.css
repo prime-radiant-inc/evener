@@ -226,23 +226,6 @@
   margin-left: calc(var(--space-3) + 6px);
 }
 
-.rowActions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  /* Aligns the continuation strip with row content: .rowToggle is 12px
-   * wide plus the denseRow's --space-2 gap after it. */
-  padding-left: calc(12px + var(--space-2));
-}
-
-.rowContinuation {
-  color: var(--ink-mid);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 /* ---- watches -------------------------------------------------------- */
 
 /* The Watches group title that leads the panel body. A plain, non-tree

@@ -8,10 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io"
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -55,8 +53,8 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedStart: 2, RetainedSHA256: hash([]byte("cdef"))})
 	writeMeta(final, outputMeta{TotalBytes: 6, RetainedStart: 0, RetainedSHA256: hash([]byte("abcdef"))})
-	if total, start, _, err := readOutputMetaForFile(base, final, output, 6); err != nil || total != 6 || start != 0 {
-		t.Fatalf("pending recovery = %d/%d/%v", total, start, err)
+	if view, err := readOutputViewForFile(base, final, output, 6); err != nil || view.total != 6 || view.fileStart != 0 {
+		t.Fatalf("pending recovery = %d/%d/%v", view.total, view.fileStart, err)
 	}
 
 	cases := []struct {
@@ -77,7 +75,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 		if tc.final.TotalBytes != 0 {
 			writeMeta(final, tc.final)
 		}
-		_, _, _, _ = readOutputMetaForFile(base, final, output, tc.retained)
+		_, _ = readOutputViewForFile(base, final, output, tc.retained)
 	}
 
 	for _, meta := range []outputMeta{
@@ -87,11 +85,11 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	} {
 		_ = base.Remove(pending)
 		writeMeta(final, meta)
-		_, _, _, _ = readOutputMetaForFile(base, final, output, 6)
+		_, _ = readOutputViewForFile(base, final, output, 6)
 	}
 
 	fault := &jcpHookFS{Fs: base, openErr: jcpInjectedErr}
-	_, _, _, _ = readOutputMetaForFile(fault, final, output, 6)
+	_, _ = readOutputViewForFile(fault, final, output, 6)
 	_, _, _ = readValidPendingOutputMeta(fault, pending, final, output, 6)
 	_, _, _ = readValidOutputMetaFs(fault, final, output, 6)
 	_, _ = outputFileHasSuffixSHA256(fault, output, 0, 1, "")
@@ -113,11 +111,11 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 		if tc.failAt > 0 {
 			fs = &jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}
 		}
-		_, _, _, _ = readOutputMetaForFile(fs, final, output, 6)
+		_, _ = readOutputViewForFile(fs, final, output, 6)
 	}
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedStart: 2, RetainedSHA256: hash([]byte("cdef"))})
 	writeMeta(final, outputMeta{TotalBytes: 6, RetainedSHA256: hash([]byte("abcdef"))})
-	_, _, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: final, failAt: 1}, final, output, 6)
+	_, _ = readOutputViewForFile(&jobstorePackageOpenFaultFS{Fs: base, path: final, failAt: 1}, final, output, 6)
 	writeMeta(pending, outputMeta{TotalBytes: 6, RetainedSHA256: hash([]byte("abcdef"))})
 	_, _, _ = readValidPendingOutputMeta(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: 1}, pending, final, output, 6)
 	for _, tc := range []struct {
@@ -130,7 +128,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	} {
 		_ = base.Remove(pending)
 		writeMeta(final, tc.meta)
-		_, _, _, _ = readOutputMetaForFile(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}, final, output, 6)
+		_, _ = readOutputViewForFile(&jobstorePackageOpenFaultFS{Fs: base, path: output, failAt: tc.failAt}, final, output, 6)
 	}
 
 	// Keep the prefix-mismatch arm independent from the fault-sweep state above.
@@ -148,7 +146,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := readOutputMetaForFile(prefixFS, final, output, 6); err == nil {
+	if _, err := readOutputViewForFile(prefixFS, final, output, 6); err == nil {
 		t.Fatal("mismatched final prefix hash was accepted")
 	}
 	if err := writeOutputMetaFileFsSync(prefixFS, final, outputMeta{
@@ -156,7 +154,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := readOutputMetaForFile(&jobstorePackageOpenFaultFS{
+	if _, err := readOutputViewForFile(&jobstorePackageOpenFaultFS{
 		Fs: prefixFS, path: output, failAt: 2,
 	}, final, output, 6); err == nil {
 		t.Fatal("prefix hash open fault was ignored")
@@ -227,12 +225,6 @@ func jobstorePackageMatcherEdges(t *testing.T) {
 	_ = m.FeedAt([]byte("x"), int64(len(m.carry))+1)
 	_, _ = grepReaderLimit(bufio.NewReaderSize(&jobstorePackageErrReader{}, 1), regexp.MustCompile("x"), 8, 0, 8)
 	_, _ = grepReaderLimit(bufio.NewReader(bytes.NewBufferString("xxxx\r")), regexp.MustCompile("x"), 8, 0, 4)
-	_, _ = grepFileLimitAtOpen("x", regexp.MustCompile("x"), 8, 0, 8, 0, func(string) (io.ReadCloser, error) {
-		return &jobstorePackageReadCloser{Reader: strings.NewReader("x\n"), closeErr: jcpInjectedErr}, nil
-	})
-	_, _ = grepFileLimitAtOpen("x", regexp.MustCompile("x"), 8, 0, 8, 0, func(string) (io.ReadCloser, error) {
-		return &jobstorePackageReadCloser{Reader: &jobstorePackageErrReader{}}, nil
-	})
 }
 
 type jobstorePackageErrReader struct{}
@@ -254,10 +246,3 @@ func (fs *jobstorePackageOpenFaultFS) Open(name string) (afero.File, error) {
 	}
 	return fs.Fs.Open(name)
 }
-
-type jobstorePackageReadCloser struct {
-	io.Reader
-	closeErr error
-}
-
-func (r *jobstorePackageReadCloser) Close() error { return r.closeErr }

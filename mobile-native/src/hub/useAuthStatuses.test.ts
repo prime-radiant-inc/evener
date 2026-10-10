@@ -3,7 +3,7 @@ import { AUTH_STATUSES_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { AUTH_RETRY_MAX_MS, AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
 vi.mock("react-native", async () => ({
@@ -302,5 +302,6 @@ it("stops listening when it unmounts", async () => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });

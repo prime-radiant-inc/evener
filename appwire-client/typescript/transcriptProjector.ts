@@ -1,3 +1,4 @@
+import { APPROVAL_DECISION_EVENT_KIND } from "./approvalDecision";
 import {
   hasFailureStatus,
   hasItemFailure,
@@ -19,6 +20,7 @@ import {
   sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { isInformationalWarning } from "./warnings";
 import { hasWarningText } from "./warningText";
 
@@ -117,42 +119,29 @@ export interface TranscriptProjection {
 
 const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
-// Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
-// a value outside this set as an unknown event and deliberately renders it.
-// Environment and shared-notes snapshots are routine diagnostics. Notes also
-// stay out of Conversation, even when Advanced.systemEvents is enabled.
-const KNOWN_EVENT_KINDS = new Set([
-  "system_prompt",
-  "plugin_loaded",
-  "skill_activated",
-  "hook_completed",
-  "prompt_loaded",
-  "context_compaction",
-  "compaction",
-  "turn_limit",
-  "loop_detection",
-  "goal_ended",
-  "fork_summary",
-  "round_timings",
-  "tool_repair",
-  "model_switch",
-  "error",
-  "environment",
-  "notes-context",
-  "warning",
-  "interrupted",
-]);
+// The daemon's event-kind vocabulary, generated from appwire's
+// AllThreadItemEventKinds, so a new kind is known (and governed by the
+// system-events gate) the moment it is generated. The projector treats a value
+// outside this set as an unknown event and deliberately renders it.
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
-const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
+// The prompt events: system_prompt is the full prompt scaffold, prompt_loaded
+// the quiet "Loaded prompt X (N B)" line naming the same event. Both answer to
+// one "Prompt loaded" setting on every client.
+export const PROMPT_EVENT_KINDS: ReadonlySet<string> = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-// The system events critical at every level: a persisted turn failure, a
-// warning notice, and an interrupted-turn notice are the rows a reader hunts
-// for (SystemNoticeItem's FailureLine renders them; systemGrouping.ts keeps
-// them out of runs). A tool-repair notice left this set for the
-// informationalNotices gate below.
+// The system events shown at every level: a persisted turn failure, a warning
+// notice, and an interrupted-turn notice are the rows a reader hunts for. This
+// decides visibility only; each client chooses how to draw them.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
+// The automatic memory refresh (agent/session_memory.go's MEMORY_CONTEXT turn).
+// It is a standalone, collapsed notification a reader can always reach, so it
+// stays visible at every level regardless of the system-events gate, and it
+// opts out of the expand-everything baseline (see eligibleDisclosure below and
+// SteeringDivider's ignoreBaseline read).
+const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed
@@ -311,6 +300,11 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
 
+  // A memory refresh is inspectable at every level and is never hidden by the
+  // system-events gate: its compact disclosure is how a reader sees recall
+  // happened. See eligibleDisclosure for its baseline opt-out.
+  if (eventKind === MEMORY_CONTEXT_EVENT_KIND) return "item";
+
   // A repair notice, and a coded "no action needed" warning notice (the
   // daemon's context-budget notices arrive this way), show only where
   // informationalNoticesVisible says so, at full. Where a repair does show,
@@ -321,6 +315,9 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   }
 
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer: its history row shows at every level.
+  if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
@@ -331,7 +328,10 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
 
   if (PROMPT_EVENT_KINDS.has(eventKind)) return config.advanced.promptEvents ? "item" : "hidden";
   if (eventKind === TURN_TIMING_EVENT_KIND) return config.advanced.roundTimings ? "item" : "hidden";
+  // Shared-notes snapshots are internal: they stay out of the chat preset even
+  // when Advanced.systemEvents is enabled (sharedNotesVisible).
   if (eventKind === "notes-context") return sharedNotesVisible(config) ? "item" : "hidden";
+  // Everything else, environment snapshots included, is a routine diagnostic.
   return config.advanced.systemEvents ? "item" : "hidden";
 }
 
@@ -403,6 +403,10 @@ function decisionFor(
 
 function eligibleDisclosure(item: ItemModel): boolean {
   if (item.type === "commandExecution" || item.type === "reasoning") return true;
+  // A memory refresh ignores every general expansion baseline, including
+  // Full's open-everything baseline; only an explicit reader choice opens it.
+  // Keeping it out of the baseline inventory is that posture's other half.
+  if (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.

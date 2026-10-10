@@ -3,7 +3,7 @@
 // per document and shared by every chip that shows it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { palettes } from "../design/tokens";
 import { DocumentChip } from "./DocumentChip";
 import { DocumentMemory } from "./documentMemory";
@@ -50,7 +50,6 @@ function storage(): SyncStringStorage {
 	};
 }
 let answers: (() => Response)[];
-const trees: ReactTestRenderer[] = [];
 
 beforeEach(() => {
 	harness.scheme = "light";
@@ -67,16 +66,9 @@ beforeEach(() => {
 		);
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } = {}) {
 	const tree = render(
@@ -88,7 +80,6 @@ function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } 
 			onOpen={props.onOpen ?? (() => {})}
 		/>,
 	);
-	trees.push(tree);
 	return tree;
 }
 
@@ -120,6 +111,17 @@ it("shows the file name once before its summary lands", () => {
 	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, 3 minutes ago");
 });
 
+// The minute clock can lag a write by up to a minute, and a hub clock ahead
+// of the phone's puts the write in the future; either way it was just now.
+it.each([
+	["seconds ago", -10_000],
+	["ahead of the phone's clock", 5_000],
+])("says just now for a document written %s", (_name, offset) => {
+	const tree = chip({ updatedAt: new Date(Date.now() + offset).toISOString() });
+	expect(renderedText(tree)).toContain("just now");
+	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, just now");
+});
+
 it("shows no age for a file the session only named", async () => {
 	const tree = chip();
 	await settle();
@@ -148,6 +150,8 @@ it("opens when pressed", async () => {
 	const tree = chip({ onOpen });
 	act(() => button(tree)?.props.onPress());
 	expect(onOpen).toHaveBeenCalledOnce();
+	// The chip's summary read is still out; let it land before the test ends.
+	await settle();
 });
 
 it("reads a document once for every chip that shows it", async () => {

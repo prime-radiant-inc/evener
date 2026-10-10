@@ -413,13 +413,13 @@ export interface ThreadModel {
   // are authoritative. goal/set's response-derived value is only an immediate
   // fallback until either authoritative path is accepted.
   goal: GoalState | null;
-  // HumanNote is the human's one-paragraph session whiteboard (wire:
+  // HumanNote is the human's session whiteboard, line breaks kept (wire:
   // EvenerThread.HumanNote, omitempty). Empty means unset. Hydration and
   // accepted evener/notes/updated pushes are authoritative. notes/human/set's
   // response-derived value is only an immediate fallback until either
   // authoritative path is accepted.
   humanNote: string;
-  // AgentNote is the agent's one-paragraph session whiteboard (wire:
+  // AgentNote is the agent's session whiteboard, line breaks kept (wire:
   // EvenerThread.AgentNote, omitempty). Empty means unset. Read-only in the
   // UI; updated by the same evener/notes/updated push as humanNote.
   agentNote: string;

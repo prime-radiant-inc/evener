@@ -1965,6 +1965,7 @@ function NavigationRail({
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
       data-testid="rail"
+      data-sidebar-rail
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
       {width !== undefined && onWidthChange && (

@@ -81,6 +81,8 @@ interface ResourceRead {
   boundary: string | undefined;
   refresh: RefreshWalk | null;
   pace: { handle: unknown; resume(): void } | null;
+  /** Bumped when the last observer leaves; a read begun before it is dropped. */
+  releases: number;
 }
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
@@ -117,6 +119,7 @@ const resourceRead = (): ResourceRead => ({
   boundary: undefined,
   refresh: null,
   pace: null,
+  releases: 0,
 });
 
 /** Owns one session/scope/connection lifetime. Results from a disposed owner
@@ -144,7 +147,7 @@ export class SessionActivityStore {
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
-    options: { scope?: SessionActivityScope; clock?: SessionActivityClock } = {},
+    options: { scope?: SessionActivityScope; clock?: SessionActivityClock; retained?: SessionActivitySnapshot } = {},
   ) {
     if (!ref.trim()) throw new TypeError("Session activity requires a session ref");
     this.scope = options.scope ?? "session";
@@ -161,6 +164,27 @@ export class SessionActivityStore {
       jobs: collectionState(),
       watches: collectionState(),
     };
+    const retained = options.retained;
+    if (retained?.ref === ref && retained.scope === this.scope) {
+      // Membership supplies the displayed boundary for a fresh cursor walk.
+      // Runtime, cursors and read outcomes belong to the new connection.
+      const retain = <Row>(collection: SessionActivityCollectionState<Row>): SessionActivityCollectionState<Row> => ({
+        ...collection,
+        ...readState(),
+        pending: true,
+        complete: false,
+        hasMore: false,
+      });
+      this.state = {
+        ...this.state,
+        context: retained.context,
+        summary: retained.summary,
+        summaryState: { ...readState(), pending: true },
+        delegates: retain(retained.delegates),
+        jobs: retain(retained.jobs),
+        watches: retain(retained.watches),
+      };
+    }
   }
   getSnapshot = (): SessionActivitySnapshot => this.state;
   subscribe = (listener: () => void): (() => void) => {
@@ -187,13 +211,15 @@ export class SessionActivityStore {
       if (this.disposed) return;
       read.observers -= 1;
       if (read.observers === 0) {
-        this.cancelTimer(read);
-        if (!read.oneShot) {
-          this.cancelPace(read);
-          read.rootQueued = false;
-          read.pageQueued = false;
-          if (!read.inFlight) this.change(resource, { pending: false });
-        }
+        // Whoever asked for the collection's reads has gone, explicit loads
+        // included: the read in flight drops its reply, and nothing queued
+        // behind it or walking on after it runs, so a store another holder
+        // keeps alive takes in no closed view's late page.
+        read.releases += 1;
+        this.stopReadDemand(read, false);
+        read.oneShot = false;
+        if (read.refresh) read.refresh.advance = false;
+        this.change(resource, { pending: false });
       }
       this.releaseIdle();
     };
@@ -262,18 +288,14 @@ export class SessionActivityStore {
       this.statusUpdate = null;
     for (const resource of resources) {
       const read = this.reads[resource];
-      this.cancelTimer(read);
       const demanded = read.observers > 0 || read.oneShot || read.rootQueued || read.pageQueued;
-      read.rootQueued = resource === source ? read.rootQueued : demanded;
-      read.pageQueued = false;
+      this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
       read.sessionId = undefined;
       read.incomplete = false;
       read.boundary = undefined;
       read.refresh = null;
-      this.cancelPace(read);
-      read.failures = 0;
     }
     const freshCollection = <Row>(resource: SessionActivityCollection): SessionActivityCollectionState<Row> => ({
       ...collectionState<Row>(),
@@ -358,16 +380,28 @@ export class SessionActivityStore {
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
+      const releases = read.releases;
+      // A read is stale once the store is disposed, its context is replaced,
+      // or its collection's last observer leaves (even from a listener during
+      // one of this read's own publishes): from then on nothing it does lands.
+      const stale = () => this.disposed || generation !== this.generation || releases !== read.releases;
+      // A read dropped once the hub served it can still have warmed the hub's
+      // count, so a dropped read refreshes that count before skipping its page.
+      const dropped = () => {
+        if (!stale()) return false;
+        this.refreshWarmedCount(resource, generation);
+        return true;
+      };
       const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
-        if (this.disposed || generation !== this.generation || this.client.state !== "ready") continue;
+        if (stale() || this.client.state !== "ready") continue;
         const result = await this.fetch(resource, cursor);
-        if (this.disposed || generation !== this.generation) continue;
+        if (dropped()) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
         generation = this.acceptContext(result.context, resource);
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -384,7 +418,7 @@ export class SessionActivityStore {
               permanent: false,
             },
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (stale()) continue;
           if (unavailable) {
             read.failures += 1;
             this.retry(resource);
@@ -451,8 +485,9 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (this.disposed || generation !== this.generation) continue;
+          if (dropped()) continue;
           this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
+          if (dropped()) continue;
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -461,7 +496,7 @@ export class SessionActivityStore {
             page.rows.length > 0 ||
             (read.cursor !== undefined && read.cursor !== cursor) ||
             (page.page.complete && !current.complete);
-          if (progressed && this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
+          if (progressed) this.refreshWarmedCount(resource, generation);
           if (read.refresh && read.cursor && read.cursor !== cursor && (read.observers > 0 || read.oneShot)) {
             read.refresh.advance = true;
             await this.pacePage(read);
@@ -486,7 +521,7 @@ export class SessionActivityStore {
           }
         }
       } catch (error) {
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (error instanceof WireError && error.evenerErrorInfo === "sessionActivityCursorStale" && cursor) {
           read.cursor = undefined;
           read.refresh = null;
@@ -503,10 +538,20 @@ export class SessionActivityStore {
         } else {
           this.change(resource, update);
         }
-        if (this.disposed || generation !== this.generation) continue;
+        if (stale()) continue;
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
+  }
+  /** A collection read the hub served can have warmed the hub's count for
+   * that collection, whether its page landed or was dropped because the view
+   * that asked for it left. Refresh a summary count still unknown, so the
+   * count does not stay hidden until the next notification. A read dropped
+   * for a replaced context or a disposed store refreshes nothing: its count
+   * belongs to no current session. */
+  private refreshWarmedCount(resource: SessionActivityResource, generation: number): void {
+    if (resource === "summary" || this.disposed || generation !== this.generation) return;
+    if (this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
   }
   private runtimeFor(context: SessionActivityContext, statusRevision: number): ThreadSubscriptionMetadata | null {
     const metadata = this.lease?.metadata();
@@ -579,6 +624,16 @@ export class SessionActivityStore {
     if (!read.pace) return;
     this.clock.clearTimeout(read.pace.handle);
     read.pace.resume();
+  }
+  /** Stops a read's scheduled and queued requests. `rootQueued` says whether a
+   * root read is left queued; failures reset so the next reads start their
+   * backoff afresh, not from the failures earlier reads left behind. */
+  private stopReadDemand(read: ResourceRead, rootQueued: boolean): void {
+    this.cancelTimer(read);
+    this.cancelPace(read);
+    read.rootQueued = rootQueued;
+    read.pageQueued = false;
+    read.failures = 0;
   }
   private cancelTimer(read: ResourceRead): void {
     if (read.timer !== null) this.clock.clearTimeout(read.timer);
@@ -681,13 +736,10 @@ export class SessionActivityStore {
     this.generation += 1;
     for (const resource of resources) {
       const read = this.reads[resource];
-      this.cancelTimer(read);
-      this.cancelPace(read);
+      this.stopReadDemand(read, false);
       read.boundary = undefined;
       read.refresh = null;
       read.observers = 0;
-      read.rootQueued = false;
-      read.pageQueued = false;
     }
     this.lease?.release();
     this.lease = null;

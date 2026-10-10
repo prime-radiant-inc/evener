@@ -999,3 +999,60 @@ func TestGlobGrepOffIdentical(t *testing.T) {
 		t.Errorf("off native grep = %q", out)
 	}
 }
+
+// TestSandboxGrepSearchesOneNamedFile: a sandboxed grep whose path names a
+// file searches that file the way the unsandboxed walk does (#4137): no
+// filename prefix on content or count lines, "." for files-with-matches, and
+// the same dotfile, glob-filter, and skip rules. A masked file stays refused.
+func TestSandboxGrepSearchesOneNamedFile(t *testing.T) {
+	t.Parallel()
+	for _, mode := range sandboxedModes {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			env, _, worktree := sandboxedEnvWithDenylist(t, mode, filepath.Join("~", "project", "vault"))
+			for name, content := range map[string]string{
+				"sub/p.md":     "before\nneedle one\nafter\nneedle two\n",
+				"sub/.hidden":  "needle\n",
+				"vault/secret": "needle\n",
+			} {
+				full := filepath.Join(worktree, filepath.FromSlash(name))
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			file := filepath.Join(worktree, "sub", "p.md")
+			for _, tc := range []struct {
+				mode string
+				want string
+			}{
+				{mode: "content", want: "2:needle one\n4:needle two"},
+				{mode: "files_with_matches", want: "."},
+				{mode: "count", want: "2"},
+			} {
+				got, err := env.Grep(t.Context(), "needle", file, "", false, 100, tc.mode)
+				if err != nil {
+					t.Fatalf("grep %s: %v", tc.mode, err)
+				}
+				if got != tc.want {
+					t.Errorf("grep %s = %q, want %q", tc.mode, got, tc.want)
+				}
+			}
+
+			if got, err := env.Grep(t.Context(), "needle", file, "*.go", false, 100, "files_with_matches"); err != nil || got != "" {
+				t.Errorf("grep with a non-matching glob filter = %q, %v; want no result", got, err)
+			}
+			skipAll := func(string) bool { return true }
+			if got, err := env.GrepSkipping(t.Context(), "needle", file, "", false, 100, "files_with_matches", 0, skipAll); err != nil || got != "" {
+				t.Errorf("grep of a skipped file = %q, %v; want no result", got, err)
+			}
+			if got, err := env.Grep(t.Context(), "needle", filepath.Join(worktree, "sub", ".hidden"), "", false, 100, "files_with_matches"); err != nil || got != "" {
+				t.Errorf("grep of a named dotfile = %q, %v; want no result", got, err)
+			}
+			_, err := env.Grep(t.Context(), "needle", filepath.Join(worktree, "vault", "secret"), "", false, 100, "files_with_matches")
+			mustDenied(t, err, "grep of a masked file")
+		})
+	}
+}

@@ -359,7 +359,6 @@ const (
 	SteeringKindNoToolCalls        = "no-tool-calls"
 	SteeringKindLoopDetected       = "loop-detected"
 	SteeringKindTasksDone          = "tasks-done"
-	SteeringKindTaskNudge          = "task-nudge"
 	SteeringKindTaskInactive       = "task-inactive"
 	SteeringKindNoteHandoff        = "note-handoff"
 	SteeringKindGoalObjective      = "goal-objective"
@@ -386,7 +385,6 @@ var AllSteeringKinds = []string{
 	SteeringKindNoToolCalls,
 	SteeringKindLoopDetected,
 	SteeringKindTasksDone,
-	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,
 	SteeringKindNoteHandoff,
 	SteeringKindGoalObjective,
@@ -559,9 +557,10 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
-	CallID  string `json:"call_id,omitempty"`
-	EndTurn bool   `json:"end_turn"`
-	Message string `json:"message"`
+	CallID    string `json:"call_id,omitempty"`
+	EndTurn   bool   `json:"end_turn"`
+	Message   string `json:"message"`
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.
@@ -725,13 +724,17 @@ type JobFinishedData struct {
 // result: clients control the resource by DelegateID and order state by
 // ProjectionRevision while merging LatestActivityAt independently.
 type DelegateUpdatedData struct {
-	RunGeneration       uint64                `json:"run_generation"`
-	DelegateID          string                `json:"delegate_id"`
-	OwnerSessionID      string                `json:"owner_session_id"`
-	RootSessionID       string                `json:"root_session_id"`
-	ChildSessionID      string                `json:"child_session_id"`
-	TranscriptRef       string                `json:"transcript_ref"`
-	ParentDelegateID    string                `json:"parent_delegate_id,omitempty"`
+	RunGeneration    uint64 `json:"run_generation"`
+	DelegateID       string `json:"delegate_id"`
+	OwnerSessionID   string `json:"owner_session_id"`
+	RootSessionID    string `json:"root_session_id"`
+	ChildSessionID   string `json:"child_session_id"`
+	TranscriptRef    string `json:"transcript_ref"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
+	// AncestorSessionIDs are the subagent sessions whose own threads list this
+	// delegate (it is in their subtree), nearest first. The root's thread lists
+	// every delegate through OwnerSessionID, so the root is not repeated here.
+	AncestorSessionIDs  []string              `json:"ancestor_session_ids,omitempty"`
 	Type                string                `json:"type"`
 	Lifecycle           string                `json:"lifecycle"`
 	Phase               string                `json:"phase"`
@@ -898,6 +901,17 @@ type SessionURLData struct {
 type EnvironmentData struct {
 	TurnID string `json:"turn_id"`
 	Text   string `json:"text"`
+}
+
+// EnvironmentChangedData is the payload for an EventEnvironmentChanged event.
+type EnvironmentChangedData struct {
+	WorkingDir string `json:"working_dir"`
+}
+
+// StatusSettledData is the payload for an EventStatusSettled event: the
+// session's wire state after the change.
+type StatusSettledData struct {
+	State string `json:"state"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

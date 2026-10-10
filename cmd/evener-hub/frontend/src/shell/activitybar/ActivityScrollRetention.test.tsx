@@ -1,4 +1,5 @@
 import { activityNodeID, buildWatchRows } from "@evener/appwire-client";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -237,10 +238,7 @@ test.each(["refresh", "reconnect"] as const)(
     revision = 1;
     act(() => {
       if (recovery === "refresh")
-        client.emitNotification({
-          method: "evener/thread/activity/changed",
-          params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-        });
+        client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"]));
       else {
         client.emitStateChange("reconnecting");
         client.emitReady();

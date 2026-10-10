@@ -111,6 +111,11 @@ beforeEach(() => {
 	harness.focus = null;
 });
 
+it("lets a drag of the page put the keyboard away", async () => {
+	const tree = await mount(launchHub().hub);
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
+
 it("offers no Reload, loaded or not", async () => {
 	const launch = launchHub();
 	launch.failNext();

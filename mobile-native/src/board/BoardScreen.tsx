@@ -52,14 +52,15 @@ import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Action, allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
-	boardState,
 	type ClassifiedRow,
 	hostLabeler,
 	type LiveSummary,
+	LIVE_BAND_ORDER,
 	liveBands,
+	liveRows,
 	liveSummary,
 	plural,
 	rowClassifier,
@@ -71,6 +72,7 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { FreshDot } from "../reader/FreshDot";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -139,6 +141,7 @@ import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProject
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
 import { destructiveButton, haptic } from "../haptics";
+import { Button } from "../sheet/Grouped";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -146,7 +149,6 @@ type Navigation = Props["navigation"];
 const MINUTE = 60_000;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	needsYou: "NEEDS YOU",
-	finished: "FINISHED",
 	working: "WORKING",
 };
 /** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
@@ -255,6 +257,13 @@ function Board({
 	// paused then, and a paused read is cancelled, not answered.
 	useBoardReadRetry(board, connected && focused ? client : null, snapshot);
 
+	// Whether a session moved after the person last looked, from the activity
+	// read's last-moved time against the hub's seen mark (the blue dot).
+	const lastMovedAt = useCallback((row: NavigationSessionSummary) => activityOf(row.ref)?.lastMovedAt, [activityOf]);
+	const movedSinceSeen = useCallback(
+		(row: NavigationSessionSummary) => seen.movedSinceSeen(row, lastMovedAt(row)),
+		[seen, lastMovedAt],
+	);
 	const bands = useMemo(
 		() =>
 			liveBands(
@@ -265,6 +274,7 @@ function Board({
 					const activity = activityOf(row.ref);
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
+				movedSinceSeen,
 			),
 		// seen re-runs isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
@@ -277,7 +287,7 @@ function Board({
 		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
 		// the top within one poll interval of its why-line saying so, instead
 		// of waiting for the next successful read.
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick],
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick, movedSinceSeen],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -285,15 +295,17 @@ function Board({
 	const sources = snapshot.manifest?.sources;
 	const hostLabel = useMemo(() => hostLabeler(sources), [sources]);
 
+	// activityRevision re-classifies after each read, so a row's dot follows
+	// its newest motion.
 	const classify = useMemo(
-		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
-		[snapshot.needsYou.rows, seen],
+		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row), movedSinceSeen),
+		[snapshot.needsYou.rows, seen, movedSinceSeen, activityRevision],
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
-	const projectRow = useCallback(
-		(row: NavigationSessionSummary): ClassifiedRow => ({ row, state: boardState(row, false, seen.isSeen(row)) }),
-		[seen],
+	const projectRow = useMemo(
+		() => rowClassifier([], (row) => seen.isSeen(row), movedSinceSeen),
+		[seen, movedSinceSeen, activityRevision],
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
@@ -415,7 +427,7 @@ function Board({
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsClient, [row]);
+		seen.markRead(actionsClient, [row], lastMovedAt);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
@@ -521,7 +533,7 @@ function Board({
 	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
-	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
+	const liveTotal = liveRows(bands).length;
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
@@ -636,13 +648,11 @@ function Board({
 		}
 	};
 	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
-	 * them, the read marks on this phone, and Shut down and Rename as the
-	 * Session sends them (rulings 18-21), held when they can't go now. */
+	 * them, and Shut down and Rename as the Session sends them (rulings
+	 * 18-21), held when they can't go now. */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
-		if (action === "markRead") seen.markRead(actionsClient, [row]);
-		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
-		else if (action === "shutDown")
+		if (action === "shutDown")
 			confirmShutDown(row, () => {
 				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
@@ -834,7 +844,7 @@ function Board({
 	// from.
 	const shownRows = useShownRows([
 		...shownRowItems,
-		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
+		...liveRows(bands).map((item) => ({
 			item,
 			archived: false,
 		})),
@@ -1038,7 +1048,14 @@ function Board({
 			content = <BandHeader text={`${BAND_HEADERS[item.band]} · ${item.count}`} />;
 			onLayout = measure(item.band);
 		} else if (item.kind === "idleFold") {
-			content = <IdleFold count={item.count} folded={item.folded} onToggle={() => foldIdle(!item.folded)} />;
+			content = (
+				<IdleFold
+					count={item.count}
+					folded={item.folded}
+					unseen={item.unseen}
+					onToggle={() => foldIdle(!item.folded)}
+				/>
+			);
 			onLayout = measure("idle");
 		} else if (item.kind === "row")
 			content = (
@@ -1163,10 +1180,6 @@ function Board({
 		leaveSelect();
 		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
-	const markChosenRead = () => {
-		seen.markRead(actionsClient, selection.markRead);
-		leaveSelect();
-	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -1263,6 +1276,7 @@ function Board({
 											hubId,
 											sessionRef: trail.sessionRef,
 											path: trail.path,
+											reference: trail.reference,
 											sessionTitle: trail.sessionTitle,
 											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
 										})
@@ -1301,7 +1315,6 @@ function Board({
 						archive: selection.archive.length,
 						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
 						pin: Platform.OS === "ios" ? selection.pin.length : 0,
-						markRead: selection.markRead.length,
 					}}
 					onDone={leaveSelect}
 					onArchive={() => void archiveChosen(selection.archive)}
@@ -1310,7 +1323,6 @@ function Board({
 							pinChosen(selection.pin, section, name),
 						)
 					}
-					onMarkRead={markChosenRead}
 				/>
 			) : (
 				<BoardToolbar
@@ -1662,8 +1674,8 @@ function shownRowKey(ref: string, archived: boolean): string {
 
 /** The Board's shown rows by ref and tier: each ref keeps its first
  * unarchived copy and its first archived copy, in screen order. The map
- * keeps its identity while no row, state or tier changes, so the row menu's
- * host (and an open menu) changes only when one does. */
+ * keeps its identity while no row, state, blue dot or tier changes, so the
+ * row menu's host (and an open menu) changes only when one does. */
 function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
 	const byKey = new Map<string, ShownRow>();
 	for (const shown of rows) {
@@ -1679,7 +1691,13 @@ function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap
 	if (before.size !== after.size) return false;
 	for (const [key, shown] of after) {
 		const was = before.get(key);
-		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state) return false;
+		if (
+			!was ||
+			was.item.row !== shown.item.row ||
+			was.item.state !== shown.item.state ||
+			was.item.unseen !== shown.item.unseen
+		)
+			return false;
 	}
 	return true;
 }
@@ -1704,7 +1722,7 @@ function readDraftRefs(hubId: string): Set<string> {
  * seen epoch, but only from fresh, complete reads. Live is sorted by
  * attention, not time, so a newer row can sit on a later page: until the
  * epoch is adopted, keep reading Live's pages. Until then isSeen counts
- * every row as seen, so nothing flashes Finished. */
+ * every row as seen, so no row flashes a blue dot. */
 function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: BoardSnapshot, focused: boolean) {
 	useEffect(() => {
 		// Out of view the Board is paused; coming back re-runs this and picks
@@ -1771,9 +1789,12 @@ function useHeader(
 			],
 			headerLeft: () => hubButton,
 			headerRight: () => (
-				<Action label="Search sessions" onPress={revealSearch}>
-					{fontScale > 1.4 ? "Find" : "Search"}
-				</Action>
+				<Button
+					text
+					label={fontScale > 1.4 ? "Find" : "Search"}
+					accessibilityLabel="Search sessions"
+					onPress={revealSearch}
+				/>
 			),
 		});
 	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
@@ -1923,7 +1944,7 @@ function SummaryLine({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const entries = (["needsYou", "finished", "working", "idle"] as const).filter((band) => summary[band] > 0);
+	const entries = LIVE_BAND_ORDER.filter((band) => summary[band] > 0);
 	return (
 		<View
 			testID="live-summary"
@@ -1981,14 +2002,27 @@ function SummaryLine({
 	);
 }
 
-/** Idle's header, folded by default; its state persists per device. */
-function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean; onToggle: () => void }) {
+/** Idle's header, folded by default; its state persists per device. Folded,
+ * it shows the blue dot while any session inside has updates you haven't
+ * opened: no count, no words. */
+function IdleFold({
+	count,
+	folded,
+	unseen,
+	onToggle,
+}: {
+	count: number;
+	folded: boolean;
+	unseen: boolean;
+	onToggle: () => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const dot = folded && unseen;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Idle, ${plural(count, "session")}`}
+			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
 			accessibilityState={{ expanded: !folded }}
 			onPress={onToggle}
 			style={({ pressed }) => ({
@@ -2007,7 +2041,10 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			>
 				{`Idle · ${count}`}
 			</Text>
-			<FoldChevron folded={folded} />
+			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
+				{dot ? <FreshDot /> : null}
+				<FoldChevron folded={folded} />
+			</View>
 		</Pressable>
 	);
 }
@@ -2054,9 +2091,7 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 			>
 				Nothing's running. Start a session to put an agent to work.
 			</Text>
-			<Action tone="primary" disabled={disabled} onPress={onNewSession}>
-				New session
-			</Action>
+			<Button primary compact label="New session" disabled={disabled} onPress={onNewSession} />
 		</View>
 	);
 }

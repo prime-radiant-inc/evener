@@ -4,7 +4,7 @@
 // - the package's send/queue table, with this client's own unreflected send
 //   as its tier 6;
 // - a paused session sends nothing until it is resumed;
-// - a finished session sends, and so resumes, when the hub says it can.
+// - a shut-down session sends, and so resumes, when the hub says it can.
 import { deriveSendQueueAvailability, SHUT_DOWN_STATUSES, type ThreadModel } from "@evener/appwire-client";
 import { ownPendingSend, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 

@@ -153,7 +153,7 @@ func newSessionTmpInBase(base string) (*SessionTmp, error) {
 		return nil, fmt.Errorf("sandbox: create session temp container: %w", err)
 	}
 	dispose := func(cause error) (*SessionTmp, error) {
-		_ = os.RemoveAll(container)
+		_ = removeTree(container)
 		return nil, cause
 	}
 	if err := os.Chmod(container, sessionTmpContainerMode); err != nil {
@@ -251,5 +251,5 @@ func (t *SessionTmp) Remove() error {
 		return fmt.Errorf("sandbox: refuse session temp removal outside the session scratch namespace: %q", t.container)
 	}
 	releaseErr := t.Retain()
-	return errors.Join(releaseErr, os.RemoveAll(container))
+	return errors.Join(releaseErr, removeTree(container))
 }

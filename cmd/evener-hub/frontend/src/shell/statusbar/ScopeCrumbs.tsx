@@ -2,8 +2,8 @@
 // the scope you're reading. Crumbs above the leaf open their session; the leaf
 // is current text, never a link to itself.
 
-import { selectSessionSummary } from "../../stores/navigation/selectors";
-import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { navigationSummaryFor } from "../../panes/session/threadTitle";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { refParam } from "../routing";
@@ -21,6 +21,16 @@ const CLASS = {
   crumbBtn: requireClass(styles.crumbBtn, "scopeCrumbs.module.css", "crumbBtn"),
 };
 
+/** A scope's display title: the loaded thread name, then the navigation row's
+ * title for the same ref, then the caller's fallback. The activity context's
+ * ancestor titles are session ids, not names, so a surface that shows a scope
+ * should resolve its title here rather than render a fallback ref raw. */
+export function useScopeTitle(ref: string, fallback: string): string {
+  const name = useThreadsStore((state) => state.threads.get(ref)?.name);
+  useNavigationStore((state) => state.resources);
+  return name || navigationSummaryFor(ref)?.title || fallback;
+}
+
 function ScopeCrumbLabel({
   crumb,
   depth,
@@ -34,9 +44,7 @@ function ScopeCrumbLabel({
   hierarchy: boolean;
   onNavigate?: (ref: string) => void;
 }) {
-  const name = useThreadsStore((state) => state.threads.get(crumb.ref)?.name);
-  const row = selectSessionSummary(crumb.ref, navigationStore.getState());
-  const title = name || (row?.ref === crumb.ref ? row.title : null) || crumb.title;
+  const title = useScopeTitle(crumb.ref, crumb.title);
   return (
     <span
       className={CLASS.crumbWrap}

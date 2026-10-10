@@ -67,6 +67,16 @@ type Catalog struct {
 	SkippedPlugins []string `json:"skippedPlugins,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }
 
+// plugin is the catalog's entry named name.
+func (c Catalog) plugin(name string) (CatalogPlugin, bool) {
+	for _, p := range c.Plugins {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return CatalogPlugin{}, false
+}
+
 type catalogMetadata struct {
 	PluginRoot string `json:"pluginRoot,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }

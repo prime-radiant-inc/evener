@@ -140,9 +140,17 @@ export interface StoreLifecycleOptions<S> {
   wantsList(state: S): boolean;
 }
 
+/** What a host drives of a store's lifecycle; see attachLifecycle. */
+export type HostLifecycle<S> = Omit<StoreLifecycle<S>, "guard" | "epoch">;
+
 export interface StoreLifecycle<S> {
   /** Wraps the store's own publish: a write after dispose() is dropped. */
   guard(publish: FrameworkFreeStore<S>["setState"]): FrameworkFreeStore<S>["setState"];
+  /** How many times the lifecycle has fenced what is in flight (reset,
+   * dispose, a replaced connection). A request no revision fences compares it
+   * across its await: a change means its answer belongs to a store that has
+   * since forgotten what it read. Like guard, the store's own business. */
+  epoch(): number;
   /** Subscribes to the notification. Idempotent, and refused after
    * dispose(). */
   start(): void;
@@ -193,8 +201,10 @@ export function createStoreLifecycle<S>(
   // The store's own publish, guarded: kept so the fence can settle what the
   // requests it cancels would have answered.
   let guardedSet: FrameworkFreeStore<S>["setState"] | undefined;
+  let fences = 0;
 
   function fenceInFlight(): void {
+    fences += 1;
     options.revision?.fence();
     if (guardedSet) options.onFence?.(guardedSet);
     clearTimeout(refetchTimer);
@@ -228,6 +238,7 @@ export function createStoreLifecycle<S>(
       };
       return guardedSet;
     },
+    epoch: () => fences,
     start() {
       if (disposed || stopNotifications) return;
       stopNotifications = notifications.onNotification(handleNotification);
@@ -316,12 +327,12 @@ export function createStoreLifecycle<S>(
 
 /**
  * The store a host drives: the store's own reactive triple plus everything of
- * the lifecycle except `guard`, which stays the store's own business.
+ * the lifecycle except `guard` and `epoch`, which stay the store's own business.
  */
 export function attachLifecycle<S, T extends FrameworkFreeStore<S>>(
   store: T,
   lifecycle: StoreLifecycle<S>,
-): T & Omit<StoreLifecycle<S>, "guard"> {
+): T & HostLifecycle<S> {
   const { start, connectionChanged, reset, dispose } = lifecycle;
   return { ...store, start, connectionChanged, reset, dispose };
 }

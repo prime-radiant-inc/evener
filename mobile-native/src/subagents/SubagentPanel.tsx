@@ -5,12 +5,11 @@
 // its composer would be. A stop goes to the hub directly when the
 // coordinator's hub can make one (S6), and is asked of the coordinator
 // otherwise.
-import { WireError } from "@evener/appwire-client";
+import { isMethodNotFound, WireError } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { SessionLink } from "../session/sessionMessage";
-import { isMethodNotFound } from "../wireErrors";
 import { returnToSession, type SessionNavigation } from "../session/returnToSession";
 import { stopRequests } from "./nativeStopRequests";
 import { SubagentBar } from "./SubagentBar";

@@ -104,7 +104,7 @@ func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
 		want       string
 	}{
 		{"active", false, "Working"},
-		{"awaiting", false, "Your move"},
+		{"awaiting", false, "Needs you"},
 		{"awaiting", true, "Question waiting"},
 		{"warning", false, "Warning"},
 		{"systemerror", false, "Error"},

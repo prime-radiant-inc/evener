@@ -549,6 +549,28 @@ describe("transcript projector", () => {
     });
   });
 
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer, so its history row shows at every level, system events off.
+  test("an approval decision shows at every level", () => {
+    const model = threadWith(
+      item("approval", "systemMessage", {
+        eventKind: "approval_decision",
+        text: "Allowed write_file to access /tmp/a",
+        raw: { approvalDecision: { approved: true, tool: "write_file", kind: "file_tool", deniedPath: "/tmp/a" } },
+      }),
+    );
+    const quietest = custom({ toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false });
+    const configs = [
+      ...(["chat", "intent", "tools", "activity", "full"] as const).map((level) =>
+        preset(level, { systemEvents: false }),
+      ),
+      quietest,
+    ];
+    for (const config of configs) {
+      expect(entriesFor(model, config)).toEqual([expect.objectContaining({ kind: "item", id: "approval" })]);
+    }
+  });
+
   describe("tool-repair notices", () => {
     const repair = () =>
       item("repair", "systemMessage", {
@@ -1088,5 +1110,34 @@ describe("transcript projector", () => {
       "item_assistant_1_1",
       "stream:preview",
     ]);
+  });
+});
+
+// --- automatic memory refresh (eventKind "memory-context") ------------------
+// The refresh is a standalone collapsed notification a reader can always
+// reach: visible at every level independently of the system-events gate, and
+// opted out of the expand-everything (Full) disclosure baseline. Both are
+// shared projector rules; each client renders the typed kind as its own
+// collapsed "Refreshed my memory" disclosure.
+
+describe("memory refresh projection", () => {
+  function memoryItem(): ItemModel {
+    return item("item_memory_context_0", "systemMessage", {
+      eventKind: "memory-context",
+      description: "Memory context",
+      text: 'Personal memory index: "- [a](a.md) — a note\\n"',
+    });
+  }
+
+  test("stays a visible item entry at every preset, even with system events off", () => {
+    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+      const entries = entriesFor(threadWith(memoryItem()), preset(level));
+      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_memory_context_0" })]);
+    }
+  });
+
+  test("is not an eligible-disclosure id, so no general baseline can open it", () => {
+    const projection = projectThread(threadWith(memoryItem()), preset("full"));
+    expect(projection.eligibleDisclosureIds).not.toContain("item_memory_context_0");
   });
 });

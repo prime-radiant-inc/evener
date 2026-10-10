@@ -1,5 +1,6 @@
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
+import type { JobLogReader } from "../panes/transcript/jobLogReader";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { refParam } from "./routing";
 import { type OpenPaneRecord, onPaneRetype, workspaceStore } from "./workspace";
@@ -12,6 +13,7 @@ export interface PaneLifetime {
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
   readonly readViews: Map<string, TranscriptReadView>;
+  readonly jobOutputReads: Map<string, JobLogReader>;
   readonly resolvedSessions: Map<string, string>;
   dispose(): void;
 }
@@ -33,6 +35,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     sourceRef,
     sourceType,
     readViews: new Map(),
+    jobOutputReads: new Map(),
     resolvedSessions: new Map(),
     get alive() {
       return alive;
@@ -44,6 +47,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     dispose() {
       if (!alive) return;
       alive = false;
+      for (const reader of lifetime.jobOutputReads.values()) reader.dispose();
+      lifetime.jobOutputReads.clear();
       for (const view of lifetime.readViews.values()) view.dispose();
       lifetime.readViews.clear();
       lifetime.resolvedSessions.clear();

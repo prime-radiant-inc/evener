@@ -36,16 +36,22 @@ func TestSessionActivityRemoteReferences(t *testing.T) {
 			t.Fatalf("context = %+v", summary.Context)
 		}
 	}})
-	delegates := appwire.SessionDelegatesResponse{Context: context, Page: page, Delegates: []appwire.SessionDelegate{{OwnerRef: "local:child", RootRef: "local:root", ChildRef: "local:grandchild"}}}
+	delegates := appwire.SessionDelegatesResponse{Context: context, Page: page, Delegates: []appwire.SessionDelegate{{OwnerRef: "local:child", RootRef: "local:root", ChildRef: "local:grandchild", RunGeneration: 7, Terminal: true, Outcome: "failed"}}}
 	tests = append(tests, translationCase{"delegates", &delegates, func(t *testing.T) {
 		if !reflect.DeepEqual(delegates.Context, wantContext) || delegates.Page.Issues[0].Ref != "remote:grandchild" || delegates.Delegates[0].OwnerRef != "remote:child" || delegates.Delegates[0].RootRef != "remote:root" || delegates.Delegates[0].ChildRef != "remote:grandchild" || delegates.Page.NextCursor != "opaque" {
 			t.Fatalf("delegates = %+v", delegates)
 		}
+		if row := delegates.Delegates[0]; row.RunGeneration != 7 || !row.Terminal || row.Outcome != "failed" {
+			t.Fatalf("translation changed delegate generation/outcome: %+v", row)
+		}
 	}})
-	jobs := appwire.SessionJobsResponse{Context: context, Page: page, Jobs: []appwire.JobActivityJob{{OwnerRef: "local:child", TranscriptRef: "local:child", JobID: "opaque"}}}
+	jobs := appwire.SessionJobsResponse{Context: context, Page: page, Jobs: []appwire.JobActivityJob{{OwnerRef: "local:child", TranscriptRef: "local:child", JobID: "opaque", Background: true, Terminal: true, Status: "command_exited_nonzero", Outcome: "failure"}}}
 	tests = append(tests, translationCase{"jobs", &jobs, func(t *testing.T) {
 		if !reflect.DeepEqual(jobs.Context, wantContext) || jobs.Page.Issues[0].Ref != "remote:grandchild" || jobs.Jobs[0].OwnerRef != "remote:child" || jobs.Jobs[0].TranscriptRef != "remote:child" || jobs.Jobs[0].JobID != "opaque" {
 			t.Fatalf("jobs = %+v", jobs)
+		}
+		if row := jobs.Jobs[0]; !row.Background || !row.Terminal || row.Status != "command_exited_nonzero" || row.Outcome != "failure" || jobs.Page.NextCursor != "opaque" {
+			t.Fatalf("translation changed durable job facts or cursor: %+v", jobs)
 		}
 	}})
 	watches := appwire.SessionWatchesResponse{Context: context, Page: page, Watches: []appwire.SessionWatch{{SourceRef: "local:child", OwnerRef: "local:root", ReceiverRef: "local:root", Watch: appwire.EvenerWatchInfo{ID: "opaque", Source: "shell-1"}}}}
@@ -60,6 +66,46 @@ func TestSessionActivityRemoteReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.check(t)
+		})
+	}
+}
+
+func TestSessionActivityRemoteJobTranscriptAnchors(t *testing.T) {
+	for _, anchor := range []string{"job:same-id", "proj:project:same-id"} {
+		t.Run(anchor, func(t *testing.T) {
+			source := &RemoteHubSource{id: "east"}
+			page := appwire.SessionJobsResponse{
+				Context: appwire.SessionActivityContext{Ref: "local:owner", RootRef: "local:owner"},
+				Page:    appwire.SessionActivityPage{NextCursor: "opaque"},
+				Jobs:    []appwire.JobActivityJob{{JobID: "same-id", OwnerRef: "local:owner", TranscriptRef: anchor, HasOutput: true}},
+			}
+			if err := source.translateOut(&page); err != nil {
+				t.Fatal(err)
+			}
+			if page.Context.Ref != "east:owner" || page.Jobs[0].OwnerRef != "east:owner" || page.Jobs[0].TranscriptRef != anchor || page.Jobs[0].JobID != "same-id" || !page.Jobs[0].HasOutput || page.Page.NextCursor != "opaque" {
+				t.Fatalf("job anchor translation: %+v", page)
+			}
+		})
+	}
+}
+
+func TestSessionActivityRemoteJobsRejectUnsupportedStructuralRefs(t *testing.T) {
+	for _, field := range []string{"owner", "context"} {
+		t.Run(field, func(t *testing.T) {
+			source := &RemoteHubSource{id: "east"}
+			page := appwire.SessionJobsResponse{
+				Context: appwire.SessionActivityContext{Ref: "local:owner"},
+				Jobs:    []appwire.JobActivityJob{{OwnerRef: "local:owner", TranscriptRef: "job:same-id"}},
+			}
+			if field == "owner" {
+				page.Jobs[0].OwnerRef = "nested:owner"
+			} else {
+				page.Context.Ref = "nested:owner"
+			}
+			var wire appwire.WireError
+			if err := source.translateOut(&page); !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+				t.Fatalf("unsupported %s ref: %v", field, err)
+			}
 		})
 	}
 }

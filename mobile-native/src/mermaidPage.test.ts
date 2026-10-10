@@ -20,6 +20,9 @@ describe("MERMAID_PAGE_HTML", () => {
 		expect(MERMAID_PAGE_HTML).toContain("Bundled license information");
 		expect(MERMAID_PAGE_HTML).toContain("MIT");
 	});
+	it("ships the remediated DOMPurify implementation", () => {
+		expect(MERMAID_PAGE_HTML).toMatch(/\.version="3\.4\.16"/);
+	});
 	it("is fresh (matches a rebuild)", async () => {
 		expect(await buildMermaidPageHtml()).toBe(MERMAID_PAGE_HTML);
 	});

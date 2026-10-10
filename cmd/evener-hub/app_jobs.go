@@ -105,7 +105,7 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.JobOutput(ctx, params)
 		},
 		func(stateDir, sessionID, jobID string) (appwire.JobsOutputResponse, bool, error) {
-			tail, found, err := agent.LoadSessionJobOutputTail(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes)
+			tail, found, err := agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes)
 			return appwire.JobsOutputResponse{Data: tail}, found, err
 		})
 }

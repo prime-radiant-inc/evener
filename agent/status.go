@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -324,10 +325,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID
-		for _, row := range s.delegateController.Snapshot().rows {
-			if row.descriptor.OwnerSessionID == s.ID() {
-				ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
-			}
+		for _, row := range s.delegateController.sessionSubtreeSnapshot(s.ID()) {
+			ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
 		}
 	}
 
@@ -388,6 +387,8 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 
 // SessionOwnedDelegateIDs reads the session's subtree in the root-owned
 // delegate journal without loading transcripts. Fork provenance is not ownership.
+// ctx is checked before the journal fold and again after the in-memory subtree
+// walk, so a cancellation during either is returned instead of a result.
 func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([]string, error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return nil, err
@@ -412,43 +413,26 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	}
 	// Committed descriptors remain ownership evidence after interrupted writes.
 	// A killed daemon may leave an incomplete trailing batch; it is not replayed.
-	children := make(map[string][]string)
-	var pending []string
+	// Only rows the root owns count, so a row outside that ownership, and any
+	// row whose parentage runs through one, is in no session's subtree here.
+	rootOwned := make(delegatestore.State, len(result.Value.state))
 	for delegateID, aggregate := range result.Value.state {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootID {
-			continue
-		}
-		children[aggregate.Descriptor.ParentDelegateID] = append(children[aggregate.Descriptor.ParentDelegateID], delegateID)
-		if sessionID == rootID || aggregate.Descriptor.ChildSessionID == sessionID {
-			pending = append(pending, delegateID)
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID {
+			rootOwned[delegateID] = aggregate
 		}
 	}
-	ids := make(map[string]bool)
-	visited := make(map[string]bool)
-	for len(pending) != 0 {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		delegateID := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if visited[delegateID] {
-			continue
-		}
-		visited[delegateID] = true
-		id := result.Value.state[delegateID].Descriptor.ChildSessionID
+	owners := sessionSubtreeOwners(rootOwned, sessionID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
+	// for the sessions below it.
+	delete(owners, sessionID)
+	out := make([]string, 0, len(owners))
+	for id := range owners {
 		if err := schema.ValidateSessionID(id); err != nil {
 			return nil, err
 		}
-		if id != sessionID {
-			ids[id] = true
-		}
-		pending = append(pending, children[delegateID]...)
-	}
-	out := make([]string, 0, len(ids))
-	for id := range ids {
 		out = append(out, id)
 	}
 	sort.Strings(out)

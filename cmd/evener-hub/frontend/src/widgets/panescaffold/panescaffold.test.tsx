@@ -48,6 +48,35 @@ test("makes the content region focusable and consumes a toggle-open focus marker
   previousFocus.remove();
 });
 
+test.each([true, false])("requested focus stays in this pane when its footer editor exists: %s", (hasEditor) => {
+  requestPaneFocus("source");
+  const pane = (focused: boolean) => (
+    <>
+      <textarea aria-label="Other pane editor" />
+      <PaneScaffold
+        title="Source"
+        paneId="source"
+        focused={focused}
+        focusSelector="textarea"
+        scaffoldMarker="source"
+        footer={hasEditor ? <textarea aria-label="Source editor" /> : undefined}
+      >
+        content
+      </PaneScaffold>
+    </>
+  );
+  const { container, rerender } = render(pane(true));
+  const body = container.querySelector<HTMLElement>('[data-pane-scaffold="source"]');
+  const target = hasEditor ? screen.getByRole("textbox", { name: "Source editor" }) : body;
+  expect(document.activeElement).toBe(target);
+
+  const other = screen.getByRole("textbox", { name: "Other pane editor" });
+  other.focus();
+  rerender(pane(false));
+  rerender(pane(true));
+  expect(document.activeElement).toBe(other);
+});
+
 test("does not focus after a scaffold mounts inactive or on an ordinary remount", () => {
   requestPaneFocus("pane_sessionDetails_1");
   const { rerender, unmount, container } = render(

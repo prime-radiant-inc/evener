@@ -1,5 +1,6 @@
 import type { InitializeResponse, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import {
+  APPWIRE_PROTOCOL_VERSION,
   type HubTranscriptDisplayDefault,
   shippedDesktopConfig,
   shippedMobileConfig,
@@ -187,7 +188,7 @@ describe("DevHarness", () => {
     const fake = new FakeClient("ready");
     const scripted: InitializeResponse = {
       serverInfo: { name: "dev-harness-hub", version: "2.0.0" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "dev-harness-test",
       features: {
         threadList: false,

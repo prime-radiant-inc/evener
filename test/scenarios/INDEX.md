@@ -112,7 +112,7 @@ the area they exercise.
 - `web-thread-clear-replaces-session.md` — web command-palette clear replaces
   the live instance while preserving the stable session ref and keeping the
   pane usable for a new turn (issue `#139`).
-- `status-vocabulary-roundtrip.md` — the attainable your-move and
+- `status-vocabulary-roundtrip.md` — the attainable needs-you and
   question-waiting states read the same across the web rail, the TUI
   dashboard row, and the TUI session header; a deterministic gate pins
   the whole `hubapi.StateWord` vocabulary (Track A §1-2).

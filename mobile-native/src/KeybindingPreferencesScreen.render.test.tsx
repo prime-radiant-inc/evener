@@ -121,6 +121,13 @@ beforeEach(() => {
 	};
 });
 
+it("lets a drag of the page put the keyboard away", () => {
+	harness.connection = { activeProfile: hub, client: null, state: "ready", retry: vi.fn() };
+	const tree = render(app());
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	act(() => tree.unmount());
+});
+
 it("shows and invokes cold-offline discard for an unreadable stored record", () => {
 	writeDraft(hub.id, "{not json");
 	const tree = render(app());

@@ -53,9 +53,12 @@ export async function locateSession(
 			ref,
 			revealRef,
 			title: location.session.project || "Project",
+			// Name the location's catalog: the key may be in several. An older
+			// hub sends none.
 			params: {
 				resource: "project_page",
 				projectKey: location.project_key,
+				...(location.catalog ? { catalog: location.catalog } : {}),
 				tier: location.tier,
 			},
 		};

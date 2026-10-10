@@ -51,6 +51,7 @@ var hostRequestMethods = map[string]struct{}{
 	MethodEvenerPluginSetAutoUpgrade: {},
 	MethodEvenerPluginPreview:        {},
 	MethodEvenerPluginCheckNow:       {},
+	MethodEvenerPluginCheckUpdates:   {},
 
 	// Auth and credentials (hubAuthController, app_auth.go). The host's own
 	// refusals (a stored key under a Codex or gcp-adc instance) pass through
