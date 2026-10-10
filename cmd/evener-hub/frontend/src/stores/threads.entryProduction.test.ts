@@ -1204,3 +1204,57 @@ it("ordinary empty source cold-opens and accepts later recorded input without a 
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["first-recorded"]);
 });
+
+it("ordinary reacquisition on a replacement client cannot reuse the outgoing retirement model", async () => {
+  const storage = cache();
+  const oldClient = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  let finishOld: (() => void) | undefined;
+  oldClient.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        finishOld = () =>
+          resolve({
+            ...response("local:a", [turn("obsolete-client-final", 2)]),
+            requestGeneration: params.requestGeneration,
+          });
+      }),
+  );
+  const releasing = threadsStore.getState().releaseThreadAndWait("local:a");
+  await vi.waitFor(() => expect(finishOld).toBeDefined());
+  const replacement = new FakeClient("ready");
+  let finishNew: (() => void) | undefined;
+  replacement.on("thread/unsubscribe", () => ({}));
+  replacement.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        finishNew = () => {
+          const fresh = response("local:a", [turn("replacement-client-baseline", 3)]);
+          fresh.snapshot = { incarnation: "replacement-incarnation", length: 4 };
+          resolve({ ...fresh, requestGeneration: params.requestGeneration });
+        };
+      }),
+  );
+  connectionStore.getState().connect(replacement);
+  const opening = threadsStore.getState().ensureThread("local:a");
+  try {
+    await vi.waitFor(() => expect(finishNew).toBeDefined(), { timeout: 500 });
+    expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+    finishNew?.();
+    await opening;
+    finishOld?.();
+    await releasing;
+    await settleEntryTranscriptForTests("local:a");
+    const key = entryHistoryKey({ ...identity, clientId: location.origin, incarnation: "replacement-incarnation" });
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["replacement-client-baseline"]);
+    expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("obsolete-client-final");
+  } finally {
+    finishOld?.();
+    finishNew?.();
+    await opening;
+    await releasing;
+  }
+});
