@@ -280,6 +280,13 @@ export class SessionActivityStore {
         }
         this.runtimeThreadId = null;
         this.statusUpdate = null;
+        // The connection may come back to a producer without the push
+        // capability, and an invalidation that arrives before the first
+        // refreshed response would trust the old one: the merge is re-enabled
+        // only by a fresh live capability context.
+        this.pushEligible = false;
+        this.clearDelegates();
+        this.retirementEpoch = undefined;
         this.publish({ runtime: null });
       }),
       this.client.onReady(() => {
@@ -1077,7 +1084,9 @@ function activityInstant(value: string): { seconds: number; nanos: number } | nu
   const monthValue = Number(month);
   const dayValue = Number(day);
   if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) return null;
-  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 60) return null;
+  // Go's time.RFC3339Nano rejects a leap second ("second out of range"), so
+  // accepting one would order a value the projector refuses.
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
   if (sign !== undefined && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) return null;
   const yearValue = Number(year);
   const utc = Date.UTC(yearValue, monthValue - 1, dayValue, Number(hour), Number(minute), Number(second));

@@ -528,7 +528,10 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 			var metadata delegateTerminalPacketMetadata
 			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
 				out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")
-			} else {
+			} else if len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
+				// The activity read only parses metadata that fits this cap, so a
+				// pushed status must omit the same usage and worktree: otherwise a
+				// pushed row carries fields a reconciliation read drops.
 				out.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
 				if metadata.Worktree != nil {
 					out.Worktree = &appwire.JobActivityWorktree{

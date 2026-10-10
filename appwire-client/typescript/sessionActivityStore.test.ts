@@ -3011,6 +3011,16 @@ test("a sibling collection catching up to the epoch keeps the current delegate o
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
 });
 
+test("a connection leaving ready stops merging pushed frames", async () => {
+  const { client, store } = await pushOwner();
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  client.emitStateChange("disconnected");
+  // Reconnecting can reach a producer without the push capability, so the old
+  // one must not keep admitting frames.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 9, status: "failed", reportPreview: "stale" })));
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+});
+
 test("a calendar-invalid timestamp never wins the activity move", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
