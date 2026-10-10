@@ -117,14 +117,13 @@ func (s *idlePublicationServer) SetProcessing(processing bool) {
 	s.observeProcessing(processing)
 }
 
-// observeProcessing opens idlePublished the first time processing ends after
-// it started: the serve loop's finish of the turn's input pass.
-
 func (s *idlePublicationServer) SetProcessingTurn(turnID string) {
 	s.Server.SetProcessingTurn(turnID)
 	s.observeProcessing(true)
 }
 
+// observeProcessing opens idlePublished the first time processing ends after
+// it started: the serve loop's finish of the turn's input pass.
 func (s *idlePublicationServer) observeProcessing(processing bool) {
 	s.mu.Lock()
 	finished := !processing && s.sawProcessing

@@ -568,8 +568,9 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 }
 
 // finishProcessing ends the running input and publishes the thread settled
-// (idle, or the awaiting or closed state already recorded), or the terminal
-// status its SESSION_END deferred, in one projection commit. A thread whose
+// (the state the session's events stored, or idle standing in for a
+// published turn's end that hasn't arrived yet), or the terminal status its
+// SESSION_END deferred, in one projection commit. A thread whose
 // processing already ended publishes nothing: the bridge's status effect for
 // a SESSION_END (applySessionEventStatus) clears processing, except for an
 // interrupted one, so after any other its status was the last word. After an
