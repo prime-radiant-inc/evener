@@ -203,6 +203,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appHeldSettledEffect = nil
@@ -568,8 +569,9 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 }
 
 // finishProcessing ends the running input and publishes the thread settled
-// (idle, or the awaiting or closed state already recorded), or the terminal
-// status its SESSION_END deferred, in one projection commit. A thread whose
+// (the state the session's events stored, or idle standing in for a
+// published turn's end that hasn't arrived yet), or the terminal status its
+// SESSION_END deferred, in one projection commit. A thread whose
 // processing already ended publishes nothing: the bridge's status effect for
 // a SESSION_END (applySessionEventStatus) clears processing, except for an
 // interrupted one, so after any other its status was the last word. After an
@@ -579,6 +581,10 @@ func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
+		// A published turn whose end the bridge hasn't reached yet: its
+		// SESSION_END will state the resting state, and until then idle
+		// stands in for it rather than the rest from before the turn.
+		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
@@ -600,11 +606,15 @@ func (s *Server) finishProcessing() {
 			held(s)
 		}
 		if len(pending) == 0 && wasProcessing && threadID != "" {
-			// The session state still says what the input left running
-			// ("active") until serve samples it after this call: nothing runs
-			// now, so that reads as idle.
+			// The stored state is what the session's own events stated: a
+			// pass that ran no turn left it as it was, and a held rest or an
+			// interrupted turn's end restated it. Nothing runs once processing
+			// ends, so a stored active (a forecast that work would follow)
+			// reads idle, stored and published alike; work that does follow
+			// publishes its own turn.
 			status := appStatus(s.status.State, false, false)
-			if status == appwire.ThreadStatusActive {
+			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}
 			pending = append(pending, pendingAppNotification{

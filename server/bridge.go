@@ -241,9 +241,16 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
 			// An interrupted end closes nothing: the session stays live and the
-			// cancelled turn is still unwinding. The event is still projected by
-			// the caller — only its status effects are skipped.
-			return nil
+			// cancelled turn is still unwinding, so processing stays set. It
+			// still states the session's resting state, which the end of
+			// processing publishes.
+			if d.State == "" {
+				return nil
+			}
+			return func(s *Server) {
+				s.status.State = d.State
+				s.appTurnEndStated = true
+			}
 		}
 		return func(s *Server) {
 			// The input ended on its own SESSION_END, which states the
