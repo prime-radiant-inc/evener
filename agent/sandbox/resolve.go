@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -750,13 +751,15 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	cr := filepath.Clean(host.EvenerConfigRoot)
 	// A config root the user denylisted themselves stays theirs: it is masked,
 	// and nothing is carved from it, since their own entries win.
+	// Judged by file identity, since neither spelling nor resolved path tells
+	// on a case-insensitive volume (~/.CONFIG/EVENER is ~/.config/evener).
 	sameDir := func(a, b string) bool {
 		if a == b {
 			return true
 		}
-		ra, aerr := filepath.EvalSymlinks(a)
-		rb, berr := filepath.EvalSymlinks(b)
-		return aerr == nil && berr == nil && ra == rb
+		fa, aerr := os.Stat(a)
+		fb, berr := os.Stat(b)
+		return aerr == nil && berr == nil && os.SameFile(fa, fb)
 	}
 	for _, a := range policy.DenylistAdd {
 		if added := resolveHomePath(a, host.Home); sameDir(added, def) || sameDir(added, cr) {
@@ -814,8 +817,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// resolved spelling all use this same answer, so a swap in between
 		// cannot slip a different location in.
 		resolved, err := filepath.EvalSymlinks(root)
-		exists := err == nil
-		if !exists {
+		if err != nil {
 			// Not created yet: its resolved spelling is where creating it would
 			// land, from its existing ancestors.
 			resolved = StripDataVolumeAlias(canonicalizeLongestPrefix(root, filepath.EvalSymlinks))
@@ -833,12 +835,10 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			continue
 		}
 		// The root is exempt under its resolved spelling too, which is how the
-		// file tools see a directory they opened (its canonical path); one that
-		// exists is held to this location (CarveOutResolvesTo).
+		// file tools see a directory they opened (its canonical path), and is
+		// held to this location (CarveOutResolvesTo), even one not created yet.
 		out = append(out, root, resolved)
-		if exists {
-			at[root], at[resolved] = resolved, resolved
-		}
+		at[root], at[resolved] = resolved, resolved
 	}
 	return dedupeRoots(out), at
 }
@@ -855,13 +855,11 @@ func (rp ResolvedPolicy) CarveOutIntact(root string) bool {
 // root was found at (say the canonical path of a directory opened through it),
 // is the root's own place under the mask it is carved from.
 func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
-	// A root that existed at resolution is held to where it resolved then, so
-	// redirecting an enclosing directory later cannot move the grant. One that
-	// did not exist yet (created mid-session) is judged by the live layout.
-	if at, ok := rp.carveOutAt[root]; ok {
-		return resolved == at
-	}
-	return !carveOutEscapes(resolved, root, rp.MaskedPaths)
+	// A root is held to where it resolved at session start (or, not created
+	// yet, where creating it would land), so redirecting an enclosing
+	// directory later cannot move the grant.
+	at, ok := rp.carveOutAt[root]
+	return ok && resolved == at
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the

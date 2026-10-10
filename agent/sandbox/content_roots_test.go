@@ -462,3 +462,63 @@ func TestEvenerContentRootsRegisterAMissingRootsResolvedSpelling(t *testing.T) {
 		t.Errorf("a missing root's resolved spelling must be carved out too: %v", rp.UnmaskedRoots)
 	}
 }
+
+// A content root missing at resolution is pinned to where creating it would
+// land: installing it there later reads normally, while redirecting an
+// enclosing directory before its first read cannot move the grant.
+func TestCarveOutPinsAMissingRootToWhereItWouldLand(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	config := filepath.Join(home, ".config", "evener")
+	cache := filepath.Join(config, "plugins", "cache")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !slices.Contains(rp.UnmaskedRoots, cache) {
+		t.Fatalf("a missing content root must still be carved out: %v", rp.UnmaskedRoots)
+	}
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(cache) {
+		t.Errorf("a root installed in place mid-session must be granted")
+	}
+	elsewhere := filepath.Join(home, "elsewhere")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "plugins", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(config, filepath.Join(home, "evener-moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, config); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(cache) {
+		t.Errorf("a missing root whose enclosing directory was redirected must not be granted")
+	}
+}
+
+// On a case-insensitive volume (macOS's default), denylisting the config root
+// under another case is the same directory, so nothing is carved from it.
+func TestEvenerContentRootsHonourACaseVariantConfigMask(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG", "EVENER")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{".CONFIG/EVENER"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a case-variant denylist entry for the config root must keep its content masked, got %v", rp.UnmaskedRoots)
+	}
+}

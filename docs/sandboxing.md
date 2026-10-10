@@ -362,7 +362,8 @@ inside or above it, win), when a write root overlaps it (it would not stay
 read-only), or when it resolves anywhere but its own place under Evener's config
 mask (a symlink into, or above, a masked directory). The file tools check that
 resolution again when they open the directory, against the directory actually
-opened, so one swapped for a symlink mid-session is refused. With
+opened, so one swapped for a symlink mid-session is refused, and one not
+installed yet is held to where installing it would land. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
