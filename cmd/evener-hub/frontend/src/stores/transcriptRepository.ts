@@ -849,7 +849,7 @@ export class TranscriptRepository {
     // A committed Clear during the lookup retires this window's authority even
     // when the client and source identity are unchanged: never publish rows a
     // cleared epoch no longer owns.
-    if (!(await this.#clearEpochUnchanged())) return { kind: "reconcile" };
+    if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
     // Only a connected-but-unverified chain is genuine uncertainty. Empty
     // coverage below the oldest row is an ordinary network continuation.
     if (window.stale) return window.coverage.length > 0 ? { kind: "reconcile" } : { kind: "server" };
@@ -971,7 +971,7 @@ export class TranscriptRepository {
           // A committed Clear during the reads retires the snapshot's authority
           // even when client and source identity are unchanged: never publish a
           // locally opened window the cleared epoch no longer owns.
-          if (!(await this.#clearEpochUnchanged())) {
+          if (!(await this.#durableAuthoritiesUnchanged())) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           const current = cut.model ?? this.#model;
@@ -1362,22 +1362,26 @@ export class TranscriptRepository {
 
   /**
    * Whether the durable Clear epoch this binding captured is still current. An
-   * asynchronous lookup that began before a committed Clear must not publish the
-   * rows it read under the old epoch, even when the client and source identity
+   * asynchronous lookup that began before a committed Clear or history deletion must not publish the
+   * rows it read under the old authorities, even when the client and source identity
    * are unchanged. Bounded by the lookup deadline and fail-closed: an epoch that
    * cannot be established (timeout or read failure) is NOT treated as unchanged,
    * so an unverified result never publishes as current.
    */
-  async #clearEpochUnchanged(): Promise<boolean> {
+  async #durableAuthoritiesUnchanged(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const epoch = await Promise.race([
-        this.#cache.getClearEpoch(),
+      const authorities = await Promise.race([
+        Promise.all([this.#cache.getClearEpoch(), this.#cache.getHistoryGeneration(this.#binding.historyKey)]),
         new Promise<undefined>((resolve) => {
           timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
         }),
       ]);
-      return epoch !== undefined && epoch === this.#binding.clearEpoch;
+      return (
+        authorities !== undefined &&
+        authorities[0] === this.#binding.clearEpoch &&
+        authorities[1] === (this.#binding.historyGeneration ?? 0)
+      );
     } catch {
       return false;
     } finally {
