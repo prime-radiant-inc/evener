@@ -522,11 +522,16 @@ func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 // An idle parent delegate (a coordinator that ended its turn waiting on its
 // worker) is woken by its worker's update: its next turn presents it. The
 // coordinator's generation stays open while it drains its worker, so that
-// turn runs inside the drain, after the coordinator has gone idle.
+// turn runs inside the drain, after the coordinator has gone idle. The
+// worker's report waits until that turn is presented, so only the update
+// itself can have woken the coordinator, and that turn consumes the update, so
+// no successor generation is started for it.
 func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
-	coordinatorIdle := make(chan struct{})
+	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	defer releaseReport()
 	presented := make(chan string, 1)
 	adapter.script("root",
 		func(llm.Request) llm.Response {
@@ -549,7 +554,10 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
 			return updateResponse("upd", "IDLE_PARENT_UPDATE: which table holds the drain cursor?")
 		},
-		func(llm.Request) llm.Response { return finalResponse("worker done") },
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
+			return finalResponse("worker done")
+		},
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	serveSupervisionRootWakes(t, root)
@@ -563,19 +571,31 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	// processing, the worker's update finds it idle.
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	var coordinator *Session
 	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
 		children := root.subagents.sessions()
-		return len(children) == 1 && children[0].State() == SessionIdle
+		if len(children) != 1 || children[0].State() != SessionIdle {
+			return false
+		}
+		coordinator = children[0]
+		return true
 	})
 	close(coordinatorIdle)
 	select {
 	case text := <-presented:
+		releaseReport()
 		if !strings.Contains(text, `kind="update"`) || !strings.Contains(text, "IDLE_PARENT_UPDATE") {
 			t.Fatalf("the coordinator's next turn does not present the update:\n%s", text)
+		}
+		if strings.Contains(text, `kind="report"`) {
+			t.Fatalf("the coordinator's turn presents the worker's report, so the update did not wake it alone:\n%s", text)
 		}
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	case <-time.After(30 * time.Second):
 		t.Fatal("the idle coordinator was never woken by its worker's update")
+	}
+	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
+		t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
 	}
 }
 
