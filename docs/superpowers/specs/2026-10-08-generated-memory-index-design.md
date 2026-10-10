@@ -38,7 +38,7 @@ Prices are stored and computed as integer cents...
 
 **What counts as a page:** every regular file under the scope root, in subdirectories too, except any path with a segment starting with `.` (the same rule `memory_search` uses) and except a file named `MEMORY.md` at the root. Only `.md` files are parsed for frontmatter; any other file renders with its filename as the description. Symlinks are skipped, as scope confinement already refuses them.
 
-**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`.
+**Fallback description**, when `description` is missing or empty: the page's first Markdown heading text, else its first non-blank body line, cut to 120 characters, followed by `(no description)`. A carriage return (alone or before a newline) ends a line, and whitespace runs in the heading or line collapse to one space, so neither a stray `\r` nor a tab reaches an index line.
 
 ## The generated index
 
@@ -50,7 +50,7 @@ Tags: formatting (3), money (2), vitest (6)
 
 - Header: `Tags:` and every tag with its page count, alphabetical. Omitted when no page has tags. A projection the whole index does not fit caps it (see Budget).
 - One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date.
-- Title: the first heading if there is one, else the filename without extension.
+- Title: the first heading if there is one (whitespace runs collapsed, as in the fallback description), else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
 - A page whose path holds an ASCII control character other than tab has no link: its line is the path as a JSON string, then a note (see the product guide).
 
