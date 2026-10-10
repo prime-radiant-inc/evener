@@ -57,6 +57,8 @@ function setup({ refuse = false, fail = false } = {}) {
 		conversation: null as { lastTurnEndedAt?: string } | null,
 		/** The fleet's row for this session, once the fleet has read it. */
 		row: undefined as NavigationSessionSummary | undefined,
+		/** The session's last motion, from the screen's activity read. */
+		lastMovedAt: undefined as number | undefined,
 	};
 	const hook = renderHook(() =>
 		useMarkSeenInFront(
@@ -66,6 +68,7 @@ function setup({ refuse = false, fail = false } = {}) {
 			view.conversation,
 			view.row,
 			useBoardSeen(view.hubId),
+			view.lastMovedAt,
 		),
 	);
 	return { hubId, sent, view, hook, client, markers };
@@ -321,5 +324,66 @@ it("doesn't mark the fleet row again for a turn end the snapshot already marked 
 	hook.rerender();
 	await settleMicrotasks();
 	expect(sent).toHaveLength(1);
+	hook.unmount();
+});
+
+// Output streaming while you watch is seen too. The screen keeps the newest
+// last motion after the hub's seen mark while it is in front and marks it once
+// when it leaves the front, so a working session doesn't rebuild the hub's
+// navigation on every activity read.
+it("marks a session seen through its newest motion once, when it leaves the front", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T - 60_000) });
+	view.lastMovedAt = T;
+	hook.rerender();
+	view.lastMovedAt = T + 10_000;
+	hook.rerender();
+	await settleMicrotasks();
+	expect(sent).toEqual([]);
+	view.inFront = false;
+	hook.rerender();
+	await settleMicrotasks();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T + 10_000 }]]);
+	hook.unmount();
+});
+
+it("marks no motion that came before the hub's seen mark, or reached while not in front", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T) });
+	view.lastMovedAt = T - 1;
+	hook.rerender();
+	view.inFront = false;
+	hook.rerender();
+	view.lastMovedAt = T + 5;
+	hook.rerender();
+	hook.unmount();
+	await settleMicrotasks();
+	expect(sent).toEqual([]);
+});
+
+it("marks motion for a session the fleet hasn't listed, as one opened from search or a project", async () => {
+	const { sent, view, hook } = setup();
+	view.row = undefined;
+	view.lastMovedAt = T;
+	hook.rerender();
+	view.inFront = false;
+	hook.rerender();
+	await settleMicrotasks();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("sends the leave-the-front motion mark through the newest client", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T - 60_000) });
+	view.lastMovedAt = T;
+	hook.rerender();
+	view.client = null;
+	hook.rerender();
+	view.inFront = false;
+	hook.rerender();
+	await settleMicrotasks();
+	// No client now: the mark waits, rather than going through the old one.
+	expect(sent).toEqual([]);
 	hook.unmount();
 });
