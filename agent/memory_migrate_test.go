@@ -63,6 +63,10 @@ func TestSetMemoryFrontmatterField(t *testing.T) {
 			"---\ndescription: d\n... # end\n---\nx\n"},
 		{"a block that does not parse gains the line", "---\ndescription: a: b\n---\nx\n", "by: s1\n",
 			"---\ndescription: a: b\nby: s1\n---\nx\n"},
+		{"CRLF frontmatter is edited in place, with \\n line endings", "---\r\ndescription: d\r\n---\r\nbody\r\n", "by: s1\n",
+			"---\ndescription: d\nby: s1\n---\nbody\n"},
+		{"carriage-return-only frontmatter is edited in place", "---\rdescription: d\r---\rbody\r", "by: s1\n",
+			"---\ndescription: d\nby: s1\n---\nbody\n"},
 		{"a key-like line inside a block scalar is not a key", "---\nnote: |\n  description: no\ndescription: old\n---\n", "description: new\n",
 			"---\nnote: |\n  description: no\ndescription: new\n---\n"},
 	} {
