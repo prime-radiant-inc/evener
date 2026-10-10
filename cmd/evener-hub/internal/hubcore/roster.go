@@ -265,7 +265,9 @@ func cloneDaemonLifecycle(in *appwire.DaemonLifecycle) *appwire.DaemonLifecycle 
 	out.Blockers = append([]appwire.DaemonBlocker(nil), in.Blockers...)
 	if in.LastAttempt != nil {
 		attempt := *in.LastAttempt
-		attempt.Blockers = append([]appwire.DaemonBlocker(nil), in.LastAttempt.Blockers...)
+		// slices.Clone keeps an empty list non-nil, so an error-only attempt
+		// still encodes "blockers": [].
+		attempt.Blockers = slices.Clone(in.LastAttempt.Blockers)
 		out.LastAttempt = &attempt
 	}
 	return &out

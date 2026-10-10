@@ -37,17 +37,21 @@ func awaitRetirementReport(t *testing.T, reports chan RetirementAttempt) Retirem
 }
 
 // awaitLastAttemptAt tripwire-polls until the snapshot's last attempt is the
-// one made at at. Run reports an attempt before recording it, so once it is
-// recorded any report it produced is already in the channel.
+// one made at at and Run has re-established eligibility from that same
+// instant. Run reports an attempt before recording it, so any report it
+// produced is already in the channel; and waiting for the re-armed interval
+// keeps a later Advance from landing before Run re-evaluates, which would
+// start the next interval late and make the next tick early.
 func awaitLastAttemptAt(t *testing.T, ctrl *RetirementController, at time.Time) *RetirementAttempt {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if last := ctrl.Snapshot().LastAttempt; last != nil && last.At.Equal(at) {
+		snap := ctrl.Snapshot()
+		if last := snap.LastAttempt; last != nil && last.At.Equal(at) && snap.EligibleSince.Equal(at) {
 			return last
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("last attempt = %+v, want one at %v", ctrl.Snapshot().LastAttempt, at)
+			t.Fatalf("snapshot = %+v, want the attempt at %v and eligibility re-established then", snap, at)
 		}
 		time.Sleep(time.Millisecond)
 	}
