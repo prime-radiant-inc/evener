@@ -101,7 +101,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // session scratch: every one under the session-private strategy. Under the
 // overlay, the Go caches when the go env file was unreadable at session start
 // (the overlay cannot know where go will write), and any Go cache whose
-// directory the overlay does not serve (overlayGoCacheDirs; its root was
+// directory the overlay does not serve (overlayCacheDirs; its root was
 // dropped, say inside the worktree), which would otherwise stay persistently
 // writable.
 //
@@ -124,9 +124,14 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 		if policy.resolveHost.GoEnvUnreadable {
 			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
 		}
-		dirs, known := overlayGoCacheDirs(env, policy.resolveHost)
+		dirs, known := overlayCacheDirs(env, policy.resolveHost)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
 			if dir := dirs[name]; !known || (filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots)) {
+				out[name] = true
+			}
+		}
+		for _, name := range []string{"npm_config_cache", envvars.CargoHome.Name} {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots) {
 				out[name] = true
 			}
 		}
@@ -134,14 +139,15 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 	return out
 }
 
-// overlayGoCacheDirs returns, for each Go cache variable, the directory a
-// spawned go would write that cache to: the spawn's own setting, else the
-// host's resolved one (env or go env -w), else Go's default. GOPATH maps to its
-// first entry's pkg, where the checksum database lives. The host's settings
+// overlayCacheDirs returns, for each cache variable, the directory a spawned
+// command would write that cache to: for Go, the spawn's own setting, else the
+// host's resolved one (env or go env -w), else Go's default; for npm and cargo,
+// the spawn's setting, else ~/.npm and ~/.cargo under its own HOME. GOPATH maps
+// to its first absolute entry's pkg, where the checksum database lives. The host's settings
 // count only when the spawn's go reads the same go env file the probe read; a
 // spawn pointing at another file (an alternate GOENV) may configure its caches
 // anywhere, which it reports as not known.
-func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
+func overlayCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
 	vars := map[string]string{}
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
@@ -163,14 +169,14 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 		// spawn's own settings and Go's defaults apply.
 		host.GoPath, host.GoModCache, host.GoCache = "", "", ""
 	}
-	home := firstOr(vars[envvars.Home.Name], host.Home)
+	// Defaults follow the spawn's own HOME and XDG_CACHE_HOME, never the
+	// host's: a child run with its own (or none) writes where its go decides.
+	home := vars[envvars.Home.Name]
 	gopath := ""
-	if entries := filepath.SplitList(vars[envvars.GoPath.Name]); len(entries) > 0 && filepath.IsAbs(entries[0]) {
-		gopath = entries[0]
-	} else if entries := goPathEntries(HostFacts{Home: home, GoPath: host.GoPath}); len(entries) > 0 {
+	if entries := goPathEntries(HostFacts{Home: home, GoPath: firstOr(vars[envvars.GoPath.Name], host.GoPath)}); len(entries) > 0 {
 		gopath = entries[0]
 	}
-	cacheHome := firstOr(vars[envvars.XDGCacheHome.Name], host.XDGCacheHome)
+	cacheHome := vars[envvars.XDGCacheHome.Name]
 	if cacheHome == "" && home != "" {
 		cacheHome = filepath.Join(home, ".cache")
 	}
@@ -186,6 +192,12 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 	}
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
+	}
+	out["npm_config_cache"] = vars["npm_config_cache"]
+	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
+	if home != "" {
+		out["npm_config_cache"] = firstOr(out["npm_config_cache"], filepath.Join(home, ".npm"))
+		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(home, ".cargo"))
 	}
 	return out, true
 }

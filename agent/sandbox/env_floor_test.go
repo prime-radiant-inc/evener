@@ -330,3 +330,45 @@ func TestEnvFloorRedirectsGoCachesForAnAlternateGoEnvFile(t *testing.T) {
 		t.Errorf("the host's own go env file must not redirect a served GOCACHE: %v", same)
 	}
 }
+
+// The caches a spawned command writes follow its own environment: a child with
+// its own XDG_CACHE_HOME (here inside the worktree, which the overlay does not
+// serve) gets its GOCACHE redirected rather than judged by the host's value, a
+// GOPATH list is read past a leading relative entry, and npm's and cargo's
+// caches are redirected too when the overlay does not serve them.
+func TestEnvFloorJudgesTheChildsOwnCacheLocations(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", XDGCacheHome: "/home/u/.cache", GoEnvFile: "/home/u/.config/go/env"}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg", "/home/u/.npm", "/home/u/.cargo"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "XDG_CACHE_HOME=/work/project/.cache"}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a child's own unserved XDG_CACHE_HOME must send GOCACHE to the scratch, got %q", v)
+	}
+
+	// A child with its own HOME and no XDG_CACHE_HOME uses that HOME's .cache,
+	// not the host's XDG_CACHE_HOME.
+	out = ApplyEnvFloor([]string{"HOME=/work/project/home"}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a child's own HOME decides its default GOCACHE; an unserved one must go to the scratch, got %q", v)
+	}
+
+	sep := string(filepath.ListSeparator)
+	out = ApplyEnvFloor([]string{"HOME=/home/u", "GOPATH=relative" + sep + "/work/project/gopath"}, policy, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("the first absolute GOPATH entry decides GOMODCACHE; an unserved one must go to the scratch, got %q", v)
+	}
+
+	out = ApplyEnvFloor([]string{"HOME=/home/u", "npm_config_cache=/work/project/.npm", "CARGO_HOME=/work/project/.cargo"}, policy, tmp)
+	for _, name := range []string{"npm_config_cache", "CARGO_HOME"} {
+		if v, _ := envValue(out, name); !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("an unserved %s must go to the scratch, got %q", name, v)
+		}
+	}
+	out = ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	for _, name := range []string{"npm_config_cache", "CARGO_HOME", "GOCACHE"} {
+		if _, ok := envValue(out, name); ok {
+			t.Errorf("a served default %s must be left alone: %v", name, out)
+		}
+	}
+}

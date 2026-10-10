@@ -534,8 +534,12 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		}
 		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
 		roots = slices.DeleteFunc(roots, func(r string) bool {
+			// A file, or a dangling symlink, can neither be overlaid nor
+			// created; the floor redirects what names it instead.
 			if fi, err := os.Stat(r); err == nil && !fi.IsDir() {
-				return true // a file cannot be overlaid; the floor redirects it instead
+				return true
+			} else if _, lerr := os.Lstat(r); err != nil && lerr == nil {
+				return true
 			}
 			return pathUnder(r, worktree) || pathUnder(resolveExistingPrefix(r), worktree)
 		})

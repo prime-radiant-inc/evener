@@ -406,9 +406,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   root at, above or inside the worktree, at or above your home directory or a
   temp root, or one that is not a directory, is never overlaid; a root that does
   not exist yet is created empty at session start (as the go command itself
-  would) so it can be. A Go cache the overlay does not serve, whether set in the
-  spawn's environment, with `go env -w`, or by Go's defaults, is redirected into
-  the session scratch instead. When the go env file exists but cannot be read
+  would) so it can be; a file or a dangling symlink is left out. A cache the
+  overlay does not serve, Go's (set in the spawn's environment, with `go env -w`,
+  or by Go's defaults under the spawn's own `HOME`) or npm's and cargo's, is
+  redirected into the session scratch instead. When the go env file exists but cannot be read
   (a FIFO, a device, an oversized file), all three Go settings go to the scratch
   and spawned go commands get `GOENV=off`, since reading it would block them too.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
@@ -445,9 +446,10 @@ spawned process:
   `GCLOUD_*`, and `VAULT_*`.
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
-- Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
-  `CARGO_HOME` there.
+- Points `TMPDIR` at the per-session temp and redirects the language cache
+  variables (`GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/`CARGO_HOME`)
+  there: all of them under the session-private cache strategy, and under the
+  overlay the ones whose directory it does not serve.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

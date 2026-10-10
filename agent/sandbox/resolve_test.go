@@ -732,3 +732,16 @@ func TestCacheRootsLeaveOutAnExistingNonDirectory(t *testing.T) {
 		t.Errorf("a GOCACHE naming a file must move into the session scratch, got %q", v)
 	}
 }
+
+// A cache root that is a dangling symlink can neither be overlaid nor created,
+// so it is left out of the cache roots and the floor redirects what names it.
+func TestCacheRootsLeaveOutADanglingSymlink(t *testing.T) {
+	dir := clean(t.TempDir())
+	link := filepath.Join(dir, "gocache")
+	if err := os.Symlink(filepath.Join(dir, "unmounted", "drive"), link); err != nil {
+		t.Fatal(err)
+	}
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoCache: link}, "/work/project"); slices.Contains(roots, link) {
+		t.Errorf("a dangling-symlink cache root must be left out: %v", roots)
+	}
+}
