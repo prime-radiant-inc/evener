@@ -15,14 +15,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
+import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setSessionCacheAdapterForTests,
-  threadsStore,
-} from "../../../stores/threads";
+import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
@@ -273,7 +269,15 @@ test("v2 shutdown installs an invalidation waiter and converges after the RPC", 
     },
   );
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
-  const applyNavigationMutation = vi.fn(() => Promise.resolve());
+  const applyNavigationMutation = vi.fn<ReturnType<typeof navigationStore.getState>["applyNavigationMutation"]>(() =>
+    Promise.resolve(),
+  );
+  // Convergence is now exported directly, rather than dispatched through the
+  // state method. Keep the same mocked navigation boundary and receipt checks.
+  vi.spyOn(navigationModule, "awaitNavigationConvergence").mockImplementation(async (waiter) => {
+    const payload = await waiter.promise;
+    await applyNavigationMutation({ generation_id: payload.generationId, targets: payload.targets });
+  });
   navigationStore.setState({
     mode: "v3",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
@@ -392,9 +396,7 @@ test.each(["resolve", "reject"])(
     });
     const applyNavigationMutation = vi.fn(() => convergence);
     navigationStore.setState({ applyNavigationMutation });
-    const adapter = new SessionCacheIndexedDB();
-    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
-    setSessionCacheAdapterForTests(adapter);
+    const deleteRecords = vi.spyOn(SessionCacheIndexedDB.prototype, "deleteRecords").mockResolvedValue(true);
     const postMessage = vi.fn();
     setCacheChannelFactoryForTests(
       () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
@@ -424,7 +426,7 @@ test.each(["resolve", "reject"])(
       await act(async () => {
         finish?.();
       });
-      adapter.close();
+      deleteRecords.mockRestore();
     }
   },
 );
