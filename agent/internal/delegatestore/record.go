@@ -65,6 +65,10 @@ const MaxTerminalStructuredResultBytes = 1024 * 1024
 const (
 	PacketReported      PacketKind = "reported"
 	PacketTerminalError PacketKind = "terminal_error"
+	// PacketUpdate is a running generation's mid-work update, queued by
+	// delegate_update_posted. It never settles a run: validateTerminalPacket
+	// refuses it on every terminal path.
+	PacketUpdate PacketKind = "update"
 )
 
 // StructuredResultSource names where a terminal packet's structured result
