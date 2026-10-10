@@ -161,7 +161,7 @@ export class SessionActivityStore {
    * independent latestActivityAt maximum). Keyed by the row's identity, because
    * a read can hold two rows under one delegate id. Cleared on a source epoch
    * change, a session replacement and dispose. */
-  private readonly appliedDelegates = new Map<string, number>();
+  private readonly appliedDelegates = new Map<string, { epoch: string | undefined; revision: number }>();
   /** Delegate ids that triggered a root read for membership; at most once per
    * id. Cleared with the applied map. */
   private readonly seenUnknownDelegates = new Set<string>();
@@ -723,7 +723,17 @@ export class SessionActivityStore {
   }
   /** Record the merge order a loaded delegate row has reached. */
   private recordAppliedDelegate(row: SessionDelegate): void {
-    this.appliedDelegates.set(rowIdentity("delegates", row), revisionOf(row.projectionRevision));
+    this.appliedDelegates.set(rowIdentity("delegates", row), {
+      epoch: this.reads.delegates.epoch,
+      revision: revisionOf(row.projectionRevision),
+    });
+  }
+  /** The recorded revision for a row, or undefined when the record belongs to a
+   * retired epoch: a source replacement rebuilds revisions from 1, so an
+   * old-epoch record must not judge a new-epoch row or frame. */
+  private appliedRevision(identity: string): number | undefined {
+    const applied = this.appliedDelegates.get(identity);
+    return applied && applied.epoch === this.reads.delegates.epoch ? applied.revision : undefined;
   }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
@@ -814,7 +824,7 @@ export class SessionActivityStore {
    * revision may advance it, a higher one never moves it backward. */
   private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
     const incoming = delegateRowFromFrame(current, frame);
-    const applied = this.appliedDelegates.get(rowIdentity("delegates", current));
+    const applied = this.appliedRevision(rowIdentity("delegates", current));
     const merged = joinDelegateState(
       incoming,
       current,
@@ -836,7 +846,7 @@ export class SessionActivityStore {
       const identity = rowIdentity("delegates", row);
       const soleRow = served.get(row.delegateId) === 1;
       const existing = previousById.get(identity);
-      const applied = this.appliedDelegates.get(identity);
+      const applied = this.appliedRevision(identity);
       let merged: SessionDelegate;
       if (applied === undefined) {
         // First sight in this epoch -- or the first read after a replacement
