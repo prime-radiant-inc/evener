@@ -62,8 +62,9 @@ begins directly with a mapping entry such as `name:` and still closes on a whole
 and reports a `missing_frontmatter_delimiter` compatibility diagnostic, advisory
 in the same way as the other preserved-metadata notes. A block that starts with
 a heading or prose, or that does not carry both a non-blank `name` and a
-non-blank `description`, is not recovered. Delimiters are LF-terminated, so a
-CRLF file is not recognized either way. Every other malformed shape stays an
+non-blank `description`, is not recovered. A file saved with CRLF (or lone CR)
+line endings reads like an LF one either way, and its delivered body ends its
+lines in `\n`. Every other malformed shape stays an
 `invalid_frontmatter` diagnostic and the skill stays unavailable.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
@@ -12,8 +13,9 @@ import (
 // seam (yaml.Unmarshal of the fenced block). Input is an arbitrary Markdown
 // document. Beyond no-panic it asserts the documented contract: a document with
 // no frontmatter framing (no leading delimiter, or a leading delimiter with no
-// closing one) is returned verbatim as Body with nil Meta; a framed document
-// splits Body exactly at the inner boundary the framing defines. Parsing is
+// closing one) is returned as Body, line endings normalized, with nil Meta; a
+// framed document splits Body exactly at the inner boundary the framing
+// defines, in the normalized text. Parsing is
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body
@@ -48,12 +50,14 @@ func FuzzFrontmatterParse(f *testing.F) {
 			return
 		}
 
-		// Framing contract: an unframed document is returned verbatim with nil
-		// Meta; a framed one splits Body exactly at the inner boundary.
+		// Framing contract: an unframed document is returned with its line
+		// endings normalized and nil Meta; a framed one splits Body exactly at
+		// the inner boundary.
 		const delim = "---\n"
+		raw = lineend.Normalize(raw)
 		if idx := indexAfter(raw); idx < 0 {
 			if doc.Meta != nil || doc.Body != raw {
-				t.Fatalf("unframed document not returned verbatim:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
+				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
 			}
 		} else {
 			wantBody := raw[len(delim)+idx+len(delim):]

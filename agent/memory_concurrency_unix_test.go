@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // memoryRaceRounds is how many rounds of racing writes one run of the
@@ -26,7 +27,7 @@ const memoryRaceRounds = 100
 // removed from its frontmatter, so a stamped page compares equal to the
 // content a tool wrote.
 func memoryWithoutStamps(raw string) string {
-	block, body, ok := splitMemoryFrontmatter(raw)
+	block, body, ok := frontmatter.Split(raw)
 	if !ok {
 		return raw
 	}

@@ -2692,7 +2692,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	restoreCfg := RestoreSessionConfig{
 		MemoryStateRoot:         s.cfg.MemoryStateRoot,
 		DisableMemory:           s.cfg.DisableMemory || descriptor.Config.DisableMemory,
-		memoryProjectCeiling:    &s.cfg.MemoryProjectID,
+		parentMemoryProjectID:   s.cfg.MemoryProjectID,
 		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,

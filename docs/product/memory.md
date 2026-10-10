@@ -33,9 +33,9 @@ resume and compaction. A root session saved without a binding (one created
 before project memory, or whose launch could not resolve its project) binds on
 resume the same way, from its own absolute home: the root it left for a
 worktree, else its working directory, never the directory the resume ran from. The restore
-persists that binding, and a saved binding is never replaced. Delegates take
-their parent's binding; a restored delegate saved without one takes its
-parent's, one saved with a different binding gets none, and an unbound one
+persists that binding, and a root session's saved binding is never replaced.
+A delegate always takes its live parent's binding, on spawn and on every
+restore under that parent, replacing whatever it saved; an unbound delegate
 resumed on its own stays unbound.
 Project-resolution failure leaves personal memory and ordinary work available
 without guessing another project. Unbound library sessions have no memory
