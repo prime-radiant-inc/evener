@@ -50,16 +50,6 @@ func (s *Session) memoryScopeBinding(scope string) (string, error) {
 	}
 }
 
-// delegateMemoryProjectID bounds a delegate's saved project binding by its
-// live parent's. A delegate saved before project memory has no binding and
-// takes its parent's; one saved with a different binding gets none.
-func delegateMemoryProjectID(saved, parent string) string {
-	if saved == "" || saved == parent {
-		return parent
-	}
-	return ""
-}
-
 // homeMemoryProjectID binds a session saved before project memory the way
 // launch binds a new one, resolving its own home directory rather than
 // wherever the resume was invoked. A home that is relative (it meant something
