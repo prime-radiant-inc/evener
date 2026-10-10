@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// checkpointConversationHeading heads the conversation a compaction turn
+// carries verbatim.
+const checkpointConversationHeading = "## Conversation"
+
 type checkpointConversationEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
@@ -21,7 +25,7 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("## Conversation\n\n")
+	b.WriteString(checkpointConversationHeading + "\n\n")
 	for _, entry := range entries {
 		switch entry.Role {
 		case "agent":
@@ -141,7 +145,7 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 }
 
 func extractMarkdownConversation(text string) []checkpointConversationEntry {
-	section := markdownSection(text, "## Conversation")
+	section := markdownSection(text, checkpointConversationHeading)
 	if section == "" {
 		return nil
 	}
@@ -181,6 +185,16 @@ func markdownSection(text, heading string) string {
 		return ""
 	}
 	return text[body:end]
+}
+
+// withoutMarkdownSection returns text with heading's section removed, or text
+// unchanged when it has no such section.
+func withoutMarkdownSection(text, heading string) string {
+	start, _, end, ok := markdownSectionSpan(text, heading)
+	if !ok {
+		return text
+	}
+	return text[:start] + text[end:]
 }
 
 // markdownSectionSpan locates heading's section in text: start is where the

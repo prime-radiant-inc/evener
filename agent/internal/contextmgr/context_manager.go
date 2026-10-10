@@ -41,6 +41,17 @@ type CompactionMeta struct {
 	AvailableTranscriptTools []string
 }
 
+// compactionPointer is the line a compaction artifact opens with to say that
+// earlier history was folded into it and how to recover that history; artifact
+// names the artifact ("checkpoint", "summary"). Empty when the session is not
+// persistent.
+func (m *CompactionMeta) compactionPointer(artifact string) string {
+	if m == nil || m.SessionID == "" {
+		return ""
+	}
+	return fmt.Sprintf("Earlier history was compacted into this %s to free context-window headroom. This session's id is %s.%s\n", artifact, m.SessionID, m.TranscriptRecoverySentence())
+}
+
 // TranscriptRecoverySentence is the trailing instruction a compaction artifact
 // appends to tell the agent how to recover folded-away detail, worded from the
 // transcript tools the session actually has. Empty when it has none.
@@ -1030,6 +1041,15 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 
 // --- Deterministic checkpoint (Layer 3) ---
 
+// maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
+// checkpoint either feeds into the LLM summarizer (which replaces it) or — if
+// the summarizer is unavailable — becomes the sole history the main model sees.
+// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
+// alongside the instruction prefix, and leaves room for preserved recent turns
+// in the main model's context. The human partner's messages a model-written
+// compaction turn carries share the same cap.
+const maxCheckpointChars = 60_000
+
 // checkpoint replaces old history with a structured state snapshot.
 // Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
 //
@@ -1046,14 +1066,6 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 	if cutoff < 0 {
 		return history
 	}
-
-	// Budget: cap the checkpoint to avoid ballooning the context. The checkpoint
-	// either feeds into the LLM summarizer (which replaces it) or — if the
-	// summarizer is unavailable — becomes the sole history the main model sees.
-	// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
-	// alongside the instruction prefix, and leaves room for preserved recent
-	// turns in the main model's context.
-	const maxCheckpointChars = 60_000
 
 	data := collectCheckpointData(history, cutoff, resultToolName)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
@@ -1084,8 +1096,9 @@ type checkpointData struct {
 // collectCompaction carries a previous compaction turn's text into the new
 // checkpoint so it survives repeated compactions. From a checkpoint it carries
 // the conversation, working notes and earlier summaries it holds. From an LLM
-// summary (summary is true) it carries the summary whole as an earlier summary;
-// the model's own text is not mined for working notes.
+// summary (summary is true) it carries the human partner's messages the summary
+// turn holds verbatim, and the rest of the summary whole as an earlier summary;
+// the model's own text is not mined for checkpoint sections.
 //
 // This is the deterministic checkpoint's carry, which the default compaction
 // paths use. Opt-in strategies that write their own checkpoints (session-log,
@@ -1093,7 +1106,7 @@ type checkpointData struct {
 func (d *checkpointData) collectCompaction(text string, summary bool) {
 	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
 	if summary {
-		d.earlierSummaries = append(d.earlierSummaries, text)
+		d.earlierSummaries = append(d.earlierSummaries, withoutMarkdownSection(text, checkpointConversationHeading))
 		return
 	}
 	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
@@ -1140,6 +1153,13 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
+
+		case schema.TurnSteering:
+			// Steering the human partner sent during a turn is their message
+			// too; daemon nudges are not.
+			if text := t.Message.Text(); t.SteeringSource == events.SteeringSourceUser && text != "" {
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			}
 
 		case schema.TurnUserInput:
 			text := t.Message.Text()
@@ -1257,9 +1277,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	var fixed strings.Builder
 
 	// Transcript pointer — tells the model how to access full history via transcript tools.
-	if meta != nil && meta.SessionID != "" {
-		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
-	}
+	fixed.WriteString(meta.compactionPointer("checkpoint"))
 
 	// Files modified: only writes whose paired result confirmed success. Failed
 	// and result-missing attempts render distinctly, so the checkpoint never
@@ -1368,65 +1386,17 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	variableBudget := max(maxChars-frame-len(summariesMarkdown), minVariableBudget)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first — they may be shed entirely — then the oldest messages after the
-	// pinned original task, which itself is never shed.
-	// Clean once so the pin index and the rendered slice refer to the same
-	// entries; renderCheckpointConversation would otherwise drop whitespace-only
-	// entries after the pin was chosen, letting the pin land on a vanishing one.
+	// first — they may be shed entirely — then fit the conversation into what
+	// remains (fitCheckpointConversation).
 	conversation := cleanCheckpointConversation(data.conversation)
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
-
-	// Pin the original task — the earliest user entry — so the checkpoint keeps
-	// what the user asked for instead of shedding it under budget pressure. With
-	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
-	// order.
-	pinnedOriginal := -1
-	for i, entry := range conversation {
-		if entry.Role == "user" {
-			pinnedOriginal = i
-			break
-		}
+	for len(workingNotes) > 0 && len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
+		workingNotes = workingNotes[1:] // drop oldest note first
+		notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 	}
-
-	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
-		if len(workingNotes) > 0 {
-			workingNotes = workingNotes[1:] // drop oldest note first
-			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
-			continue
-		}
-		if len(conversation) > 1 {
-			// Drop the oldest entry that is not the pinned original task.
-			drop := 0
-			if drop == pinnedOriginal {
-				drop = 1
-			}
-			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
-			if drop < pinnedOriginal {
-				pinnedOriginal--
-			}
-			conversationMarkdown = renderCheckpointConversation(conversation)
-			continue
-		}
-		break
-	}
-
-	// Notes are exhaustible, so a lone over-budget conversation entry is all the
-	// loop can leave behind: it never sheds the pinned original task. Trim that
-	// entry — by its exact rendered length — so the checkpoint still honors its
-	// size cap instead of keeping an oversized task or dropping it.
-	if len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
-		role := conversation[0].Role
-		render := func(text string) int {
-			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
-		}
-		conversation = []checkpointConversationEntry{{
-			Role: role,
-			Text: truncateRendered(conversation[0].Text, variableBudget, render),
-		}}
-		conversationMarkdown = renderCheckpointConversation(conversation)
-	}
+	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown)))
 
 	// Assemble final checkpoint.
 	var b strings.Builder
@@ -1445,6 +1415,72 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 	return b.String()
+}
+
+// fitCheckpointConversation sheds conversation entries until their rendering
+// fits budget: the oldest first, except the original task — the earliest user
+// entry — which is never shed, so a compaction keeps what the human partner
+// asked for. Notes are exhaustible, so a lone over-budget entry is all the
+// shedding can leave behind; it is trimmed by its exact rendered length so the
+// result still honors its size cap instead of keeping an oversized task or
+// dropping it.
+//
+// conversation must already be cleaned (cleanCheckpointConversation), so the
+// pin index and the rendered slice refer to the same entries;
+// renderCheckpointConversation would otherwise drop whitespace-only entries
+// after the pin was chosen, letting the pin land on a vanishing one.
+func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
+	// With no user entry (-1) the pin is inactive and shedding keeps its
+	// oldest-first order.
+	pinnedOriginal := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role == "user" })
+	rendered := renderCheckpointConversation(conversation)
+	for len(rendered) > budget && len(conversation) > 1 {
+		// Drop the oldest entry that is not the pinned original task.
+		drop := 0
+		if drop == pinnedOriginal {
+			drop = 1
+		}
+		conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
+		if drop < pinnedOriginal {
+			pinnedOriginal--
+		}
+		rendered = renderCheckpointConversation(conversation)
+	}
+	if len(conversation) == 1 && len(rendered) > budget {
+		role := conversation[0].Role
+		render := func(text string) int {
+			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+		}
+		conversation = []checkpointConversationEntry{{
+			Role: role,
+			Text: truncateRendered(conversation[0].Text, budget, render),
+		}}
+	}
+	return conversation
+}
+
+// partnerMessagesMarkdown renders the human partner's messages from the turns
+// a compaction folds (history[:cutoff]), verbatim, under the checkpoint's cap
+// and shedding rules. A model-written compaction turn carries them beside its
+// own text, so its permissions and holds stay in front of the model whatever
+// the model wrote (#4173). It reads them through the checkpoint's own
+// collector, so they come from raw user turns and from previous compaction
+// turns alike.
+//
+// Only the partner's messages are carried. An earlier summary a folded
+// checkpoint holds is input to the new summary, which supersedes it; carrying
+// every earlier summary forward as well would grow each summary turn with
+// every compaction. Checkpoints written by the opt-in session-log strategy
+// keep no conversation section, so nothing is recovered from them here
+// (#4181).
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string) string {
+	var partner []checkpointConversationEntry
+	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
+		if entry.Role == "user" {
+			partner = append(partner, entry)
+		}
+	}
+	return renderCheckpointConversation(fitCheckpointConversation(partner, maxCheckpointChars))
 }
 
 // truncateRendered shortens text (via truncate, which appends an ellipsis) until
@@ -1706,7 +1742,7 @@ func promptSectionNames(prompt string) []string {
 // pins that one filled section is accepted). The guarantee that the human
 // partner's permissions and holds survive compaction does not rest on this
 // check or on the model: by ruling on #4173, the summary turn carries the
-// partner's messages verbatim beside the reply (#4241).
+// partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {
@@ -2010,7 +2046,13 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: ")
+			// Steering the human partner sent is their message, labeled as such
+			// for the summary prompt's quoting rule; daemon nudges are not.
+			if t.SteeringSource == events.SteeringSourceUser {
+				b.WriteString("User: ")
+			} else {
+				b.WriteString("System: ")
+			}
 			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		}
@@ -2030,7 +2072,10 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 		return nil, err
 	}
 
-	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
+	// The human partner's messages come before the model's text, so a later
+	// checkpoint finds them ahead of anything the model wrote.
+	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
+		partnerMessagesMarkdown(history, cutoff, cm.resultToolName()) + "## Summary\n" + resp.Text() + "\n[END SUMMARY]"
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

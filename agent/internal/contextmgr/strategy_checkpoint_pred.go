@@ -242,7 +242,11 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 		return nil, err
 	}
 
-	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + resp.Text() + "\n[END CHECKPOINT]"
+	// The prediction is model-written, so the human partner's messages ride
+	// beside it verbatim, ahead of the model's text (partnerMessagesMarkdown).
+	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + s.cm.metaFor(ctx).compactionPointer("checkpoint") +
+		partnerMessagesMarkdown(history, cutoff, s.cm.resultToolName()) +
+		"## Predicted Context\n" + resp.Text() + "\n[END CHECKPOINT]"
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
