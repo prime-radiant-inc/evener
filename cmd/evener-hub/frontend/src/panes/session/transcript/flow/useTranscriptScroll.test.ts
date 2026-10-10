@@ -2875,6 +2875,36 @@ describe("near-top triggers loadOlder", () => {
       setLocalOpening("ref_a", false);
     }
   });
+
+  // The short-page branch of the resume, distinct from the near-top branch: the
+  // port does not overflow (scrollHeight <= clientHeight) but the reader is NOT
+  // near the top, so only shouldAutoLoadOlder can resume the demand.
+  test("releasing the opening hold on a short, not-near-top port resumes through shouldAutoLoadOlder", () => {
+    const { ref, el } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 500, scrollHeight: 300, clientHeight: 500 });
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(el, "offsetHeight", { configurable: true, value: 500 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+    setLocalOpening("ref_a", true);
+    try {
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+          listRef: ref,
+          loadOlder,
+          measure,
+        }),
+      );
+      act(() => {
+        setLocalOpening("ref_a", false);
+      });
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      setLocalOpening("ref_a", false);
+    }
+  });
 });
 
 describe("prepend anchoring (loadOlder resolving)", () => {
