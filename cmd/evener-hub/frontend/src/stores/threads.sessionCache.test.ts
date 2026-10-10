@@ -4206,6 +4206,145 @@ describe("exclusive entry transcript fixture route", () => {
     }
   });
 
+  it.each([false, true])("a held same-tab Clear pauses queued entry writes, legacy abort=%s", async (abort) => {
+    const selected = `local:entry-clear-queued-${abort}`;
+    const entryDatabase = `entry-clear-queued-${abort}-test`;
+    const legacy = new SessionCacheIndexedDB();
+    setSessionCacheAdapterForTests(legacy);
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const turn = turnFixture("queued-baseline", "QUEUED_BASELINE");
+      return readResponse(params.ref ?? selected, {
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "queued-baseline", version: 1 }] }],
+        requestGeneration: params.requestGeneration,
+      });
+    });
+    const lease = acquireBackgroundThread(selected);
+    let releaseWrite!: () => void;
+    let releaseClear!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const clearGate = new Promise<void>((resolve) => {
+      releaseClear = resolve;
+    });
+    let reachedWrite!: () => void;
+    const writeReached = new Promise<void>((resolve) => {
+      reachedWrite = resolve;
+    });
+    const realCommit = entryCache.commitBatch.bind(entryCache);
+    const dispatched: string[] = [];
+    const commitSpy = vi.spyOn(entryCache, "commitBatch").mockImplementation(async (batch) => {
+      dispatched.push(...batch.items.map((row) => row.transcriptKey));
+      if (batch.items.some((row) => row.transcriptKey === "queued-9")) {
+        reachedWrite();
+        await writeGate;
+      }
+      return realCommit(batch);
+    });
+    const realClear = legacy.clear.bind(legacy);
+    const clearSpy = vi.spyOn(legacy, "clear").mockImplementation(async () => {
+      await clearGate;
+      if (!abort) return realClear();
+      const original = IDBObjectStore.prototype.clear;
+      const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementation(function (this: IDBObjectStore) {
+        if (this.transaction.objectStoreNames.contains("records")) throw new Error("legacy queued clear fault");
+        return original.call(this);
+      });
+      try {
+        return await realClear();
+      } finally {
+        fault.mockRestore();
+      }
+    });
+    let clearing: ReturnType<typeof clearCachedSessions> | undefined;
+    try {
+      await lease.ready;
+      await fixture.settled();
+      expect(fixture.inspect().readerRetention).toBeUndefined();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected resolved history key");
+      const emit = (entry: number) =>
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: selected,
+            threadId: `thr_${selected}`,
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: entry },
+            turns: [{ id: "queued-turn", status: "completed", itemsView: "full", version: entry }],
+            items: [
+              {
+                type: "agentMessage",
+                id: `queued-${entry}`,
+                transcriptKey: `queued-${entry}`,
+                turnId: "queued-turn",
+                version: entry,
+                text: `QUEUED_${entry}`,
+                position: { entry, item: 0 },
+              },
+            ],
+          },
+        } as AnyNotification);
+      emit(9);
+      await writeReached;
+      emit(10);
+      await settleProjectionWorkForTests();
+      clearing = clearCachedSessions();
+      expect(threadsStore.getState().clearInFlight).toBeDefined();
+      releaseWrite();
+      // The legacy Clear is still held and the entry durable epoch is still 0.
+      // Wait for the issued predecessor to commit, then its queue continuation.
+      await vi.waitFor(async () =>
+        expect((await entryCache.getLatest(historyKey, 20)).some((row) => row.transcriptKey === "queued-9")).toBe(true),
+      );
+      await expect(fixture.settled()).rejects.toThrow(/outstanding/);
+      expect(await entryCache.getClearEpoch()).toBe(0);
+      expect(dispatched).not.toContain("queued-10");
+      expect((await entryCache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).not.toContain("queued-10");
+      releaseClear();
+      await expect(clearing).resolves.toEqual({ committed: !abort });
+      if (abort) {
+        // No new notification or acquisition: the same queued item must resume
+        // automatically when the real legacy Clear transaction aborts.
+        // Observe disk before settled(), which can itself drive ready accepts.
+        await vi.waitFor(async () =>
+          expect((await entryCache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("queued-10"),
+        );
+        await fixture.settled();
+        expect(dispatched.filter((key) => key === "queued-10")).toHaveLength(1);
+        expect((await entryCache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("queued-10");
+        expect(await entryCache.getClearEpoch()).toBe(0);
+      } else {
+        expect(fixture.inspect().model).toBeUndefined();
+        expect(dispatched).not.toContain("queued-10");
+        expect(await entryCache.getLatest(historyKey, 20)).toEqual([]);
+      }
+    } finally {
+      releaseWrite();
+      releaseClear();
+      await clearing;
+      commitSpy.mockRestore();
+      clearSpy.mockRestore();
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      legacy.close();
+      setSessionCacheAdapterForTests(undefined);
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
   it("a same-tab Clear whose entry transaction aborts is reported incomplete and keeps the entry rows", async () => {
     const selected = "local:entry-clear-abort";
     const entryDatabase = "entry-clear-abort-test";

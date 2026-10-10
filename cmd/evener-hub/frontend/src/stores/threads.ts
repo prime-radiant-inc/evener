@@ -6459,7 +6459,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     // Neither database changed, so the suppressed entry route is re-enabled: a
     // still-held foreground model resumes ordinary recorded ingestion
     // (publication and persistence) without a release/reacquire.
-    if (entryFixture) entryFixture.clearInert = false;
+    if (entryFixture) {
+      entryFixture.clearInert = false;
+      entryFixture.repository?.resumePersistence();
+    }
     return { committed: false };
   }
   // The entry cache is a separate store from the legacy/residency cache; clear

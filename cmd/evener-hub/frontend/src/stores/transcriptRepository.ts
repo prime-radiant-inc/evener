@@ -497,6 +497,11 @@ export class TranscriptRepository {
     return () => this.#listeners.delete(listener);
   }
 
+  /** The owner calls this after lifting reversible persistence suppression. */
+  resumePersistence(): void {
+    this.#continueBackground();
+  }
+
   /** Accept a complete wire read under its captured reader lifetime. */
   acceptRead(response: ThreadReadResponse, request: { lifetime: number; readId: string; boundary: string }): boolean {
     if (!this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
@@ -1662,6 +1667,7 @@ export class TranscriptRepository {
   // shared background slot decides which repository runs next.
   #scheduleRetry(): void {
     if (this.#retryScheduled || this.#retryInFlight || this.#disposed || this.#invalidated) return;
+    if (this.#binding.suppressed?.()) return;
     if (this.#readerCount <= 0) return;
     if (this.#retryQueue.length === 0) return;
     this.#retryScheduled = true;
@@ -1697,6 +1703,10 @@ export class TranscriptRepository {
       this.#retryQueue.length = 0;
       return;
     }
+    // Keep bounded queued work for abort recovery, but do not acquire the slot
+    // or issue a new transaction while the owner's Clear is unresolved. An
+    // already-issued batch keeps its accounting until its real outcome.
+    if (this.#binding.suppressed?.()) return;
     // One repository cannot overlap itself: a second drain call while this
     // repository's own batch is in flight must not issue a concurrent second
     // batch (the shared slot admits a re-entrant same-owner acquisition).

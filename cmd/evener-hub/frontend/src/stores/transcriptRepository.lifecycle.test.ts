@@ -137,6 +137,8 @@ interface RepoOptions {
   seedModel?: ThreadModel;
   omitSeedAuthority?: boolean;
   isPreferred?: boolean;
+  suppressed?: () => boolean;
+  retryScheduler?: (attempt: number, retry: () => void) => () => void;
 }
 
 function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
@@ -151,6 +153,8 @@ function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
     sessionNonce: options.sessionNonce,
     lifetime: options.lifetime ?? 1,
     isPreferred: options.isPreferred ? () => true : undefined,
+    suppressed: options.suppressed,
+    retryScheduler: options.retryScheduler,
     seedModel,
     seedAuthority:
       seedModel?.history && !options.omitSeedAuthority
@@ -165,6 +169,99 @@ function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
     now: () => Date.now(),
   });
 }
+
+test("suppression pauses previously queued background writes before cache dispatch", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  let suppressed = false;
+  const repo = repository(fixture.cache, { suppressed: () => suppressed });
+  repo.acceptRead(readOf([8]), { lifetime: 1, readId: "suppression-read", boundary: "suppression-boundary" });
+  await repo.settled();
+  const held = holdNextEntryWrite(fixture.cache, "item-9");
+  repo.accept(historyUpdate(9, 9, "held-nine", 9), { lifetime: 1 });
+  await held.reached;
+  repo.accept(historyUpdate(10, 10, "queued-ten", 10), { lifetime: 1 });
+  expect(repo.retainedInventoryForTesting().backgroundAcceptBodies.length).toBeGreaterThan(0);
+  suppressed = true;
+  held.release();
+  const dispatched = vi.spyOn(fixture.cache, "commitBatch");
+  try {
+    // Observe after the first batch's terminal continuation has released the
+    // shared slot, while suppression remains true, not after Clear completes.
+    await vi.waitFor(() => expect(repo.getAdmissionSnapshotForTesting().backgroundInFlight).toBe(false));
+    expect(dispatched).not.toHaveBeenCalled();
+    expect((await fixture.cache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).not.toContain("item-10");
+    await expect(repo.settled()).rejects.toThrow(/outstanding/);
+    // The owner signals abort explicitly, waking the same accepted work without
+    // requiring new input or another reader acquisition.
+    suppressed = false;
+    repo.resumePersistence();
+    await repo.settled();
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect((await fixture.cache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("item-10");
+  } finally {
+    dispatched.mockRestore();
+    repo.dispose();
+  }
+});
+
+test("suppression parks failed-write retries and armed callbacks until the owner resumes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  let suppressed = false;
+  const callbacks: Array<() => void> = [];
+  const repo = repository(fixture.cache, {
+    suppressed: () => suppressed,
+    retryScheduler: (_attempt, retry) => {
+      callbacks.push(retry);
+      return () => {};
+    },
+  });
+  const reader = repo.attachReader();
+  repo.acceptRead(readOf([8]), { lifetime: 1, readId: "suppression-read", boundary: "suppression-boundary" });
+  await repo.settled();
+  const held = holdNextEntryWrite(fixture.cache, "item-9");
+  repo.accept(historyUpdate(9, 9, "retry-nine", 9), { lifetime: 1 });
+  await held.reached;
+  const put = IDBObjectStore.prototype.put;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["put"]>
+  ) {
+    const request = put.apply(this, args);
+    if (this.name === "transcriptItems" && args[0].transcriptKey === "item-9") this.transaction.abort();
+    return request;
+  });
+  suppressed = true;
+  held.release();
+  const dispatched = vi.spyOn(fixture.cache, "commitBatch");
+  try {
+    await expect(repo.settled()).rejects.toThrow(/outstanding/);
+    fault.mockRestore();
+    expect(callbacks).toHaveLength(0);
+    expect(repo.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+    suppressed = false;
+    repo.resumePersistence();
+    expect(callbacks).toHaveLength(1);
+    // A timer armed before Clear can still fire inside the suppression window.
+    suppressed = true;
+    callbacks[0]!();
+    expect(dispatched).not.toHaveBeenCalled();
+    await expect(repo.settled()).rejects.toThrow(/outstanding/);
+    suppressed = false;
+    repo.resumePersistence();
+    expect(callbacks).toHaveLength(2);
+    callbacks[1]!();
+    await repo.settled();
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect((await fixture.cache.getLatest(historyKey, 20)).map((row) => row.transcriptKey)).toContain("item-9");
+  } finally {
+    fault.mockRestore();
+    dispatched.mockRestore();
+    reader.dispose();
+    repo.dispose();
+  }
+});
 
 function orderedPositions(model: ThreadModel | undefined): number[] {
   return (model?.history?.turns ?? [])
