@@ -317,12 +317,13 @@ func denialReasonKind(reason string) sandbox.DenialReason {
 }
 
 // underMasked reports whether the resolved policy masks abs (a secrets/pseudo-fs
-// path; see ResolvedPolicy.Masks).
+// path not inside a root carved out of the mask; see ResolvedPolicy.Masks).
 func (s *sandboxFS) underMasked(abs string) bool {
 	return s.policy.Masks(abs)
 }
 
-// underMaskedForWrite is underMasked for a write (ResolvedPolicy.MasksWrite).
+// underMaskedForWrite is underMasked for a write: the carve-outs are read-only,
+// so a write into one is denied like a write into the rest of the mask.
 func (s *sandboxFS) underMaskedForWrite(abs string) bool {
 	return s.policy.MasksWrite(abs)
 }
