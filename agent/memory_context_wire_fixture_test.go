@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -193,7 +194,7 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	}{{"Session start, both scopes", startTurn}, {"Both scopes changed by another session, and a read page", changedTurn}} {
 		fmt.Fprintf(&boundaries, "\n## %s\n\n%s\n", b.name, b.turn.Message.Text())
 	}
-	checkGolden(t, memoryContextBoundariesPath, []byte(boundaries.String()), *updateWireFixtures,
+	agenttest.CheckGolden(t, memoryContextBoundariesPath, []byte(boundaries.String()), *updateWireFixtures,
 		"Regenerate with `go test ./agent -run 'MemoryContextWireFixtures$' -count=1 -update-wire` and read the diff.")
 }
 

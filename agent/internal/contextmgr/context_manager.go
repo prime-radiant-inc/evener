@@ -1075,6 +1075,29 @@ type checkpointData struct {
 	lastShellResults []string
 	conversation     []checkpointConversationEntry
 	workingNotes     []string
+	// earlierSummaries are LLM summaries the checkpoint folds, kept whole: a
+	// summary is the only record of the conversation it replaced, including
+	// the permissions and holds it quotes.
+	earlierSummaries []string
+}
+
+// collectCompaction carries a previous compaction turn's text into the new
+// checkpoint so it survives repeated compactions. From a checkpoint it carries
+// the conversation, working notes and earlier summaries it holds. From an LLM
+// summary (summary is true) it carries the summary whole as an earlier summary;
+// the model's own text is not mined for working notes.
+//
+// This is the deterministic checkpoint's carry, which the default compaction
+// paths use. Opt-in strategies that write their own checkpoints (session-log,
+// OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
+func (d *checkpointData) collectCompaction(text string, summary bool) {
+	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
+	if summary {
+		d.earlierSummaries = append(d.earlierSummaries, text)
+		return
+	}
+	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
+	d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
 }
 
 // checkpointWriteStatus classifies a write tool call by the outcome of its
@@ -1116,20 +1139,17 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			// Extract user messages and working notes from previous compaction turns
-			// so they survive across repeated compactions.
-			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
-			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
+			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
 
 		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if text == "" {
 				continue
 			}
-			// Old-format checkpoint/summary stored as TurnUserInput — extract
-			// user messages from them just like typed compaction turns.
+			// Old-format checkpoint/summary stored as TurnUserInput — carry it
+			// just like a typed compaction turn.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.conversation = append(data.conversation, extractCheckpointConversation(text)...)
+				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -1318,9 +1338,34 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Budget for variable content (conversation + working notes as Markdown).
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
-	// and the Markdown section headings.
-	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
-	variableBudget := max(maxChars-overhead, 1000)
+	// earlier summaries, and the Markdown section headings. The variable
+	// content always gets at least minVariableBudget.
+	const minVariableBudget = 1000
+	frame := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
+
+	// Earlier summaries get up to half the checkpoint, and never so much that
+	// the variable content's floor would push it past maxChars. The newest are
+	// kept, the last one trimmed from its tail: summaries put permissions and
+	// holds first.
+	summaryBudget := min(maxChars/2, maxChars-frame-minVariableBudget)
+	summaries := data.earlierSummaries
+	summariesMarkdown := renderCheckpointEarlierSummaries(summaries)
+	for len(summaries) > 1 && len(summariesMarkdown) > summaryBudget {
+		summaries = summaries[1:]
+		summariesMarkdown = renderCheckpointEarlierSummaries(summaries)
+	}
+	if len(summaries) == 1 && len(summariesMarkdown) > summaryBudget {
+		summary := truncateRendered(summaries[0], summaryBudget, func(text string) int {
+			return len(renderCheckpointEarlierSummaries([]string{text}))
+		})
+		summariesMarkdown = renderCheckpointEarlierSummaries([]string{summary})
+		if len(summariesMarkdown) > summaryBudget {
+			// The fixed metadata leaves no room for even a trimmed summary.
+			summariesMarkdown = ""
+		}
+	}
+
+	variableBudget := max(maxChars-frame-len(summariesMarkdown), minVariableBudget)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
 	// first — they may be shed entirely — then the oldest messages after the
@@ -1386,6 +1431,9 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// Assemble final checkpoint.
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT]\n")
+	// Earlier summaries come first so the summarizer, which reads a previous
+	// compaction from its head, sees them before anything else.
+	b.WriteString(summariesMarkdown)
 	b.WriteString(fixedStr)
 	if conversationMarkdown != "" {
 		b.WriteString("\n")
@@ -1569,12 +1617,25 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	return resp, rejected
 }
 
+// partnerAuthorityRule keeps a summary from adding or dropping the human
+// partner's permissions, approvals, holds and stops. The continuing agent
+// treats the summary as the record of what it may do, so a paraphrase that
+// hardens into a new hold, or drops a standing permission, changes its
+// behavior (#4173). Both summary prompts carry it, and caller instructions
+// cannot override it. Both put these quotes first in the summary, so when a
+// re-compaction caps an oversized previous summary to its head, the quotes are
+// what survives.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
-// are provided. It mandates seven specific sections and directs the LLM to
-// err on the side of verbosity.
+// are provided. It mandates eight specific sections, permissions and holds
+// first, and directs the LLM to err on the side of verbosity.
 var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## Permissions and Holds
+` + partnerAuthorityRule + `
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -1637,6 +1698,15 @@ func promptSectionNames(prompt string) []string {
 // summarizing (#3978). One filled section is enough, so a summary that drops
 // some sections still keeps what it has. Caller instructions replace the
 // sections, so under them only emptiness is checked.
+//
+// The permissions-and-holds section is not required either. Its presence
+// would not show the quotes are faithful or complete (a reply can say "None."
+// and drop them), and rejecting a summary for lacking it would discard
+// everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
+// pins that one filled section is accepted). The guarantee that the human
+// partner's permissions and holds survive compaction does not rest on this
+// check or on the model: by ruling on #4173, the summary turn carries the
+// partner's messages verbatim beside the reply (#4241).
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {
@@ -1699,16 +1769,18 @@ func summarySectionHeading(line string) (string, bool) {
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
-// mandatory-7-sections block is replaced by the caller's directive.
+// mandatory-sections block is replaced by the caller's directive.
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
-## CALLER INSTRUCTIONS (these take precedence)
+## CALLER INSTRUCTIONS (these take precedence over the general guidance)
 ` + instructions + `
 
-Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win, except over the rule on your human partner's permissions and holds. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
 ` + historyText
 	}
@@ -1883,7 +1955,10 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 		switch t.Kind {
 		case schema.TurnUserInput:
 			// Preserve user messages verbatim. Cap at 5k to protect the cheap
-			// model's context — normal messages are well under this.
+			// model's context — normal messages are well under this. On the
+			// MaybeCompact and ForceCompact paths the checkpoint layer has
+			// already folded these turns, so their user messages arrive inside
+			// the checkpoint (a previous compaction) instead of here.
 			text := t.Message.Text()
 			if len(text) > 5000 {
 				text = text[:5000] + "..."
@@ -1892,8 +1967,13 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
+			// A previous compaction is the only record of the conversation it
+			// folded, so it gets up to half the history budget; the rest stays
+			// for the turns it precedes, where a newer permission or hold may
+			// be. The cap keeps its head, where both summary prompts put the
+			// permissions and holds it quotes.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString(truncText(t.Message.Text(), maxHistoryChars/2))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent

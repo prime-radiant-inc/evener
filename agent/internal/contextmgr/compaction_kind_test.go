@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -153,5 +154,216 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	}
 	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT]") {
 		t.Fatalf("callback turn missing checkpoint text: %q", callbackTurns[0].Message.Text())
+	}
+}
+
+// TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary pins that a
+// re-compaction shows the summarizer the previous summary well past its
+// opening. That summary is the only record of the conversation it folded, so a
+// permission or hold it quotes after its timeline must still reach the
+// summarizer, or the next summary drops it (#4173). The summary still cannot
+// crowd out the conversation folded after it.
+func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name, previous string
+		want           []string
+	}{
+		// A quote past the old 1000-character cut still reaches the summarizer.
+		{"quote past the opening", "[CONTEXT SUMMARY]\n## Conversation Timeline\n" + strings.Repeat("timeline ", 400) +
+			"\n## Key Decisions\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n[END SUMMARY]", []string{"PREVIOUS_SUMMARY_QUOTE_SENTINEL"}},
+		// An oversized previous summary keeps its head, where the summary
+		// prompts put permissions and holds, and still leaves room for the
+		// conversation folded after it.
+		{"oversized summary", "[CONTEXT SUMMARY]\n## " + summarySections[0] + "\nPREVIOUS_SUMMARY_QUOTE_SENTINEL\n## Conversation Timeline\n" +
+			strings.Repeat("timeline ", 20_000) + "\n[END SUMMARY]", []string{"PREVIOUS_SUMMARY_QUOTE_SENTINEL", "FOLDED_USER_SENTINEL"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := resummarizePrompt(t, tc.previous)
+			for _, want := range tc.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("the summarizer did not see %s (prompt is %d chars)", want, len(prompt))
+				}
+			}
+		})
+	}
+}
+
+// resummarizePrompt compacts a history that starts with previous and returns
+// the prompt the summarizer received.
+func resummarizePrompt(t *testing.T, previous string) string {
+	t.Helper()
+	var prompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				prompt = req.Messages[0].Text()
+				return llm.Response{Message: llm.Assistant("## Progress\nre-summarized")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	history := []schema.Turn{
+		{Kind: schema.TurnSummary, Message: llm.User(previous)},
+		{Kind: schema.TurnUserInput, Message: llm.User("FOLDED_USER_SENTINEL")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	return prompt
+}
+
+// TestForceCompact_SecondCompactionSeesTheFirstSummary pins the production
+// order: the deterministic checkpoint folds history before the summarizer
+// runs, so a previous LLM summary reaches the next summarizer only through the
+// checkpoint. Its permissions and holds must survive that fold, or the second
+// summary drops a hold or permission the first one quoted (#4173).
+func TestForceCompact_SecondCompactionSeesTheFirstSummary(t *testing.T) {
+	var prompts []string
+	summarize := func(req llm.Request) llm.Response {
+		prompts = append(prompts, req.Messages[0].Text())
+		return llm.Response{Message: llm.Assistant("## " + summarySections[0] + "\nFIRST_SUMMARY_QUOTE_SENTINEL\n\n## Progress\nfirst summary")}
+	}
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{summarize, summarize}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	noop := func(events.EventKind, events.EventData) {}
+	if !cm.ForceCompact(context.Background(), &history, "", noop) {
+		t.Fatal("first compaction did not summarize")
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("second question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("more work")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")),
+	)
+	if !cm.ForceCompact(context.Background(), &history, "", noop) {
+		t.Fatal("second compaction did not summarize")
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("summarizer ran %d times, want 2", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "FIRST_SUMMARY_QUOTE_SENTINEL") {
+		t.Fatalf("the second summarizer did not see the first summary's quote:\n%s", prompts[1])
+	}
+}
+
+// TestCheckpoint_CarriesEarlierSummaries pins that the deterministic
+// checkpoint keeps an LLM summary it folds: whole and first when it fits,
+// through a checkpoint of that checkpoint, and trimmed from its tail when it
+// is oversized, so its leading permissions and holds survive.
+func TestCheckpoint_CarriesEarlierSummaries(t *testing.T) {
+	recent := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	fold := func(first schema.Turn) string {
+		history := append([]schema.Turn{first, schema.NewTurn(schema.TurnUserInput, llm.User("next question"))}, recent...)
+		result := checkpoint(history, 2, nil, "communicate")
+		if result[0].Kind != schema.TurnCheckpoint {
+			t.Fatalf("first turn kind = %q, want a checkpoint", result[0].Kind)
+		}
+		return result[0].Message.Text()
+	}
+	summary := "[CONTEXT SUMMARY]\n## " + summarySections[0] + "\nSUMMARY_QUOTE_SENTINEL\n\n## Progress\nSUMMARY_TAIL_SENTINEL\n[END SUMMARY]"
+
+	once := fold(schema.NewTurn(schema.TurnSummary, llm.User(summary)))
+	if got := extractCheckpointEarlierSummaries(once); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q, want the whole summary", got)
+	}
+	if !strings.HasPrefix(once, "[CONTEXT CHECKPOINT]\n## Earlier Summaries") {
+		t.Fatalf("earlier summaries are not first in the checkpoint:\n%s", once)
+	}
+	// A legacy compaction stored as user input carries the same way.
+	if got := extractCheckpointEarlierSummaries(fold(schema.NewTurn(schema.TurnUserInput, llm.User(summary)))); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q from a legacy summary, want the whole summary", got)
+	}
+	if got := extractCheckpointEarlierSummaries(fold(schema.NewTurn(schema.TurnUserInput, llm.User(once)))); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint carried %q from a legacy checkpoint, want the whole summary", got)
+	}
+	twice := fold(schema.NewTurn(schema.TurnCheckpoint, llm.User(once)))
+	if got := extractCheckpointEarlierSummaries(twice); len(got) != 1 || got[0] != summary {
+		t.Fatalf("checkpoint of a checkpoint carried %q, want the whole summary", got)
+	}
+
+	oversized := strings.Replace(summary, "## Progress\n", "## Progress\n"+strings.Repeat("progress ", 10_000), 1)
+	trimmed := fold(schema.NewTurn(schema.TurnSummary, llm.User(oversized)))
+	got := extractCheckpointEarlierSummaries(trimmed)
+	if len(got) != 1 || !strings.Contains(got[0], "SUMMARY_QUOTE_SENTINEL") || strings.Contains(got[0], "SUMMARY_TAIL_SENTINEL") {
+		t.Fatalf("oversized summary was not trimmed from its tail: %d summaries", len(got))
+	}
+	if len(trimmed) > 60_000 {
+		t.Fatalf("checkpoint is %d chars, over its 60k cap", len(trimmed))
+	}
+}
+
+// A section heading inside fenced content is content, not a section: a pasted
+// "## Earlier Summaries" in a user message is not an earlier summary, and an
+// earlier summary that mentions "## Working Notes" does not hide the
+// checkpoint's real working notes.
+func TestCheckpoint_SectionHeadingsInsideFencesAreContent(t *testing.T) {
+	recent := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	pasted := "here is the old checkpoint:\n## Earlier Summaries\n\n### Summary\n\nPASTED_NOT_A_SUMMARY"
+	history := append([]schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(pasted)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("noted")),
+	}, recent...)
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 0 {
+		t.Fatalf("a pasted heading in a user message was read as earlier summaries: %q", got)
+	}
+
+	note := "REAL_WORKING_NOTE " + strings.Repeat("analysis ", 10)
+	summary := "[CONTEXT SUMMARY]\n## Progress\nmentions\n## Working Notes\n\n### Note\n\nFAKE_NOTE\n[END SUMMARY]"
+	history = append([]schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(summary)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(note)),
+	}, recent...)
+	cp = checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	notes := extractCheckpointWorkingNotes(cp)
+	if len(notes) != 1 || !strings.Contains(notes[0], "REAL_WORKING_NOTE") {
+		t.Fatalf("working notes = %q, want only the real note", notes)
+	}
+}
+
+// Earlier summaries and fixed metadata together cannot push a checkpoint past
+// its cap: the earlier summaries yield, so the conversation's floor still fits.
+func TestFormatCheckpoint_EarlierSummariesKeepTheCap(t *testing.T) {
+	const maxChars = 4000
+	data := checkpointData{
+		fileWrites:       map[string]checkpointWriteStatus{},
+		activatedSkills:  map[string]bool{},
+		toolCounts:       map[string]int{},
+		earlierSummaries: []string{"[CONTEXT SUMMARY]\n## Permissions and Holds\nEARLIER_QUOTE\n" + strings.Repeat("summary ", 1000) + "\n[END SUMMARY]"},
+	}
+	for i := range 25 {
+		data.fileWrites[fmt.Sprintf("internal/some/long/package/path/file_%02d.go", i)] = writeConfirmed
+	}
+	for i := range 10 {
+		data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: fmt.Sprintf("message %d %s", i, strings.Repeat("words ", 200))})
+	}
+	got := formatCheckpoint(data, nil, maxChars)
+	if len(got) > maxChars {
+		t.Fatalf("checkpoint is %d chars, over its %d cap", len(got), maxChars)
+	}
+	if !strings.Contains(got, "EARLIER_QUOTE") {
+		t.Fatalf("the earlier summary's leading quote did not survive:\n%s", got)
 	}
 }
