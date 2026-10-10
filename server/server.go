@@ -672,21 +672,6 @@ func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.Delegat
 	s.mu.Unlock()
 }
 
-// SetSteerFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetSteerFunc(fn func(string) error) {}
-
-// SetSteerWithImagesFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment) error) {}
-
-// SetQueueFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetQueueFunc(fn func(string) error) {}
-
 // SetGoalFunc sets the function called by the appwire goal/set method. The
 // callback sets (or, for an empty objective, clears) the session's /goal and
 // returns whether the goal loop started immediately.
@@ -716,26 +701,6 @@ func (s *Server) SetUrlsRemoveFunc(fn func(outerID, id string) (bool, error)) {
 	s.urlsRemoveFunc = fn
 	s.mu.Unlock()
 }
-
-// SetQueueWithImagesFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error) {}
-
-// SetDrainAsSteerFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetDrainAsSteerFunc(fn func() error) {}
-
-// SetDrainAsSteerWithInputFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment) error) {}
-
-// SetCancelQueuedFunc is retained for source compatibility and has no effect.
-//
-// Deprecated: Use SetRetrySafeTurnFunctions instead.
-func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {}
 
 // SetCompactFunc sets the function called by thread/compact/start.
 func (s *Server) SetCompactFunc(fn func(context.Context) error) {
