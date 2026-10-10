@@ -1447,6 +1447,13 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 // the model wrote (#4173). It reads them through the checkpoint's own
 // collector, so they come from raw user turns and from previous compaction
 // turns alike.
+//
+// Only the partner's messages are carried. An earlier summary a folded
+// checkpoint holds is input to the new summary, which supersedes it; carrying
+// every earlier summary forward as well would grow each summary turn with
+// every compaction. Checkpoints written by the opt-in session-log strategy
+// keep no conversation section, so nothing is recovered from them here
+// (#4181).
 func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string) string {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {

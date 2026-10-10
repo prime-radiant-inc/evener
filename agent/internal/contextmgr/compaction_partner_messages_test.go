@@ -137,6 +137,9 @@ func TestCheckpointPred_PredictiveCheckpointKeepsPartnerMessagesVerbatim(t *test
 	history := partnerHoldHistory()
 	runCheckpointPred(t, cm, &history, 2) // never summarize: the predictive checkpoint stands
 	requirePartnerHoldInContext(t, history, schema.TurnCheckpoint)
+	if !strings.Contains(history[0].Message.Text(), "SESSION_ID_SENTINEL") {
+		t.Fatalf("the predictive checkpoint does not point at the session's transcript:\n%s", history[0].Message.Text())
+	}
 }
 
 // A section heading inside fenced content is content, not a section: a pasted
