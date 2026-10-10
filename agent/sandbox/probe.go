@@ -113,11 +113,7 @@ type HostFacts struct {
 	GitGlobalConfigPaths []string
 
 	// EvenerContentRoots are Evener's plugin store and the user's skills
-	// directory, at their configured locations (honouring XDG_CONFIG_HOME). By
-	// default both sit inside ~/.config/evener, which the credential denylist
-	// masks, yet they hold only content the session itself loads: the skills
-	// whose BaseDirectory it hands the model and the plugin hook scripts it
-	// runs. Resolve carves them out of the mask read-only (UnmaskedRoots).
+	// directory at their configured locations (see ResolvedPolicy.UnmaskedRoots).
 	// Missing directories are listed anyway, so one created mid-session is
 	// readable at its next spawn.
 	EvenerContentRoots []string

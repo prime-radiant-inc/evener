@@ -601,8 +601,10 @@ func TestSeatbeltRegrantsEvenerContentAfterTheMask(t *testing.T) {
 					if i := strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")"); i > maskIdx {
 						regranted = true
 					}
-					if strings.Contains(text, "file-write* "+literalAndSubpath(key)) || strings.Contains(text, "file-write*\n  "+subpathParam(key)) {
-						t.Errorf("%q must never be writable:\n%s", path, text)
+					for rule := range strings.SplitSeq(text, "\n(") {
+						if strings.HasPrefix(rule, "allow file-write*") && strings.Contains(rule, quoteParam(key)) {
+							t.Errorf("%q must never be writable:\n%s", path, text)
+						}
 					}
 				}
 				if !regranted {

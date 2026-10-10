@@ -233,12 +233,7 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 // layer asks this one question, so the file tools, the policy filters and the
 // backends agree on what a mask hides.
 func (rp ResolvedPolicy) Masks(path string) bool {
-	for _, masked := range rp.MaskedPaths {
-		if filepath.IsAbs(masked) && (path == masked || pathUnder(path, masked)) {
-			return !isUnderAnyRoot(path, rp.UnmaskedRoots)
-		}
-	}
-	return false
+	return isUnderAnyRoot(path, rp.MaskedPaths) && !isUnderAnyRoot(path, rp.UnmaskedRoots)
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
@@ -434,9 +429,8 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, rp)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
 
-	// The carved-out content roots are read roots in both layers in every mode:
-	// the grant restricted mode needs, and an open anchor for the file tools of
-	// the read-anywhere modes.
+	// Read roots in both layers: restricted needs the grant, and the
+	// read-anywhere modes' file tools use it as an open anchor.
 	rp.FileTool.ReadRoots = dedupeRoots(slices.Concat(rp.FileTool.ReadRoots, rp.UnmaskedRoots))
 	rp.Spawned.ReadRoots = dedupeRoots(slices.Concat(rp.Spawned.ReadRoots, rp.UnmaskedRoots))
 
@@ -691,7 +685,7 @@ func unmaskedContentRoots(candidates, masked []string, home, worktree string) []
 		if isUnderAnyRoot(root, defaultPseudoFSPaths) {
 			continue
 		}
-		if slices.ContainsFunc(masked, func(m string) bool { return m == root || pathUnder(m, root) }) {
+		if slices.ContainsFunc(masked, func(m string) bool { return pathUnder(m, root) }) {
 			continue
 		}
 		out = append(out, root)

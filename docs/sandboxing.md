@@ -341,9 +341,8 @@ affect `AF_UNIX`).
 (`~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
 sit inside the masked `~/.config/evener` by default, but they hold only content
 the session itself loads: the skills whose `base_directory` it hands the model,
-and the hook scripts of installed plugins it runs. Masking them broke both, in
-every mode: a skill's own templates were unreadable, and installed plugins' hooks
-could not run. So every mode reads those two directories, **read-only**, in both
+and the hook scripts of installed plugins it runs. So every mode reads those two
+directories, **read-only**, in both
 layers (`restricted` included), carved out of the mask; the rest of
 `~/.config/evener`, where hub configuration and credentials live, stays masked.
 The carve-out never writes, never touches the pseudo-filesystem floor, and is
@@ -571,14 +570,12 @@ The grant is tightly bounded:
 - **Read and exec only.** The write surface is unchanged; a hook's own directory
   stays unwritable in every mode.
 - **Spawned layer only.** This grant gives the file tools no browse access to a hook
-  or MCP path. (Installed plugins live in Evener's plugin store, which every mode
-  reads read-only anyway; see the denylist section.)
+  or MCP path.
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
   granted, and a denylisted subtree inside a granted path stays masked — the
   pseudo-filesystem floor and the credential denylist are authoritative over this
-  grant as over every other. The one exception is Evener's own content (the plugin
-  store and your skills directory), carved out of the `~/.config/evener` mask for
-  the reasons in the denylist section, so a plugin's hooks run from the store.
+  grant as over every other, except for Evener's own content (see the denylist
+  section), which is how an installed plugin's hooks run from the plugin store.
 - **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
   or *above* the user's home directory, the session's worktree, or a temp root, or
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,

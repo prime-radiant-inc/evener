@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,7 +46,7 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 				t.Errorf("spawned processes must read the plugin store, got roots %v", rp.Spawned.ReadRoots)
 			}
 			for _, w := range slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots) {
-				if w == store || pathUnder(w, store) || pathUnder(store, w) {
+				if pathUnder(w, store) || pathUnder(store, w) {
 					t.Errorf("the plugin store must never be writable: write root %q", w)
 				}
 			}
@@ -53,7 +55,7 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 }
 
 // A hook script installed in the plugin store is a hook/MCP read root under the
-// mask; with the store carved out it now survives resolution in restricted mode,
+// mask; with the store carved out it survives resolution in restricted mode,
 // whose spawned layer reads only its roots.
 func TestPluginHookRootsSurviveResolutionInsideThePluginStore(t *testing.T) {
 	root := mainRepo(t)
@@ -108,5 +110,63 @@ func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
 				t.Errorf("probeEvenerContentRoots = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// evenerContentFixture is a home whose ~/.config/evener holds a plugin skill,
+// that plugin's hook script, a user skill and a stand-in credential file, for
+// the backend tests that check the carve-out with a real sandbox.
+type evenerContentFixture struct {
+	config, store, skills, plugin     string
+	template, hook, userSkill, secret string
+}
+
+func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
+	t.Helper()
+	f := evenerContentFixture{config: filepath.Join(home, ".config", "evener")}
+	f.store = filepath.Join(f.config, "plugins")
+	f.skills = filepath.Join(f.config, "skills")
+	f.plugin = filepath.Join(f.store, "cache", "mkt", "plugin", "abc")
+	f.template = filepath.Join(f.plugin, "skills", "review", "template.md")
+	f.hook = filepath.Join(f.plugin, "hooks", "start.sh")
+	f.userSkill = filepath.Join(f.skills, "mine", "SKILL.md")
+	f.secret = filepath.Join(f.config, "hub.toml")
+	for path, body := range map[string]string{f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+// evenerContentScript reads both skills, runs the hook, tries to write into the
+// store and to read the credential file (a bwrap mask over a file reads as
+// empty, hence the -s), printing a marker for each outcome.
+const evenerContentScript = `set -u
+test "$(cat "$1")" = template && echo SKILL-READ
+test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
+"$3"
+if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
+if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi`
+
+// scriptCommand is the confined command running evenerContentScript.
+func (f evenerContentFixture) scriptCommand(shell string) []string {
+	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret}
+}
+
+func assertEvenerContentOutput(t *testing.T, out string) {
+	t.Helper()
+	for _, want := range []string{"SKILL-READ", "USER-SKILL-READ", "HOOK-RAN"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
+		}
 	}
 }

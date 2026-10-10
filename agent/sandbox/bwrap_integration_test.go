@@ -429,37 +429,14 @@ func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	config := filepath.Join(home, ".config", "evener")
-	store := filepath.Join(config, "plugins")
-	skills := filepath.Join(config, "skills")
-	plugin := filepath.Join(store, "cache", "mkt", "plugin", "abc")
-	files := map[string]string{
-		filepath.Join(plugin, "skills", "review", "template.md"): "template\n",
-		filepath.Join(plugin, "hooks", "start.sh"):               "#!/bin/sh\necho HOOK-RAN\n",
-		filepath.Join(skills, "mine", "SKILL.md"):                "user skill\n",
-		filepath.Join(config, "hub.toml"):                        "token = 'x'\n",
-	}
-	for path, body := range files {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	fx := writeEvenerContentFixture(t, home)
 	cwd := MaterializeWorkspace(t, MainCheckout)
-	const script = `set -u
-test "$(cat "$1")" = template && echo SKILL-READ
-test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
-"$3"
-if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
-if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi`
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			f := facts
 			f.Home = home
-			f.EvenerContentRoots = []string{store, skills}
-			rp, err := Resolve(SandboxPolicy{Mode: mode, InfraReadRoots: []string{plugin}}, f, cwd)
+			f.EvenerContentRoots = []string{fx.store, fx.skills}
+			rp, err := Resolve(SandboxPolicy{Mode: mode, InfraReadRoots: []string{fx.plugin}}, f, cwd)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -467,28 +444,14 @@ if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi`
 			if err != nil {
 				t.Fatal(err)
 			}
-			argv := w.Wrap([]string{"/bin/bash", "-c", script, "content-test",
-				filepath.Join(plugin, "skills", "review", "template.md"),
-				filepath.Join(skills, "mine", "SKILL.md"),
-				filepath.Join(plugin, "hooks", "start.sh"),
-				filepath.Join(config, "hub.toml")}, cwd)
+			argv := w.Wrap(fx.scriptCommand("/bin/bash"), cwd)
 			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
 			cmd.Env = ApplyEnvFloor(os.Environ(), rp, w.SessionTmp())
-			raw, err := cmd.CombinedOutput()
-			out := string(raw)
+			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("sandboxed command failed: %v\n%s", err, out)
 			}
-			for _, want := range []string{"SKILL-READ", "USER-SKILL-READ", "HOOK-RAN"} {
-				if !strings.Contains(out, want) {
-					t.Errorf("missing %s: the shell must read and run Evener content:\n%s", want, out)
-				}
-			}
-			for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE"} {
-				if strings.Contains(out, bad) {
-					t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
-				}
-			}
+			assertEvenerContentOutput(t, string(out))
 		})
 	}
 }
