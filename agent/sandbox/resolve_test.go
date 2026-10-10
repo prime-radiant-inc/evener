@@ -697,3 +697,19 @@ func TestCacheRootsNeverCoverTheWorktreeThroughASymlink(t *testing.T) {
 		t.Errorf("a cache root resolving inside the worktree must be dropped: %v", roots)
 	}
 }
+
+// A cache root that does not exist yet, under a symlinked parent that resolves
+// inside the worktree, is dropped as well: the wrapper would otherwise create it
+// through the link inside the worktree and overlay it there.
+func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *testing.T) {
+	worktree := clean(t.TempDir())
+	link := filepath.Join(clean(t.TempDir()), "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(link, "not", "yet", "modcache")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: missing}, worktree)
+	if slices.Contains(roots, missing) {
+		t.Errorf("a missing cache root whose parent resolves inside the worktree must be dropped: %v", roots)
+	}
+}
