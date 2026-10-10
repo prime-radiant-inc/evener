@@ -40,7 +40,10 @@ export function ActivityPageBoundary({
   const isCurrent = useActivityViewCurrent();
   const admit = useCallback(() => {
     setPagePending(true);
-    return Promise.resolve(loadMore(resource))
+    // Thunked so a synchronous throw reaches the chain: evaluating it as an
+    // argument would escape the catch and leave the control pending forever.
+    return Promise.resolve()
+      .then(() => loadMore(resource))
       .catch(() => {})
       .finally(() => setPagePending(false));
   }, [loadMore, resource]);

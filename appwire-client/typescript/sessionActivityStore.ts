@@ -775,6 +775,9 @@ export class SessionActivityStore {
     // Frames can arrive out of order, so a later arrival must not replace a
     // newer settlement: keep the projector's join, exactly as a loaded row does.
     const buffered = this.bufferedUnknownDelegates.get(frame.delegateId);
+    // Re-inserting moves the id to the end, so eviction drops the coldest id
+    // rather than one a frame just refreshed.
+    if (buffered) this.bufferedUnknownDelegates.delete(frame.delegateId);
     this.bufferedUnknownDelegates.set(frame.delegateId, buffered ? mergeDelegateFrames(buffered, frame) : frame);
     if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
       const oldest = this.bufferedUnknownDelegates.keys().next();
