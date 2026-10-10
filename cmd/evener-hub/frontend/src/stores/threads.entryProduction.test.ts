@@ -1,6 +1,6 @@
 import type { ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
@@ -353,4 +353,34 @@ it("ordinary Clear removes entries once and suppresses the held cache lifetime w
   await threadsStore.getState().ensureThread(ref);
   await settleEntryTranscriptForTests(ref);
   expect(await countCachedSessions()).toBe(1);
+});
+
+it("an aborted ordinary Clear preserves disk rows and the held entry route resumes writes", async () => {
+  const storage = cache();
+  const client = connect();
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const originalClear = IDBObjectStore.prototype.clear;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementationOnce(function () {
+    this.transaction.abort();
+    return originalClear.call(this);
+  });
+  expect(await clearCachedSessions()).toEqual({ committed: false });
+  fault.mockRestore();
+  expect(await storage.getClearEpoch()).toBe(0);
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("after-abort", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded", "after-abort"]);
 });

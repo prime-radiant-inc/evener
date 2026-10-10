@@ -906,10 +906,12 @@ async function acceptEntryTranscriptHydration(
   )
     return;
   const state = threadsStore.getState();
+  const productionRoute = productionEntryRoutes.get(ref) === fixture;
+  const lifetimeSuppressed = state.cacheLifetimes.get(ref)?.suppressed === true;
   const retired =
     state.deletedRefs.has(ref) ||
     (entryRouteRetirements.get(ref) ?? 0) !== claimedRetirement ||
-    state.cacheLifetimes.get(ref)?.suppressed === true;
+    (lifetimeSuppressed && !productionRoute);
   if (retired) {
     // The acquisition is no longer eligible. Only the route this acquisition
     // actually owns is retired: if a replacement has since installed its own
@@ -921,7 +923,10 @@ async function acceptEntryTranscriptHydration(
   // A failed or held-out authority read keeps the installed repository rather
   // than adopting unread authorities; a brand-new route falls back to the
   // epoch-0/generation-0 baseline and lets the durable fence decide.
-  const clearEpoch = authorities?.clearEpoch ?? fixture.clearEpoch ?? 0;
+  const clearEpoch =
+    productionRoute && lifetimeSuppressed
+      ? (fixture.clearEpoch ?? 0)
+      : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
   const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
   if (
@@ -6621,6 +6626,7 @@ export function markCacheSessionsDeleted(refs: string[]): void {
  * suppression stands — so open refs resume caching at their next
  * publication. */
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
+  const productionRoute = sessionCacheAdapterOverride === undefined && !entryTranscriptFixtureForTests;
   const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
@@ -6630,13 +6636,14 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // persist into the clear window, and a hydration that began before it must not
   // adopt the post-Clear epoch. Readable content stays in the store model.
   const entryFixture = entryTranscriptFixtureForTests;
-  if (entryFixture) {
-    noteEntryRouteRetirement(entryFixture.ref);
+  const entryRoutes = entryTranscriptRoutes();
+  for (const route of entryRoutes) {
+    noteEntryRouteRetirement(route.ref);
     // Retire the route's publication and persistence claims immediately by
     // suppressing it, WITHOUT disposing it: an aborted Clear (nothing changed)
     // re-enables the same held reader/subscription/repository, so a still-held
     // foreground model resumes ordinary ingestion without a release/reacquire.
-    entryFixture.clearInert = true;
+    route.clearInert = true;
   }
   // Synchronous logical retirement, before the transaction resolves: a
   // pre-Clear hydration must not publish into the same-tab clear window. Issued
@@ -6648,7 +6655,9 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     retirePendingHydration(ref, pending, pendingWatchedHydrations);
   }
   residencyIfCreated?.retireClaims();
-  const result = await currentSessionCache().clear();
+  // Production has one durable Clear boundary. The entry cache clears both
+  // entry and legacy stores atomically on the real database.
+  const result = await (productionRoute ? currentEntryCache().clear() : currentSessionCache().clear());
   if (!result.committed) {
     // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
@@ -6658,9 +6667,9 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     // Neither database changed, so the suppressed entry route is re-enabled: a
     // still-held foreground model resumes ordinary recorded ingestion
     // (publication and persistence) without a release/reacquire.
-    if (entryFixture) {
-      entryFixture.clearInert = false;
-      entryFixture.repository?.resumePersistence();
+    for (const route of entryRoutes) {
+      route.clearInert = false;
+      route.repository?.resumePersistence();
     }
     return { committed: false };
   }
@@ -6677,6 +6686,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     retireEntryTranscriptRoute(entryFixture);
     entryFixture.clearInert = false;
   }
+  // A held production route keeps displaying live input. Its captured old
+  // epoch is unchanged, so all subsequent writes are durably refused until a
+  // fresh explicit acquisition after the pre-Clear holders have released.
+  if (productionRoute) for (const route of entryRoutes) route.clearInert = false;
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);
   // Every open lease whose captured epoch predates the committed epoch: the
