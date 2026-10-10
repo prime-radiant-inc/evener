@@ -937,7 +937,9 @@ it("keeps an accepted read visible after cache failure and refuses to call the l
   expect(
     owner.acceptRead(read("accepted", 2), { lifetime: 1, readId: "read-after", boundary: "read-after-boundary" }),
   ).toBe(true);
-  await owner.settled();
+  // The failure is retained recovery work, so settlement reports it rather
+  // than silently resolving.
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
   expect(
     owner
       .getSnapshot()
@@ -1926,7 +1928,8 @@ it("keeps mixed uncovered overlays and accepted history visible after a real abo
   } finally {
     writeHold.abort();
   }
-  await owner.settled();
+  // A real abort is retained recovery work; settlement reports it honestly.
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
 
   expect(
     reader
@@ -2169,7 +2172,8 @@ it("keeps accepted publication after the real entry transaction aborts", async (
   expect(snapshots).toHaveLength(1);
   expect(snapshots[0]).toContain("visible but aborted");
   writeHold.abort();
-  await owner.settled();
+  // A real abort is retained recovery work; settlement reports it honestly.
+  await expect(owner.settled()).rejects.toThrow(/outstanding/);
 
   expect(
     reader

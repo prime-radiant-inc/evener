@@ -50,9 +50,11 @@ export interface TranscriptRepositoryBinding {
   };
   now?: () => number;
   /**
-   * The shared paced-retry scheduler for this write path. When absent, a
-   * transient write failure is retried on a bounded exponential timer; the
-   * store wires one so real repairs coalesce per ref. Returns a cancel.
+   * The paced-retry scheduler for this write path. When absent, a transient
+   * write failure is retried on a bounded exponential timer. This route is
+   * fixture-gated and the store does not currently pass a scheduler, so the
+   * default timer is what runs today; the seam exists so tests can pace and
+   * hold callbacks. Returns a cancel.
    */
   retryScheduler?: (attempt: number, retry: () => void) => () => void;
 }
@@ -122,9 +124,13 @@ export class TranscriptRepository {
   #disposed = false;
   #invalidated = false;
   #cacheContinuityLost = false;
-  // A transiently failed batch is retained and retried on bounded backoff
-  // while a reader holds demand. One retry is outstanding per repository.
-  #retryBatch: Parameters<SessionEntryCache["commitBatch"]>[0] | undefined;
+  // Transiently failed batches are retained in a queue and retried in order on
+  // bounded backoff while a reader holds demand. A second failed batch is
+  // deferred, not discarded; each entry remembers the source revision it was
+  // issued under, so a boundary (reconnect/reconciliation) revokes an obsolete
+  // retry instead of letting it overwrite the current committed coverage.
+  #retryQueue: Array<{ batch: Parameters<SessionEntryCache["commitBatch"]>[0]; revision: number }> = [];
+  #retryScheduled = false;
   #retryCancel: (() => void) | undefined;
   #retryAttempt = 0;
 
@@ -669,20 +675,31 @@ export class TranscriptRepository {
     };
   }
 
+  /**
+   * Await issued writes. A failed write resolves its own promise, so an armed
+   * or queued retry is recovery work that is still outstanding: a truthful
+   * settlement must not report success while it remains. It does not wait for
+   * a future timer (which demand can keep rearming), so it throws when recovery
+   * is outstanding rather than hanging or silently succeeding.
+   */
   async settled(): Promise<void> {
     await Promise.all([...this.#writes]);
+    if (this.#invalidated) return;
+    if (!this.#disposed && (this.#retryQueue.length > 0 || this.#retryScheduled)) {
+      throw new Error("transcript recovery is outstanding");
+    }
   }
 
   invalidate(): void {
     this.#invalidated = true;
     this.#pending.clear();
-    this.#cancelWriteRetry();
+    this.#cancelRetry();
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#cancelWriteRetry();
+    this.#cancelRetry();
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
@@ -992,16 +1009,25 @@ export class TranscriptRepository {
     );
   }
 
-  #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
+  /**
+   * `retryRevision`, when given, is the source revision the batch was issued
+   * under. A retried batch whose revision no longer matches is superseded by a
+   * newer boundary, so its completion must not write the old baseline's
+   * committed-coverage bookkeeping back over the new baseline's.
+   */
+  #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): void {
+    const issuedRevision = retryRevision ?? this.#sourceRevision;
     const write = this.#cache.commitBatch(batch).then((outcome) => {
+      const superseded = retryRevision !== undefined && issuedRevision !== this.#sourceRevision;
       if (outcome.outcome === "committed") {
-        // A committed batch that carries coverage restores the certified chain
-        // a transient failure broke: the route is durably ready again. Without
-        // this the flag set below stays true forever, so every later open would
-        // report recovery-needed even though eligible work committed.
         this.#retryAttempt = 0;
-        if (batch.coverage) this.#cacheContinuityLost = false;
-        if (batch.coverage) {
+        // Restoration is conditioned on the outcome's coverage, not the offered
+        // input: only an `extended` certificate actually repairs the chain (an
+        // `unchanged` batch adds none; `not-extended` means the row did not
+        // survive policy or a suffix could not extend, and the cache refuses to
+        // certify it). A superseded retry likewise contributes nothing.
+        if (!superseded && batch.coverage && outcome.coverage === "extended") this.#cacheContinuityLost = false;
+        if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverageBoundary = batch.coverage.boundary;
           this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
           this.#committedCoverageReadId = batch.coverage.readId;
@@ -1018,11 +1044,13 @@ export class TranscriptRepository {
         }
         // A failed transaction is transient until the storage proves otherwise.
         // Retry it on bounded backoff while a reader still holds demand, so a
-        // momentary abort does not strand the route in recovery forever.
-        // A refusal (`clear-epoch`, `history-fence`, `capacity`) is not
-        // transient: retrying it would be the repair loop the policy forbids.
-        if (outcome.outcome === "failed") this.#armWriteRetry(batch);
+        // momentary abort does not strand the route in recovery forever. A
+        // refusal (`clear-epoch`, `history-fence`, `capacity`) is not transient:
+        // retrying it would be the repair loop the policy forbids. A superseded
+        // retry is dropped rather than re-armed.
+        if (outcome.outcome === "failed" && !superseded) this.#enqueueRetry(batch, issuedRevision);
       }
+      this.#scheduleRetry();
     });
     this.#writes.add(write);
     void write.finally(() => {
@@ -1035,18 +1063,27 @@ export class TranscriptRepository {
     return this.#binding.now?.() ?? Date.now();
   }
 
-  #armWriteRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
+  // Retain a failed batch in arrival order. A second distinct failure is
+  // deferred behind the first; nothing is discarded, so no accepted cache work
+  // is abandoned. Demand-gated: with no reader there is nothing to recover for.
+  #enqueueRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0], revision: number): void {
     if (this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
-    if (this.#retryCancel) return; // coalesced: one outstanding retry per repository
-    this.#retryBatch = batch;
+    this.#retryQueue.push({ batch, revision });
+  }
+
+  // One paced timer drains the queue in order, one batch at a time: the next
+  // attempt is scheduled only after the previous write settles (its own
+  // `.then` calls back here), so two batches never write concurrently.
+  #scheduleRetry(): void {
+    if (this.#retryScheduled || this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
+    if (this.#retryQueue.length === 0) return;
+    this.#retryScheduled = true;
     this.#retryAttempt += 1;
     const attempt = this.#retryAttempt;
     const fire = () => {
+      this.#retryScheduled = false;
       this.#retryCancel = undefined;
-      const pending = this.#retryBatch;
-      this.#retryBatch = undefined;
-      if (!pending || this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
-      this.#queueWrite(pending);
+      this.#drainRetry();
     };
     const scheduler = this.#binding.retryScheduler;
     if (scheduler) {
@@ -1058,8 +1095,26 @@ export class TranscriptRepository {
     this.#retryCancel = () => clearTimeout(timer);
   }
 
-  #cancelWriteRetry(): void {
-    this.#retryBatch = undefined;
+  #drainRetry(): void {
+    if (this.#disposed || this.#invalidated || this.#readerCount <= 0) {
+      this.#retryQueue.length = 0;
+      return;
+    }
+    const next = this.#retryQueue.shift();
+    if (!next) return;
+    // A boundary since this batch was issued retires its persistence claim:
+    // re-committing it could only write the old baseline's bookkeeping over the
+    // new one. Drop it and continue with the rest of the queue.
+    if (next.revision !== this.#sourceRevision) {
+      this.#scheduleRetry();
+      return;
+    }
+    this.#queueWrite(next.batch, next.revision);
+  }
+
+  #cancelRetry(): void {
+    this.#retryQueue.length = 0;
+    this.#retryScheduled = false;
     const cancel = this.#retryCancel;
     this.#retryCancel = undefined;
     cancel?.();
