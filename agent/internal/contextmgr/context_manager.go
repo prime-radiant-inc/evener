@@ -1569,12 +1569,25 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	return resp, rejected
 }
 
+// partnerAuthorityRule keeps a summary from adding or dropping the human
+// partner's permissions, approvals, holds and stops. The continuing agent
+// treats the summary as the record of what it may do, so a paraphrase that
+// hardens into a new hold, or drops a standing permission, changes its
+// behavior (#4173). Both summary prompts carry it, and caller instructions
+// cannot override it. Both put these quotes first in the summary, so when a
+// re-compaction caps an oversized previous summary to its head, the quotes are
+// what survives.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
-// are provided. It mandates seven specific sections and directs the LLM to
-// err on the side of verbosity.
+// are provided. It mandates eight specific sections, permissions and holds
+// first, and directs the LLM to err on the side of verbosity.
 var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## Permissions and Holds
+` + partnerAuthorityRule + `
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -1637,6 +1650,12 @@ func promptSectionNames(prompt string) []string {
 // summarizing (#3978). One filled section is enough, so a summary that drops
 // some sections still keeps what it has. Caller instructions replace the
 // sections, so under them only emptiness is checked.
+//
+// The permissions-and-holds section is not required either. Its presence
+// would not show the quotes are faithful or complete (a reply can say "None."
+// and drop them), and rejecting a summary for lacking it would discard
+// everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
+// pins that one filled section is accepted).
 func checkSummaryReply(reply, instructions string) error {
 	text := strings.TrimSpace(reply)
 	if text == "" {
@@ -1699,7 +1718,7 @@ func summarySectionHeading(line string) (string, bool) {
 
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
-// mandatory-7-sections block is replaced by the caller's directive.
+// mandatory-sections block is replaced by the caller's directive.
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
@@ -1709,6 +1728,8 @@ func buildSummaryPrompt(historyText, instructions string) string {
 ` + instructions + `
 
 Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
 ` + historyText
 	}
