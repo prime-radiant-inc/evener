@@ -4,6 +4,7 @@
 // never unread, so one whose turn ended is Idle, with no dot.
 import { summaryTally } from "../subagents/subagentModel";
 import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+import { taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration, timeAgo } from "./format";
 
@@ -123,12 +124,14 @@ export function contextChips(
 			accessibilityLabel: `Files, ${files.count}${files.fresh ? ", new or changed" : ""}`,
 		});
 	const tasks = session.tasks;
+	// Settled = done plus cancelled, the same count the web's Tasks chips and
+	// the Tasks sheet's groups read.
 	if (connected && tasks && tasks.total > 0)
 		chips.push({
 			kind: "tasks",
-			label: `Tasks ${tasks.done}/${tasks.total}`,
+			label: `Tasks ${taskSettledCount(tasks)}/${tasks.total}`,
 			attention: false,
-			accessibilityLabel: `Tasks, ${tasks.done} of ${tasks.total} done`,
+			accessibilityLabel: `Tasks, ${taskSettledCount(tasks)} of ${tasks.total} settled`,
 		});
 	if (session.goal) {
 		const blocked = session.goal.status === "blocked";

@@ -17,6 +17,7 @@ import {
 	type Thread,
 	type ThreadCapabilities,
 	threadUsageSummary,
+	taskSettledCount,
 	type UsageSummary,
 } from "@evener/appwire-client";
 
@@ -381,7 +382,7 @@ function projectTasks(tasks: TaskAggregate | undefined): TaskGroup[] {
 	return [
 		{ status: "active", count: 0 },
 		{ status: "open", count: open },
-		{ status: "done", count: tasks.done },
+		{ status: "done", count: taskSettledCount(tasks) },
 	];
 }
 

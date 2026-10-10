@@ -113,7 +113,7 @@ describe("the context chips (spec 8.1)", () => {
 		});
 	});
 
-	it("show tasks done of total, the goal (amber when blocked), and the queue", () => {
+	it("show tasks settled of total, the goal (amber when blocked), and the queue", () => {
 		const chips = contextChips(
 			{
 				delegates: undefined,
@@ -131,9 +131,31 @@ describe("the context chips (spec 8.1)", () => {
 			["queue", "Queue 1", false],
 		]);
 		expect(chips.map((chip) => chip.accessibilityLabel)).toEqual([
-			"Tasks, 3 of 7 done",
+			"Tasks, 3 of 7 settled",
 			"Goal, blocked",
 			"1 queued message",
+		]);
+	});
+
+	it("counts cancelled tasks toward the Tasks chip's settled count", () => {
+		const chips = contextChips(
+			{
+				delegates: undefined,
+				tasks: { total: 7, done: 3, cancelled: 1 },
+				goal: null,
+				queue: null,
+			},
+			true,
+			noFiles,
+			counts(),
+		);
+		expect(chips).toEqual([
+			{
+				kind: "tasks",
+				label: "Tasks 4/7",
+				attention: false,
+				accessibilityLabel: "Tasks, 4 of 7 settled",
+			},
 		]);
 	});
 

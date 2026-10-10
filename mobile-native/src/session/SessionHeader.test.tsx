@@ -44,7 +44,7 @@ const tasks: ContextChip = {
 	kind: "tasks",
 	label: "Tasks 2/5",
 	attention: false,
-	accessibilityLabel: "Tasks, 2 of 5 done",
+	accessibilityLabel: "Tasks, 2 of 5 settled",
 };
 const goal: ContextChip = { kind: "goal", label: "Goal", attention: false, accessibilityLabel: "Goal" };
 const blockedGoal: ContextChip = { ...goal, attention: true, accessibilityLabel: "Goal, blocked" };
@@ -208,7 +208,7 @@ describe("the chips row (spec 8.1)", () => {
 		const chips = chipButtons(tree);
 		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
 			"Subagents, 5",
-			"Tasks, 2 of 5 done",
+			"Tasks, 2 of 5 settled",
 			"Goal",
 			"2 queued messages",
 		]);
