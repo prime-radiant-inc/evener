@@ -96,13 +96,31 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
 PROVIDERS_POINTER = "providers-config-path"
 
 
+def user_state_root():
+    """The lab user's state root: $XDG_STATE_HOME, else ~/.local/state."""
+    return os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+
+
+def trial_state_parent():
+    """Where --work-root trials keep their state dirs (see make_state_dir)."""
+    return os.path.join(os.path.realpath(user_state_root()), "workspaces")
+
+
+def require_state_outside_work_root(work_root):
+    """Exits when the trials' state parent and the work root overlap: one inside the other would put
+    trial state, and so other trials' memory, back where a session exploring the work root finds it."""
+    state, work = trial_state_parent(), os.path.realpath(work_root)
+    if os.path.commonpath([state, work]) in (state, work):
+        sys.exit(f"memory-lab: --work-root {work_root} overlaps the trials' state dir {state} (from XDG_STATE_HOME "
+                 "or ~/.local/state); pick a work root outside it, or set XDG_STATE_HOME elsewhere")
+
+
 def write_run_providers(text):
     """Writes a run's providers.toml and returns its path: <state root>/memory-lab/providers/<random>/
     providers.toml, where the state root is $XDG_STATE_HOME or ~/.local/state. It is a copy of the user's
     config, which can hold literal keys, so it is owner-only (dir 0700, file 0600) and never in the results
     tree. It is left in place so ask can use it; delete it by hand."""
-    base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                        "memory-lab", "providers")
+    base = os.path.join(user_state_root(), "memory-lab", "providers")
     os.makedirs(base, mode=0o700, exist_ok=True)
     os.chmod(base, 0o700)  # makedirs leaves a dir that already existed as it was
     path = os.path.join(tempfile.mkdtemp(dir=base), "providers.toml")  # mkdtemp makes the dir 0700
@@ -408,14 +426,16 @@ def workdir(trial, name):
 
 def make_state_dir(args, trial, work):
     """Creates trial/xdg, the trial's XDG_STATE_HOME, and trial/sessions, the stages' evener
-    state dirs. Under --work-root both are symlinks into DIR/.state/<workspace name>, since
-    memory tool results show the state path to the agent and delegate worktrees live in the
-    session state dir. Under --context-window xdg holds the trial's providers.toml."""
+    state dirs. Under --work-root both are symlinks into user_state_root()/workspaces/<workspace
+    name>: memory tool results and delegate worktree paths show the state path to the agent, so it
+    is neutral and outside the results tree, and it is outside the work root, where sessions
+    exploring the work root could read other trials' memory, and apart from the user's own evener
+    state. Under --context-window xdg holds the trial's providers.toml."""
     xdg = os.path.join(trial, "xdg")
     if not args.work_root:
         os.makedirs(xdg)
     else:
-        real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
+        real = os.path.join(trial_state_parent(), os.path.basename(work))
         os.makedirs(os.path.join(real, "sessions"))
         os.symlink(real, xdg)
         os.symlink(os.path.join(real, "sessions"), os.path.join(trial, "sessions"))
@@ -923,6 +943,7 @@ def cmd_run(args):
     args.out = os.path.abspath(args.out)
     if args.work_root:
         args.work_root = os.path.abspath(os.path.expanduser(args.work_root))
+        require_state_outside_work_root(args.work_root)
     versions = {}
     for v in args.version:
         label, sep, binpath = v.partition("=")
