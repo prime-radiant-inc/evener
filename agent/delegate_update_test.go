@@ -392,6 +392,16 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 	if pending := delegateAggregateSnapshot(t, root.delegateController, id).PendingDeliveries; len(pending) != 0 {
 		t.Fatalf("pending deliveries after the reply = %#v, want all acknowledged", pending)
 	}
+	// With every delivery acknowledged nothing is left to arrive later, so the
+	// update the reply carried never reaches the root as a notification too.
+	if pending := rootPendingAttention(root); len(pending) != 0 {
+		t.Fatalf("root attention after the reply = %v, want none", pending)
+	}
+	for _, attentionID := range rootAttentionFold(t, root).order {
+		if strings.Contains(attentionID, "/update/") {
+			t.Fatalf("the root holds update attention %q, want the update only in the reply", attentionID)
+		}
+	}
 }
 
 // A root awaiting its human partner's answer to ask_user holds a delegate's
@@ -428,8 +438,8 @@ func TestDelegateUpdateWaitsForTheAnswerToAPendingQuestion(t *testing.T) {
 	}
 	close(release)
 	pending := waitForRootAttention(t, root, 2)
-	if !strings.Contains(pending[0], "/update/") {
-		t.Fatalf("root attention = %v, want the update first", pending)
+	if !strings.Contains(pending[0], "/update/") || !strings.Contains(rootAttentionFold(t, root).content[pending[1]].Text(), `kind="report"`) {
+		t.Fatalf("root attention = %v, want the update, then the report", pending)
 	}
 	before := len(adapter.requestsFor("root"))
 	if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -637,6 +647,9 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	}
 	// The worker's later report may legitimately wake the coordinator again;
 	// only the update's own resolution says whether it earned a generation.
+	if coordinator == nil {
+		t.Fatal("the coordinator never deferred the worker's update")
+	}
 	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
 		t.Fatalf("the update the coordinator already saw was consumed by attention generation %d, want its presenting generation (0)", generation)
 	}
