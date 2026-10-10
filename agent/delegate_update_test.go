@@ -580,7 +580,6 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	close(coordinatorIdle)
 	select {
 	case text := <-presented:
-		releaseReport()
 		if !strings.Contains(text, `kind="update"`) || !strings.Contains(text, "IDLE_PARENT_UPDATE") {
 			t.Fatalf("the coordinator's next turn does not present the update:\n%s", text)
 		}
@@ -594,14 +593,17 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
 		t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
 	}
-	awaitRootReport(t, root)
 	// The scripted adapter answers a request past its script with a plain
 	// final report, so only the count shows a drain pass that ran extra
 	// turns. The script's three steps are the delegate call, the end of the
-	// first turn and the update's turn.
+	// first turn and the update's turn. The worker is still held, so its
+	// report cannot yet run a turn of its own; where that later turn lands
+	// depends on when the report arrives, so the count is not pinned after.
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
 		t.Fatalf("the coordinator made %d model requests, want its 3 scripted steps", got)
 	}
+	releaseReport()
+	awaitRootReport(t, root)
 }
 
 // A coordinator woken in its finalization drain by its worker's update has

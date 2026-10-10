@@ -1106,6 +1106,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// update stays pending only if no request presented it or its marker
 		// write failed (retried after the turn), and a turn that fails first
 		// returns its error from the process call below rather than looping.
+		// Compaction does not hide a pending update from that turn: it retains
+		// unresolved attention turns in the history (retainDelegateAttentionTurn,
+		// and resume restores them; see
+		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
+		// so a request after a compaction or a failed turn still presents it.
 		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasPendingDelegateUpdateAttention()
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
