@@ -2590,6 +2590,132 @@ it("does not invent exhaustion for a zero-limit successor query", async () => {
   expect(zero.serverCursor).toBeUndefined();
 });
 
+it("exhausts an empty-only successor chain with no top certificate (C1)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c1";
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    serverCursor: "C2",
+    requestCursor: "C1",
+    boundary: "a-empty",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "z-terminal",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 11, item: 0 }, 10, "A");
+  expect(window.complete).toBe(true);
+  expect(window.stale).toBe(false);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("does not certify a mixed-authority store when no authority is given (C2)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c2";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    requestCursor: "C2",
+    boundary: "t1",
+    authority: "A1",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 25, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 10, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "C3",
+    requestCursor: "C2",
+    boundary: "e2",
+    authority: "A2",
+  });
+
+  const mixed = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(mixed.complete).toBe(false);
+  expect(mixed.stale).toBe(true);
+  expect(mixed.serverCursor).toBeUndefined();
+  // Both single-authority scoped queries still resolve.
+  const staleAuthority = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A1");
+  expect(staleAuthority.complete).toBe(true);
+  expect(staleAuthority.serverCursor).toBeUndefined();
+  await expect(cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100, "A2")).resolves.toMatchObject({
+    serverCursor: "C3",
+  });
+});
+
+// Refined stronger geometry (controller correction): T (terminal) and U (a stale
+// duplicate with C9) are both unconsumed at depth 11, and the probe-preference
+// filter would silently drop U and exhaust on T.
+it("marks competing successors of one consumed certificate unverified (C3)", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-c3";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 35, item: 0 },
+    start: { entry: 21, item: 0 },
+    end: { entry: 30, item: 0 },
+    representedSnapshot: 35,
+    serverCursor: "C1",
+    boundary: "p",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C2",
+    boundary: "e",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 35,
+    requestCursor: "C2",
+    boundary: "t",
+    authority: "A",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "r",
+    before: { entry: 21, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 35,
+    requestCursor: "C1",
+    serverCursor: "C9",
+    boundary: "u",
+    authority: "A",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 35, item: 0 }, 100, "A");
+  expect(window.complete).toBe(false);
+  expect(window.stale).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
 function identityFor(sessionId: string) {
   return { clientId: "c", hostId: "h", sessionId, incarnation: "i" };
 }

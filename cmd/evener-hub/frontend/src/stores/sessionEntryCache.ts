@@ -300,6 +300,12 @@ function certsConnected(left: TranscriptCoverageRow, right: TranscriptCoverageRo
   // recorded explicitly rather than inferred from neighbouring positions.
   if (left.before !== null && left.before !== undefined && positionCoveredBy(left.before, right)) return true;
   if (right.before !== null && right.before !== undefined && positionCoveredBy(right.before, left)) return true;
+  // A recorded cursor succession is itself a continuity link: a page fetched
+  // against another certificate's `serverCursor` continues it, even when their
+  // ranges do not overlap. Without this an empty-only successor chain would
+  // select its predecessor alone and never see the consumed edge.
+  if (left.requestCursor !== undefined && left.requestCursor === right.serverCursor) return true;
+  if (right.requestCursor !== undefined && right.requestCursor === left.serverCursor) return true;
   return false;
 }
 
@@ -345,15 +351,54 @@ function certificateBottom(cert: TranscriptCoverageRow): { point: ThreadItemPosi
   return bottom;
 }
 
+// A page certificate that predates recorded cursor edges: it neither carried a
+// request cursor nor was the target of one. A probe fetched against its range
+// boundary supersedes it in the accepted deeper-range behavior, so it must not
+// fabricate ambiguity against that probe. Certificates that participate in the
+// cursor graph are never superseded here.
+function legacySupersededByProbe(
+  cert: TranscriptCoverageRow,
+  probes: readonly TranscriptCoverageRow[],
+  chain: readonly TranscriptCoverageRow[],
+): boolean {
+  if (cert.requestCursor !== undefined) return false;
+  if (chain.some((row) => row.requestCursor !== undefined && row.requestCursor === cert.serverCursor)) return false;
+  const bottom = certificateBottom(cert);
+  if (bottom?.probe === true) return false;
+  return probes.some((probe) => {
+    const before = probe.before;
+    return before !== null && before !== undefined && positionCoveredBy(before, cert);
+  });
+}
+
 // The frontier of an exhausted chain, resolved from recorded successor edges
 // alone: cert S is the successor of P iff same authority, `S.requestCursor`
 // is defined, `P.serverCursor` is defined and they are equal. No commit order,
-// timestamp, lexeme, position or snapshot tie-break. At the deepest depth a
-// probe is preferred, matching the empty-page authority the older paging
-// contract already established. `verified` false means the chain is ambiguous
-// (zero or several unconsumed certificates, or conflicting cursors), and
-// uncertainty must never present as exhausted history.
+// timestamp, lexeme, position or snapshot tie-break. Every unconsumed
+// certificate at the deepest depth is a peer regardless of probe status; only a
+// legacy certificate superseded by a same-depth probe is excluded. `verified`
+// false means the chain is ambiguous (zero or several unconsumed certificates,
+// or conflicting cursors), and uncertainty must never present as exhausted
+// history.
 function chooseFrontier(chain: readonly TranscriptCoverageRow[]): { cursor?: string; verified: boolean } {
+  const consumed = new Set<string>();
+  for (const predecessor of chain) {
+    if (predecessor.serverCursor === undefined) continue;
+    const successors = chain.filter(
+      (successor) =>
+        successor.rangeId !== predecessor.rangeId &&
+        successor.authority === predecessor.authority &&
+        successor.requestCursor !== undefined &&
+        successor.requestCursor === predecessor.serverCursor,
+    );
+    if (successors.length === 0) continue;
+    // Two readers that both consumed the same cursor but disagree on what
+    // follows are a branch: the continuation is unverified, whatever the
+    // depths of their successors — a deeper branch must not hide its peer.
+    const distinct = new Set(successors.map((successor) => successor.serverCursor ?? "\u0000terminal"));
+    if (distinct.size > 1) return { verified: false };
+    consumed.add(predecessor.rangeId);
+  }
   let deepestPoint: ThreadItemPosition | undefined;
   for (const cert of chain) {
     const bottom = certificateBottom(cert);
@@ -369,20 +414,9 @@ function chooseFrontier(chain: readonly TranscriptCoverageRow[]): { cursor?: str
     return bottom !== undefined && comparePosition(bottom.point, depth) === 0;
   });
   const probes = atDepth.filter((cert) => certificateBottom(cert)?.probe === true);
-  const deepest = probes.length > 0 ? probes : atDepth;
-  const consumed = new Set<string>();
-  for (const predecessor of chain) {
-    if (predecessor.serverCursor === undefined) continue;
-    const hasSuccessor = chain.some(
-      (successor) =>
-        successor.rangeId !== predecessor.rangeId &&
-        successor.authority === predecessor.authority &&
-        successor.requestCursor !== undefined &&
-        successor.requestCursor === predecessor.serverCursor,
-    );
-    if (hasSuccessor) consumed.add(predecessor.rangeId);
-  }
-  const unconsumed = deepest.filter((cert) => !consumed.has(cert.rangeId));
+  const unconsumed = atDepth.filter(
+    (cert) => !consumed.has(cert.rangeId) && !legacySupersededByProbe(cert, probes, chain),
+  );
   const first = unconsumed[0];
   if (!first) return { verified: false };
   if (unconsumed.length === 1) {
@@ -1419,6 +1453,18 @@ export class SessionEntryCache {
           TranscriptCoverageRow[]
         >,
       );
+      // Without an explicit authority a store holding several competing
+      // connection/read lifetimes must not be certified: anchoring would pick
+      // one authority's certificate by position and could present another
+      // authority's live chain as exhausted. Only the caller that knows the
+      // current lifetime may scope the continuation.
+      if (authority === undefined) {
+        const authorities = new Set(allRanges.filter((row) => row.authority !== undefined).map((row) => row.authority));
+        if (authorities.size > 1) {
+          await complete;
+          return { rows: [], coverage: [], complete: false, stale: true };
+        }
+      }
       const ranges = authority === undefined ? allRanges : allRanges.filter((row) => row.authority === authority);
       const anchor = chooseOlderAnchor(ranges, before);
       if (!anchor) {
