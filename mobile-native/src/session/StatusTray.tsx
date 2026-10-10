@@ -72,8 +72,8 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 
 /** The tray with its own one-second clock, so only the tray re-renders each
  * second. The clock runs only while the tray shows a line, so an idle session
- * runs no timer. While the agent works and the screen is in front, it also
- * polls the hub's activity for this session (S5), whose running-subagent
+ * runs no timer. It shows the hub's activity read for this session (S5),
+ * which the session screen polls while it is in front: its running-subagent
  * count is the one the Board's row names (spec 13.1). */
 export function LiveStatusTray({
 	session,

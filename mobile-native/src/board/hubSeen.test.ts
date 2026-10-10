@@ -511,6 +511,21 @@ describe("pruning a motion mark", () => {
 		expect(marks.pendingSeenThrough("u")).toBeUndefined();
 	});
 
+	it("lets an unread set elsewhere after the hub answered this phone's mark win", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		const unread = row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) });
+		// Before the hub answers, the mark stands and keeps the row seen.
+		expect(marks.isSeenOnHub(unread)).toBe(true);
+		calls[0].answer();
+		await settle();
+		// Answered, the mark reached seen_through, and the row still reads
+		// unseen: an unread came after it.
+		expect(marks.isSeenOnHub(unread)).toBe(false);
+		marks.prune([unread]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
 	it("keeps a motion mark on a row with no turn end until its seen_through lands", () => {
 		const { marks, client } = setup();
 		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);

@@ -58,7 +58,7 @@ export class HubSeenMarks {
 		const ended = hubTurnEnd(row);
 		if (ended === null) return null;
 		const entry = this.pending.get(row.ref);
-		if (entry && ended <= entry.seenThrough) return true;
+		if (entry && ended <= entry.seenThrough && !unreadSince(row, entry)) return true;
 		return row.unseen !== true;
 	}
 
@@ -106,8 +106,9 @@ export class HubSeenMarks {
 			const mark = hubTime(row.seen_through);
 			if (ended === null && mark === null) continue;
 			// seen_through doesn't reflect an unread set elsewhere, so a mark
-			// has landed only once the row reads seen as well.
-			const landed = row.unseen !== true && (mark === null || mark >= entry.seenThrough);
+			// has landed once the row reads seen as well, or once the hub
+			// answered it and an unread came after (unreadSince).
+			const landed = (row.unseen !== true && (mark === null || mark >= entry.seenThrough)) || unreadSince(row, entry);
 			if (landed || (ended !== null && ended > entry.seenThrough)) {
 				this.pending.delete(row.ref);
 				changed = true;
@@ -174,6 +175,14 @@ export class HubSeenMarks {
  * seen_through. */
 export function tracksSeenThrough(row: NavigationSessionSummary): boolean {
 	return row.seen_through !== undefined;
+}
+
+/** Whether an unread set elsewhere came after this phone's mark: the hub
+ * answered the mark, and its seen_through has reached it, yet the row still
+ * reads unseen. That unread is the newer word, so it wins over the mark. */
+function unreadSince(row: HubRow, entry: PendingEntry): boolean {
+	const mark = hubTime(row.seen_through);
+	return entry.acknowledged && row.unseen === true && mark !== null && mark >= entry.seenThrough;
 }
 
 /** When the row's last turn ended, in ms, if the hub decides the row: a row

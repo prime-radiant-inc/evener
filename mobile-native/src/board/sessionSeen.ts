@@ -70,7 +70,9 @@ export function useMarkSeenInFront(
 	// The mark on leaving goes through the newest client, not the one that was
 	// current when the motion was read.
 	const latestClient = useRef(client);
-	latestClient.current = client;
+	useEffect(() => {
+		latestClient.current = client;
+	}, [client]);
 	const seenMark = fleetRow && tracksSeenThrough(fleetRow) ? (hubTime(fleetRow.seen_through) ?? 0) : null;
 	useEffect(() => {
 		if (!inFront || lastMovedAt === undefined || seenMark === null) return;
