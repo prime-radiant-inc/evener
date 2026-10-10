@@ -16,7 +16,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { StrictMode } from "react";
 
 // Session-title queries in this file target navigation, so keep them scoped to
@@ -46,17 +46,12 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../stores/sessionActivityTestUtils";
-import { SessionCacheIndexedDB } from "../stores/sessionCacheIndexedDB";
+import { SessionEntryCache } from "../stores/sessionEntryCache";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { holdNextWriteTransaction } from "../stores/testing/stalledIndexedDB";
 import * as threadsModule from "../stores/threads";
-import {
-  resetThreadsStoreForTests,
-  setCacheWriteTimersForTests,
-  setSessionCacheAdapterForTests,
-  threadsStore,
-} from "../stores/threads";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "../stores/threads";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
@@ -685,7 +680,7 @@ test("a banner retry swaps the client useClient consumers call", async () => {
 // actual wire demand: one additive thread membership read (subscribe:true) per
 // discovered Live ref, released on the owner's lifetime end.
 function currentThreadRead(params: { ref?: string; requestGeneration?: number }) {
-  return { ...currentRead(params.ref ?? "local:s1"), requestGeneration: params.requestGeneration ?? 1 };
+  return { ...currentRead(params.ref ?? "local:s1"), requestGeneration: params.requestGeneration };
 }
 function membershipReads(client: FakeClient): number {
   return client.calls.filter(
@@ -754,38 +749,40 @@ test("two mounted panes and an activity holder survive background ownership rele
   }
 });
 
-// A versioned thread read carrying `literal`, so a resident model has versioned
-// history and its release drains a real cache write; distinct literals let a
-// successor's own read be told apart from the predecessor's content.
-function currentVersionedThreadRead(literal: string) {
+// A coherent completed-entry read carrying `literal`; final release re-reads
+// and checkpoints it. Distinct successor bytes carry a newer item version.
+function currentVersionedThreadRead(literal: string, version: number) {
   return (params: { ref?: string; requestGeneration?: number }) => {
     const base = currentRead(params.ref ?? "local:s1");
     base.snapshot = { incarnation: "inc-1", length: 1 };
+    base.thread.status = { type: "idle" };
+    delete base.overlay;
+    delete base.olderCursor;
     base.thread.turns = [
       {
         id: "turn_1",
         itemsView: "full",
         status: "completed",
-        version: 1,
+        version,
         items: [
           {
             type: "agentMessage",
             id: "turn_1-item-0",
             transcriptKey: "apptranscript-item-v2:turn_1:0:0",
             turnId: "turn_1",
-            position: { entry: 2, item: 0 },
-            version: 1,
+            position: { entry: 0, item: 0 },
+            version,
             text: literal,
           },
         ],
       },
     ];
-    return { ...base, requestGeneration: params.requestGeneration ?? 1 };
+    return { ...base, requestGeneration: params.requestGeneration };
   };
 }
-function versionedClient(literal: string): FakeClient {
+function versionedClient(literal: string, version = 1): FakeClient {
   const client = navClient();
-  client.on("thread/read", currentVersionedThreadRead(literal));
+  client.on("thread/read", currentVersionedThreadRead(literal, version));
   client.on("thread/unsubscribe", () => ({}));
   return client;
 }
@@ -853,7 +850,7 @@ function instrumentBackgroundLifetime() {
 // fresh flush. A hold armed after cleanup began (i.e. after `beginCleanup()`)
 // is recorded and signalled, so a failure proof can detect an orphaned hold and
 // release it rather than hanging the suite.
-function armReleaseWriteHold(cache: SessionCacheIndexedDB, lifetime: ReturnType<typeof instrumentBackgroundLifetime>) {
+function armReleaseWriteHold(cache: SessionEntryCache, lifetime: ReturnType<typeof instrumentBackgroundLifetime>) {
   let held: ReturnType<typeof holdNextWriteTransaction> | undefined;
   let consumed = false;
   let disarmed = false;
@@ -863,18 +860,27 @@ function armReleaseWriteHold(cache: SessionCacheIndexedDB, lifetime: ReturnType<
     signalArmedDuringCleanup = resolve;
   });
   const writeEntered = deferredSignal();
-  const realPut = cache.put.bind(cache);
-  const spy = vi.spyOn(cache, "put").mockImplementation(async (record, scheduledEpoch, now) => {
+  const realCommit = cache.commitBatch.bind(cache);
+  const spy = vi.spyOn(cache, "commitBatch").mockImplementation(async (batch) => {
     // One-shot: hold only the predecessor's real release flush, never a later
     // successor teardown write. After disarm no new hold may be armed, so
     // teardown cannot leave an unreleased gate behind.
     if (!disarmed && !consumed && lifetime.releaseEntered()) {
       consumed = true;
-      held = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      held = holdNextWriteTransaction([
+        "transcriptItems",
+        "transcriptTurns",
+        "transcriptCoverage",
+        "transcriptMeta",
+        "records",
+        "meta",
+        "current",
+        "currentMeta",
+      ]);
       writeEntered.resolve();
       if (cleanupBegan) signalArmedDuringCleanup?.();
     }
-    return realPut(record, scheduledEpoch, now);
+    return realCommit(batch);
   });
   return {
     writeEntered,
@@ -938,17 +944,20 @@ async function runHeldCleanupSafely(
   await cleanup;
 }
 
-// Shared bounded fixture for the AppShell held-release failure proofs: a real
-// open cache adapter, frozen write timers, a predecessor with a valid versioned
-// resident model, real owner tracking and the real final-release write hold.
+// Shared bounded fixture for the AppShell held-release failure proofs: real
+// entry storage, a predecessor's accepted baseline, real owner tracking and
+// the real final-read checkpoint hold. Reset storage only after the following
+// healthy-operation proof, so that proof cannot hide a leaked owner by reset.
 async function heldReleaseFailureFixture() {
-  const cache = new SessionCacheIndexedDB({
+  resetThreadsStoreForTests();
+  onTestFinished(() => resetThreadsStoreForTests());
+  const cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
     databaseName: `appshell-bg-fail-${crypto.randomUUID()}`,
   });
-  setSessionCacheAdapterForTests(cache);
-  await cache.count();
-  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
+  setProductionEntryCacheForTests(cache);
+  await cache.getClearEpoch();
   const predecessor = versionedClient("predecessor-content");
   const owners = trackBackgroundOwners();
   const lifetime = instrumentBackgroundLifetime();
@@ -957,9 +966,9 @@ async function heldReleaseFailureFixture() {
 }
 
 // The shared teardown for the AppShell failure proofs: release and disarm
-// through runHeldCleanupSafely, then join real disposals and restore observers,
-// timers, the cache adapter and close it. `onRestore` observes state at the
-// restoration boundary, before the intercepts and adapter are torn down.
+// through runHeldCleanupSafely, then join real disposals and restore observers.
+// `onRestore` observes that boundary before intercepts are torn down. Storage
+// stays usable for the following healthy operation and closes at test finish.
 function heldReleaseFailureCleanup(
   fixture: Awaited<ReturnType<typeof heldReleaseFailureFixture>>,
   getView: () => { unmount: () => void } | undefined,
@@ -974,9 +983,6 @@ function heldReleaseFailureCleanup(
       fixture.hold.restore();
       fixture.lifetime.restore();
       fixture.owners.restore();
-      setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
-      setSessionCacheAdapterForTests(undefined);
-      fixture.cache.close();
     },
   };
 }
@@ -991,6 +997,7 @@ async function expectHealthyBackgroundUsable() {
     healthyView = render(<AppShell client={healthyClient} />);
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(healthyClient)).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     healthyView.unmount();
     healthyView = undefined;
     await healthyOwners.joinDisposals();
@@ -1188,19 +1195,19 @@ test.each(["desktop", "narrow"])("one background owner per client lifetime in th
 
 test("a client replacement holds the predecessor's real release cleanup and keeps a useful successor", async () => {
   const user = userEvent.setup();
+  resetThreadsStoreForTests();
+  onTestFinished(() => resetThreadsStoreForTests());
   // A real open cache adapter: the predecessor owner's real final release
   // drains a real cache write we hold inside the release.
-  const cache = new SessionCacheIndexedDB({
+  const cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
     databaseName: `appshell-bg-${crypto.randomUUID()}`,
   });
-  setSessionCacheAdapterForTests(cache);
-  await cache.count(); // complete the adapter's open-time sweep before arming
-  // Freeze the debounced cache write so the only immediate write is the
-  // predecessor's release flush, which flushCacheWrite fires now.
-  setCacheWriteTimersForTests({ debounceMs: 60_000, maxWaitMs: 60_000 });
+  setProductionEntryCacheForTests(cache);
+  await cache.getClearEpoch(); // open the real entry storage before arming
   const predecessor = versionedClient("predecessor-content");
-  const fresh = versionedClient("successor-content");
+  const fresh = versionedClient("successor-content", 2);
   const owners = trackBackgroundOwners();
   const lifetime = instrumentBackgroundLifetime();
 
@@ -1219,6 +1226,7 @@ test("a client replacement holds the predecessor's real release cleanup and keep
     // valid content, so its release drains a real cache write.
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
+    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     const predecessorRecord = owners.records[0];
     if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
@@ -1262,7 +1270,20 @@ test("a client replacement holds the predecessor's real release cleanup and keep
         navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
       });
     });
-    await waitFor(() => expect(threadsHistory("local:s1")).toContain("successor-content"));
+    const historyKey = threadsModule.productionEntryTranscriptForTests("local:s1").historyKey;
+    if (!historyKey) throw new Error("successor has no resolved entry history identity");
+    await waitFor(() =>
+      expect(
+        JSON.stringify(
+          threadsModule.productionEntryTranscriptForTests("local:s1").repository?.retainedInventoryForTesting(),
+        ),
+      ).toContain("successor-content"),
+    );
+    // R36: the accepted ordinary background-only contract excludes bodies from
+    // the store model (threads.entryProduction.test.ts:653-656). The old
+    // release is still held, so accepted successor bytes belong to its real
+    // repository's bounded write inventory until that checkpoint can complete.
+    expect(threadsHistory("local:s1")).not.toContain("successor-content");
     const contentWhileHeld = threadsHistory("local:s1");
     const freshReadsWhileHeld = membershipReads(fresh);
     const freshUnsubsWhileHeld = unsubscribedRefs(fresh);
@@ -1279,7 +1300,9 @@ test("a client replacement holds the predecessor's real release cleanup and keep
     // The old cleanup neither retired the successor nor removed its content or
     // demand.
     expect(threadsHistory("local:s1")).toBe(contentWhileHeld);
-    expect(threadsHistory("local:s1")).toContain("successor-content");
+    expect(threadsHistory("local:s1")).not.toContain("successor-content");
+    await threadsModule.settleEntryTranscriptForTests("local:s1");
+    expect(JSON.stringify(await cache.getLatest(historyKey, 40))).toContain("successor-content");
     expect(membershipReads(fresh)).toBe(freshReadsWhileHeld);
     expect(unsubscribedRefs(fresh)).toEqual(freshUnsubsWhileHeld);
     expect(owners.activeCount()).toBe(1);
@@ -1296,8 +1319,6 @@ test("a client replacement holds the predecessor's real release cleanup and keep
           hold.restore();
           lifetime.restore();
           owners.restore();
-          setCacheWriteTimersForTests({ debounceMs: 1_000, maxWaitMs: 5_000 });
-          setSessionCacheAdapterForTests(undefined);
           cache.close();
         },
       });
@@ -1321,6 +1342,7 @@ test("an early failure before the predecessor release write joins real cleanup w
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
+    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     // A valid resident model exists and no release write has been held yet, so
     // the injected failure lands BEFORE the first hold is consumed.
@@ -1367,6 +1389,7 @@ test("a failure after the predecessor release entry joins the held predecessor b
     await screen.findByText("No session open");
     await waitFor(() => expect(membershipReads(predecessor)).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(threadsStore.getState().threads.get("local:s1")?.history?.incarnation).toBeDefined());
+    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
     expect(owners.activeCount()).toBe(1);
     const predecessorRecord = owners.records[0];
     if (!predecessorRecord) throw new Error("no predecessor owner was tracked");
