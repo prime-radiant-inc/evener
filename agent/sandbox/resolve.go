@@ -529,7 +529,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		return dedupeRoots(guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree))
 	default:
 		return nil
 	}
@@ -537,12 +537,19 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 
 // goCacheRoots are the directories the go command writes caches to: pkg under
 // the first GOPATH entry, which holds the default module cache and the checksum
-// database, plus a GOMODCACHE or GOCACHE configured somewhere else. A relative
+// database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
+// somewhere else. A relative
 // value, which the go command refuses, contributes nothing.
 func goCacheRoots(host HostFacts) []string {
 	var roots []string
 	if entries := goPathEntries(host); len(entries) > 0 {
 		roots = append(roots, filepath.Join(entries[0], "pkg"))
+	}
+	// Go's default stays served alongside a custom GOPATH: a spawn whose
+	// environment does not carry that GOPATH (or the GOENV that set it) falls
+	// back to $HOME/go.
+	if def := goPathEntries(HostFacts{Home: host.Home}); len(def) > 0 {
+		roots = append(roots, filepath.Join(def[0], "pkg"))
 	}
 	for _, dir := range []string{host.GoModCache, host.GoCache} {
 		if filepath.IsAbs(dir) {

@@ -399,7 +399,9 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 		host HostFacts
 		want []string
 	}{
-		{"custom GOPATH", HostFacts{Home: home, GoPath: "/custom/gopath" + sep + "/other"}, []string{"/custom/gopath/pkg"}},
+		// Go's default stays served too: a spawn whose environment does not carry
+		// the custom GOPATH (or the GOENV that set it) falls back to it.
+		{"custom GOPATH", HostFacts{Home: home, GoPath: "/custom/gopath" + sep + "/other"}, []string{"/custom/gopath/pkg", filepath.Join(home, "go", "pkg")}},
 		{"default GOPATH", HostFacts{Home: home}, []string{filepath.Join(home, "go", "pkg")}},
 		{"relative GOPATH", HostFacts{Home: home, GoPath: "relative/gopath"}, []string{filepath.Join(home, "go", "pkg")}},
 		{"explicit caches", HostFacts{Home: home, GoModCache: "/custom/modcache", GoCache: "/custom/gocache"}, []string{"/custom/modcache", "/custom/gocache"}},
@@ -412,6 +414,10 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 				}
 			}
 		})
+	}
+	// An explicit GOPATH equal to Go's default is served once, not overlaid twice.
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoPath: filepath.Join(home, "go")}, "/work/project"); len(roots) != len(dedupeRoots(roots)) {
+		t.Errorf("cache roots must not repeat: %v", roots)
 	}
 	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}, "/work/project"); slices.Contains(roots, "relative") {
 		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -207,18 +208,20 @@ const goEnvFileLimit = 64 << 10
 // runs before any sandbox exists, so a FIFO (which would block session start),
 // a device such as /dev/zero (which never ends) or an oversized file is refused.
 func (hostProbeSystem) readFile(path string) ([]byte, error) {
-	fi, err := os.Stat(path)
+	// Open without blocking (a FIFO's open waits for a writer), then judge the
+	// descriptor itself, so a file swapped in after a path check cannot slip by.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() || fi.Size() > goEnvFileLimit {
 		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, goEnvFileLimit)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, goEnvFileLimit+1))
 	if err == nil && len(data) > goEnvFileLimit {
 		err = fmt.Errorf("%s is larger than %d bytes", path, goEnvFileLimit)
