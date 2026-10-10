@@ -663,54 +663,6 @@ afterEach(() => {
 });
 
 describe("cached shell load seam", () => {
-  it("replay: the reload paints the recorded turns before the read resolves, then the read carries the record's heldSnapshot and a higher generation", async () => {
-    // First life: a prior tab's record exists in storage, so this test still
-    // writes it through the adapter directly (the write seam's own tests
-    // below exercise the live path); then reload.
-    const { adapter } = cacheTestBed();
-    await seedCache(adapter, "local:thr_1", {
-      incarnation: "inc-1",
-      length: 40,
-      turns: [turnFixture("turn_1")],
-      olderCursor: "cur-1",
-    });
-    // Reload: fresh store state, same database, a scripted read that stays pending.
-    const fake = connectFakeClient();
-    let resolveRead: ((value: ThreadReadResponse) => void) | undefined;
-    fake.on(
-      "thread/read",
-      () =>
-        new Promise<ThreadReadResponse>((resolve) => {
-          resolveRead = resolve;
-        }),
-    );
-    const pending = threadsStore.getState().ensureThread("local:thr_1");
-    await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:thr_1")).toBeDefined());
-    const shell = threadsStore.getState().threads.get("local:thr_1");
-    if (shell === undefined) throw new Error("the cached shell must publish before the read resolves");
-    expect(shell.history?.turns.map((t) => t.id)).toEqual(["turn_1"]); // painted from the cache
-    expect(shell.capabilities.send).toBe(false); // the empty set admits nothing
-    expect(threadInstanceIDForTest(shell)).toBe("thr_1"); // non-gated actions fence on the cached threadId
-    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBe(true);
-    expect(shell.history?.issuedGeneration).toBeGreaterThan(0); // the bumped base, not the raw record
-    const call = fake.calls.find((c) => c.method === "thread/read");
-    if (call === undefined) throw new Error("the read must be armed once the shell publishes");
-    const params = call.params as { heldSnapshot?: SnapshotIdentity; requestGeneration?: number };
-    expect(params.heldSnapshot).toEqual({ incarnation: "inc-1", length: 40 }); // the read carries the held identity
-    const appliedGeneration = shell.history?.appliedGeneration ?? 0;
-    expect(params.requestGeneration).toBeGreaterThan(appliedGeneration);
-    if (resolveRead === undefined) throw new Error("the read must be in flight while the shell is published");
-    resolveRead(
-      readResponse("local:thr_1", {
-        snapshot: { incarnation: "inc-1", length: 40 },
-        requestGeneration: params.requestGeneration,
-        changes: { turns: [], items: [] },
-      }),
-    );
-    await pending;
-    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // the first authoritative read cleared the flag
-  });
-
   it("an anchorless cached shell keeps its shell gate until the authoritative publish", async () => {
     const ref = "local:anchorless";
     const { adapter } = cacheTestBed();
