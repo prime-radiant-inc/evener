@@ -31,6 +31,9 @@ export type Band = "needsYou" | "finished" | "working" | "idle";
 export interface ClassifiedRow {
 	row: NavigationSessionSummary;
 	state: BoardState;
+	/** Updates since you last opened it: the row's blue dot, wherever it
+	 * sits. Absent reads as seen. */
+	unseen?: boolean;
 }
 
 export interface LiveBands {
@@ -114,14 +117,33 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
- * section marks approvals (approvalRefs), and isSeen splits Finished from
- * Idle. */
+ * section marks approvals (approvalRefs), isSeen splits Finished from Idle,
+ * and movedSinceSeen says whether the session moved after the person last
+ * looked. */
 export function rowClassifier(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean,
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
-	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+	return (row) => {
+		const seen = isSeen(row);
+		const state = boardState(row, approvals.has(row.ref), seen);
+		return { row, state, unseen: rowUnseen(row, state, seen, movedSinceSeen(row)) };
+	};
+}
+
+/** The blue dot (Jesse's ruling): only a live session that has run, and
+ * whenever anything is new since you last opened it. A session mid-turn
+ * (working, or reporting active) reads the hub alone: a turn end the hub
+ * decides (with this phone's pending marks applied), or motion after its seen
+ * mark, never this device's own markers. A resting one also counts a turn the
+ * device's fallback hasn't seen. */
+function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
+	// An offline row is shutDown (boardState).
+	if (!row.live || row.dormant || state === "shutDown") return false;
+	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
+	return !seen || moved;
 }
 
 const BANDS: Record<BoardState, Band | null> = {
@@ -210,8 +232,9 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
+	movedSinceSeen: (row: NavigationSessionSummary) => boolean = () => false,
 ): LiveBands {
-	const classify = rowClassifier(needsYouSection, isSeen);
+	const classify = rowClassifier(needsYouSection, isSeen, movedSinceSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);

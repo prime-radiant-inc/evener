@@ -55,7 +55,6 @@ import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
-	boardState,
 	type ClassifiedRow,
 	hostLabeler,
 	type LiveSummary,
@@ -71,6 +70,7 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { FreshDot } from "../reader/FreshDot";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -256,6 +256,13 @@ function Board({
 	// paused then, and a paused read is cancelled, not answered.
 	useBoardReadRetry(board, connected && focused ? client : null, snapshot);
 
+	// Whether a session moved after the person last looked, from the activity
+	// read's last-moved time against the hub's seen mark (the blue dot).
+	const lastMovedAt = useCallback((row: NavigationSessionSummary) => activityOf(row.ref)?.lastMovedAt, [activityOf]);
+	const movedSinceSeen = useCallback(
+		(row: NavigationSessionSummary) => seen.movedSinceSeen(row, lastMovedAt(row)),
+		[seen, lastMovedAt],
+	);
 	const bands = useMemo(
 		() =>
 			liveBands(
@@ -266,6 +273,7 @@ function Board({
 					const activity = activityOf(row.ref);
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
+				movedSinceSeen,
 			),
 		// seen re-runs isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
@@ -278,7 +286,7 @@ function Board({
 		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
 		// the top within one poll interval of its why-line saying so, instead
 		// of waiting for the next successful read.
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick],
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick, movedSinceSeen],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -286,15 +294,17 @@ function Board({
 	const sources = snapshot.manifest?.sources;
 	const hostLabel = useMemo(() => hostLabeler(sources), [sources]);
 
+	// activityRevision re-classifies after each read, so a row's dot follows
+	// its newest motion.
 	const classify = useMemo(
-		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
-		[snapshot.needsYou.rows, seen],
+		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row), movedSinceSeen),
+		[snapshot.needsYou.rows, seen, movedSinceSeen, activityRevision],
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
-	const projectRow = useCallback(
-		(row: NavigationSessionSummary): ClassifiedRow => ({ row, state: boardState(row, false, seen.isSeen(row)) }),
-		[seen],
+	const projectRow = useMemo(
+		() => rowClassifier([], (row) => seen.isSeen(row), movedSinceSeen),
+		[seen, movedSinceSeen, activityRevision],
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
@@ -416,7 +426,7 @@ function Board({
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsClient, [row]);
+		seen.markRead(actionsClient, [row], lastMovedAt);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
@@ -1037,7 +1047,14 @@ function Board({
 			content = <BandHeader text={`${BAND_HEADERS[item.band]} · ${item.count}`} />;
 			onLayout = measure(item.band);
 		} else if (item.kind === "idleFold") {
-			content = <IdleFold count={item.count} folded={item.folded} onToggle={() => foldIdle(!item.folded)} />;
+			content = (
+				<IdleFold
+					count={item.count}
+					folded={item.folded}
+					unseen={item.unseen}
+					onToggle={() => foldIdle(!item.folded)}
+				/>
+			);
 			onLayout = measure("idle");
 		} else if (item.kind === "row")
 			content = (
@@ -1978,14 +1995,27 @@ function SummaryLine({
 	);
 }
 
-/** Idle's header, folded by default; its state persists per device. */
-function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean; onToggle: () => void }) {
+/** Idle's header, folded by default; its state persists per device. Folded,
+ * it shows the blue dot while any session inside has updates you haven't
+ * opened: no count, no words. */
+function IdleFold({
+	count,
+	folded,
+	unseen,
+	onToggle,
+}: {
+	count: number;
+	folded: boolean;
+	unseen: boolean;
+	onToggle: () => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const dot = folded && unseen;
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`Idle, ${plural(count, "session")}`}
+			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
 			accessibilityState={{ expanded: !folded }}
 			onPress={onToggle}
 			style={({ pressed }) => ({
@@ -2004,7 +2034,10 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			>
 				{`Idle · ${count}`}
 			</Text>
-			<FoldChevron folded={folded} />
+			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
+				{dot ? <FreshDot /> : null}
+				<FoldChevron folded={folded} />
+			</View>
 		</Pressable>
 	);
 }

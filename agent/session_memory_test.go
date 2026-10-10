@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1930,6 +1931,55 @@ func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 	}
 }
 
+// Deleting a page removes the directories it leaves empty, up to but never
+// including the scope root, since no memory tool can remove a directory. A
+// directory still holding anything, a dot file included, is kept, and so is
+// an empty one named by the delete of a file that is not there.
+func TestMemoryDeletePrunesEmptiedDirectories(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+			env, err := s.openMemoryEnvironment(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := env.WorkingDirectory()
+			for _, rel := range []string{"lone/nested/page.md", "kept/sub/page.md", "kept/other.md", "hidden/sub/page.md", "hidden/.keep", "top.md"} {
+				path := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("opaque-prune-4176"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, rel := range []string{"lone/nested/page.md", "kept/sub/page.md", "hidden/sub/page.md", "top.md"} {
+				if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": rel}); res.IsError {
+					t.Fatal(res.Output)
+				}
+			}
+			for _, rel := range []string{"lone", "kept/sub", "hidden/sub"} {
+				if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+					t.Fatalf("emptied directory %s remains: %v", rel, err)
+				}
+			}
+			// Deleting a missing file is a no-op: an empty directory it names stays.
+			if err := os.Mkdir(filepath.Join(root, "empty"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": scope, "file_path": "empty/missing.md"}); res.IsError {
+				t.Fatal(res.Output)
+			}
+			for _, rel := range []string{".", "kept/other.md", "hidden/.keep", "empty"} {
+				if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+					t.Fatalf("%s removed: %v", rel, err)
+				}
+			}
+		})
+	}
+}
+
 // The native tool must not read a page's body merely to delete it.
 func TestMemoryDeleteUnreadable(t *testing.T) {
 	t.Parallel()
@@ -2946,7 +2996,12 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			golden.WriteString(strings.TrimPrefix(memoryGuidanceHeading, "\n\n") + section + "\n\n# Memory tool descriptions\n")
 			for _, name := range nativeMemoryToolNames {
 				if registered := s.reg.Get(name); registered != nil {
-					fmt.Fprintf(&golden, "\n## %s\n\n%s\n", name, registered.Definition.Description)
+					fmt.Fprintf(&golden, "\n## %s\n\n%s\n\n", name, registered.Definition.Description)
+					props, _ := registered.Definition.Parameters["properties"].(map[string]any)
+					for _, param := range slices.Sorted(maps.Keys(props)) {
+						description, _ := props[param].(map[string]any)["description"].(string)
+						fmt.Fprintf(&golden, "- `%s`: %s\n", param, description)
+					}
 				}
 			}
 			checkGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,

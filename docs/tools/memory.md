@@ -30,7 +30,7 @@ All rows below also require `scope`. Unknown arguments are rejected.
 | `memory_write` | `file_path`, `content` | None | Ordinary `WriteFile`: create the file and parent directories if needed, or replace the entire existing file. Content is accepted unchanged. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab (a newline, say), which no index line can link to. |
 | `memory_edit` | `file_path`, `old_string`, `new_string` | `replace_all` (default false) | Ordinary `EditFile`: replace a unique exact match, or deliberately replace every occurrence when `replace_all` is true. Read first and include enough context for a unique match. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab. |
 | `memory_search` | `pattern` (regex) | `path`, `glob_filter`, `case_insensitive`, `max_results` (default 100), `context_lines` (0–10, default 0), `output_mode` (`content`, `files_with_matches`, `count`, default `content`) | Ordinary `Grep`, with matching lines, filenames or per-file counts. `glob_filter` supports `*`, `?`, `[]`, `**` and bounded brace alternatives. Dotfiles/directories and gitignored paths are excluded. It never searches a root `MEMORY.md` (any case). A result names a file whose path holds an ASCII control character other than tab as a JSON string, so every result stays one line. |
-| `memory_delete` | `file_path` | None | Remove one regular file through shared captured-parent confinement, without reading its body or requiring file read permission. Missing files or parents are a no-op. Directories, symlinks and special files are refused. Parent permissions and other removal errors still apply. `MEMORY.md` at the scope root (any case) is refused; a path holding a control character is taken, so a file named that way outside the tools can be removed. The page's index line disappears with it; repair links from other pages separately. |
+| `memory_delete` | `file_path` | None | Remove one regular file through shared captured-parent confinement, without reading its body or requiring file read permission. Missing files or parents are a no-op. Directories, symlinks and special files are refused. Directories the removal leaves empty are removed too, deepest first, up to but never including the scope root; the first that still holds anything stops the climb. Parent permissions and other removal errors still apply. `MEMORY.md` at the scope root (any case) is refused; a path holding a control character is taken, so a file named that way outside the tools can be removed. The page's index line disappears with it; repair links from other pages separately. |
 
 After a successful `memory_write` or `memory_edit` of a Markdown page, Evener
 sets its `updated` and `by` frontmatter, keeping every other byte, and the
@@ -49,7 +49,11 @@ not inherited from a workspace read of a same-named file.
 Deletion checks the leaf's type beneath the authorized parent, then unlinks it
 without a directory-removal fallback. A leaf replaced after admission can still
 lose its replacement non-directory entry, but cannot redirect through a symlink
-or remove a directory. There is no atomic file-identity guarantee.
+or remove a directory. There is no atomic file-identity guarantee. The
+emptied parent directories are then removed one by one with `rmdir` beneath
+their own authorized parents, which never removes a nonempty directory or
+follows a symlink. A page written into such a directory at the same instant
+fails and can be retried.
 
 Successful deletion reports `Removed or already absent: <path>`, with any
 applicable read-before-write warning. It does not distinguish an actual unlink

@@ -74,8 +74,17 @@ it("leaves out empty bands, and Idle's rows while it is folded", () => {
 		["live:local:done", "live", "signal", false, false, false, 0, true],
 		["idle-fold", "live", "idleFold"],
 	]);
-	expect(items.at(-1)).toMatchObject({ count: 1, folded: true });
+	expect(items.at(-1)).toMatchObject({ count: 1, folded: true, unseen: false });
 	expect(liveItems(bands(), false)).toEqual([]);
+});
+
+it("says on Idle's fold whether any session inside is unseen", () => {
+	const fold = (idle: ClassifiedRow[]) => liveItems(bands({ idle }), true).at(-1);
+	expect(fold([classified("local:old", "idle")])).toMatchObject({ kind: "idleFold", unseen: false });
+	expect(fold([classified("local:old", "idle"), { ...classified("local:new", "idle"), unseen: true }])).toMatchObject({
+		kind: "idleFold",
+		unseen: true,
+	});
 });
 
 it("lists each pinned category as its header, then its sessions as quiet still rows, even a working one", () => {
@@ -141,4 +150,18 @@ it("groups a list by section, in order", () => {
 	const groups = groupItems([...live, ...pinned]);
 	expect([...groups.keys()]).toEqual(["live", "pin:pins-1"]);
 	expect(groups.get("live")?.map((item) => item.key)).toEqual(["band:finished", "live:local:done"]);
+});
+
+it("gives an archived project session no blue dot, though it may still be running", () => {
+	const items = projectItems(
+		[
+			{
+				section: { key: "p" } as never,
+				folded: false,
+				items: [{ kind: "session", key: "s", row: row("local:archived"), depth: 0, archived: true } as never],
+			},
+		],
+		(summary) => ({ row: summary, state: "working", unseen: true }),
+	);
+	expect(items.flatMap((item) => (item.kind === "row" ? [item.item.unseen] : []))).toEqual([false]);
 });

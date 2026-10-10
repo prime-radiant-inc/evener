@@ -271,9 +271,36 @@ func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnviron
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {
 		path := stringArg(forwarded, "file_path")
 		warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
+		// Only a removal can leave a directory empty; deleting a missing
+		// file stays a no-op.
+		existed := env.FileExists(path)
 		if err := env.RemoveConfinedFile(path); err != nil {
 			return nil, err
 		}
+		if existed {
+			pruneEmptyMemoryDirectories(env, path)
+		}
 		return warn + "Removed or already absent: " + path, nil
 	})
+}
+
+// pruneEmptyMemoryDirectories removes the directories above file, an absolute
+// path in env's scope, that are left empty, deepest first, up to but never
+// including the scope root. It stops at the first one it can't remove; a
+// failure leaves only an empty directory, which holds no page, so it is not
+// reported. A write that opened a directory before it is removed here fails
+// rather than landing in the detached directory, as the kernel creates no
+// entry in a removed directory (TestConfinedWriteIntoAPrunedDirectoryFails),
+// so a racing write is never lost and can be retried.
+func pruneEmptyMemoryDirectories(env *execenv.LocalExecutionEnvironment, file string) {
+	root := env.WorkingDirectory()
+	rel, err := filepath.Rel(root, file)
+	if err != nil {
+		return
+	}
+	for dir := filepath.Dir(rel); dir != "."; dir = filepath.Dir(dir) {
+		if env.RemoveConfinedEmptyDirectory(filepath.Join(root, dir)) != nil {
+			return
+		}
+	}
 }
