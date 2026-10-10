@@ -282,7 +282,7 @@ func probeHost(system probeSystem) HostFacts {
 			facts.EvenerConfigRoot = abs
 		}
 	}
-	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot)
+	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
@@ -351,11 +351,19 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 // user skills directory under Evener's config root, or nothing when the root is
 // unresolved. The store's metadata, which records marketplace URLs that may
 // carry tokens, is left out and stays masked.
-func evenerContentRoots(root string) []string {
+//
+// noUserSkills (EVENER_NO_USER_SKILLS=1) leaves the user skills directory out,
+// since such a session loads none; installed plugins stay, as their hooks still
+// run.
+func evenerContentRoots(root string, noUserSkills bool) []string {
 	if root == "" {
 		return nil
 	}
-	return append(userdirs.PluginContentDirs(userdirs.PluginStore(root)), userdirs.UserSkills(root))
+	roots := userdirs.PluginContentDirs(userdirs.PluginStore(root))
+	if !noUserSkills {
+		roots = append(roots, userdirs.UserSkills(root))
+	}
+	return roots
 }
 
 // goEnvValue returns a go command setting as configured on this host, with the

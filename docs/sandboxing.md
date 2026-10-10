@@ -354,8 +354,12 @@ carry a token. The carve-out never writes and never touches the pseudo-filesyste
 floor. It is cut only from Evener's own config mask, and a directory is left
 masked when it contains a masked path or sits under another one (so your own
 denylist entries, inside or above it, win), when a write root overlaps it (it
-would not stay read-only), or when it resolves through a symlink into another
-masked directory. The locations follow
+would not stay read-only), or when it resolves anywhere but its own place under
+Evener's config mask (a symlink into, or above, a masked directory). Each layer
+checks that resolution again when it opens the directory, so one swapped for a
+symlink mid-session is refused. With `EVENER_NO_USER_SKILLS=1`, which loads no
+user skills, the skills directory stays masked; installed plugins stay readable
+because their hooks still run. The locations follow
 `$XDG_CONFIG_HOME` the way Evener does. Inside the carve-out, any `.git` stays
 masked too: a plugin installed by cloning keeps its remote URL, which may carry a
 token, in its installed copy's `.git/config`, and skills and hooks never need it.

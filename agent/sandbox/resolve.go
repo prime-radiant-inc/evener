@@ -709,7 +709,9 @@ func withEvenerConfigMask(masked []string, host HostFacts) (all, configMasks []s
 		return masked, nil
 	}
 	configMasks = []string{def}
-	if cr := filepath.Clean(host.EvenerConfigRoot); filepath.IsAbs(host.EvenerConfigRoot) && cr != def {
+	// A relocated root the user already denylisted stays theirs: it is masked,
+	// and not carved, since their own entries win over the carve-out.
+	if cr := filepath.Clean(host.EvenerConfigRoot); filepath.IsAbs(host.EvenerConfigRoot) && cr != def && !slices.Contains(masked, cr) {
 		masked = append(slices.Clone(masked), cr)
 		configMasks = append(configMasks, cr)
 	}
@@ -749,6 +751,14 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 	return dedupeRoots(out)
 }
 
+// CarveOutIntact reports whether root, one of the UnmaskedRoots, still resolves
+// to its own place under the mask it is carved from. A root can be swapped for
+// a symlink after resolution, so a layer that opens it checks again first.
+func (rp ResolvedPolicy) CarveOutIntact(root string) bool {
+	resolved, err := filepath.EvalSymlinks(root)
+	return err == nil && !carveOutEscapes(resolved, root, rp.MaskedPaths)
+}
+
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the
 // carve-out root, is anywhere but the root's own place inside the mask it is
 // carved from: under another mask, under the pseudo-fs floor, or elsewhere in
@@ -758,6 +768,12 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 func carveOutEscapes(resolved, root string, masked []string) bool {
 	if isUnderAnyRoot(resolved, defaultPseudoFSPaths) {
 		return true
+	}
+	// A resolution at or above any mask would re-grant that mask whole.
+	for _, m := range masked {
+		if pathUnder(m, resolved) {
+			return true
+		}
 	}
 	for _, m := range masked {
 		if pathUnder(root, m) {

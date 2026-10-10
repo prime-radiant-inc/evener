@@ -319,3 +319,57 @@ func mustAbs(p string) string {
 	}
 	return abs
 }
+
+// A carve-out that resolves to an ancestor of a masked path (cache -> ~/.config,
+// holding ~/.config/gcloud) is refused even when Evener's config mask itself was
+// removed from the denylist, since re-granting it would expose that mask.
+func TestEvenerContentRootsRefuseAResolutionAboveAMask(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	dotConfig := filepath.Join(home, ".config")
+	if err := os.MkdirAll(filepath.Join(dotConfig, "gcloud"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(dotConfig, "evener", "plugins")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(store, "cache")
+	if err := os.Symlink(dotConfig, cache); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistRemove: []string{".config/evener"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a content root resolving above ~/.config/gcloud must be refused, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// A denylist entry the user added for a relocated config root is the user's
+// boundary, not Evener's automatic config mask, so it is not carved.
+func TestEvenerContentRootsHonourAUserMaskOnTheRelocatedConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	host := bwrapHost()
+	host.EvenerConfigRoot = "/xdg/evener"
+	host.EvenerContentRoots = []string{"/xdg/evener/plugins/cache"}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{"/xdg/evener"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 || !rp.Masks("/xdg/evener/plugins/cache/x") {
+		t.Errorf("a user mask on the relocated config root must keep its content masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// With EVENER_NO_USER_SKILLS=1 the session loads no user skills, so the probe
+// leaves the user skills directory out; installed plugins stay (their hooks
+// still run).
+func TestProbeLeavesUserSkillsOutWhenTheyAreNotLoaded(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(stubProbeSystem{env: map[string]string{"EVENER_NO_USER_SKILLS": "1"}})
+	if slices.Contains(facts.EvenerContentRoots, "/Users/tester/.config/evener/skills") {
+		t.Errorf("user skills must be left out when EVENER_NO_USER_SKILLS=1: %v", facts.EvenerContentRoots)
+	}
+	if !slices.Contains(facts.EvenerContentRoots, "/Users/tester/.config/evener/plugins/cache") {
+		t.Errorf("installed plugins must stay: %v", facts.EvenerContentRoots)
+	}
+}

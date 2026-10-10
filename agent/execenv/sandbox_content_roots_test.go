@@ -67,3 +67,36 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 		})
 	}
 }
+
+// A content root swapped for a symlink after resolution (here, to an unrelated
+// directory outside every mask) must not become a door for restricted file tools:
+// the root is re-validated when the tools first open it.
+func TestFileToolsRefuseAContentRootRedirectedAfterResolution(t *testing.T) {
+	t.Parallel()
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	elsewhere := filepath.Join(home, "elsewhere")
+	for _, dir := range []string{worktree, filepath.Dir(cache), elsewhere} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, "private.txt"), []byte("not plugin content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{cache}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := os.Symlink(elsewhere, cache); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	_, err = env.ReadFile(filepath.Join(cache, "private.txt"), nil, nil)
+	mustDenied(t, err, "read_file through a content root redirected after resolution")
+}
