@@ -451,6 +451,60 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 	return res.Caps.EffortCapable(), res.Caps.EffortValues
 }
 
+// sessionChainSeesToolResultMedia reports whether every model that could
+// serve a later round — the session model plus each resolvable
+// model_fallbacks entry — sees tool-result bytes of this media type inline.
+// A generated description is steering text every serving model can read, so
+// skipping it is safe only while every model that might serve can see the
+// bytes natively: a text-only or image-stripping fallback inherits the same
+// history and would otherwise lose the image twice over. An entry the
+// resolver cannot answer never serves (the round runner skips it with a
+// warning), so it cannot lose the description either.
+func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fallbacks []string, mt string) bool {
+	if !profile.SeesToolResultMedia(mt) {
+		return false
+	}
+	for _, ref := range fallbacks {
+		fbProfile, _, err := s.resolveProfileForRef(profile, ref)
+		if err != nil || fbProfile == nil {
+			continue
+		}
+		if !fbProfile.SeesToolResultMedia(mt) {
+			return false
+		}
+	}
+	return true
+}
+
+// sessionModelTakesRequestMedia reports whether the session profile can see a
+// describe-request's media part: a raster image needs image input (a
+// user-message image is the one shape every protocol vouches for), a document
+// needs the row's pdf input plus an adapter that represents a user-message
+// document. Any other kind stays with the configured route's verdict.
+func sessionModelTakesRequestMedia(part llm.ContentPart, profile *provider.Profile) bool {
+	switch part.Kind {
+	case llm.ContentImage:
+		return profile.AcceptsImageInput()
+	case llm.ContentDocument:
+		return profile.AcceptsDocumentInput()
+	default:
+		return false
+	}
+}
+
+// applyVisionRouteEffort clamps the fixed low vision cap to the route's
+// supported effort levels. A model whose cheapest level is above the cap gets
+// that level rather than a value it would reject, and a route that takes no
+// effort control gets none on the wire.
+func (s *Session) applyVisionRouteEffort(req *llm.Request, profile *provider.Profile, providerName, modelID string) {
+	if supportsReasoning, levels := s.visionRouteReasoning(profile, providerName, modelID); supportsReasoning {
+		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
+		req.ReasoningEffort = &effort
+	} else {
+		req.ReasoningEffort = nil
+	}
+}
+
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
 	if len(r.ImageData) == 0 {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
@@ -467,10 +521,31 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Lock()
 	profile := s.profile
 	visionSetting := s.cfg.VisionModel
+	modelFallbacks := slices.Clone(s.cfg.ModelFallbacks)
 	s.mu.Unlock()
+	visionSetting = strings.TrimSpace(visionSetting)
 
 	routeProvider, routeModel, visionOff := resolveVisionRoute(profile, visionSetting)
 	if visionOff {
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
+	}
+
+	mt := strings.ToLower(strings.TrimSpace(r.ImageMediaType))
+	if mt == "" {
+		mt = "image/png"
+	}
+
+	// Native vision replaces the side-channel when every model that could
+	// serve a later round sees this result's bytes inline
+	// (sessionChainSeesToolResultMedia: image input on a row whose adapter
+	// delivers that media, checked across the session model and its
+	// fallbacks): a describing call would only duplicate bytes the serving
+	// model already sees, and its failures would call native vision
+	// unavailable. Documents never qualify — no adapter vouches for a PDF
+	// tool result — so they always take the side-channel. An explicitly
+	// configured vision model is a deliberate instruction to describe with
+	// that model and stays honored.
+	if visionSetting == "" && s.sessionChainSeesToolResultMedia(profile, modelFallbacks, mt) {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
@@ -478,11 +553,6 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	// knows what it needs — we just ask the vision model to answer that question
 	// under one unconditional observation contract.
 	prompt := visionPrompt(r.ImagePrompt)
-
-	mt := r.ImageMediaType
-	if mt == "" {
-		mt = "image/png"
-	}
 
 	// Build the content part based on media type — images use ContentImage,
 	// documents (PDFs) use ContentDocument so the provider sends them correctly.
@@ -531,18 +601,28 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		},
 	}
 	// This request is built manually (not via buildModelRequest), so clamp the
-	// fixed vision cap to the model's supported levels here too. A model whose
-	// cheapest level is above the cap gets that level rather than a value it
-	// would reject. Gate on SupportsReasoning so non-reasoning models never get
-	// reasoning_effort on the wire.
-	if supportsReasoning, levels := s.visionRouteReasoning(profile, routeProvider, routeModel); supportsReasoning {
-		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
-		req.ReasoningEffort = &effort
-	}
+	// fixed vision cap to the route's supported levels here too.
+	s.applyVisionRouteEffort(&req, profile, routeProvider, routeModel)
 	s.applyModelRequestMetadata(&req)
 
 	start := s.sclock().Now()
-	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
+	resp, ranSessionModel, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
+	if err != nil && !ranSessionModel && visionCtx.Err() == nil && sessionModelTakesRequestMedia(mediaPart, profile) {
+		// The failed attempt never touched the session model — cheapmodel
+		// reroutes unservable routes and its own refusal fallback there, and
+		// both report it — the fixed deadline is not spent, and the session
+		// model can see the media (a raster image needs image input, the one
+		// user-message shape every protocol vouches for; a document needs the
+		// row's pdf input plus an adapter that represents a user-message
+		// document, which only the Responses builder does): try the
+		// description once on it before declaring vision unavailable. The
+		// effort must fit the session model's ladder, not the failed route's.
+		// A model that cannot see the media never gets the doomed request:
+		// providers reject it, and the ones that do not answer with confident
+		// hallucinated descriptions.
+		s.applyVisionRouteEffort(&req, profile, profile.ID(), profile.Model())
+		resp, _, err = s.cheap.CompleteRouted(visionCtx, profile, profile.ID(), profile.Model(), req)
+	}
 	elapsed := s.sclock().Now().Sub(start)
 	elapsed = max(elapsed, 0)
 	if err != nil {

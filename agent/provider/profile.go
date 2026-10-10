@@ -327,6 +327,36 @@ func (p *Profile) Cost() *registry.Cost { return p.res.Caps.Cost }
 // InputModalities lists what the model accepts ("text", "image", "pdf", …).
 func (p *Profile) InputModalities() []string { return cloneStringSlice(p.res.Caps.InputModalities) }
 
+// AcceptsImageInput reports whether the row declares image input at all. It
+// says the model can be handed an image in a user message (the shape the
+// vision side-channel uses); it says nothing about tool results.
+func (p *Profile) AcceptsImageInput() bool {
+	return p.res.Caps.AcceptsModality("image")
+}
+
+// AcceptsDocumentInput reports whether the row declares document ("pdf")
+// input and its adapter represents a user-message document on the wire.
+// Unlike an image — the one user-message shape every protocol vouches for —
+// a document needs the protocol check too: the Responses builder writes
+// input_file, while the Anthropic and Google builders reject the kind and
+// chat strips it (llm.DeliversUserMessageDocuments).
+func (p *Profile) AcceptsDocumentInput() bool {
+	return p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+}
+
+// SeesToolResultMedia reports whether the session model receives tool-result
+// bytes of this media type inline on the wire: the row declares image input
+// and its adapter delivers tool-result media of this type. This is the fact
+// that makes inline bytes the vision support — when it holds, a describing
+// side-channel would only duplicate what the model already sees. Only raster
+// image media qualifies (llm.DeliversToolResultMedia), so a document always
+// takes the side-channel; a chat-protocol row that strips tool-result images,
+// or a Google row without the multimodal-tool-results cap, never sees images
+// natively even though it accepts image input.
+func (p *Profile) SeesToolResultMedia(mediaType string) bool {
+	return p.AcceptsImageInput() && llm.DeliversToolResultMedia(p.res, mediaType)
+}
+
 // Warnings are the registry's notices for this reference (an uncatalogued
 // model, an unresolved variable, a hidden provider).
 func (p *Profile) Warnings() []string { return cloneStringSlice(p.res.Warnings) }

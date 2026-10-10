@@ -31,6 +31,14 @@ type probeCall struct {
 // use this to choose a non-LLM fallback while retaining the underlying errors.
 var ErrAllModelsRefused = errors.New("all auxiliary models refused")
 
+// ErrSessionModelCannotTakeMedia marks a request that never reached the
+// session model because it carries media the session model's row does not
+// accept: a refusal fallback would have asked it to describe content it
+// cannot see, which providers reject — and the ones that do not answer with
+// a confident hallucinated description (#4213). The underlying route error,
+// when one was observed, is joined in.
+var ErrSessionModelCannotTakeMedia = errors.New("session model cannot take this request's media")
+
 // Caller executes cheap-model requests for one session.
 type Caller struct {
 	client *llm.Client
@@ -59,17 +67,21 @@ func New(client *llm.Client) *Caller {
 // default cheap model when the session configured none.
 func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req llm.Request) (llm.Response, error) {
 	cheapProvider, cheapModel := profile.CheapModelRef()
-	return c.CompleteRouted(ctx, profile, cheapProvider, cheapModel, req)
+	resp, _, err := c.CompleteRouted(ctx, profile, cheapProvider, cheapModel, req)
+	return resp, err
 }
 
 // CompleteRouted is Complete for an explicit route chosen by the caller rather
 // than the profile's cheap-model ref — e.g. the vision side-channel's
 // configured vision model. It shares Complete's refusal learning and
 // session-model fallback; an empty model or a route equal to the session
-// route runs on the session model.
-func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, providerName, modelID string, req llm.Request) (llm.Response, error) {
-	resp, _, err := c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
-	return resp, err
+// route runs on the session model. It reports whether the request — including
+// any reroute of an unservable route and any refusal fallback inside — ran on
+// the session model, so a caller layering routes of its own on top does not
+// re-run a route already tried here, the same contract CompleteConfigured
+// reports.
+func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, providerName, modelID string, req llm.Request) (llm.Response, bool, error) {
+	return c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
 }
 
 // CompleteConfigured is Complete for work too costly to hand to a model nobody
@@ -103,6 +115,14 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 	}
 	active := sessionModel(profile)
 	if cheap != active && !c.serves(cheap) {
+		if sessionModelCannotTakeMedia(profile, req) {
+			// The chosen route is unservable or refusal-latched and the
+			// reroute would land on a session model that cannot see the
+			// request's media. The caller's own choice of the session route
+			// is not gated — that is the try-the-session-model default, not a
+			// fallback.
+			return llm.Response{}, false, ErrSessionModelCannotTakeMedia
+		}
 		cheap = active
 	}
 
@@ -118,7 +138,11 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		resp, refusedProbe, skipped, err = c.probe(ctx, cheap, req)
 		if skipped {
 			// The route was latched after the first serves check but before the
-			// probe acquired c.mu. Re-run this request on the active model.
+			// probe acquired c.mu. Re-run this request on the active model —
+			// unless that reroute would hand media to a model that cannot see it.
+			if sessionModelCannotTakeMedia(profile, req) {
+				return llm.Response{}, false, ErrSessionModelCannotTakeMedia
+			}
 			cheap = active
 			req.Provider, req.Model = active.provider, active.model
 			resp, err = c.client.Complete(ctx, req)
@@ -128,6 +152,17 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		return resp, cheap == active, err
 	}
 
+	if sessionModelCannotTakeMedia(profile, req) {
+		// The live refusal fallback would hand the session model a describe
+		// request for media it cannot see: providers reject the content, and
+		// the ones that do not answer with confident hallucinated
+		// descriptions (#4213). Learn the route refusal — it is durable — and
+		// report the request as one the session model cannot take. Text-only
+		// aux callers never carry media, so the gate is inert for naming,
+		// summarization and web fetch.
+		c.finishProbe(cheap, refusedProbe, true)
+		return llm.Response{}, false, errors.Join(ErrSessionModelCannotTakeMedia, err)
+	}
 	req.Provider, req.Model = active.provider, active.model
 	fallbackResp, fallbackErr := c.client.Complete(ctx, req)
 	if fallbackErr != nil {
@@ -151,6 +186,38 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 	}
 	c.finishProbe(cheap, refusedProbe, true)
 	return fallbackResp, true, nil
+}
+
+// sessionModelCannotTakeMedia reports whether routing this request onto the
+// session model would hand it media it cannot see: an image part needs image
+// input on the row, and a document part needs document input — the row
+// declares pdf and its adapter represents a user-message document (only the
+// Responses builder writes input_file today; the Anthropic and Google
+// builders reject the kind and chat strips it, so a pdf row on those
+// protocols stays blocked).
+func sessionModelCannotTakeMedia(profile *provider.Profile, req llm.Request) bool {
+	images, documents := requestMediaKinds(req)
+	if documents && !profile.AcceptsDocumentInput() {
+		return true
+	}
+	return images && !profile.AcceptsImageInput()
+}
+
+// requestMediaKinds reports whether any message part is an image or a
+// document — content only a model with the matching input modality can
+// actually see.
+func requestMediaKinds(req llm.Request) (images, documents bool) {
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			switch p.Kind {
+			case llm.ContentImage:
+				images = true
+			case llm.ContentDocument:
+				documents = true
+			}
+		}
+	}
+	return images, documents
 }
 
 // probe runs one request on a cheap route. Successful and ordinary failed
