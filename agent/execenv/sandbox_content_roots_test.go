@@ -231,3 +231,74 @@ func TestFileToolsNeverWriteACarveOutThroughAWritableAlias(t *testing.T) {
 		t.Errorf("nothing may be written into the carve-out: %v", err)
 	}
 }
+
+// On a case-insensitive volume, a denylist entry spelled in another case for a
+// skills dir that does not exist yet still wins once the dir is created: the
+// file tools judge the carve-out against the user's masks when they open it.
+func TestFileToolsHonourACaseVariantMaskOfASkillsDirCreatedLater(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	config := filepath.Join(home, ".config", "evener")
+	for _, dir := range []string{worktree, config} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG", "EVENER")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	skills := filepath.Join(config, "skills")
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, DenylistAdd: []string{".config/evener/SKILLS"}}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	private := filepath.Join(skills, "mine", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(private), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(private, []byte("private\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	_, err = env.ReadFile(private, nil, nil)
+	mustDenied(t, err, "read_file under a case-variant denylisted skills dir created after resolution")
+}
+
+// On a case-insensitive volume, a home spelled in another case than on disk
+// still reads its skills: the opened directory's real casing is the same
+// directory as the pinned location.
+func TestFileToolsReadACarveOutUnderAHomeSpelledInAnotherCase(t *testing.T) {
+	parent := realTempDir(t)
+	home := filepath.Join(parent, "casehome")
+	skill := filepath.Join(home, ".config", "evener", "skills", "mine", "SKILL.md")
+	worktree := filepath.Join(home, "project")
+	for _, dir := range []string{worktree, filepath.Dir(skill)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(skill, []byte("user skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spelled := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelled); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := sbTestHost(spelled)
+	host.EvenerContentRoots = []string{filepath.Join(spelled, ".config", "evener", "skills")}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, filepath.Join(spelled, "project"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(filepath.Join(spelled, "project"))
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	path := filepath.Join(spelled, ".config", "evener", "skills", "mine", "SKILL.md")
+	if got, err := env.ReadFile(path, nil, nil); err != nil || !strings.Contains(got, "user skill") {
+		t.Errorf("read_file %s: got %q err %v", path, got, err)
+	}
+}

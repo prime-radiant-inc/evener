@@ -851,12 +851,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// mask spelled in another case (~/.config/evener/SKILLS) is the same
 		// directory, so overlap with any mask but Evener's config mask is also
 		// judged by file identity.
-		if slices.ContainsFunc(masked, func(m string) bool {
-			if slices.ContainsFunc(configMasks, func(c string) bool { return sameDir(m, c) }) {
-				return false
-			}
-			return underByIdentity(resolved, m) || underByIdentity(m, resolved)
-		}) {
+		if overlapsMaskByIdentity(masked, configMasks, resolved) {
 			continue
 		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
@@ -890,9 +885,43 @@ func (rp ResolvedPolicy) CarveOutIntact(root string) bool {
 func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// A root is held to where it resolved at session start (or, not created
 	// yet, where creating it would land), so redirecting an enclosing
-	// directory later cannot move the grant.
+	// directory later cannot move the grant. The kernel reports an opened
+	// directory in its real letter case, which a pinned spelling from the
+	// environment may not share; on a case-insensitive volume such a spelling
+	// is the same directory, which file identity confirms.
 	at, ok := rp.carveOutAt[root]
-	return ok && resolved == at
+	sameLocation := resolved == at || (strings.EqualFold(resolved, at) && sameDir(resolved, at))
+	if !ok || !sameLocation {
+		return false
+	}
+	// A denylist entry naming the root in another case, for a directory that
+	// did not exist at resolution, can only be matched by identity now.
+	return !rp.userMaskOverlaps(root, at)
+}
+
+// userMaskOverlaps reports whether a mask other than the config mask root is
+// carved from (listed above root or above its location) is, by file identity,
+// at, above or inside the carve-out at its location at.
+func (rp ResolvedPolicy) userMaskOverlaps(root, at string) bool {
+	var own []string
+	for _, m := range rp.MaskedPaths {
+		if pathUnder(root, m) || pathUnder(at, m) {
+			own = append(own, m)
+		}
+	}
+	return overlapsMaskByIdentity(rp.MaskedPaths, own, at)
+}
+
+// overlapsMaskByIdentity reports whether any of masked other than the config
+// masks own (under any spelling: a symlinked home lists two) is, by file
+// identity, at, above or inside the directory at.
+func overlapsMaskByIdentity(masked, own []string, at string) bool {
+	return slices.ContainsFunc(masked, func(m string) bool {
+		if slices.ContainsFunc(own, func(o string) bool { return sameDir(m, o) }) {
+			return false
+		}
+		return underByIdentity(at, m) || underByIdentity(m, at)
+	})
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the
