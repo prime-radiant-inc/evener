@@ -897,7 +897,8 @@ package and the dependency realpath, or external setup imports fail as
 the custom config, test files, cacheDir and dependency symlink in scratch,
 reuse the frontend's resolve aliases and test setup, and keep at least two
 workers (the vmThreads isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`.
+probes; canonical verdicts stay with `make test-web`, which in a read-only
+lane still needs that writable `.vite-cache`.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -972,6 +973,12 @@ timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
 crosses the show delay on a fake clock scoped to the hover, so it needs none
 of that wiring, and it must be called on real timers.
 
+The frontend has no jest-dom (it is not in `package.json`), so matchers
+such as `toHaveValue`, `toBeDisabled` or `toBeInTheDocument` fail
+`npm run typecheck` even when vitest, which never typechecks, runs them
+green. Assert on the DOM directly (`input.value`, `el.textContent`,
+`button.disabled`, `document.activeElement`).
+
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await` has to
 be awaited, never asserted right after the click. Work that goes through
@@ -981,8 +988,12 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 (src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
-has settled, and the dispatched request has gone out by then. A `waitFor`
-on the request races that chain against a 1000ms ceiling, which a loaded
+has settled, and the dispatched request has gone out by then. The flush
+waits only for work registered with that tracker: if production code adds
+an awaited step outside storage (say, a component awaits a store call
+before clearing its state), wrap the whole operation in
+`trackProjectionWork` (src/stores/projectionWork.ts), or the flush returns
+early. A `waitFor` on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
 tracked work open on purpose (a held read or commit) cannot flush until it
@@ -997,7 +1008,7 @@ toast from the previous test can satisfy this test's assertion.
 
 ### Frontend store-fixture contracts
 
-Four contracts that repeatedly bite store-test authors, none of them visible
+Five contracts that repeatedly bite store-test authors, none of them visible
 from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
@@ -1018,6 +1029,12 @@ from the assertion that fails:
   withholds the completion event; it does not prove an active transaction
   lock blocks other writes, so diagnose a stalled successor from its actual
   pending operation.
+- To test a boundary before commit, while the write can still abort, hook
+  the request itself: wrap the object-store method in a call-through spy
+  that either holds the request's `success` event with `holdIndexedDBEvent`
+  or calls `this.transaction.abort()`. Match the call by `this.name` and the
+  exact key the caller builds, not by call order, since production may add
+  an earlier read. Worked example: src/stores/humanNoteDrafts.test.ts.
 - fake-indexeddb throws a synchronous `DataError` from the store method
   itself for a put/add whose key cannot be derived (`buildRecordAddPut`
   throws before any request is created). Such a test proves method-fault
@@ -1694,6 +1711,18 @@ does slip through shows up on the hub's stderr:
 ```
 [hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
 ```
+
+## Driving Turns from a Go Fixture
+
+A session runs one turn at a time. A `turn/start` during an active turn is
+refused with `turn is already active`, so a fixture must wait for each turn
+to finish before starting the next.
+
+To wait on the turn lifecycle, call `thread/read` with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same daemon connection
+before `TurnStart`. Without `Subscribe: true` the read returns a snapshot
+and subscribes to nothing, so `Client.Notifications()` never carries that
+thread's `thread/status/changed` or `history/updated`.
 
 ## A Disposable Hub Needs Its Own HOME
 
