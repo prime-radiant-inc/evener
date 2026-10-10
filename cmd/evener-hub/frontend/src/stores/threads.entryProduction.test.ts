@@ -1,4 +1,4 @@
-import type { ThreadReadResponse, Turn } from "@evener/appwire-client";
+import { cachedSessionRecord, hydrateThread, type ThreadReadResponse, type Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
+import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
@@ -383,4 +384,32 @@ it("an aborted ordinary Clear preserves disk rows and the held entry route resum
   });
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded", "after-abort"]);
+});
+
+it("ordinary first open migrates a legacy blob once as stale seeds and atomically removes its source", async () => {
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
+  try {
+    const seeded = cachedSessionRecord(
+      hydrateThread(response("local:a", [turn("legacy-older", 0)]), "local:a", Date.now()),
+      Date.now(),
+    );
+    if (!seeded) throw new Error("fixture must encode a legacy session");
+    expect((await legacy.put(seeded, 0, Date.now())).outcome).toBe("written");
+    const storage = cache();
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect(await legacyCounts()).toEqual([1, 0]);
+    connect(response("local:a", [turn("live-newer", 2)]));
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["legacy-older", "live-newer"]);
+    expect(await legacyCounts()).toEqual([0, 0]);
+    const window = await storage.getOlderWindow(key, { entry: 2, item: 0 }, 10);
+    expect(window.rows).toEqual([]);
+    expect(window.coverage.every((range) => range.start === null || range.start.entry >= 2)).toBe(true);
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["legacy-older", "live-newer"]);
+  } finally {
+    legacy.close();
+  }
 });
