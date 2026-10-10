@@ -178,7 +178,7 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 		// without one: hold the rest for the end of processing. Once a turn is
 		// published, any settle the bridge still meets predates it, and the
 		// turn's own end restates the state.
-		if s.processing && s.appPendingStableTurnID == "" && s.status.State != string(agent.SessionClosed) {
+		if s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed) {
 			s.appHeldSettledEffect = effect
 		}
 		return

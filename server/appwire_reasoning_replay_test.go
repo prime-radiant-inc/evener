@@ -657,3 +657,23 @@ func TestServerAppWireStatusSettledAfterACloseIsNotHeld(t *testing.T) {
 		t.Fatalf("read status = %q, want closed", read.Status.Type)
 	}
 }
+
+// A settle the bridge meets while a published turn is running is dropped, also
+// once that turn's EXECUTION_STARTED has been bridged.
+func TestServerAppWireStatusSettledDuringAStartedTurnIsNotHeld(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_started_turn")
+	srv.SetProcessingTurn("t1")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_started_turn", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_started_turn", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	srv.SetProcessing(false)
+
+	if read := readThreadOverWire(t, srv, "local:th_started_turn"); read.Status.Type == appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want the running turn's settle dropped", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_started_turn") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast a settle held over a started turn: %+v", status)
+		}
+	}
+}
