@@ -235,6 +235,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster,
 		fuzzScenarioRoster_Watch_PicksUpNewFile,
 		fuzzScenarioSessionSeenSnapshot_CloneOwnsItsRecords,
+		fuzzScenarioSessionSeenSnapshot_SeenThrough,
 		fuzzScenarioSessionSeenSnapshot_Unseen,
 		fuzzScenarioSessionSeenStore_EpochIsSetOnceAndSurvivesReopen,
 		fuzzScenarioSessionSeenStore_MarkSeenMovesForwardOnly,

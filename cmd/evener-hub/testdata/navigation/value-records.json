@@ -36,6 +36,7 @@
     "updated_at": "2026-09-26T12:00:00Z",
     "turn_ended_at": "2026-09-26T11:58:00.123Z",
     "unseen": true,
+    "seen_through": "2026-09-26T11:50:00Z",
     "more_subagents": 3,
     "subagents": {
       "running": 2,

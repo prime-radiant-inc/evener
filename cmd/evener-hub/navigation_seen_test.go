@@ -16,14 +16,24 @@ import (
 // turnEnds against seen, keyed by session ID.
 func seenLiveRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen hubcore.SessionSeenSnapshot) map[string]hubapi.NavigationSessionSummary {
 	t.Helper()
+	return seenRows(t, now, turnEnds, seen, true)
+}
+
+// seenRows is seenLiveRows with the choice of whether the hub reports the
+// sessions live: with markLive false they still have a live entry, but their
+// rows are not live.
+func seenRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen hubcore.SessionSeenSnapshot, markLive bool) map[string]hubapi.NavigationSessionSummary {
+	t.Helper()
 	var metas []schema.SessionMeta
 	var live []hubcore.LiveEntry
+	liveIDs := make(map[string]bool)
 	for id, ended := range turnEnds {
+		liveIDs[id] = markLive
 		metas = append(metas, schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
 		live = append(live, hubcore.LiveEntry{PID: len(live) + 1, SessionID: id, Status: appwire.ThreadStatusIdle, LastTurnEndedAt: ended})
 	}
 	tree := hubcore.BuildTreeAt(metas, live, nil, now)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen})
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen, Live: liveIDs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,5 +155,44 @@ func TestNavigationSummaryCloneOwnsItsTimestamps(t *testing.T) {
 	}
 	if bare := cloneNavigationSummary(hubapi.NavigationSessionSummary{}); bare.UpdatedAt != nil || bare.TurnEndedAt != nil {
 		t.Fatalf("clone of a summary without timestamps = %v, %v; want none", bare.UpdatedAt, bare.TurnEndedAt)
+	}
+}
+
+// A live row carries the hub's seen-through mark for it, floored at the
+// store's epoch, so a client can tell output that streamed after the mark
+// from output the person already saw, even while a turn is still running and
+// has no turn end yet. With no seen store the key is absent.
+func TestNavigationRowsCarrySeenThrough(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	epoch := now.Add(-time.Hour)
+	mark := now.Add(-10 * time.Minute)
+	turnEnds := map[string]time.Time{"01MARKED": mark, "01UNMARKED": {}, "01OLDMARK": mark}
+	seen := hubcore.SessionSeenSnapshot{Epoch: epoch, Records: map[hubcore.ArchiveKey]hubcore.SessionSeenRecord{
+		hubcore.SessionPinKey("", "01MARKED"):  {SeenThrough: mark},
+		hubcore.SessionPinKey("", "01OLDMARK"): {SeenThrough: epoch.Add(-time.Minute)},
+	}}
+	rows := seenLiveRows(t, now, turnEnds, seen)
+	for id, want := range map[string]time.Time{"01MARKED": mark, "01UNMARKED": epoch, "01OLDMARK": epoch} {
+		raw, present := navigationSummaryJSONFields(t, rows[id])["seen_through"]
+		if !present {
+			t.Fatalf("%s: no seen_through", id)
+		}
+		if quoted := `"` + want.Format(time.RFC3339Nano) + `"`; string(raw) != quoted {
+			t.Errorf("%s: seen_through = %s, want %s", id, raw, quoted)
+		}
+	}
+
+	notLive, ok := seenRows(t, now, map[string]time.Time{"01NOTLIVE": {}}, seen, false)["01NOTLIVE"]
+	if !ok {
+		t.Fatal("no row for the session that isn't live")
+	}
+	if _, present := navigationSummaryJSONFields(t, notLive)["seen_through"]; present {
+		t.Error("seen_through present on a row that isn't live")
+	}
+
+	for id, row := range seenLiveRows(t, now, turnEnds, hubcore.SessionSeenSnapshot{}) {
+		if _, present := navigationSummaryJSONFields(t, row)["seen_through"]; present {
+			t.Errorf("%s: seen_through present with no seen store", id)
+		}
 	}
 }

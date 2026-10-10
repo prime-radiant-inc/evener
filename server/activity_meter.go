@@ -47,9 +47,15 @@ type activitySlot struct {
 type activityMeter struct {
 	now func() time.Time
 
-	mu         sync.Mutex
-	slots      [activitySlotCount]activitySlot
-	lastMotion time.Time
+	mu    sync.Mutex
+	slots [activitySlotCount]activitySlot
+	// servedAt is when restart last ran, and lastMoved the newest motion since
+	// then (zero until the tree moves). The quiet clock reads the later of the
+	// two; the moved time reads lastMoved alone, since a daemon beginning to
+	// serve a session is not news to someone comparing it with what they last
+	// saw.
+	servedAt  time.Time
+	lastMoved time.Time
 	// intent is the newest intent a tool call of the meter's own root session
 	// stated (noteIntent), empty until this turn states one.
 	intent string
@@ -70,7 +76,8 @@ func (m *activityMeter) restart() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.slots = [activitySlotCount]activitySlot{}
-	m.lastMotion = m.clock()
+	m.servedAt = m.clock()
+	m.lastMoved = time.Time{}
 	m.intent = ""
 }
 
@@ -111,8 +118,8 @@ func (m *activityMeter) count(at time.Time) {
 }
 
 func (m *activityMeter) touch(at time.Time) {
-	if at.After(m.lastMotion) {
-		m.lastMotion = at
+	if at.After(m.lastMoved) {
+		m.lastMoved = at
 	}
 }
 
@@ -155,7 +162,7 @@ func (m *activityMeter) noteIntent(event events.SessionEvent) {
 func (m *activityMeter) snapshot() *appwire.ThreadActivity {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.lastMotion.IsZero() {
+	if m.servedAt.IsZero() {
 		return nil
 	}
 	current := m.clock().Unix() / activitySlotSeconds
@@ -168,5 +175,13 @@ func (m *activityMeter) snapshot() *appwire.ThreadActivity {
 			minutes[activityBars-1-age/activitySlotsPerBar] += slot.count
 		}
 	}
-	return &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli(), LatestIntent: m.intent}
+	lastMotion := m.servedAt
+	if m.lastMoved.After(lastMotion) {
+		lastMotion = m.lastMoved
+	}
+	activity := &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: lastMotion.UnixMilli(), LatestIntent: m.intent}
+	if !m.lastMoved.IsZero() {
+		activity.LastMovedAt = m.lastMoved.UnixMilli()
+	}
+	return activity
 }
