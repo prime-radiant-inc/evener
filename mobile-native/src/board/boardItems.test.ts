@@ -151,3 +151,17 @@ it("groups a list by section, in order", () => {
 	expect([...groups.keys()]).toEqual(["live", "pin:pins-1"]);
 	expect(groups.get("live")?.map((item) => item.key)).toEqual(["band:finished", "live:local:done"]);
 });
+
+it("gives an archived project session no blue dot, though it may still be running", () => {
+	const items = projectItems(
+		[
+			{
+				section: { key: "p" } as never,
+				folded: false,
+				items: [{ kind: "session", key: "s", row: row("local:archived"), depth: 0, archived: true } as never],
+			},
+		],
+		(summary) => ({ row: summary, state: "working", unseen: true }),
+	);
+	expect(items.flatMap((item) => (item.kind === "row" ? [item.item.unseen] : []))).toEqual([false]);
+});

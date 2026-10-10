@@ -126,7 +126,9 @@ export function projectItems(
 								key: `${group}:${tree.key}`,
 								group,
 								kind: "row",
-								item: classify(tree.row),
+								// An archived session gets no blue dot (Jesse's ruling), though
+								// it may still be running.
+								item: tree.archived ? { ...classify(tree.row), unseen: false } : classify(tree.row),
 								variant: "quiet",
 								moving: false,
 								archived: tree.archived,

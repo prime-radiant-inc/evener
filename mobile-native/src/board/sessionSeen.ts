@@ -5,7 +5,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubTime } from "./attention";
-import { type BoardSeen, hubSeenMarks, tracksSeenThrough } from "./hubSeen";
+import { type BoardSeen, hubSeenMarks } from "./hubSeen";
 
 /** Marks the session seen while the screen is in front, so a turn that ends
  * while you watch goes straight to Idle (Jesse's ruling, 2026-09-29, over the
@@ -73,9 +73,12 @@ export function useMarkSeenInFront(
 	useEffect(() => {
 		latestClient.current = client;
 	}, [client]);
-	const seenMark = fleetRow && tracksSeenThrough(fleetRow) ? (hubTime(fleetRow.seen_through) ?? 0) : null;
+	// A hub that sends lastMovedAt tracks seen-through marks, so a session
+	// opened from outside the fleet's first Live page (search, a project, a
+	// link) is marked too; without its row, every motion counts as new.
+	const seenMark = hubTime(fleetRow?.seen_through) ?? 0;
 	useEffect(() => {
-		if (!inFront || lastMovedAt === undefined || seenMark === null) return;
+		if (!inFront || lastMovedAt === undefined) return;
 		if (lastMovedAt > (newestMotion.current ?? seenMark)) newestMotion.current = lastMovedAt;
 	}, [inFront, lastMovedAt, seenMark]);
 	useEffect(() => {

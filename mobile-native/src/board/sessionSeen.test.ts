@@ -361,14 +361,16 @@ it("marks no motion that came before the hub's seen mark, or reached while not i
 	expect(sent).toEqual([]);
 });
 
-it("sends no motion mark to a hub without seen-through marks", async () => {
+it("marks motion for a session the fleet hasn't listed, as one opened from search or a project", async () => {
 	const { sent, view, hook } = setup();
-	view.row = fleetRow({ state: "active" });
+	view.row = undefined;
 	view.lastMovedAt = T;
 	hook.rerender();
-	hook.unmount();
+	view.inFront = false;
+	hook.rerender();
 	await settleMicrotasks();
-	expect(sent).toEqual([]);
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
 });
 
 it("sends the leave-the-front motion mark through the newest client", async () => {
