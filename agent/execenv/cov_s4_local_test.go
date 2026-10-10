@@ -244,8 +244,8 @@ func TestGrepFallback_MaxResultsCap(t *testing.T) {
 		t.Fatalf("Grep: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("maxResults cap = %d lines, want 3: %q", len(lines), out)
+	if len(lines) != 4 || lines[3] != grepTruncationNote(3) {
+		t.Fatalf("maxResults cap = %d lines, want 3 then the truncation note: %q", len(lines), out)
 	}
 }
 

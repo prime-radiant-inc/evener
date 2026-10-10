@@ -945,9 +945,10 @@ func TestGrepNative_MaxResults(t *testing.T) {
 		t.Fatalf("grepNative: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(result), "\n")
-	if len(lines) > 5 {
-		t.Fatalf("expected at most 5 results, got %d", len(lines))
+	if len(lines) > 6 || lines[len(lines)-1] != grepTruncationNote(5) {
+		t.Fatalf("expected at most 5 results then the truncation note, got %q", result)
 	}
+	lines = lines[:len(lines)-1]
 	// Lower bound: a mutation returning "" would yield len==1 with lines[0]==""
 	// and pass the upper-bound check above; pin that the result is non-empty.
 	if len(lines) < 5 || (len(lines) == 1 && lines[0] == "") {
