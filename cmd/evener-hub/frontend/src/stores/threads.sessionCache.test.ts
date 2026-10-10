@@ -47,6 +47,7 @@ import {
   clearCachedSessions,
   installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
+  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
@@ -3552,6 +3553,269 @@ describe("exclusive entry transcript fixture route", () => {
       fixture.dispose();
       entryCache.close();
       await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("settles only the matching opening: an older settle leaves the newer hold, then clearing publishes", async () => {
+    const selected = "local:entry-overlap-token";
+    const ordinary = "local:entry-opening-ordinary";
+    const entryDatabase = "entry-overlap-token-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    // Hold each real opening at its own cache read so the two can be settled
+    // in a controlled order.
+    const releases: Array<() => void> = [];
+    const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+    entryCache.getLatestWindow = ((historyKey: string, limit: number, boundary?: string) =>
+      new Promise((resolve, reject) => {
+        releases.push(() => {
+          void realGetLatestWindow(historyKey, limit, boundary).then(resolve, reject);
+        });
+      })) as typeof entryCache.getLatestWindow;
+    const snapshots: Array<{ present: boolean; token: number | undefined }> = [];
+    const unsubscribe = threadsStore.subscribe((state) =>
+      snapshots.push({ present: state.localOpenings.has(selected), token: state.localOpenings.get(selected) }),
+    );
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [turnFixture("entry-overlap", "OVERLAP_BODY")],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      const first = threadsStore.getState().ensureThread(selected);
+      const second = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
+      const newerToken = threadsStore.getState().localOpenings.get(selected);
+      expect(newerToken).toBeGreaterThan(0);
+      expect(snapshots.filter((entry) => entry.present).length).toBeGreaterThanOrEqual(2);
+
+      // Settle the OLDER opening while the newer is still pending: its settle
+      // must leave the newer hold published and in place.
+      releases[0]!();
+      await first;
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(true);
+      expect(threadsStore.getState().localOpenings.get(selected)).toBe(newerToken);
+
+      // Settle the newer opening: the hold clears and publishes.
+      releases[1]!();
+      await second;
+      await fixture.settled();
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      // The matching clear was PUBLISHED to a real subscriber, not only in the
+      // getter's final value.
+      expect(snapshots.some((entry) => !entry.present)).toBe(true);
+      expect(isEntryTranscriptLocalOpening(ordinary)).toBe(false);
+    } finally {
+      unsubscribe();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // ensureThread always hydrates (accepts a model-bearing read) before it opens
+  // the fixture's reader, so this path cannot present openLocal's model-less
+  // branch (transcriptRepository.ts:394-395 needs `#model` undefined, and
+  // :451-452 returns `latest`, which hydration has already set). A cold or
+  // empty cache is not a model-less opening: openLocal still returns a
+  // model-bearing result. Assert the genuine terminal outcome here - the
+  // opening resolves, the ref keeps its published model, and the hold settles
+  // with the clear observed by a real subscriber.
+  it("a successful opening settles its hold and publishes the clear (ensureThread cannot yield a model-less opening)", async () => {
+    const selected = "local:entry-opening-settles";
+    const entryDatabase = "entry-opening-settles-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const seen: boolean[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => seen.push(state.localOpenings.has(selected)));
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [turnFixture("entry-settles", "SETTLES_BODY")],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      expect(seen).toContain(true);
+      expect(seen).toContain(false); // the clear was published, not only the getter
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      // The terminal outcome is model-bearing, not model-less.
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+      expect(fixture.inspect().model).toBeDefined();
+    } finally {
+      unsubscribe();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // A cache read that rejects is caught INSIDE openLocal
+  // (transcriptRepository.ts:451-452), which resolves a model-bearing
+  // recovery-needed result. The outer opening therefore RESOLVES; it does not
+  // reject. Assert that real outcome and that the finally still settles the
+  // hold, with the clear published to subscribers.
+  it("a rejected cache read resolves a recovery-needed opening that settles and publishes the clear", async () => {
+    const selected = "local:entry-reject-read";
+    const entryDatabase = "entry-reject-read-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const reads: Array<{ reject: (error: Error) => void }> = [];
+    entryCache.getLatestWindow = (() =>
+      new Promise((_resolve, reject) => {
+        reads.push({ reject });
+      })) as typeof entryCache.getLatestWindow;
+    const seen: boolean[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => seen.push(state.localOpenings.has(selected)));
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [turnFixture("entry-reject", "REJECT_BODY")],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      const opening = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(reads.length).toBeGreaterThanOrEqual(1));
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(true);
+      reads[0]!.reject(new Error("cache read failed"));
+      // The real terminal outcome: openLocal catches and resolves; the opening
+      // does not reject outward.
+      await expect(opening).resolves.toBeUndefined();
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      expect(seen).toContain(true);
+      expect(seen).toContain(false);
+      expect(threadsStore.getState().threads.get(selected)).toBeDefined();
+    } finally {
+      unsubscribe();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // Disposal and replacement: a disposed predecessor's late read completes
+  // after a replacement fixture/reader holds ANOTHER ref; it must neither
+  // clear nor re-arm the replacement's hold, and the replacement's own
+  // settlement clears it. Disposal publishes the clear.
+  //
+  // The replacement is a distinct session ref on purpose: a replacement
+  // fixture installed for an ALREADY-hydrated ref has no repository
+  // (acceptEntryTranscriptHydration, which builds it, is skipped when the ref
+  // is already in the store) and cannot open, so a same-ref replacement
+  // opening is not producible by the real store. Per-ref keying is exactly
+  // what keeps a late predecessor completion from touching the replacement.
+  it("a disposed opening's late completion cannot clear or re-arm another ref's replacement hold", async () => {
+    const predecessor = "local:entry-dispose-predecessor";
+    const replacement = "local:entry-dispose-replacement";
+    const databaseA = "entry-dispose-replace-a";
+    const databaseB = "entry-dispose-replace-b";
+    const cacheA = new SessionEntryCache({ databaseName: databaseA });
+    const fixtureA = installEntryTranscriptFixtureForTests({
+      ref: predecessor,
+      cache: cacheA,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const readsA: Array<() => void> = [];
+    const realA = cacheA.getLatestWindow.bind(cacheA);
+    cacheA.getLatestWindow = ((historyKey: string, limit: number, boundary?: string) =>
+      new Promise((resolve, reject) => {
+        readsA.push(() => {
+          void realA(historyKey, limit, boundary).then(resolve, reject);
+        });
+      })) as typeof cacheA.getLatestWindow;
+    const seen: Array<{ ref: string; present: boolean }> = [];
+    const unsubscribe = threadsStore.subscribe((state) => {
+      seen.push({ ref: predecessor, present: state.localOpenings.has(predecessor) });
+      seen.push({ ref: replacement, present: state.localOpenings.has(replacement) });
+    });
+    let cacheB: SessionEntryCache | undefined;
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? predecessor, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [turnFixture("entry-dispose", "DISPOSE_BODY")],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      const openingA = threadsStore.getState().ensureThread(predecessor);
+      await vi.waitFor(() => expect(readsA.length).toBeGreaterThanOrEqual(1));
+      expect(isEntryTranscriptLocalOpening(predecessor)).toBe(true);
+
+      // Disposing the pending opening publishes the clear to subscribers.
+      fixtureA.dispose();
+      expect(isEntryTranscriptLocalOpening(predecessor)).toBe(false);
+      expect(seen.some((entry) => entry.ref === predecessor && !entry.present)).toBe(true);
+
+      // Replacement fixture/reader for a fresh ref hydrates and opens, taking
+      // its own hold.
+      cacheB = new SessionEntryCache({ databaseName: databaseB });
+      const readsB: Array<() => void> = [];
+      const realB = cacheB.getLatestWindow.bind(cacheB);
+      cacheB.getLatestWindow = ((historyKey: string, limit: number, boundary?: string) =>
+        new Promise((resolve, reject) => {
+          readsB.push(() => {
+            void realB(historyKey, limit, boundary).then(resolve, reject);
+          });
+        })) as typeof cacheB.getLatestWindow;
+      const fixtureB = installEntryTranscriptFixtureForTests({
+        ref: replacement,
+        cache: cacheB,
+        clientId: "fixture-client",
+        hostId: "fixture-host",
+      });
+      const openingB = threadsStore.getState().ensureThread(replacement);
+      await vi.waitFor(() => expect(readsB.length).toBeGreaterThanOrEqual(1));
+      const replacementToken = threadsStore.getState().localOpenings.get(replacement);
+      expect(replacementToken).toBeGreaterThan(0);
+
+      // The disposed predecessor's real read completes late: no clear, no
+      // re-arm of the replacement's hold.
+      readsA[0]!();
+      await openingA.catch(() => {});
+      expect(isEntryTranscriptLocalOpening(predecessor)).toBe(false);
+      expect(isEntryTranscriptLocalOpening(replacement)).toBe(true);
+      expect(threadsStore.getState().localOpenings.get(replacement)).toBe(replacementToken);
+
+      // The replacement's own settlement clears it.
+      readsB[0]!();
+      await openingB.catch(() => {});
+      await fixtureB.settled();
+      expect(isEntryTranscriptLocalOpening(replacement)).toBe(false);
+      expect(seen.some((entry) => entry.ref === replacement && !entry.present)).toBe(true);
+    } finally {
+      unsubscribe();
+      fixtureA.dispose();
+      cacheA.close();
+      await deleteIndexedDatabase(databaseA);
+      if (cacheB) {
+        cacheB.close();
+        await deleteIndexedDatabase(databaseB);
+      }
     }
   });
 });

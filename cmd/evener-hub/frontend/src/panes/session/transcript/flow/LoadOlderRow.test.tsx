@@ -147,6 +147,26 @@ test("an empty port with no rendered rows still auto-loads when short", () => {
   expect(onLoad).toHaveBeenCalledTimes(1);
 });
 
+// N1: the real renderer keeps a virtual wrapper for a projected turn with no
+// entries, measured zero. That measured-zero row beside visible content is not
+// the transient unmeasured paint, so the short page still fills itself. The
+// zero row is marked exactly as VirtualList marks a measured item.
+test("auto-loads when a measured zero-height row sits beside visible rows", () => {
+  const port = scrollPort(300, 500);
+  const emptyTurn = document.createElement("div");
+  emptyTurn.setAttribute("data-measured", "");
+  port.el.firstElementChild?.appendChild(emptyTurn);
+  const visible = document.createElement("div");
+  Object.defineProperty(visible, "offsetHeight", { configurable: true, value: 40 });
+  port.el.firstElementChild?.appendChild(visible);
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} scrollElement={() => port.el} />);
+
+  latestObserver().resize();
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
 // The reported bug: the row renders into FlowOverlay's non-scrolling top slot,
 // so a sentinel of its own was inside the viewport at every scroll position
 // and loaded a page on every open, however far the reader was from the top of

@@ -235,6 +235,58 @@ test("shouldAutoLoadOlder: false while only some rendered rows have measured", (
   expect(shouldAutoLoadOlder(el)).toBe(false);
 });
 
+// N1 (second review): a settled transcript can keep a legitimately EMPTY row -
+// projectThread retains a turn with no projected entries, TranscriptBody keeps
+// its virtual wrapper, and TurnBlock can render nothing - so the wrapper stays
+// zero-height after the virtualizer has measured it. VirtualList marks each
+// measured item with `data-measured`, so a measured-zero row beside visible
+// content is not the transient unmeasured paint: the short-page check decides.
+test("shouldAutoLoadOlder: true when a measured zero-height row sits beside visible content", () => {
+  const el = document.createElement("div");
+  const sizer = document.createElement("div");
+  el.appendChild(sizer);
+  const emptyTurn = document.createElement("div");
+  emptyTurn.setAttribute("data-measured", "");
+  sizer.appendChild(emptyTurn);
+  const visible = document.createElement("div");
+  Object.defineProperty(visible, "offsetHeight", { configurable: true, value: 40 });
+  sizer.appendChild(visible);
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+// The measured-zero exemption is keyed on the virtualizer's own record, not on
+// height: a zero-height row with no `data-measured` is still estimate-only and
+// holds paging, even beside a row that has measured positive.
+test("shouldAutoLoadOlder: false while a zero row has not been measured, beside a positive row", () => {
+  const el = document.createElement("div");
+  const sizer = document.createElement("div");
+  el.appendChild(sizer);
+  sizer.appendChild(document.createElement("div"));
+  const visible = document.createElement("div");
+  Object.defineProperty(visible, "offsetHeight", { configurable: true, value: 40 });
+  sizer.appendChild(visible);
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+// The store-owned recorded opening holds paging while the pane paints the
+// background-evicted snapshot. useTranscriptScroll stamps the port until the
+// opening settles; the short-page row must read that stamp as a hold even
+// though the port's measured geometry already looks short.
+test("shouldAutoLoadOlder: false while the port carries the record-opening hold", () => {
+  const el = document.createElement("div");
+  el.setAttribute("data-opening-hold", "");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  Object.defineProperty(el, "offsetHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+  el.removeAttribute("data-opening-hold");
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
 test("isEndBelowFold: false for content that does not scroll at all", () => {
   expect(isEndBelowFold({ scrollTop: 0, scrollHeight: 100, clientHeight: 200 })).toBe(false);
 });
