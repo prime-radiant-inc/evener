@@ -37,12 +37,18 @@ func TestDelegateStatusInfo_PayloadCapMatchesTheRead(t *testing.T) {
 	}
 	row := stableActivitySnapshot("dlg_1", "root", "child", "brief")
 	row.latestPacket = &delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Metadata: metadata}
-	info := delegateStatusInfoFromSnapshot(at, "root", row)
+	info := delegateFrameStatusInfo(at, "root", row)
 	if info.Usage != nil {
 		t.Fatalf("pushed Usage = %+v, want it omitted over the %d-byte metadata cap", info.Usage, activityMaxDelegatePayloadBytes)
 	}
 	if info.Worktree != nil {
 		t.Fatalf("pushed Worktree = %+v, want it omitted over the %d-byte metadata cap", info.Worktree, activityMaxDelegatePayloadBytes)
+	}
+	// A diagnostics status is not the frame, so it keeps them: the cap governs
+	// push/read parity, not the detailed-status contract.
+	diagnostics := delegateStatusInfoFromSnapshot(at, "root", row)
+	if diagnostics.Usage == nil || diagnostics.Worktree == nil {
+		t.Fatalf("diagnostics status dropped usage/worktree over the metadata cap")
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",

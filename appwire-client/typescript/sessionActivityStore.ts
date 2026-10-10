@@ -455,7 +455,10 @@ export class SessionActivityStore {
         const crossing = previous !== undefined && previous !== epoch;
         // The delegate merge ordering is epoch-scoped, so the delegates
         // collection's own replacement retires it here.
-        if (crossing && resource === "delegates") {
+        // A summary-triggered retire already cleared this epoch's state and
+        // forced the read, so clearing again here would wipe a frame that
+        // arrived between the two and leave it undiscovered until another.
+        if (crossing && resource === "delegates" && this.retirementEpoch !== epoch) {
           this.clearDelegates();
           this.retirementEpoch = undefined;
         }

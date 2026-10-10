@@ -3195,6 +3195,50 @@ test("a frame whose delegate id names two loaded rows patches neither", async ()
   await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
 });
 
+test("a frame buffered during the replacement window survives the replacement read", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext(),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  // The summary reports the replacement and its forced delegates read is left in
+  // flight; a frame then arrives for a delegate the read will admit.
+  const reconciled = deferred<SessionDelegatesResponse>();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ epoch: "epoch-2" }),
+  }));
+  client.on("evener/thread/delegates/list", () => reconciled.promise);
+  activityChanged(client, ["summary"]);
+  await activityState(store, () => store.getSnapshot().context?.epoch === "epoch-2");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-2", projectionRevision: 9, status: "completed", reportPreview: "settled" }),
+    ),
+  );
+  reconciled.resolve({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" }), delegateRow({ delegateId: "delegate-2", status: "running" })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.status).toBe("completed");
+});
+
 test("a gate that turns on recovers a permanently refused delegates read", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ scope }) => ({
