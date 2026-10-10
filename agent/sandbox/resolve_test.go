@@ -739,3 +739,45 @@ func TestCacheRootsLeaveOutADanglingSymlink(t *testing.T) {
 		t.Errorf("a dangling-symlink cache root must be left out: %v", roots)
 	}
 }
+
+// An overlay over a directory holding any persistent write root (an extra
+// writable root, or a linked worktree's shared git metadata) would hide that
+// root's writable bind behind a discarded upper layer, so writes there, such
+// as a commit, would vanish when the command exits. Such a cache root is
+// dropped, like one over the worktree.
+func TestCacheRootsNeverCoverAPersistentWriteRoot(t *testing.T) {
+	overlayHost := func(home string) HostFacts {
+		return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	}
+
+	shared := clean(t.TempDir())
+	library := filepath.Join(shared, "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := overlayHost(clean(t.TempDir()))
+	host.GoCache = shared
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.CacheRoots, shared) {
+		t.Errorf("a cache root holding an extra writable root must be dropped: %v", rp.CacheRoots)
+	}
+
+	linked := MaterializeWorkspace(t, LinkedWorktree)
+	mainRepo := strings.TrimSuffix(linked, "-wt")
+	host = overlayHost(clean(t.TempDir()))
+	host.XDGCacheHome = mainRepo
+	rp, err = Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, host, linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rp.Git.CommonDir == "" || !pathUnder(rp.Git.CommonDir, mainRepo) {
+		t.Fatalf("fixture: the linked worktree's common dir %q must lie under %q", rp.Git.CommonDir, mainRepo)
+	}
+	if slices.Contains(rp.CacheRoots, mainRepo) {
+		t.Errorf("a cache root holding the linked worktree's shared git metadata must be dropped: %v", rp.CacheRoots)
+	}
+}
