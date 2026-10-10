@@ -3195,6 +3195,32 @@ test("a frame whose delegate id names two loaded rows patches neither", async ()
   await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
 });
 
+test("a page that first observes a session replacement restarts instead of adopting its rows", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) =>
+    cursor
+      ? {
+          context: { ...pushContext(), sessionId: "replacement", ref: "remote:new" },
+          scope: scope ?? "session",
+          page: { complete: true, issues: [] },
+          delegates: [delegateRow({ delegateId: "stale", status: "failed" })],
+        }
+      : {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: false, issues: [], nextCursor: "next" },
+          delegates: [delegateRow({ status: "running" })],
+        },
+  );
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  await store.loadMore("delegates");
+  // The continuation page belongs to a replacement session, so its row is never
+  // adopted as that session's own first page.
+  expect(store.getSnapshot().delegates.rows.some((row) => row.delegateId === "stale")).toBe(false);
+});
+
 test("a re-served delegate id on a later page keeps both served rows", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({

@@ -83,6 +83,10 @@ interface ResourceRead {
   timer: unknown | null;
   cursor: string | undefined;
   epoch: string | undefined;
+  /** The session this collection's rows belong to. `acceptContext` clears it on
+   * a replacement, so a continuation page whose response names a different
+   * session is recognized as a restart rather than adopted. */
+  sessionId: string | undefined;
   incomplete: boolean;
   boundary: string | undefined;
   refresh: RefreshWalk | null;
@@ -123,6 +127,7 @@ const resourceRead = (): ResourceRead => ({
   timer: null,
   cursor: undefined,
   epoch: undefined,
+  sessionId: undefined,
   incomplete: false,
   boundary: undefined,
   refresh: null,
@@ -331,6 +336,7 @@ export class SessionActivityStore {
       this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
+      read.sessionId = undefined;
       read.incomplete = false;
       read.boundary = undefined;
       read.refresh = null;
@@ -443,6 +449,8 @@ export class SessionActivityStore {
         // A source replacement is visible only in a response: the invalidation
         // carries no epoch.
         const epoch = result.context.epoch;
+        const session = result.context.sessionId;
+        const replacedSession = read.sessionId !== session;
         const previous = read.epoch;
         const crossing = previous !== undefined && previous !== epoch;
         // The delegate merge ordering is epoch-scoped, so the delegates
@@ -453,13 +461,17 @@ export class SessionActivityStore {
         }
         read.epoch = epoch;
         // A page cannot cross epochs: its rows extend a retired walk. A root read
-        // is the fresh read for the new epoch.
-        if (crossing && !root) {
+        // is the fresh read for the new epoch. A page that first observes a
+        // replacement session restarts too, so its rows are never adopted as the
+        // new session's own.
+        if (!root && (crossing || replacedSession)) {
+          read.sessionId = session;
           read.cursor = undefined;
           read.refresh = null;
           read.rootQueued = true;
           continue;
         }
+        read.sessionId = session;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
