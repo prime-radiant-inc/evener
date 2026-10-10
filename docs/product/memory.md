@@ -62,7 +62,10 @@ fits, the index section says nothing about size. Otherwise it keeps the tag head
 and the newest lines that fit, ends with a line counting the pages left out per
 tag, and its heading says the index is partial. Clients decode that heading as
 the truncated flag. Only this message shape is decoded; memory-context messages
-recorded by earlier builds show as their original text. Topic files and logs are not preloaded.
+recorded by earlier builds show as their original text, and on resume they do
+not count as the scope having been shown. So after an upgrade, a resumed
+session whose scope is now missing or revoked is not told so until that
+scope's index next projects. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is
