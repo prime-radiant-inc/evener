@@ -262,8 +262,9 @@ character other than tab, which `memory_write` refuses but a file can still
 have, gets no link. Its line is the path as a JSON string, then a note, with no
 title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
 a control character, shown JSON-escaped; read or delete it, and save its
-content under another name)`. A name holding invalid UTF-8, which no JSON string
-can carry, is quoted with `\x` escapes instead. So every page stays one line. A scope with no
+content under another name)`. A name that also holds invalid UTF-8, which no JSON
+string or tool call can carry, is quoted with `\x` escapes instead, and its note
+says to rename or remove the file outside the tools. So every page stays one line. A scope with no
 pages has the `missing` state.
 
 When the rendering passes the 8 KiB projection budget, the projection keeps the
@@ -313,8 +314,9 @@ gives that page a description: the rest of the line, with the link, list
 markers and separators stripped, or the link text when the rest is empty. A
 link target names the listed page it spells whole, else the page before its
 `#` fragment, so `a#b.md` can be a page so named and `cents.md#rule` is
-`cents.md`. A generated line with no link (a name holding a control
-character) names no page, even when its escaped name ends in `.md`. A bare path
+`cents.md`. A generated line with no link (a quoted name holding a
+control character, then its note) names no page, even when its escaped name
+ends in `.md`. A bare path
 counts only when nothing path-like follows `.md` (`a.md.txt` and `a.md/x` name
 no page). A link whose letter case differs from a page's names that page when
 exactly one page matches it ignoring case. A linked page that exists and has no

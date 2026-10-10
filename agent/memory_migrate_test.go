@@ -490,6 +490,19 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	}
 }
 
+// A linked line whose description ends like an unlinked line's note still
+// gives its page that description: only a line with no link is skipped.
+func TestParseLegacyMemoryIndexSkipsOnlyUnlinkedLines(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"bad\n name.md", "bad\n\xff name.md"} {
+		described := "quoting " + memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		got := parseLegacyMemoryIndex("- [plain](plain.md) — " + described + "\n")
+		if len(got) != 1 || got[0].Links[0] != "plain.md" || got[0].Description != described {
+			t.Fatalf("%q: got %+v", rel, got)
+		}
+	}
+}
+
 // Migration reads back the link a generated index line writes for any path,
 // so an index an older build copied from a generated one still migrates.
 func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {

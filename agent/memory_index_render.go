@@ -58,6 +58,10 @@ func memoryLinkTarget(rel string) string {
 // path holds a control character (memoryUnlinkedIndexLine).
 const memoryUnlinkedPathNote = "(no link: the name holds a control character, shown JSON-escaped; read or delete it, and save its content under another name)"
 
+// memoryInvalidUTF8PathNote stands in for memoryUnlinkedPathNote on the line
+// of a name that also holds invalid UTF-8, which no tool call can carry.
+const memoryInvalidUTF8PathNote = "(no link: the name holds a control character and invalid UTF-8, shown Go-quoted; no tool call can name it, so rename or remove it outside the tools)"
+
 // memoryUnlinkedIndexLine is the index line of the page at rel when rel holds
 // a control character (memoryPathHasControl). No Markdown link destination
 // can hold one, so the line has no link: the path as a JSON string, which a
@@ -65,17 +69,25 @@ const memoryUnlinkedPathNote = "(no link: the name holds a control character, sh
 // title, description or tags. JSON leaves DEL bare, so it is escaped here.
 // No JSON string, and so no tool call, holds invalid UTF-8, which JSON
 // encoding would replace with U+FFFD; such a name is Go-quoted with \x
-// escapes instead, so each name keeps a line of its own.
+// escapes instead, so each name keeps a line of its own, and its note is
+// memoryInvalidUTF8PathNote.
 func memoryUnlinkedIndexLine(rel string) string {
-	name := strconv.Quote(rel)
-	if utf8.ValidString(rel) {
-		var b strings.Builder
-		encoder := json.NewEncoder(&b)
-		encoder.SetEscapeHTML(false)
-		_ = encoder.Encode(rel) // a string always encodes
-		name = strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
+	if !utf8.ValidString(rel) {
+		return "- " + strconv.Quote(rel) + " — " + memoryInvalidUTF8PathNote
 	}
+	var b strings.Builder
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(rel) // a string always encodes
+	name := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
 	return "- " + name + " — " + memoryUnlinkedPathNote
+}
+
+// isMemoryUnlinkedIndexLine reports whether line has the shape
+// memoryUnlinkedIndexLine writes: a quoted name, then either note.
+func isMemoryUnlinkedIndexLine(line string) bool {
+	return strings.HasPrefix(line, `- "`) &&
+		(strings.HasSuffix(line, `" — `+memoryUnlinkedPathNote) || strings.HasSuffix(line, `" — `+memoryInvalidUTF8PathNote))
 }
 
 // memoryIndexLine is one page's index line.

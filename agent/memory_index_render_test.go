@@ -285,14 +285,14 @@ func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
 }
 
 // No JSON string holds invalid UTF-8, so a name holding it is quoted with
-// \x escapes instead: still one line, and two such names that differ only in
-// their invalid bytes keep distinct lines, so patching one never drops the
-// other.
+// \x escapes instead, with a note saying no tool can name it: still one
+// line, and two such names that differ only in their invalid bytes keep
+// distinct lines, so patching one never drops the other.
 func TestMemoryIndexLineControlCharacterInvalidUTF8Path(t *testing.T) {
 	t.Parallel()
 	a, b := "bad\n\xff.md", "bad\n\xfe.md"
 	lineA := memoryIndexLine(filenameMemoryPage(a, time.Time{}))
-	if want := `- "bad\n\xff.md" — ` + memoryUnlinkedPathNote; lineA != want {
+	if want := `- "bad\n\xff.md" — ` + memoryInvalidUTF8PathNote; lineA != want {
 		t.Fatalf("got %q, want %q", lineA, want)
 	}
 	if memoryIndexLineFor(lineA, b) || memoryIndexLineFor(lineA, "bad\n\ufffd.md") {

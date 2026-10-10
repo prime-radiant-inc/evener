@@ -360,7 +360,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 	for line := range strings.SplitSeq(index, "\n") {
 		// A generated line for a name no link can hold names no page,
 		// though its escaped name can end like one ("bad\n name.md").
-		if strings.HasSuffix(strings.TrimRight(line, " \t\r"), " — "+memoryUnlinkedPathNote) {
+		if isMemoryUnlinkedIndexLine(strings.TrimRight(line, " \t\r")) {
 			continue
 		}
 		var target, text, rest string
