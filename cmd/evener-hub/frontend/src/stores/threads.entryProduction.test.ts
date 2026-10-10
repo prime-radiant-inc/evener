@@ -106,6 +106,6 @@ it("production cache writes and reopens keyed entries on the real database", asy
     }),
   ).toMatchObject({ outcome: "committed" });
   first.close();
-  expect((await cache().getItem(historyKey, "disk-row"))?.item).toMatchObject({ text: "disk-row" });
+  expect((await cache().getLatest(historyKey, 1))[0]?.item).toMatchObject({ text: "disk-row" });
   expect(await factory.databases()).toEqual([{ name: SESSION_CACHE_DATABASE_NAME, version: 3 }]);
 });
