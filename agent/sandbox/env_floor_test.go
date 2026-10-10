@@ -79,10 +79,9 @@ func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
 }
 
 // Go keeps the checksum database's tree heads in $GOPATH/pkg/sumdb, a path
-// GOMODCACHE does not move. Under the session-private strategy the real GOPATH is
-// read-only, so a cold download (a module, or the toolchain go.mod asks for)
-// failed verifying with "read-only file system" (#4177). GOPATH must move into
-// the session scratch with the other caches, whatever the ambient value was.
+// GOMODCACHE does not move, and a cold download needs to write there (#4177).
+// GOPATH moves into the session scratch with the other caches, whatever the
+// ambient value was.
 func TestEnvFloorRedirectsGoPathWhenSessionPrivate(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
 	in := []string{"GOPATH=/home/u/go"}

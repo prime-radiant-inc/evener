@@ -343,11 +343,9 @@ func TestBwrapSessionTmpInsideADevShmWorkspaceStaysWritable(t *testing.T) {
 }
 
 // A delegate is routinely handed files from its parent's session scratch, which
-// lives beside its own in the root's scratch tree (<base>/evener-scratch-<root>/
-// <session>). The file tools of a read-anywhere mode read that tree; the shell's
-// private /tmp hid it, so read_file succeeded where cat failed (#4170). The shell
-// must see the tree read-only exactly where the file tools may read it, keep its
-// own scratch writable, and still hide the rest of the host /tmp.
+// lives beside its own in the root's scratch tree (#4170). The shell must see the
+// tree read-only exactly where the file tools may read it, keep its own scratch
+// writable, and still hide the rest of the host /tmp.
 func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 	facts := requireRealBwrap(t)
 	base, err := os.MkdirTemp("/tmp", "evener-bwrap-scratch-tree-")
@@ -359,14 +357,17 @@ func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 	if !pathUnder(base, "/tmp") {
 		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
 	}
-	tree := filepath.Join(base, sessionScratchTreePrefix+"root")
-	parentScratch := filepath.Join(tree, "parent")
-	ownScratch := filepath.Join(tree, "child")
-	for _, dir := range []string{parentScratch, ownScratch} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	var scratch [2]string
+	for i, session := range []string{"parent", "child"} {
+		s, err := OpenSessionScratch(base, cwd, "root", session)
+		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = s.Cleanup() })
+		scratch[i] = s.Dir
 	}
+	parentScratch, ownScratch := scratch[0], scratch[1]
 	preserved := filepath.Join(parentScratch, "preserved.txt")
 	elsewhere := filepath.Join(base, "elsewhere.txt")
 	for _, f := range []string{preserved, elsewhere} {
@@ -374,7 +375,6 @@ func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
 
 	const script = `set -u
 if test "$(cat "$1" 2>/dev/null)" = fixture; then echo PARENT-VISIBLE; fi
@@ -410,8 +410,6 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 			if !strings.Contains(out, "OWN-WRITABLE") {
 				t.Errorf("the session's own scratch must stay writable:\n%s", out)
 			}
-			// The private /tmp is what hides host Unix sockets (tmux, ssh-agent)
-			// from a shell bwrap cannot stop connecting to a visible one.
 			if strings.Contains(out, "ELSEWHERE-VISIBLE") {
 				t.Errorf("host /tmp outside the scratch tree must stay hidden:\n%s", out)
 			}

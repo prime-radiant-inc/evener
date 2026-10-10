@@ -69,7 +69,24 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
 func (s *SessionScratch) Named() bool {
-	return s != nil && strings.HasPrefix(filepath.Base(s.base), sessionScratchTreePrefix)
+	return s != nil && isSessionScratchTree(s.base)
+}
+
+// isSessionScratchTree reports whether dir is named as a root session's scratch
+// tree.
+func isSessionScratchTree(dir string) bool {
+	return strings.HasPrefix(filepath.Base(dir), sessionScratchTreePrefix)
+}
+
+// scratchTreeOf returns the root session's scratch tree that holds scratchDir
+// (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
+// belongs to no tree.
+func scratchTreeOf(scratchDir string) string {
+	tree := filepath.Dir(scratchDir)
+	if !isSessionScratchTree(tree) {
+		return ""
+	}
+	return tree
 }
 
 // PruneCaches removes the regenerable cache directories (SessionCacheDirNames)

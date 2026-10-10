@@ -189,8 +189,9 @@ func floorDrops(name string) bool {
 // Verified 2026-08-06 (see env_floor_test.go).
 //
 // GOPATH is included because Go writes the checksum database's tree heads to
-// $GOPATH/pkg/sumdb whatever GOMODCACHE says: with only GOMODCACHE redirected, a
-// cold download failed verifying against the read-only real GOPATH.
+// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so it must be writable too.
+// GOMODCACHE stays set explicitly: an environment value overrides one written to
+// the user's go env file with `go env -w`, which deriving it from GOPATH would not.
 func isRedirectedCacheVar(name string) bool {
 	switch name {
 	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:

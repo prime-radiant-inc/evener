@@ -162,7 +162,11 @@ sandboxed command act outside the box. Inside it the shell sees the cwd, its gra
 its own scratch (writable), and, in the read-anywhere modes, the root session's
 whole scratch tree read-only. That tree holds the parent's and sibling delegates'
 scratch, which the file tools of those modes already read, so a delegate handed a
-file from its parent's scratch can open it from the shell too.
+file from its parent's scratch can open it from the shell too. The tree is also
+every sandboxed session's `TMPDIR`, so a socket a sibling's daemon puts there
+(an ssh-agent started with its default socket path, say) is connectable from the
+shell. That reaches only what that sibling's own sandbox already allows; an
+unsandboxed root's `TMPDIR` is not in the tree.
 
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|

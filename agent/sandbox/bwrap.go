@@ -91,11 +91,9 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	//
 	// A read-anywhere mode also re-binds the root session's scratch tree holding
 	// the session tmp. Its file tools read that tree, and delegates are routinely
-	// handed files from their parent's scratch beside their own, so a shell that
-	// could not see it failed on paths read_file had just read. The rest of the
-	// host /tmp stays behind the private tmpfs: bwrap cannot stop a process
-	// connecting to a Unix socket it can see, and host /tmp holds tmux and
-	// ssh-agent sockets that would let a sandboxed command act outside the box.
+	// handed files from their parent's scratch, so the shell must see it too. The
+	// rest of the host /tmp stays private for its Unix sockets (docs/sandboxing.md
+	// explains the private /tmp in its Modes section).
 	candidates := append([]string{cwd}, sp.ReadRoots...)
 	if sp.Read == ReadAnywhere {
 		candidates = append(candidates, scratchTreeOf(sessionTmp))
@@ -327,20 +325,6 @@ func maskHandledByNamespace(path string) bool {
 		return false
 	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
-}
-
-// scratchTreeOf returns the root session's scratch tree that holds sessionTmp
-// (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
-// belongs to no tree.
-func scratchTreeOf(sessionTmp string) string {
-	if sessionTmp == "" {
-		return ""
-	}
-	tree := filepath.Dir(sessionTmp)
-	if !strings.HasPrefix(filepath.Base(tree), sessionScratchTreePrefix) {
-		return ""
-	}
-	return tree
 }
 
 // pathExists reports whether path exists on the host (following symlinks).
