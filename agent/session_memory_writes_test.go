@@ -16,7 +16,7 @@ func memoryWritesSession(t *testing.T) (*Session, string) {
 	t.Helper()
 	root := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: agenttest.NewFakeClock()}))
-	return s, filepath.Join(root, "memory", "personal")
+	return s, filepath.Join(root, "memory")
 }
 
 // memoryOwnStamps is the frontmatter a session's own write of a page sets:

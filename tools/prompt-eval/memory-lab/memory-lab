@@ -49,7 +49,7 @@ also a symlink under --work-root), sessions/ (each stage's evener state dir, whe
 live; a symlink under --work-root too), and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
-import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, fnmatch, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -288,8 +288,13 @@ def context_window_config(model, window):
     return text
 
 
-def memory_root(xdg):
-    return os.path.join(xdg, "evener", "memory")
+def snapshot_memory(xdg, dest):
+    """Copies every memory scope under xdg's evener state root (memcheck.scope_dirs) into dest at its
+    path relative to that root: memory/ for personal memory, projects/<id>/memory/ for each project's.
+    The rest of the state root, such as the projects' sessions, stays out."""
+    state = os.path.join(xdg, "evener")
+    for scope in memcheck.scope_dirs(xdg, memcheck.PERSONAL_AND_PROJECT_SCOPES):
+        shutil.copytree(scope, os.path.join(dest, os.path.relpath(scope, state)), dirs_exist_ok=True)
 
 
 def find_files(root, suffix=""):
@@ -494,7 +499,10 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
         if rc != 0:
             raise RuntimeError(f"projid failed: {out}")
         pid = out.strip()
-        dest = os.path.join(memory_root(xdg), "projects", pid)
+        # Seeding, snapshots, grading and the scenarios' checks all use the current memory layout
+        # (memcheck.py), so every --version binary must be built from a commit that has it; an older
+        # binary reads and writes memory elsewhere. The lab carries no second layout.
+        dest = os.path.join(xdg, "evener", memcheck.project_scope(pid))
         shutil.copytree(os.path.join(scen, stage["seed_project_memory"]), dest, dirs_exist_ok=True)
     if stage.get("before"):
         rc, out = run_bounded(stage["before"], work, env, COMMAND_TIMEOUT)
@@ -548,8 +556,10 @@ def grade_trace(spec, inputs):
 
 
 def grade_memory(spec, inputs):
-    prefix = {"personal": "personal/", "project": "projects/"}.get(spec.get("scope"), "")
-    blob = "\n".join(body for path, body in inputs["memory"].items() if path.startswith(prefix))
+    # A snapshot keeps each scope at its path under the state root (snapshot_memory).
+    scope = {"personal": memcheck.PERSONAL_SCOPE, "project": memcheck.PROJECT_SCOPES}.get(spec.get("scope"))
+    blob = "\n".join(body for path, body in inputs["memory"].items()
+                     if scope is None or fnmatch.fnmatchcase(path, scope + "/*"))
     found = bool(re.search(spec["regex"], blob))
     return (not found) if spec.get("absent") else found
 
@@ -749,8 +759,7 @@ def grade_stage(label, arm, scen, stage, trial, session, earlier=()):
     grade["session_id"] = root_session_id(session["events"], session["state"])
     mem_dir = os.path.join(trial, f"{name}.memory")
     try:
-        if os.path.isdir(memory_root(session["xdg"])):
-            shutil.copytree(memory_root(session["xdg"]), mem_dir, dirs_exist_ok=True)
+        snapshot_memory(session["xdg"], mem_dir)
     except OSError as e:
         grade["evidence_error"] = f"memory snapshot: {e}"
     inputs = {"work": session["work"], "env": session["env"], "calls": calls, "messages": messages,

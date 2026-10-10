@@ -139,12 +139,12 @@ func TestParseMemoryPageFallbackCut(t *testing.T) {
 func TestListMemoryPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	env, err := execenv.NewConfinedFileEnvironment(root, filepath.Join("memory", "personal"))
+	env, err := execenv.NewConfinedFileEnvironment(root, "memory")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	scope := filepath.Join(root, "memory", "personal")
+	scope := filepath.Join(root, "memory")
 	for rel, body := range map[string]string{
 		"a.md":                     "---\ndescription: alpha\n---\n",
 		"sub/b.md":                 "# Bravo\n",

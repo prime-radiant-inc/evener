@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
@@ -112,6 +113,11 @@ type HostFacts struct {
 	// masked. A path that does not exist contributes nothing and never fails
 	// session start.
 	GitGlobalConfigPaths []string
+
+	// EvenerConfigRoot is Evener's config root ($XDG_CONFIG_HOME/evener, else
+	// ~/.config/evener). Resolve masks it wherever it lives, since that is where
+	// hub configuration and credentials are kept.
+	EvenerConfigRoot string
 
 	// GoPath is the go command's GOPATH as configured on this host, in the
 	// environment or with `go env -w` (see goEnvValue), resolved once at session
@@ -261,6 +267,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
 
@@ -390,6 +397,22 @@ func goPathEntries(host HostFacts) []string {
 		entries = []string{filepath.Join(host.Home, "go")}
 	}
 	return entries
+}
+
+// probeEvenerConfigRoot returns Evener's config root as Evener resolves it:
+// $XDG_CONFIG_HOME/evener, else ~/.config/evener. A relative XDG_CONFIG_HOME is
+// resolved against the working directory, as Evener's own process does, so the
+// mask covers the directory it really uses. "" when it cannot be resolved.
+func probeEvenerConfigRoot(system probeSystem) string {
+	root := userdirs.ConfigRoot(system.getenv(envvars.XDGConfigHome.Name), system.userHomeDir)
+	if root == "" || filepath.IsAbs(root) {
+		return root
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	return abs
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

@@ -638,6 +638,37 @@ class SessionMemoryWritesTest(unittest.TestCase):
         self.assertEqual(turns, {"A": [2, 0], "B": [1, 1], "C": [0]})
 
 
+class MemorySnapshotTest(unittest.TestCase):
+    """A stage's memory snapshot holds each scope at its state-relative path, and nothing else from the
+    state root; memory checks grade a scope by that path."""
+
+    def test_snapshot_keeps_each_scope_and_grading_tells_them_apart(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        xdg, dest = os.path.join(tmp.name, "xdg"), os.path.join(tmp.name, "A.memory")
+        for rel, text in {"memory/mine.md": "personal-fact", "projects/abc/memory/ours.md": "project-fact",
+                          "projects/abc/sessions/s.transcript.jsonl": "transcript"}.items():
+            path = os.path.join(xdg, "evener", rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(text)
+        bookkeeping.lab.snapshot_memory(xdg, dest)
+        memory = bookkeeping.lab.read_tree(dest)
+        self.assertEqual(sorted(memory), [os.path.join("memory", "mine.md"), os.path.join("projects", "abc", "memory", "ours.md")])
+        grade = bookkeeping.lab.grade_memory
+        self.assertTrue(grade({"regex": "personal-fact", "scope": "personal"}, {"memory": memory}))
+        self.assertFalse(grade({"regex": "project-fact", "scope": "personal"}, {"memory": memory}))
+        self.assertTrue(grade({"regex": "project-fact", "scope": "project"}, {"memory": memory}))
+        self.assertFalse(grade({"regex": "personal-fact", "scope": "project"}, {"memory": memory}))
+
+    def test_snapshot_of_a_state_root_without_memory_is_empty(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        dest = os.path.join(tmp.name, "A.memory")
+        bookkeeping.lab.snapshot_memory(os.path.join(tmp.name, "xdg"), dest)
+        self.assertFalse(os.path.exists(dest))
+
+
 class TrialJobsTest(unittest.TestCase):
     """run --arm limits a run to one arm of each scenario that declares it."""
 
