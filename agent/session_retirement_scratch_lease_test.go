@@ -152,3 +152,42 @@ func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
 
 	assertScratchSettledAtEnd(t, "owning child", childScratch)
 }
+
+// TestRetirementSurvivesScratchRemovedUnderTheDaemon pins the cause of the
+// prepare_failed loops seen in #4270. Daemons built before #3742 checked, after
+// rewriting the root's metadata, that every retained scratch directory still
+// existed; those directories lived under /tmp and had been removed while the
+// daemon sat idle, so every idle tick failed preparation and aborted. Scratch
+// is not part of what a retirement must preserve: a session whose scratch
+// directory vanished under it still prepares, commits and releases.
+func TestRetirementSurvivesScratchRemovedUnderTheDaemon(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	rootLocal, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
+	}
+	if _, err := rootLocal.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand to mint the root's scratch: %v", err)
+	}
+	scratch := rootLocal.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the root minted no session scratch")
+	}
+	if err := os.RemoveAll(scratch); err != nil {
+		t.Fatalf("remove the scratch from under the session: %v", err)
+	}
+
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("Prepare with the scratch removed: %v", err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatalf("DrainReaders: %v", err)
+	}
+	if err := root.ReleaseForRetirement(context.Background(), prepared); err != nil {
+		t.Fatalf("ReleaseForRetirement with the scratch removed: %v", err)
+	}
+}
