@@ -357,6 +357,15 @@ class TrialStateTest(unittest.TestCase):
         self.assertNotEqual(os.path.dirname(xdg), os.path.join(self.root, "state"))
         self.assertEqual(os.path.realpath(os.path.join(trial, "sessions")), os.path.join(xdg, "sessions"))
 
+    def test_a_state_root_inside_the_work_root_is_refused(self):
+        # With $XDG_STATE_HOME at or under the work root, trial state would land back in the work root.
+        for work_root in (os.path.join(self.root, "state"), self.root):
+            with self.subTest(work_root=work_root):
+                with self.assertRaises(SystemExit) as refused:
+                    bookkeeping.lab.require_state_outside_work_root(work_root)
+                self.assertIn("XDG_STATE_HOME", str(refused.exception))
+        bookkeeping.lab.require_state_outside_work_root(os.path.join(self.root, "wr"))
+
     def test_session_state_stays_in_the_trial_without_work_root(self):
         self.run_trial(work_root=False)
         trial = os.path.join(self.root, "out", "main", "on", "s", "r1")

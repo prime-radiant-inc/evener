@@ -99,6 +99,20 @@ def user_state_root():
     return os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
 
 
+def trial_state_parent():
+    """Where --work-root trials keep their state dirs (see make_state_dir)."""
+    return os.path.join(os.path.realpath(user_state_root()), "workspaces")
+
+
+def require_state_outside_work_root(work_root):
+    """Exits when the trials' state parent and the work root overlap: one inside the other would put
+    trial state, and so other trials' memory, back where a session exploring the work root finds it."""
+    state, work = trial_state_parent(), os.path.realpath(work_root)
+    if os.path.commonpath([state, work]) in (state, work):
+        sys.exit(f"memory-lab: --work-root {work_root} overlaps the trials' state dir {state} (from XDG_STATE_HOME "
+                 "or ~/.local/state); pick a work root outside it, or set XDG_STATE_HOME elsewhere")
+
+
 def write_run_providers(text):
     """Writes a run's providers.toml and returns its path: <state root>/memory-lab/providers/<random>/
     providers.toml, where the state root is $XDG_STATE_HOME or ~/.local/state. It is a copy of the user's
@@ -419,7 +433,7 @@ def make_state_dir(args, trial, work):
     if not args.work_root:
         os.makedirs(xdg)
     else:
-        real = os.path.join(os.path.realpath(user_state_root()), "workspaces", os.path.basename(work))
+        real = os.path.join(trial_state_parent(), os.path.basename(work))
         os.makedirs(os.path.join(real, "sessions"))
         os.symlink(real, xdg)
         os.symlink(os.path.join(real, "sessions"), os.path.join(trial, "sessions"))
@@ -884,6 +898,7 @@ def cmd_run(args):
     args.out = os.path.abspath(args.out)
     if args.work_root:
         args.work_root = os.path.abspath(os.path.expanduser(args.work_root))
+        require_state_outside_work_root(args.work_root)
     versions = {}
     for v in args.version:
         label, sep, binpath = v.partition("=")
