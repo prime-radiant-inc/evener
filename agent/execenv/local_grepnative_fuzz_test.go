@@ -49,7 +49,12 @@ func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (conte
 			}
 		}
 		fileHad := false
+		// Lines as rg counts them: a final newline ends the last line rather
+		// than starting an empty one, and an empty file has no lines.
 		lines := strings.Split(string(f.content), "\n")
+		if len(f.content) == 0 || bytes.HasSuffix(f.content, []byte("\n")) {
+			lines = lines[:len(lines)-1]
+		}
 		for i, line := range lines {
 			if re.MatchString(line) {
 				content = append(content, fmt.Sprintf("%s:%d:%s", f.rel, i+1, line))

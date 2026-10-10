@@ -52,7 +52,6 @@ type grepAccum struct {
 	results      []string
 	fileCounts   map[string]int
 	filesSeen    map[string]struct{}
-	total        int
 	// truncated records that the walk found a result past maxResults, so
 	// finish ends the output with grepTruncationNote.
 	truncated bool
@@ -126,68 +125,103 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 	}
 	singleFile := relPath == "."
 	name := OneLinePath(relPath)
-	lines := strings.Split(string(data), "\n")
-	for i, line := range lines {
+	lines := fileLines(data)
+	if a.outputMode != "files_with_matches" && a.outputMode != "count" {
+		return a.feedContent(name, singleFile, lines)
+	}
+	for _, line := range lines {
 		if !a.re.MatchString(line) {
 			continue
 		}
-		switch a.outputMode {
-		case "files_with_matches":
+		if a.outputMode == "files_with_matches" {
 			if _, seen := a.filesSeen[relPath]; !seen {
-				if a.total >= a.maxResults {
+				if len(a.results) >= a.maxResults {
 					return a.cutAtCap()
 				}
 				a.filesSeen[relPath] = struct{}{}
 				a.results = append(a.results, name)
-				a.total++
 			}
 			return false // once recorded, move to the next file
-		case "count":
-			// The cap counts entries like files_with_matches does: once
-			// maxResults files hold a count row, the walk stops, so the
-			// rendered count output has at most maxResults rows — the same
-			// first-N truncation the ripgrep path applies to rg --count.
-			if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
-				return a.cutAtCap()
+		}
+		// The cap counts entries like files_with_matches does: once
+		// maxResults files hold a count row, the walk stops, so the
+		// rendered count output has at most maxResults rows — the same
+		// first-N truncation the ripgrep path applies to rg --count.
+		if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
+			return a.cutAtCap()
+		}
+		a.fileCounts[relPath]++
+	}
+	return false
+}
+
+// fileLines is a file's lines as rg counts them: none in an empty file, and
+// no empty line after a final newline, which ends the last line rather than
+// starting another.
+func fileLines(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+// feedContent records a file's matching lines, and with contextLines the
+// lines around each, the way rg -C prints them: windows that overlap or touch
+// join into one group, a "--" goes between groups (across files too), and a
+// match line takes ":" where a context line takes "-". The cap counts output
+// lines, separators and context included, as the ripgrep arm's cap does and
+// the grep tool's max_results promises for content.
+func (a *grepAccum) feedContent(name string, singleFile bool, lines []string) (stop bool) {
+	// last is the last line written from this file; afterEnd is the last line
+	// the latest match's after-context reaches.
+	last, afterEnd := -1, -1
+	for i, line := range lines {
+		if !a.re.MatchString(line) {
+			continue
+		}
+		for k := last + 1; k < i && k <= afterEnd; k++ {
+			if a.emitLine(name, singleFile, k, "-", lines[k]) {
+				return true
 			}
-			a.fileCounts[relPath]++
-		default: // "content" or ""
-			if a.total >= a.maxResults {
-				return a.cutAtCap()
+			last = k
+		}
+		start := max(last+1, i-a.contextLines)
+		if a.contextLines > 0 && len(a.results) > 0 && (last < 0 || start > last+1) && a.emit("--") {
+			return true
+		}
+		for k := start; k < i; k++ {
+			if a.emitLine(name, singleFile, k, "-", lines[k]) {
+				return true
 			}
-			if a.contextLines > 0 {
-				// Mirror rg's -C style: a "--" separator between match groups, the
-				// match line itself using ":", and surrounding context lines using
-				// "-" (both as the file/line separator), matched immediately below.
-				if len(a.results) > 0 {
-					a.results = append(a.results, "--")
-				}
-				lo, hi := i-a.contextLines, i+a.contextLines
-				if lo < 0 {
-					lo = 0
-				}
-				if hi >= len(lines) {
-					hi = len(lines) - 1
-				}
-				for j := lo; j <= hi; j++ {
-					sep := "-"
-					if j == i {
-						sep = ":"
-					}
-					if singleFile {
-						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
-					} else {
-						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", name, sep, j+1, sep, lines[j]))
-					}
-				}
-			} else if singleFile {
-				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
-			} else {
-				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", name, i+1, line))
-			}
-			a.total++
+		}
+		if a.emitLine(name, singleFile, i, ":", line) {
+			return true
+		}
+		last, afterEnd = i, i+a.contextLines
+	}
+	for k := last + 1; k < len(lines) && k <= afterEnd; k++ {
+		if a.emitLine(name, singleFile, k, "-", lines[k]) {
+			return true
 		}
 	}
+	return false
+}
+
+// emitLine writes line index k of a file as a content line: "12:text" for a
+// named file, else "path:12:text", with sep in place of ":" on a context line.
+func (a *grepAccum) emitLine(name string, singleFile bool, k int, sep, text string) (stop bool) {
+	if singleFile {
+		return a.emit(fmt.Sprintf("%d%s%s", k+1, sep, text))
+	}
+	return a.emit(fmt.Sprintf("%s%s%d%s%s", name, sep, k+1, sep, text))
+}
+
+// emit adds one content output line, or reports the cap cut it off.
+func (a *grepAccum) emit(line string) (stop bool) {
+	if len(a.results) >= a.maxResults {
+		return a.cutAtCap()
+	}
+	a.results = append(a.results, line)
 	return false
 }
 

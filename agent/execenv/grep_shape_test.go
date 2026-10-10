@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -13,7 +14,9 @@ import (
 
 // writeGrepShapeTree lays out a small tree both grep implementations search
 // the same way: two matching files at different depths, a file with no match,
-// and a file whose match sits alone with context around it.
+// and a file whose match sits alone with context around it. The ctx/ files
+// match "hit" (never "foo") to pin how context windows join: overlapping,
+// touching, or apart, and at the end of a file that ends in a newline.
 func writeGrepShapeTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -22,6 +25,10 @@ func writeGrepShapeTree(t *testing.T) string {
 		"sub/b.go":     "foo two\nfoo three\n",
 		"sub/none.txt": "nothing here\n",
 		"ctx.txt":      "before2\nbefore1\nfoo ctx\nafter1\nafter2\n",
+		"ctx/overlap":  "a\nhit 1\nhit 2\nb\n",
+		"ctx/touching": "hit 1\nx\ny\nhit 2\nz\n",
+		"ctx/apart":    "hit 1\nx\ny\nz\nhit 2\n",
+		"ctx/eof":      "before\nhit one\nafter\nhit two\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -37,27 +44,36 @@ func writeGrepShapeTree(t *testing.T) string {
 
 // TestGrepEmitsOneShapeWithOrWithoutRipgrep runs the ripgrep arm and the
 // native fallback against the same tree and asks for the same text: paths
-// relative to the searched directory, and no trailing newline (#3259). rg
-// searches files in parallel, so across several files only the set of lines
-// is compared; a single file's output is compared exactly.
+// relative to the searched directory, and no trailing newline (#3259); context
+// windows that overlap or touch joined into one group, and a "--" only between
+// groups apart; and in content mode a cap on output lines, separators and
+// context included (#3284). rg searches files in parallel, so across several
+// files only the set of lines is compared; a single file's output is compared
+// exactly. Without ripgrep installed only the fallback is checked.
 func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
-	rg, err := exec.LookPath("rg")
-	if err != nil {
-		t.Skip("ripgrep not installed; cannot compare the rg path with the fallback")
-	}
 	root := writeGrepShapeTree(t)
-	withRg := NewLocalExecutionEnvironment(root)
-	defer withRg.Cleanup()
-	withRg.lookPath = func(string) (string, error) { return rg, nil }
 	fallback := NewLocalExecutionEnvironment(root)
 	defer fallback.Cleanup()
 	fallback.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	arms := []struct {
+		name string
+		env  *LocalExecutionEnvironment
+	}{{"fallback", fallback}}
+	if rg, err := exec.LookPath("rg"); err == nil {
+		withRg := NewLocalExecutionEnvironment(root)
+		defer withRg.Cleanup()
+		withRg.lookPath = func(string) (string, error) { return rg, nil }
+		arms = append(arms, struct {
+			name string
+			env  *LocalExecutionEnvironment
+		}{"ripgrep", withRg})
+	}
 
 	cases := []struct {
-		name, path, mode string
-		context          int
-		ordered          bool
-		want             []string
+		name, path, mode, pattern string
+		context, maxResults       int
+		ordered                   bool
+		want                      []string
 	}{
 		{name: "content from the root", mode: "content", want: []string{
 			filepath.FromSlash("a.go") + ":2:foo one",
@@ -83,14 +99,32 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 		}},
 		{name: "one named file's matches", path: "a.go", mode: "files_with_matches", ordered: true, want: []string{"."}},
 		{name: "one named file's count", path: "sub/b.go", mode: "count", ordered: true, want: []string{"2"}},
+		{name: "overlapping context windows join", path: "ctx/overlap", pattern: "hit", context: 1, ordered: true, want: []string{
+			"1-a", "2:hit 1", "3:hit 2", "4-b",
+		}},
+		{name: "touching context windows join", path: "ctx/touching", pattern: "hit", context: 1, ordered: true, want: []string{
+			"1:hit 1", "2-x", "3-y", "4:hit 2", "5-z",
+		}},
+		{name: "context windows apart get a separator", path: "ctx/apart", pattern: "hit", context: 1, ordered: true, want: []string{
+			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",
+		}},
+		{name: "context stops at the last line", path: "ctx/eof", pattern: "hit", context: 1, ordered: true, want: []string{
+			"1-before", "2:hit one", "3-after", "4:hit two",
+		}},
+		{name: "no empty line past the last one", path: "ctx/eof", pattern: "^$", ordered: true, want: []string{""}},
+		{name: "the cap counts context lines and separators", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 4, ordered: true, want: []string{
+			"1:hit 1", "2-x", "--", "4-z", grepTruncationNote(4),
+		}},
+		{name: "output exactly at the cap has no note", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 5, ordered: true, want: []string{
+			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, arm := range []struct {
-				name string
-				env  *LocalExecutionEnvironment
-			}{{"ripgrep", withRg}, {"fallback", fallback}} {
-				got, err := arm.env.Grep(context.Background(), "foo", tc.path, "", false, 100, tc.mode, tc.context)
+			pattern := cmp.Or(tc.pattern, "foo")
+			maxResults := cmp.Or(tc.maxResults, 100)
+			for _, arm := range arms {
+				got, err := arm.env.Grep(context.Background(), pattern, tc.path, "", false, maxResults, tc.mode, tc.context)
 				if err != nil {
 					t.Fatalf("%s: Grep: %v", arm.name, err)
 				}
