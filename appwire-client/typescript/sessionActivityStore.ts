@@ -649,8 +649,12 @@ export class SessionActivityStore {
     // see the replacement the loaded delegates rows are a retired generation's,
     // so retire the ordering and re-read them: an eligible context suppresses
     // the invalidation-driven delegate read, so nothing else would.
+    // Only the no-read merge depends on the loaded ordering: with the gate off
+    // the activity invalidation already re-reads the observed delegates, and a
+    // gate that turns on re-reads them too. Retiring on every other collection's
+    // context would spend a read on state this store is not merging into.
     const loaded = this.reads.delegates.epoch;
-    if (loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
+    if ((this.pushEligible || next) && loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
   }
   /** The delegate merge ordering is invalid across a source replacement: a
    * replacement journal rebuilds projectionRevision from 1, so an older epoch's
@@ -667,11 +671,12 @@ export class SessionActivityStore {
     const delegates = this.reads.delegates;
     if (delegates.observers > 0 || delegates.oneShot) void this.request("delegates", "root");
   }
-  /** Record the merge order a delegate id has reached: a frame is admitted over
-   * it only by a strictly greater revision, and latestActivityAt is the
-   * independent maximum. */
-  private recordAppliedDelegate(id: string, row: SessionDelegate): void {
-    this.appliedDelegates.set(id, {
+  /** Record the merge order a loaded delegate row has reached: a frame is
+   * admitted over it only by a strictly greater revision, and latestActivityAt
+   * is the independent maximum. Keyed by the row's identity, because a read can
+   * hold two rows under one delegate id. */
+  private recordAppliedDelegate(row: SessionDelegate): void {
+    this.appliedDelegates.set(rowIdentity("delegates", row), {
       projectionRevision: row.projectionRevision,
       latestActivityAt: row.latestActivityAt,
     });
@@ -692,7 +697,24 @@ export class SessionActivityStore {
   private applyDelegateFrame(frame: EvenerDelegateInfo): void {
     if (!this.delegateFrameInScope(frame)) return;
     const rows = this.state.delegates.rows;
-    const index = rows.findIndex((row) => row.delegateId === frame.delegateId);
+    // The id may name no loaded row or more than one: a read preserves a child
+    // it served twice under one delegate id, and a frame carries no child
+    // identity to tell those rows apart, so patching the first would write one
+    // row's update into another.
+    let index = -1;
+    let ambiguous = false;
+    for (let at = 0; at < rows.length; at += 1) {
+      if (rows[at]?.delegateId !== frame.delegateId) continue;
+      if (index !== -1) {
+        ambiguous = true;
+        break;
+      }
+      index = at;
+    }
+    if (ambiguous) {
+      this.noteAmbiguousDelegate(frame);
+      return;
+    }
     if (index === -1) {
       this.noteUnknownDelegate(frame);
       return;
@@ -703,7 +725,7 @@ export class SessionActivityStore {
     if (merged === current) return;
     const next = rows.slice();
     next[index] = merged;
-    this.recordAppliedDelegate(frame.delegateId, merged);
+    this.recordAppliedDelegate(merged);
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
   private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
@@ -715,8 +737,24 @@ export class SessionActivityStore {
     this.bufferedUnknownDelegates.set(frame.delegateId, buffered ? mergeDelegateFrames(buffered, frame) : frame);
     if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
       const oldest = this.bufferedUnknownDelegates.keys().next();
-      if (!oldest.done) this.bufferedUnknownDelegates.delete(oldest.value);
+      if (!oldest.done) {
+        this.bufferedUnknownDelegates.delete(oldest.value);
+        // The evicted id must be readable again: leaving it in the seen set
+        // would let a delegate whose read never admitted it stay undiscovered
+        // forever, with later frames updating a buffer that no read will use.
+        this.seenUnknownDelegates.delete(oldest.value);
+      }
     }
+    if (this.seenUnknownDelegates.has(frame.delegateId)) return;
+    this.seenUnknownDelegates.add(frame.delegateId);
+    void this.request("delegates", "root");
+  }
+  /** A frame whose delegate id names more than one loaded row cannot be
+   * attributed to one of them, so it patches none: read once for the id and let
+   * the read settle every row it serves. */
+  private noteAmbiguousDelegate(frame: EvenerDelegateInfo): void {
+    const read = this.reads.delegates;
+    if (read.observers === 0 && !read.oneShot) return;
     if (this.seenUnknownDelegates.has(frame.delegateId)) return;
     this.seenUnknownDelegates.add(frame.delegateId);
     void this.request("delegates", "root");
@@ -726,7 +764,7 @@ export class SessionActivityStore {
    * revision may advance it, a higher one never moves it backward. */
   private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
     const incoming = delegateRowFromFrame(current, frame);
-    const applied = this.appliedDelegates.get(frame.delegateId) ?? {
+    const applied = this.appliedDelegates.get(rowIdentity("delegates", current)) ?? {
       projectionRevision: current.projectionRevision,
       latestActivityAt: current.latestActivityAt,
     };
@@ -741,10 +779,11 @@ export class SessionActivityStore {
     incoming: readonly SessionDelegate[],
     previous: readonly SessionDelegate[],
   ): SessionDelegate[] {
-    const previousById = new Map(previous.map((row) => [row.delegateId, row]));
+    const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
     return incoming.map((row) => {
-      const existing = previousById.get(row.delegateId);
-      const applied = this.appliedDelegates.get(row.delegateId);
+      const identity = rowIdentity("delegates", row);
+      const existing = previousById.get(identity);
+      const applied = this.appliedDelegates.get(identity);
       let merged: SessionDelegate;
       if (applied === undefined) {
         // First sight in this epoch -- or the first read after a replacement
@@ -762,13 +801,17 @@ export class SessionActivityStore {
         );
         merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
       }
+      // Record the served row's order before folding a buffered frame in, so the
+      // frame is joined against the row it lands in rather than the ordering
+      // that row had before this read answered.
+      this.recordAppliedDelegate(merged);
       const buffered = this.bufferedUnknownDelegates.get(row.delegateId);
       if (buffered) {
         this.bufferedUnknownDelegates.delete(row.delegateId);
         merged = this.mergeDelegateFrame(merged, buffered);
       }
       this.seenUnknownDelegates.delete(row.delegateId);
-      this.recordAppliedDelegate(row.delegateId, merged);
+      this.recordAppliedDelegate(merged);
       return merged;
     });
   }
@@ -1073,7 +1116,13 @@ function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
   );
 }
 function rowIdentity(resource: SessionActivityCollection, row: ActivityRow): string {
-  if (resource === "delegates") return (row as SessionDelegate).delegateId;
+  if (resource === "delegates") {
+    // A read can serve one delegate id twice (a child it served again), and the
+    // walk, the boundary and the merge order must key on the same pair the read
+    // preserves or one served row replaces the other.
+    const delegate = row as SessionDelegate;
+    return `${delegate.delegateId}\u0000${delegate.childRef}`;
+  }
   if (resource === "jobs") {
     const job = row as JobActivityJob;
     return JSON.stringify([job.ownerRef, job.jobId]);

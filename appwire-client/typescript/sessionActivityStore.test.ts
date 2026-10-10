@@ -2911,6 +2911,40 @@ test("an epoch change retires a buffered unknown-id frame", async () => {
   expect(row?.status).toBe("running");
 });
 
+test("an ineligible context never retires the delegate ordering for another epoch", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ availability: "retained" }),
+  }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow()],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().context?.availability).toBe("retained");
+  const before = callsTo(client, "evener/thread/delegates/list");
+  // The summary reports a different epoch on a retained context. With the
+  // no-read merge off, nothing here merges into the delegate ordering, so the
+  // store must not spend a read re-establishing it.
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ availability: "retained", epoch: "epoch-2" }),
+  }));
+  activityChanged(client, ["summary"]);
+  await activityState(store, () => store.getSnapshot().context?.epoch === "epoch-2");
+  // A read the summary could have started reaches the wire a turn later, so
+  // settle before asserting that none was taken.
+  await vi.advanceTimersByTimeAsync(0);
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(before);
+});
+
 test("an epoch change observed only by the summary retires the delegate merge ordering", async () => {
   const client = pushClient();
   const store = owner(client);
@@ -2975,6 +3009,58 @@ test("a sibling collection catching up to the epoch keeps the current delegate o
   await activityState(store, () => store.getSnapshot().jobs.context?.epoch === "epoch-2");
   await store.refresh("delegates");
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
+});
+
+test("a frame whose delegate id names two loaded rows patches neither", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({ delegateId: "delegate-1", childRef: "local:first", status: "running" }),
+      delegateRow({ delegateId: "delegate-1", childRef: "local:second", status: "running" }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  expect(store.getSnapshot().delegates.rows).toHaveLength(2);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(frameInfo({ delegateId: "delegate-1", projectionRevision: 9, status: "failed" })),
+  );
+  expect(store.getSnapshot().delegates.rows.map((row) => row.status)).toEqual(["running", "running"]);
+  // The id cannot be attributed to a row, so the frame asks for a read instead.
+  await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
+});
+
+test("a re-served delegate id on a later page keeps both served rows", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: false, issues: [], nextCursor: cursor ? undefined : "next" },
+    delegates: cursor
+      ? [delegateRow({ delegateId: "delegate-1", childRef: "local:second", status: "failed" })]
+      : [delegateRow({ delegateId: "delegate-1", childRef: "local:first", status: "running" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  await store.loadMore("delegates");
+  expect(store.getSnapshot().delegates.rows.map((row) => row.status)).toEqual(["running", "failed"]);
+});
+
+test("an evicted unknown-delegate id can trigger a read again", async () => {
+  const { client, store } = await pushOwner();
+  // One frame per distinct unknown id: the buffer holds the latest 128, so
+  // emitting 129 evicts the first.
+  for (let index = 0; index <= 128; index += 1) {
+    client.emitNotification(pushedFrame(frameInfo({ delegateId: `unknown-${index}`, projectionRevision: 2 })));
+  }
+  await activityState(store, () => !store.getSnapshot().delegates.loading && !store.getSnapshot().delegates.pending);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(pushedFrame(frameInfo({ delegateId: "unknown-0", projectionRevision: 3 })));
+  await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
 });
 
 test("an older unknown-delegate frame arrival cannot replace a newer settlement", async () => {
