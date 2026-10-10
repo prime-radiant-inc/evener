@@ -5,7 +5,6 @@ package execenv
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -295,15 +294,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	result := a.finish()
-	// Silent-empty is the enemy (D2): distinguish "genuinely no matches" from
-	// "no matches among the files searched, but N were skipped by the
-	// default dotfile/gitignore exclusion" — grep has no include_ignored
-	// knob, so this is informational rather than a suggestion to retry.
-	if result == "" && excludedByIgnore > 0 {
-		return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore), nil
-	}
-	return result, nil
+	return a.finishWalk(excludedByIgnore), nil
 }
 
 // grepNamedFile searches the one file a grep's path names, given its

@@ -133,6 +133,10 @@ type HostFacts struct {
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
 
+	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
+	// so the env floor can tell whether a spawn's go would read the same one.
+	GoEnvFile string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -271,6 +275,7 @@ func probeHost(system probeSystem) HostFacts {
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
+	facts.GoEnvFile = goEnvFile(system)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)

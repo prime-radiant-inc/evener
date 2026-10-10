@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -905,15 +906,15 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		exitCode := parseExitCode(contentStr)
 		return fmt.Sprintf("[shell: %q → exit %s]", cmd, exitCode)
 
-	case "grep":
+	case "grep", "memory_search":
 		pattern := getArg("pattern")
-		matches := countLines(contentStr)
-		return fmt.Sprintf("[grep: %q → %d matches]", pattern, matches)
+		matches := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("%s: %q → %d matches", toolName, pattern, matches), contentStr)
 
 	case "glob":
 		pattern := getArg("pattern")
-		files := countNonEmptyLines(contentStr)
-		return fmt.Sprintf("[glob: %q → %d files]", pattern, files)
+		files := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("glob: %q → %d files", pattern, files), contentStr)
 
 	case "edit_file":
 		path := getArg("file_path")
@@ -2013,14 +2014,23 @@ func countLines(s string) int {
 	return strings.Count(s, "\n") + 1
 }
 
-func countNonEmptyLines(s string) int {
-	n := 0
-	for line := range strings.SplitSeq(s, "\n") {
-		if strings.TrimSpace(line) != "" {
-			n++
+// searchSummary is a search result's one-line summary, "[head]", with the
+// notes the tool put after its entries (searchresult.Split) added inside the
+// brackets, each without brackets of its own, so a compacted search still
+// says it was cut short or left paths out. Anything the registry appended
+// after another blank line is left out; after a result with no notes of its
+// own, a registry nudge reads as its note (#4223 tracks giving notes a field
+// of their own).
+func searchSummary(head, output string) string {
+	_, notes := searchresult.Split(output)
+	notes, _, _ = strings.Cut(notes, "\n\n")
+	parts := []string{head}
+	for line := range strings.SplitSeq(notes, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 		}
 	}
-	return n
+	return "[" + strings.Join(parts, "; ") + "]"
 }
 
 func parseExitCode(shellOutput string) string {

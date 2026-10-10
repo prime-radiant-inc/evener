@@ -128,9 +128,9 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 // first, because Go writes the checksum database and `go install` output only to
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
 // follows, so GOPATH-mode builds still find the packages already there,
-// read-only: the spawn's own GOPATH when it has one, else the host's as resolved
-// at session start (goPathEntries, which covers one set with `go env -w`) when
-// the spawn's environment would let go find those settings at all.
+// read-only: the spawn's own GOPATH when it has one, else what its go would
+// resolve: the host's `go env -w` setting when it reads the same env file,
+// otherwise Go's default for its HOME.
 // Restricted mode cannot read it, so it gets the scratch alone. Entries inside
 // the scratch are dropped from the ambient value, so flooring an already-floored
 // env does not repeat them.
@@ -140,21 +140,24 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		return scratchGoPath
 	}
 	var ambient []string
-	canFindGoSettings := false
+	vars := map[string]string{}
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
-		switch {
-		case name == envvars.GoPath.Name && val != "":
+		if name == envvars.GoPath.Name && val != "" {
 			ambient = filepath.SplitList(val)
-		case val != "" && (name == envvars.Home.Name || name == envvars.XDGConfigHome.Name || (name == envvars.GoEnv.Name && val != "off")):
-			canFindGoSettings = true
 		}
+		vars[name] = val
 	}
-	// The host's resolved GOPATH stands in for what the spawned go would read
-	// from its env file or default. A clean environment (EnvPolicyNone) gives it
-	// no HOME, XDG_CONFIG_HOME or GOENV to find either, so it gets none.
-	if ambient == nil && canFindGoSettings {
-		ambient = goPathEntries(policy.resolveHost)
+	if ambient == nil {
+		// What the spawned go would use for GOPATH: the host's configured value
+		// when it reads the same go env file the probe read, else Go's default
+		// for its own HOME. A clean environment (EnvPolicyNone) has neither.
+		host := policy.resolveHost
+		configured := ""
+		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
+			configured = host.GoPath
+		}
+		ambient = goPathEntries(HostFacts{Home: vars[envvars.Home.Name], GoPath: configured})
 	}
 	entries := []string{scratchGoPath}
 	for _, entry := range ambient {
@@ -164,6 +167,30 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		}
 	}
 	return strings.Join(entries, string(filepath.ListSeparator))
+}
+
+// goEnvFileFor returns the go env file a go command run with vars would read,
+// mirroring goEnvFile and os.UserConfigDir for goos: $GOENV, else
+// $HOME/Library/Application Support/go/env on darwin, else
+// ${XDG_CONFIG_HOME:-$HOME/.config}/go/env; "" when GOENV=off or nothing locates
+// it.
+func goEnvFileFor(vars map[string]string, goos string) string {
+	if file := vars[envvars.GoEnv.Name]; file != "" {
+		if file == "off" {
+			return ""
+		}
+		return file
+	}
+	home := vars[envvars.Home.Name]
+	switch {
+	case goos == "darwin" && home != "":
+		return filepath.Join(home, "Library", "Application Support", "go", "env")
+	case goos != "darwin" && vars[envvars.XDGConfigHome.Name] != "":
+		return filepath.Join(vars[envvars.XDGConfigHome.Name], "go", "env")
+	case goos != "darwin" && home != "":
+		return filepath.Join(home, ".config", "go", "env")
+	}
+	return ""
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
