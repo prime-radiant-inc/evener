@@ -203,6 +203,42 @@ function connectedCoverage(
   return component;
 }
 
+// The cursor that continues an exhausted older window: the connected
+// certificate reaching deepest. Each certificate's depth is its lowest known
+// position, whether a certified range start/end or the boundary an empty page
+// probed below. A probe below the same depth supersedes the range above it, so
+// an empty page fetched against the deepest start wins over that range.
+function chooseFrontierCursor(chain: readonly TranscriptCoverageRow[]): string | undefined {
+  let best: TranscriptCoverageRow | undefined;
+  let bestBottom: ThreadItemPosition | undefined;
+  let bestProbe = false;
+  for (const cert of chain) {
+    const points: Array<{ point: ThreadItemPosition; probe: boolean }> = [];
+    if (cert.start !== null) points.push({ point: cert.start, probe: false });
+    if (cert.end !== null) points.push({ point: cert.end, probe: false });
+    if (cert.before !== null && cert.before !== undefined) points.push({ point: cert.before, probe: true });
+    const first = points[0];
+    if (!first) continue;
+    let bottom = first;
+    for (const candidate of points) {
+      if (comparePosition(candidate.point, bottom.point) < 0) bottom = candidate;
+    }
+    const deeper = bestBottom === undefined || comparePosition(bottom.point, bestBottom) < 0;
+    const sameDepth = bestBottom !== undefined && comparePosition(bottom.point, bestBottom) === 0;
+    const replace =
+      deeper ||
+      (sameDepth &&
+        ((bottom.probe && !bestProbe) ||
+          (bottom.probe === bestProbe && best !== undefined && cert.rangeId < best.rangeId)));
+    if (replace) {
+      best = cert;
+      bestBottom = bottom.point;
+      bestProbe = bottom.probe;
+    }
+  }
+  return best?.serverCursor;
+}
+
 // The anchor certificate for an older-window query. Anchoring uses exact
 // position equality and range containment, never numeric adjacency: two
 // ranges whose endpoints merely follow one another numerically are not
@@ -765,7 +801,9 @@ export class SessionEntryCache {
       }
       const certified = oldestStart !== null;
       let rows: TranscriptItemRow<unknown>[] = [];
-      if (oldestStart !== null && limit > 0) {
+      // A boundary equal to (or below) the oldest certified start has no rows
+      // strictly below it, and a half-open range with equal bounds is invalid.
+      if (oldestStart !== null && limit > 0 && comparePosition(oldestStart, before) < 0) {
         const range = this.#keyRange.bound(
           [historyKey, ...positionKey(oldestStart)],
           [historyKey, ...positionKey(before)],
@@ -782,21 +820,18 @@ export class SessionEntryCache {
         rows.length < limit ||
         (oldestStart !== null && rows.length > 0 && comparePosition(rows[0]?.position ?? null, oldestStart) === 0);
       const isComplete = limit === 0 ? emptyChain : emptyChain || reachedBottom;
-      const spanStart = oldestStart;
-      const frontier =
-        spanStart === null
-          ? undefined
-          : chain.find(
-              (cert) =>
-                cert.start !== null && comparePosition(cert.start, spanStart) === 0 && cert.serverCursor !== undefined,
-            );
+      // The continuation cursor belongs to the connected certificate that
+      // reaches deepest. An empty page fetched against the deepest boundary is
+      // that certificate even when it names no positions: it supersedes the
+      // cursor of the range above it, and continues via its own cursor if any.
+      const frontier = isComplete ? chooseFrontierCursor(chain) : undefined;
       return {
         rows,
         coverage: chain,
         complete: isComplete,
         stale: false,
         boundary: anchor.boundary,
-        ...(isComplete && frontier?.serverCursor !== undefined ? { serverCursor: frontier.serverCursor } : {}),
+        ...(frontier !== undefined ? { serverCursor: frontier } : {}),
       };
     } catch (error) {
       await complete.catch(() => {});

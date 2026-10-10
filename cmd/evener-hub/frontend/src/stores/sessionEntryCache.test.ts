@@ -1982,3 +1982,137 @@ it("keeps page certificates when a later read commits", async () => {
     serverCursor: "cursor-page1",
   });
 });
+
+it("preserves a continuation cursor from an empty nonterminal page", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-empty-nonterminal";
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 5, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 5,
+    serverCursor: "next-empty",
+    boundary: "empty",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 5, item: 0 }, 10);
+  expect(window).toMatchObject({
+    rows: [],
+    complete: true,
+    stale: false,
+    boundary: "empty",
+    serverCursor: "next-empty",
+  });
+});
+
+it("exhausts a connected terminal page instead of returning the superseded cursor", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-connected-terminal";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-superseded",
+    boundary: "page-top",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 11, item: 0 },
+    start: null,
+    end: null,
+    representedSnapshot: 10,
+    boundary: "page-terminal",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  expect(window.complete).toBe(true);
+  expect(window.serverCursor).toBeUndefined();
+});
+
+it("returns an empty complete window with its cursor when the boundary equals the range start", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-before-equals-start";
+  await cache.putItems(Array.from({ length: 10 }, (_, index) => itemRow(historyKey, index + 11)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-C1",
+    boundary: "page-top",
+  });
+
+  await expect(cache.getOlderWindow(historyKey, { entry: 11, item: 0 }, 10)).resolves.toMatchObject({
+    rows: [],
+    complete: true,
+    stale: false,
+    serverCursor: "cursor-C1",
+  });
+});
+
+it("includes an overlapping certified page range in an older window", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-overlap";
+  await cache.putItems(Array.from({ length: 20 }, (_, index) => itemRow(historyKey, index + 1)));
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 25, item: 0 },
+    start: { entry: 11, item: 0 },
+    end: { entry: 20, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-top",
+    boundary: "page-top",
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-1",
+    before: { entry: 20, item: 0 },
+    start: { entry: 1, item: 0 },
+    end: { entry: 15, item: 0 },
+    representedSnapshot: 25,
+    serverCursor: "cursor-bottom",
+    boundary: "page-bottom",
+  });
+
+  const window = await cache.getOlderWindow(historyKey, { entry: 25, item: 0 }, 100);
+  expect(window.rows.map((row) => row.position.entry)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  expect(window.serverCursor).toBe("cursor-bottom");
+});
+
+it("ignores a page certificate when the latest window is requested by that page boundary", async () => {
+  const { cache } = newEntryCache();
+  const historyKey = "host/session/page-latest-boundary";
+  await cache.putItems([100, 101, 102, 103].map((entry) => itemRow(historyKey, entry)));
+  await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [],
+    coverage: {
+      kind: "read",
+      readId: "read-latest",
+      start: { entry: 100, item: 0 },
+      end: { entry: 103, item: 0 },
+      representedSnapshot: 103,
+      serverCursor: "read-cursor",
+      boundary: "read-latest",
+    },
+  });
+  await seedPage(cache, historyKey, {
+    readId: "read-latest",
+    before: { entry: 60, item: 0 },
+    start: { entry: 50, item: 0 },
+    end: { entry: 59, item: 0 },
+    representedSnapshot: 99_999,
+    serverCursor: "page-cursor",
+    boundary: "page-boundary",
+  });
+
+  const explicit = await cache.getLatestWindow(historyKey, 3, "page-boundary");
+  expect(explicit).toMatchObject({ complete: false, stale: true });
+  expect(explicit.serverCursor).toBeUndefined();
+});
