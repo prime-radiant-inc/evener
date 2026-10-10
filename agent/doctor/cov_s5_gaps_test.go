@@ -45,6 +45,7 @@ func TestTranscriptRange_StartAndSpan(t *testing.T) {
 		{"1-2", 2, 1},
 		{"1-99", 2, 1},
 		{"last:1", 1, 2},
+		{" 1-2 ", 2, 1},  // surrounding whitespace is ignored, as in read_transcript
 		{"2-1", 0, -1},   // N > M selects nothing
 		{"99-98", 0, -1}, // even past the end
 	} {

@@ -230,8 +230,9 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 	total := len(turnStarts)
 	lo, hi, rendered := 0, len(doc.Entries), total
 	var rangeWarning string
-	if opts.Range != "" {
-		first, last, err := turnwindow.Parse(opts.Range, total)
+	// Surrounding whitespace is ignored, as read_transcript ignores it.
+	if spec := strings.TrimSpace(opts.Range); spec != "" {
+		first, last, err := turnwindow.Parse(spec, total)
 		switch {
 		case err != nil:
 			rangeWarning = fmt.Sprintf("invalid range %q; rendered the whole transcript instead. Accepted: %s", opts.Range, turnwindow.Grammar)
