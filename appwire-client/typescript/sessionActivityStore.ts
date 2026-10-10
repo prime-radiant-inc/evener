@@ -165,6 +165,11 @@ export class SessionActivityStore {
   private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
+  /** The replacement epoch whose delegate state has already been retired: a
+   * sibling resource can report the same new epoch on every response while the
+   * delegates read is still in flight, and retiring once per epoch keeps that
+   * from clearing a buffered frame that arrived after the first report. */
+  private retirementEpoch: string | undefined;
 
   constructor(
     private readonly client: SessionActivityClient,
@@ -309,6 +314,7 @@ export class SessionActivityStore {
     // The replacement context has not been seen by noteContext yet; a fresh
     // session resets eligibility rather than reporting a live->retained flip.
     this.pushEligible = false;
+    this.retirementEpoch = undefined;
     const metadata = this.lease?.metadata();
     if (metadata?.sessionId !== context.sessionId || this.statusUpdate?.threadId !== metadata?.threadId)
       this.statusUpdate = null;
@@ -434,7 +440,10 @@ export class SessionActivityStore {
         const crossing = previous !== undefined && previous !== epoch;
         // The delegate merge ordering is epoch-scoped, so the delegates
         // collection's own replacement retires it here.
-        if (crossing && resource === "delegates") this.clearDelegates();
+        if (crossing && resource === "delegates") {
+          this.clearDelegates();
+          this.retirementEpoch = undefined;
+        }
         read.epoch = epoch;
         // A page cannot cross epochs: its rows extend a retired walk. A root read
         // is the fresh read for the new epoch.
@@ -654,7 +663,15 @@ export class SessionActivityStore {
     // gate that turns on re-reads them too. Retiring on every other collection's
     // context would spend a read on state this store is not merging into.
     const loaded = this.reads.delegates.epoch;
-    if ((wasEligible || next) && loaded !== undefined && loaded !== context.epoch) this.retireDelegates();
+    if (
+      (wasEligible || next) &&
+      loaded !== undefined &&
+      loaded !== context.epoch &&
+      this.retirementEpoch !== context.epoch
+    ) {
+      this.retirementEpoch = context.epoch;
+      this.retireDelegates();
+    }
   }
   /** The delegate merge ordering is invalid across a source replacement: a
    * replacement journal rebuilds projectionRevision from 1, so an older epoch's
@@ -664,8 +681,6 @@ export class SessionActivityStore {
     this.seenUnknownDelegates.clear();
     this.bufferedUnknownDelegates.clear();
   }
-  /** Retire the ordering and re-read the observed delegates, because an
-   * eligible context suppresses the invalidation-driven delegate read. */
   private retireDelegates(): void {
     this.clearDelegates();
     this.reconcileDelegates();
@@ -1063,10 +1078,18 @@ function activityInstant(value: string): { seconds: number; nanos: number } | nu
   const dayValue = Number(day);
   if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) return null;
   if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 60) return null;
-  const seconds = Date.UTC(Number(year), monthValue - 1, dayValue, Number(hour), Number(minute), Number(second)) / 1000;
+  if (sign !== undefined && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) return null;
+  const yearValue = Number(year);
+  const utc = Date.UTC(yearValue, monthValue - 1, dayValue, Number(hour), Number(minute), Number(second));
+  const at = new Date(utc);
+  // Date.UTC rolls a calendar-invalid day (31 February) into the next month,
+  // which the projector's parser rejects outright.
+  if (at.getUTCFullYear() !== yearValue || at.getUTCMonth() !== monthValue - 1 || at.getUTCDate() !== dayValue) {
+    return null;
+  }
   const offsetSeconds =
     sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(offsetHour) * 3600 + Number(offsetMinute) * 60);
-  return { seconds: seconds - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
+  return { seconds: utc / 1000 - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
 }
 /** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
  * wins, a blank current loses to any non-blank candidate, and otherwise the

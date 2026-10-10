@@ -3011,6 +3011,22 @@ test("a sibling collection catching up to the epoch keeps the current delegate o
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
 });
 
+test("a calendar-invalid timestamp never wins the activity move", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 5, latestActivityAt: "2026-01-01T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  // Date normalizes 31 February into March; the projector's parser rejects it.
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 3, status: "running", latestActivityAt: "2026-02-31T00:00:00Z" })),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-01-01T00:00:00Z");
+});
+
 test("a sub-millisecond later activity still advances the move", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
