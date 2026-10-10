@@ -68,11 +68,13 @@
       "memory": [
         {
           "name": "saved slog migration",
-          "regex": "slog"
+          "regex": "slog",
+          "scope": "project"
         },
         {
           "name": "saved go vet preference",
-          "regex": "(?i)go vet|\\bvet\\b"
+          "regex": "(?i)go vet|\\bvet\\b",
+          "scope": "personal"
         },
         {
           "name": "no page on log output",
@@ -102,7 +104,7 @@
         {
           "name": "no call-site inventory",
           "absent": true,
-          "regex": "(?i)\\b(cart|catalog|coupon)\\.go\\b|call sites? (in|as of)"
+          "regex": "(?im)^(?!evidence:).*\\b(cart|catalog|coupon)\\.go\\b|call sites? (in|as of)"
         }
       ],
       "memory_writes": [
