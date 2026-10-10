@@ -574,3 +574,25 @@ func TestFilteredWakeAfterTheQuietPeriodStaysAwaiting(t *testing.T) {
 		t.Fatalf("status settled events = %v, want only the first rest's awaiting", got)
 	}
 }
+
+// A filtered wake on a session that has never scheduled a quiet period
+// re-arms nothing: there was no rest to interrupt.
+func TestFilteredWakeOnAFreshSessionStaysIdle(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t)
+	evs, mu, done := collectEvents(sess)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	fake.Advance(2 * needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after a filtered wake = %q, want idle", got)
+	}
+	if got := settledStatesAfterClose(sess, evs, mu, done); len(got) != 0 {
+		t.Fatalf("status settled events = %v, want none", got)
+	}
+}
