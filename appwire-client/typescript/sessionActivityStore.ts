@@ -1,5 +1,6 @@
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
+import { sameJsonValue } from "./plainObject";
 import { isThreadNotFound } from "./sessionErrors";
 import {
   acquireThreadSubscription,
@@ -82,9 +83,6 @@ interface ResourceRead {
   timer: unknown | null;
   cursor: string | undefined;
   epoch: string | undefined;
-  /** Epochs this collection has left: a reply naming one was superseded in
-   * flight by a source replacement. */
-  retired: string[];
   incomplete: boolean;
   boundary: string | undefined;
   refresh: RefreshWalk | null;
@@ -95,10 +93,6 @@ interface ResourceRead {
 /** Cap on the buffered latest frame per unknown delegate id; the per-ID
  * seen-unknown set bounds reads, so this only guards an unbounded store. */
 const MAX_BUFFERED_DELEGATE_FRAMES = 128;
-/** How many superseded source epochs a reply may still name and be recognized
- * as stale rather than as a replacement. Replies are short-lived, so a handful
- * covers a replacement that lands while another is still in flight. */
-const RETIRED_EPOCHS = 4;
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -129,7 +123,6 @@ const resourceRead = (): ResourceRead => ({
   timer: null,
   cursor: undefined,
   epoch: undefined,
-  retired: [],
   incomplete: false,
   boundary: undefined,
   refresh: null,
@@ -313,9 +306,7 @@ export class SessionActivityStore {
     // cursors retire together; opaque cache epochs alone do not imply this.
     this.generation += 1;
     const generation = this.generation;
-    this.appliedDelegates.clear();
-    this.seenUnknownDelegates.clear();
-    this.bufferedUnknownDelegates.clear();
+    this.clearDelegates();
     // The replacement context has not been seen by noteContext yet; a fresh
     // session resets eligibility rather than reporting a live->retained flip.
     this.pushEligible = false;
@@ -328,7 +319,6 @@ export class SessionActivityStore {
       this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
-      read.retired.length = 0;
       read.incomplete = false;
       read.boundary = undefined;
       read.refresh = null;
@@ -439,29 +429,22 @@ export class SessionActivityStore {
         generation = this.acceptContext(result.context, resource);
         if (stale()) continue;
         // A source replacement is visible only in a response: the invalidation
-        // carries no epoch. A retired epoch names a reply the replacement
-        // superseded while it was still in flight, so its rows must not be
-        // grafted; a page cannot cross epochs either, because its rows extend a
-        // retired walk. A root read is the fresh read for the new epoch.
+        // carries no epoch.
         const epoch = result.context.epoch;
-        const previousEpoch = read.epoch;
-        const superseded = read.retired.includes(epoch);
-        const crossing = previousEpoch !== undefined && previousEpoch !== epoch;
-        if (crossing) {
-          read.retired.push(previousEpoch);
-          if (read.retired.length > RETIRED_EPOCHS) read.retired.shift();
-        }
+        const previous = read.epoch;
+        const crossing = previous !== undefined && previous !== epoch;
+        // The delegate merge ordering is epoch-scoped, so the delegates
+        // collection's own replacement retires it here.
+        if (crossing && resource === "delegates") this.clearDelegates();
         read.epoch = epoch;
-        if (superseded || (crossing && !root)) {
+        // A page cannot cross epochs: its rows extend a retired walk. A root read
+        // is the fresh read for the new epoch.
+        if (crossing && !root) {
           read.cursor = undefined;
           read.refresh = null;
           read.rootQueued = true;
           continue;
         }
-        // The delegate merge ordering is epoch-scoped, so the delegates
-        // collection's own replacement retires it here (a superseded reply
-        // leaves the live ordering alone).
-        if (crossing && !superseded && resource === "delegates") this.clearDelegates();
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
@@ -684,6 +667,15 @@ export class SessionActivityStore {
     const delegates = this.reads.delegates;
     if (delegates.observers > 0 || delegates.oneShot) void this.request("delegates", "root");
   }
+  /** Record the merge order a delegate id has reached: a frame is admitted over
+   * it only by a strictly greater revision, and latestActivityAt is the
+   * independent maximum. */
+  private recordAppliedDelegate(id: string, row: SessionDelegate): void {
+    this.appliedDelegates.set(id, {
+      projectionRevision: row.projectionRevision,
+      latestActivityAt: row.latestActivityAt,
+    });
+  }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
    * nearest ancestor session) instead. A subtree store's ref-matched frames
@@ -711,10 +703,7 @@ export class SessionActivityStore {
     if (merged === current) return;
     const next = rows.slice();
     next[index] = merged;
-    this.appliedDelegates.set(frame.delegateId, {
-      projectionRevision: merged.projectionRevision,
-      latestActivityAt: merged.latestActivityAt,
-    });
+    this.recordAppliedDelegate(frame.delegateId, merged);
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
   private noteUnknownDelegate(frame: EvenerDelegateInfo): void {
@@ -741,10 +730,11 @@ export class SessionActivityStore {
       projectionRevision: current.projectionRevision,
       latestActivityAt: current.latestActivityAt,
     };
-    const winner =
-      revisionOf(incoming.projectionRevision) > revisionOf(applied.projectionRevision) ? incoming : current;
-    const activity = laterActivity(applied.latestActivityAt, incoming.latestActivityAt);
-    const merged = activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+    const merged = joinDelegateState(
+      incoming,
+      current,
+      revisionOf(incoming.projectionRevision) > revisionOf(applied.projectionRevision),
+    );
     return delegateRowsEqual(merged, current) ? current : merged;
   }
   private joinDelegateRows(
@@ -765,10 +755,11 @@ export class SessionActivityStore {
         // A served row is an authoritative snapshot: it wins at equal revision
         // (parity with a same-revision frame) and only loses to a strictly
         // newer applied frame, which it must not clobber.
-        const winner =
-          revisionOf(row.projectionRevision) >= revisionOf(applied.projectionRevision) ? row : (existing ?? row);
-        const activity = laterActivity(applied.latestActivityAt, row.latestActivityAt);
-        const candidate = activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+        const candidate = joinDelegateState(
+          row,
+          existing ?? row,
+          revisionOf(row.projectionRevision) >= revisionOf(applied.projectionRevision),
+        );
         merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
       }
       const buffered = this.bufferedUnknownDelegates.get(row.delegateId);
@@ -777,10 +768,7 @@ export class SessionActivityStore {
         merged = this.mergeDelegateFrame(merged, buffered);
       }
       this.seenUnknownDelegates.delete(row.delegateId);
-      this.appliedDelegates.set(row.delegateId, {
-        projectionRevision: merged.projectionRevision,
-        latestActivityAt: merged.latestActivityAt,
-      });
+      this.recordAppliedDelegate(row.delegateId, merged);
       return merged;
     });
   }
@@ -966,9 +954,7 @@ export class SessionActivityStore {
     this.lease = null;
     this.runtimeThreadId = null;
     this.statusUpdate = null;
-    this.appliedDelegates.clear();
-    this.seenUnknownDelegates.clear();
-    this.bufferedUnknownDelegates.clear();
+    this.clearDelegates();
     this.pushEligible = false;
     this.state = { ...this.state, runtime: null };
     for (const stop of this.stopListening) stop();
@@ -1025,6 +1011,19 @@ function activityAfter(candidate: string | undefined, current: string | undefine
 function laterActivity(candidate: string | undefined, current: string | undefined): string | undefined {
   return activityAfter(candidate, current) ? candidate : current;
 }
+/** The projector's join for one delegate: `incomingWins` picks the snapshot
+ * fields, while latestActivityAt is the independent maximum of the two -- a
+ * lower revision may advance it, a higher one never moves it backward. */
+function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
+  incoming: T,
+  current: T,
+  incomingWins: boolean,
+): T {
+  const winner = incomingWins ? incoming : current;
+  const other = incomingWins ? current : incoming;
+  const activity = laterActivity(winner.latestActivityAt, other.latestActivityAt);
+  return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+}
 /** A missing/NaN revision is the zero value; an unset read row must not beat a
  * real frame, and two unset rows compare equal. */
 function revisionOf(value: number | undefined): number {
@@ -1034,9 +1033,11 @@ function revisionOf(value: number | undefined): number {
  * greater revision supplies the fields, latestActivityAt is the independent
  * maximum. Mirrors `mergeDelegateFrame` for a row not yet loaded. */
 function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateInfo): EvenerDelegateInfo {
-  const winner = revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision) ? frame : current;
-  const activity = laterActivity(current.latestActivityAt, frame.latestActivityAt);
-  return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
+  return joinDelegateState(
+    frame,
+    current,
+    revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision),
+  );
 }
 function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
   return (
@@ -1067,8 +1068,8 @@ function delegateRowsEqual(a: SessionDelegate, b: SessionDelegate): boolean {
     a.runStartedAt === b.runStartedAt &&
     a.runEndedAt === b.runEndedAt &&
     a.latestActivityAt === b.latestActivityAt &&
-    JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
-    JSON.stringify(a.worktree) === JSON.stringify(b.worktree)
+    sameJsonValue(a.usage, b.usage) &&
+    sameJsonValue(a.worktree, b.worktree)
   );
 }
 function rowIdentity(resource: SessionActivityCollection, row: ActivityRow): string {

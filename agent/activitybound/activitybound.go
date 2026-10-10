@@ -89,9 +89,11 @@ func BoundMessage(raw json.RawMessage) (json.RawMessage, bool) {
 
 // Preview decodes a window from BoundMessage (with whether it was complete) and
 // returns the bounded preview text and whether it was truncated. Only a prefix
-// beyond the text cap proves a truncated preview: a partial window that already
-// decodes to the whole text yields nothing, because the durable packet is the
-// authority for the full value.
+// beyond the text cap proves a truncated preview: a window that already decodes
+// to the whole text yields nothing, because the durable packet is the authority
+// for the full value. MaxReportPreviewBytes' arithmetic means that case cannot
+// arise through ReportPreview -- a partial window always decodes to more than
+// MaxDelegateProseRunes runes -- so the check guards a direct Preview caller.
 func Preview(window json.RawMessage, complete bool) (string, bool) {
 	decoded, err := jsontext.AppendUnquote(nil, window)
 	partial := !complete && errors.Is(err, io.ErrUnexpectedEOF)
