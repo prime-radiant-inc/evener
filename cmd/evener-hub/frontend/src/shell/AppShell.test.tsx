@@ -1270,6 +1270,20 @@ test("a client replacement holds the predecessor's real release cleanup and keep
         navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
       });
     });
+    // Queued successor bytes may already exist from its initial read. Capture
+    // only after this fresh-ready resync has actually published its own cut.
+    const lastReadParams = () =>
+      fresh.calls.filter((call) => call.method === "thread/read").at(-1)?.params as
+        | { requestGeneration?: number }
+        | undefined;
+    await waitFor(() => expect(typeof lastReadParams()?.requestGeneration).toBe("number"));
+    const refreshGeneration = lastReadParams()?.requestGeneration;
+    await waitFor(() =>
+      expect(threadsStore.getState().threads.get("local:s1")?.history).toMatchObject({
+        issuedGeneration: refreshGeneration,
+        appliedGeneration: refreshGeneration,
+      }),
+    );
     const historyKey = threadsModule.productionEntryTranscriptForTests("local:s1").historyKey;
     if (!historyKey) throw new Error("successor has no resolved entry history identity");
     await waitFor(() =>
