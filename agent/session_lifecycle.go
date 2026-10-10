@@ -2939,8 +2939,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	hasRootAttention := s.hasPendingRootDelegateAttention()
 	// A delegate parked in its finalization drain is woken for its own
 	// delegates' updates (hasPendingDelegateUpdateAttention); the update is
-	// already in its transcript, so the turn's model request carries it.
-	hasDelegateUpdate := s.hasPendingDelegateUpdateAttention()
+	// already in its transcript, so the turn's model request carries it. Only
+	// a turn that consumes what it presents is admitted for it: a parent's
+	// unleased drive of an idle delegate would present the update and leave it
+	// pending.
+	hasDelegateUpdate := s.hasPendingDelegateUpdateAttention() && s.coversPresentedAttention(ctx)
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)

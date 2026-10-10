@@ -225,6 +225,8 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) (deleg
 		// journal's pending heads and the rest of its queue for retry.
 		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
 	}
+	// A missing aggregate reads as not pending: it cannot occur while the run
+	// that just posted is open.
 	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
 		return delegateUpdateDelivery{Status: delegateUpdateQueued}, true
 	}
@@ -239,7 +241,7 @@ func notDeliveredUpdate(err error) delegateUpdateDelivery {
 	case errors.Is(err, errDelegateStaleLease):
 		reason = "this run of yours is no longer the current one"
 	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable):
-		reason = "the route to your parent is closed: you are stopping or finishing, your parent is gone, or the session is shutting down"
+		reason = "you are stopping or finishing, or this run can no longer report to your parent"
 	}
 	return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
 }

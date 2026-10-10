@@ -237,6 +237,12 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			reg := toolpkg.NewRegistry()
 			registerCommunicateTool(reg, newToolDeps(runtime))
 			ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+			// The refusal the controller gives this lease, which the result's
+			// reason must explain.
+			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema")
+			if refusal == nil {
+				t.Fatal("the controller accepted an update it should refuse")
+			}
 			out, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{"message": "need the schema", "end_turn": false})
 			if err != nil {
 				t.Fatalf("communicate: %v", err)
@@ -248,8 +254,8 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			if result["accepted"] != true || result["delivery"] != "not_delivered" {
 				t.Fatalf("result = %v, want accepted and not_delivered", result)
 			}
-			if reason, _ := result["reason"].(string); reason == "" {
-				t.Fatalf("result = %v, want a reason", result)
+			if want := notDeliveredUpdate(refusal).Reason; result["reason"] != want {
+				t.Fatalf("reason = %v, want %q", result["reason"], want)
 			}
 			if pending := delegateAggregateSnapshot(t, c, "dlg_target").PendingDeliveries; len(pending) != 0 {
 				t.Fatalf("refused update queued: %#v", pending)
@@ -570,8 +576,8 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	// The coordinator's second request ends its turn; once it is no longer
 	// processing, the worker's update finds it idle.
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	var coordinator *Session
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
 		children := root.subagents.sessions()
 		if len(children) != 1 || children[0].State() != SessionIdle {
@@ -899,4 +905,35 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 			t.Fatalf("update attention after restart = %q, want consumed", got)
 		}
 	})
+}
+
+// Only a turn that consumes what it presents is admitted for a delegate's
+// update. A parent's unleased notification drive of an idle delegate covers
+// no attention, so it would present the update and leave it pending, and
+// stands down; the delegate's own leased turn is admitted.
+func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
+	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || !appended {
+		t.Fatalf("append update attention = appended:%t err:%v", appended, err)
+	}
+	if !sub.sess.hasPendingDelegateUpdateAttention() {
+		t.Fatal("the delegate does not hold the pending update")
+	}
+
+	if sub.sess.acceptNotificationInput(context.Background(), "unleased-turn") {
+		t.Fatal("an unleased notification drive was admitted for an update it cannot consume")
+	}
+	lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+	leased := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	if !sub.sess.acceptNotificationInput(leased, "leased-turn") {
+		t.Fatal("the delegate's own leased turn was not admitted for its update")
+	}
 }
