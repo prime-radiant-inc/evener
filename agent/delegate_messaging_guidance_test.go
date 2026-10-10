@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -88,7 +89,7 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 		{"delegate", delegateRequest, nil},
 		{"delegate-result-schema", schemaDelegateRequest, nil},
 	} {
-		checkGolden(t, filepath.Join("testdata", "messagingprompt", tc.name+".md"), messagingGuidanceGolden(t, tc.req, tc.extra), *updatePromptGoldens,
+		agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", tc.name+".md"), messagingGuidanceGolden(t, tc.req, tc.extra), *updatePromptGoldens,
 			"Regenerate with `go test ./agent -run 'TestDelegateMessagingGuidanceGoldens$' -count=1 -update-prompt` and read the diff.")
 	}
 }
