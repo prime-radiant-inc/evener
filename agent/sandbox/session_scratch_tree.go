@@ -80,8 +80,13 @@ func isSessionScratchTree(dir string) bool {
 
 // scratchTreeOf returns the root session's scratch tree that holds scratchDir
 // (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
-// belongs to no tree.
+// belongs to no tree. A disposable scratch is recognized by the name its
+// allocator gives it, so one created under a temp base that merely carries the
+// tree prefix still belongs to no tree.
 func scratchTreeOf(scratchDir string) string {
+	if strings.HasPrefix(filepath.Base(scratchDir), sessionScratchPrefix) {
+		return ""
+	}
 	tree := filepath.Dir(scratchDir)
 	if !isSessionScratchTree(tree) {
 		return ""
@@ -286,9 +291,11 @@ func ensureOwnedScratchDir(dir string) error {
 	return nil
 }
 
-// safeScratchName reports whether id can name one path component.
+// safeScratchName reports whether id can name one path component. An id
+// carrying the disposable-scratch prefix is refused too, so a named session's
+// scratch can never be taken for a disposable one (see scratchTreeOf).
 func safeScratchName(id string) bool {
-	if id == "" || id == "." || id == ".." {
+	if id == "" || id == "." || id == ".." || strings.HasPrefix(id, sessionScratchPrefix) {
 		return false
 	}
 	return !strings.ContainsAny(id, `/\`) && !strings.ContainsRune(id, 0)

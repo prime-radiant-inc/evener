@@ -329,3 +329,38 @@ func TestRemoveSessionScratchTreeSkipsALiveSession(t *testing.T) {
 		t.Errorf("the tree survived its last session's end: %v", err)
 	}
 }
+
+// The bwrap shell re-binds the tree scratchTreeOf names, so only a named
+// session's scratch may report one. A disposable scratch allocated under a temp
+// base that happens to carry the tree prefix must report none, or the shell
+// would see that whole base.
+func TestScratchTreeOfNamesOnlyANamedSessionsTree(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookalike := filepath.Join(base, sessionScratchTreePrefix+"tmpdir")
+	if err := os.Mkdir(lookalike, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	disposable, err := NewSessionScratch(lookalike, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = disposable.Cleanup() })
+	if got := scratchTreeOf(disposable.Dir); got != "" {
+		t.Errorf("a disposable scratch under %q must belong to no tree, got %q", lookalike, got)
+	}
+
+	named, err := OpenSessionScratch(base, t.TempDir(), "ROOT1", "CHILD1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = named.Cleanup() })
+	if got, want := scratchTreeOf(named.Dir), filepath.Join(base, sessionScratchTreePrefix+"ROOT1"); got != want {
+		t.Errorf("scratchTreeOf(%q) = %q, want %q", named.Dir, got, want)
+	}
+	if _, err := OpenSessionScratch(base, t.TempDir(), "ROOT1", sessionScratchPrefix+"x"); err == nil {
+		t.Error("a session id carrying the disposable-scratch prefix must be refused")
+	}
+}

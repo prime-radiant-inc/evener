@@ -192,6 +192,12 @@ func floorDrops(name string) bool {
 // $GOPATH/pkg/sumdb whatever GOMODCACHE says, so it must be writable too.
 // GOMODCACHE stays set explicitly: an environment value overrides one written to
 // the user's go env file with `go env -w`, which deriving it from GOPATH would not.
+//
+// PATH is deliberately left alone, so `go install` output in the scratch GOPATH's
+// bin is run by its path rather than found on PATH. The real GOPATH's bin is
+// read-only under this strategy, so `go install` could not land anywhere before.
+// Putting a session-writable directory on PATH would let anything the model
+// writes there shadow the commands every spawn site runs, hooks included.
 func isRedirectedCacheVar(name string) bool {
 	switch name {
 	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
