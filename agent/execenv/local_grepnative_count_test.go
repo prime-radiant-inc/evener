@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // TestGrepNativeCountModeCapsRowsAtMaxResults pins count mode to the same
@@ -35,8 +37,8 @@ func TestGrepNativeCountModeCapsRowsAtMaxResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grepNative count: %v", err)
 	}
-	rows, cut := strings.CutSuffix(got, "\n"+grepTruncationNote(3))
-	if n := countOutputRows(rows); n != 3 || !cut {
+	rows, notes := searchresult.Split(got)
+	if n := countOutputRows(rows); n != 3 || notes != grepTruncationNote(3) {
 		t.Fatalf("count mode returned %d rows, want exactly 3 then the truncation note (max_results caps rows at 3; 5 files match):\n%s", n, got)
 	}
 }

@@ -1160,9 +1160,15 @@ func jobResultStatus(r jobResult, raw string) string {
 	if jobID == "" {
 		jobID = "(none)"
 	}
+	// An update a delegate_send reply carries settled nothing and has no
+	// status; its metadata line says it is an update.
+	status := r.Status
+	if status == "" {
+		status = "(none)"
+	}
 	statusParts := []string{
 		"job_id=" + jobID,
-		"status=" + r.Status,
+		"status=" + status,
 	}
 	if r.Reason != "" {
 		statusParts = append(statusParts, "reason="+r.Reason)

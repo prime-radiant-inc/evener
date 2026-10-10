@@ -994,7 +994,9 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 	total := len(lines)
 	if total > maxEntries {
 		shown := lines[:maxEntries]
-		summary := fmt.Sprintf("\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
+		// Like the search tools' own notes, the summary follows a blank
+		// line (searchresult.WithNotes), so no reader counts it as a hit.
+		summary := fmt.Sprintf("\n\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
 		out = strings.Join(shown, "\n") + summary
 		truncated = true
 	}
@@ -1017,7 +1019,7 @@ func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	}
 	removed := len(runes) - limit
 	for {
-		marker := fmt.Sprintf("\n[Output truncated: %d characters removed from the end.]", removed)
+		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the end.]", removed)
 		keep := max(limit-len([]rune(marker)), 0)
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {

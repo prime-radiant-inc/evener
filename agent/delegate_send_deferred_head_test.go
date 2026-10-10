@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
 
@@ -197,5 +198,23 @@ func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
 	}
 	if fold.deliveryCommits[delegateDeliveryID(delegateID, 1)] != "send" || fold.deliveryCommits[delegateDeliveryID(delegateID, 2)] != "send" {
 		t.Fatalf("delivery commits = %v, want both on the send call", fold.deliveryCommits)
+	}
+}
+
+// An update a delegate_send reply carries ahead of the newest result reads
+// as an update: its message is the output and nothing claims it finished.
+func TestDelegateSendEarlierUpdateRendersAsAnUpdate(t *testing.T) {
+	t.Parallel()
+	out := delegateSendResultFrom(sendMessageResult{
+		DelegateID: "dlg_1",
+		Type:       delegateResourceType,
+		Earlier:    []delegatestore.TerminalPacket{{Kind: delegatestore.PacketUpdate, Message: json.RawMessage(`"which table?"`)}},
+	})
+	if len(out.EarlierResults) != 1 {
+		t.Fatalf("earlier results = %#v, want one", out.EarlierResults)
+	}
+	earlier := out.EarlierResults[0]
+	if earlier.Action != "update" || earlier.Output == nil || *earlier.Output != "which table?" || earlier.Status != "" || earlier.DelegateID != "dlg_1" {
+		t.Fatalf("earlier update = %#v, want action update, the message as output and no status", earlier)
 	}
 }

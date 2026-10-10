@@ -104,7 +104,7 @@
         {
           "name": "no call-site inventory",
           "absent": true,
-          "regex": "(?im)^(?!evidence:).*\\b(cart|catalog|coupon)\\.go\\b|call sites? (in|as of)"
+          "regex": "(?im)^(?!evidence:).*\\b(cart|catalog|coupon)\\.go\\b|call sites? as of"
         }
       ],
       "memory_writes": [

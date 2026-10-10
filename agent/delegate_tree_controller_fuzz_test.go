@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -169,9 +171,8 @@ func assertDelegateControllerFuzzInvariants(t *testing.T, c *delegateTreeControl
 			}
 		}
 		for _, delivery := range aggregate.PendingDeliveries {
-			want := fmt.Sprintf("%s/delivery/%d", id, delivery.Generation)
-			if delivery.DeliveryID != want {
-				t.Fatalf("delegate %s used non-deterministic durable correlation %q, want %q", id, delivery.DeliveryID, want)
+			if err := pendingDeliveryIDShapeError(id, delivery); err != nil {
+				t.Fatalf("delegate %s used non-deterministic durable correlation: %v", id, err)
 			}
 		}
 	}
@@ -188,5 +189,47 @@ func assertDelegateControllerFuzzInvariants(t *testing.T, c *delegateTreeControl
 	}
 	if !reflect.DeepEqual(folded, c.durable) {
 		t.Fatalf("persisted fold differs from c.durable:\n got %#v\nwant %#v", folded, c.durable)
+	}
+}
+
+// pendingDeliveryIDShapeError reports a pending delivery whose id is not the
+// deterministic one its packet kind names: <id>/delivery/<generation> for a
+// generation's report, <id>/update/<journal seq> for an update.
+func pendingDeliveryIDShapeError(delegateID string, delivery delegatestore.PendingDelivery) error {
+	if delivery.Packet.Kind == delegatestore.PacketUpdate {
+		seqText, found := strings.CutPrefix(delivery.DeliveryID, delegateID+"/update/")
+		seq, err := strconv.ParseUint(seqText, 10, 64)
+		if !found || err != nil || seq == 0 || delegatestore.UpdateDeliveryID(delegateID, seq) != delivery.DeliveryID {
+			return fmt.Errorf("update delivery ID %q, want %s/update/<seq>", delivery.DeliveryID, delegateID)
+		}
+		return nil
+	}
+	if want := delegateDeliveryID(delegateID, delivery.Generation); delivery.DeliveryID != want {
+		return fmt.Errorf("delivery ID %q, want %q", delivery.DeliveryID, want)
+	}
+	return nil
+}
+
+func TestPendingDeliveryIDShapeError(t *testing.T) {
+	report := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported}
+	update := delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate}
+	for _, tc := range []struct {
+		id     string
+		packet delegatestore.TerminalPacket
+		ok     bool
+	}{
+		{"dlg_a/delivery/2", report, true},
+		{"dlg_a/delivery/1", report, false},
+		{"dlg_a/update/7", report, false},
+		{"dlg_a/update/7", update, true},
+		{"dlg_a/update/0", update, false},
+		{"dlg_a/update/07", update, false},
+		{"dlg_b/update/7", update, false},
+		{"dlg_a/delivery/2", update, false},
+	} {
+		err := pendingDeliveryIDShapeError("dlg_a", delegatestore.PendingDelivery{DeliveryID: tc.id, Generation: 2, Packet: tc.packet})
+		if (err == nil) != tc.ok {
+			t.Errorf("%s (%s): err = %v, want ok=%v", tc.id, tc.packet.Kind, err, tc.ok)
+		}
 	}
 }

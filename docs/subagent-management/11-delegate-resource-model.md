@@ -1189,6 +1189,13 @@ cannot reuse it. It is never a control handle.
   next head.
 - Only the head pending delivery may be dispatched. Acknowledging that exact
   head removes it and returns the delivery plan for the next head, if any.
+- A delegate_update_posted event records a running generation's update and
+  joins the same per-delegate queue as the pending delivery
+  `<delegate_id>/update/<event seq>` with packet kind `update`. The
+  generation's updates are therefore dispatched in the order posted and ahead
+  of the report its finish appends. Only the open, running
+  generation may post one. An update at the head never claims the
+  generation's inline waiter; a `delegate_send` wait stays for the report.
 - Restart begins with the oldest unacknowledged packet and advances through the
   same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
@@ -1199,10 +1206,11 @@ cannot reuse it. It is never a control handle.
 If selected inline delivery cannot commit because the owner Session closes or
 its tool result fails, delivery remains pending and later uses the ordinary
 notification/replay path. The aggregate keeps an ordered collection keyed by
-delivery ID, with at most one entry per generation. A later generation may
-finish while an earlier delivery remains unacknowledged; it appends a second
-entry rather than overwriting the first, but receives no independent delivery
-plan until every earlier entry is acknowledged. Waiter selection occurs when
+delivery ID, with at most one report entry per generation plus any updates
+that generation posted. A later generation may finish while an earlier
+delivery remains unacknowledged; it appends its report entry rather than
+overwriting the earlier ones, but receives no independent delivery plan until
+every earlier entry is acknowledged. Waiter selection occurs when
 an entry becomes the head and looks up that entry's generation-keyed waiter,
 even if a successor generation is now current. A restart loses process-local
 waiters and therefore uses notification/replay for every remaining head. There
@@ -1281,7 +1289,8 @@ Required event kinds are:
 - delegate_run_finished;
 - delegate_resumability_closed;
 - delegate_subtree_stop_requested;
-- delegate_subtree_stop_completed; and
+- delegate_subtree_stop_completed;
+- delegate_update_posted; and
 - delegate_delivery_acknowledged.
 
 No event kind exists for a delegate activation JobRecord, current/latest job

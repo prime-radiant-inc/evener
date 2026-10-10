@@ -3,10 +3,10 @@ import type { ItemModel } from "./model";
 import {
   BINARY_PAYLOAD_HEADER,
   diffResultText,
-  outputCount,
   quotedSearchPattern,
   readLineRange,
   type StepWords,
+  searchResultCount,
   summaryOf,
   withDetail,
 } from "./stepWords";
@@ -89,7 +89,7 @@ export function memorySearchWords(step: MemoryStep): StepWords {
       target: quotedSearchPattern(pattern),
       ...(location ? { after: `in ${location}` } : {}),
     },
-    outputCount(step.output, "hits"),
+    searchResultCount(step.output, "hits"),
   );
 }
 

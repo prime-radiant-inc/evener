@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +113,17 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
+	// GoPath is the go command's GOPATH as configured on this host, in the
+	// environment or with `go env -w` (see goEnvValue), resolved once at session
+	// start. Empty means unset, and goPathEntries applies Go's $HOME/go default.
+	// It grants nothing: it is the ambient GOPATH the env floor keeps behind the
+	// session scratch.
+	GoPath string
+
+	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
+	// so the env floor can tell whether a spawn's go would read the same one.
+	GoEnvFile string
+
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
 	KernelVersion string
@@ -157,6 +170,8 @@ type probeSystem interface {
 	userHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
+	userConfigDir() (string, error)
+	readFile(string) ([]byte, error)
 	run(context.Context, string, ...string) error
 	combinedOutput(context.Context, string, ...string) ([]byte, error)
 	output(context.Context, string, ...string) ([]byte, error)
@@ -177,6 +192,37 @@ func (hostProbeSystem) lookPath(name string) (string, error) { return exec.LookP
 func (hostProbeSystem) nonDirectoryFile(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
+}
+
+func (hostProbeSystem) userConfigDir() (string, error) { return os.UserConfigDir() }
+
+// goEnvFileLimit bounds the go env file the probe reads. `go env -w` writes a
+// few lines; anything near this size is not one.
+const goEnvFileLimit = 64 << 10
+
+// readFile reads a small regular file. GOENV can name anything, and the probe
+// runs before any sandbox exists, so a FIFO (which would block session start),
+// a device such as /dev/zero (which never ends) or an oversized file is refused.
+func (hostProbeSystem) readFile(path string) ([]byte, error) {
+	// Open without blocking (a FIFO's open waits for a writer), then judge the
+	// descriptor itself, so a file swapped in after a path check cannot slip by.
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > goEnvFileLimit {
+		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, goEnvFileLimit)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, goEnvFileLimit+1))
+	if err == nil && len(data) > goEnvFileLimit {
+		err = fmt.Errorf("%s is larger than %d bytes", path, goEnvFileLimit)
+	}
+	return data, err
 }
 
 func (hostProbeSystem) run(ctx context.Context, name string, args ...string) error {
@@ -215,6 +261,8 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
+	facts.GoEnvFile = goEnvFile(system)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -274,6 +322,74 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// goEnvValue returns a go command setting as configured on this host, with the
+// go command's own precedence: the environment, then the user's go env file,
+// which is what `go env -w` writes. $GOENV names that file, GOENV=off disables
+// it, and otherwise it is <user config dir>/go/env; like the go command, a later
+// line overrides an earlier one. It returns "" for an unset setting.
+//
+// The line handling deliberately matches cmd/go/internal/cfg.readEnvFile: a
+// line is split at its first "=" with no trimming, quote or "\r" stripping, and
+// comment or blank lines never match a name. Normalizing more than go does
+// would make the sandbox disagree with the go command it serves.
+//
+// It reads the file rather than running `go env`: host facts feed Resolve, so a
+// `go env` here would run before any sandbox exists, executing whichever go is
+// first on PATH, and any toolchain it switches to and downloads, unconfined.
+func goEnvValue(system probeSystem, name string) string {
+	if value := system.getenv(name); value != "" {
+		return value
+	}
+	file := goEnvFile(system)
+	if file == "" {
+		return ""
+	}
+	data, err := system.readFile(file)
+	if err != nil {
+		return ""
+	}
+	value := ""
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if key, val, ok := strings.Cut(line, "="); ok && key == name {
+			value = val
+		}
+	}
+	return value
+}
+
+// goEnvFile returns the go env file the go command reads: $GOENV, or
+// <user config dir>/go/env, or "" when GOENV=off or the directory is unknown.
+func goEnvFile(system probeSystem) string {
+	file := system.getenv(envvars.GoEnv.Name)
+	switch file {
+	case "off":
+		return ""
+	case "":
+		dir, err := system.userConfigDir()
+		if err != nil || dir == "" {
+			return ""
+		}
+		file = filepath.Join(dir, "go", "env")
+	}
+	return file
+}
+
+// goPathEntries returns the GOPATH entries the go command uses on this host: the
+// absolute entries of the configured GOPATH (it refuses relative ones), else
+// Go's $HOME/go default, or none without an absolute home.
+func goPathEntries(host HostFacts) []string {
+	var entries []string
+	for _, entry := range filepath.SplitList(host.GoPath) {
+		if filepath.IsAbs(entry) {
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) == 0 && filepath.IsAbs(host.Home) {
+		entries = []string{filepath.Join(host.Home, "go")}
+	}
+	return entries
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line
