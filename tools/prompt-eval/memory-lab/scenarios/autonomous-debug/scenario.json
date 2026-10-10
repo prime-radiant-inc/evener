@@ -22,7 +22,7 @@
         },
         {
           "name": "changelog script works here",
-          "run": "d=$(mktemp -d) || exit 1; cp -R . \"$d/w\" && cd \"$d/w\" && ! grep -q 'probe entry' CHANGELOG.md && sh scripts/changelog.sh 'probe entry' >/dev/null 2>&1 && awk '/^## Unreleased/{f=1;next} /^## /{f=0} f && /probe entry/{ok=1} END{exit !ok}' CHANGELOG.md"
+          "run": "d=$(mktemp -d) || exit 1; cp -R . \"$d/w\" && cd \"$d/w\" && for e in 'Fix receipt totals' 'probe entry'; do grep -vF \"$e\" CHANGELOG.md > CHANGELOG.probe && mv CHANGELOG.probe CHANGELOG.md && sh scripts/changelog.sh \"$e\" >/dev/null 2>&1 && awk -v e=\"$e\" '/^## Unreleased/{f=1;next} /^## /{f=0} f && index($0, e){ok=1} END{exit !ok}' CHANGELOG.md || exit 1; done"
         },
         {
           "name": "fix committed",
@@ -30,7 +30,7 @@
         },
         {
           "name": "at most 1 memory page",
-          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
+          "run": "test \"$(find \"$XDG_STATE_HOME/evener/memory\" \"$XDG_STATE_HOME\"/evener/projects/*/memory -name '*.md' ! -name MEMORY.md 2>/dev/null | wc -l)\" -le 1"
         }
       ],
       "trace": [

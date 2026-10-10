@@ -34,17 +34,26 @@ var (
 var memoryScopes = []string{"personal", "project"}
 
 // memoryScopeBinding resolves scope to its directory under the memory state
-// root. An error means the scope is unknown or not bound for this session.
+// root: personal memory is the root's memory directory, and project memory is
+// the memory directory in that project's own state directory,
+// projects/<Project.ID>. An error means the scope is unknown or not bound for
+// this session.
+//
+// Every entry under memory/ belongs to personal memory, and nothing reads or
+// excludes the earlier memory/personal/, memory/projects/<id>/ and
+// memory/sessions/ directories. That is deliberate: the product chose no
+// migration code and no fallback for the old layout, and each host moves its
+// files once by hand (a one-time script outside the repo) when it upgrades.
 func (s *Session) memoryScopeBinding(scope string) (string, error) {
 	switch scope {
 	case "personal":
-		return "memory/personal", nil
+		return "memory", nil
 	case "project":
 		id := s.cfg.MemoryProjectID
 		if id == "" || !filepath.IsLocal(id) || strings.ContainsAny(id, `/\\`) || id == "." {
 			return "", errors.New("project memory is not bound")
 		}
-		return filepath.Join("memory", "projects", id), nil
+		return filepath.Join("projects", id, "memory"), nil
 	default:
 		return "", fmt.Errorf("unknown memory scope %q", scope)
 	}

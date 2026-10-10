@@ -381,10 +381,10 @@ func TestMemoryEvalIsolation(t *testing.T) {
 	verifierPath := filepath.Join(decoyRoot, "verifier", "hidden_test.go")
 	memoryEvalWrite(t, authPath, "fixture auth decoy 611")
 	memoryEvalWrite(t, verifierPath, "fixture verifier decoy 612")
-	memoryEvalWrite(t, filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "personal", "MEMORY.md"), "fixture ambient memory 613")
+	memoryEvalWrite(t, filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "MEMORY.md"), "fixture ambient memory 613")
 	memoryEvalWrite(t, filepath.Join(home, "XDG_CONFIG_HOME", "evener", "AGENTS.md"), "fixture ambient config 614")
 	ambient := []string{
-		filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "personal", "MEMORY.md"),
+		filepath.Join(home, "HOME", ".local", "state", "evener", "memory", "MEMORY.md"),
 		filepath.Join(home, "XDG_CONFIG_HOME", "evener", "AGENTS.md"),
 		filepath.Join(home, "XDG_CONFIG_HOME", "evener", "providers.toml"),
 		filepath.Join(home, "XDG_STATE_HOME", "evener", "projects", "ambient", "sessions", "ambient", "transcript.jsonl"),
@@ -397,7 +397,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
 			root, workspace, scratch := t.TempDir(), t.TempDir(), t.TempDir()
 			memoryEvalWrite(t, filepath.Join(workspace, "visible.txt"), "opaque-visible-615")
-			memoryEvalWrite(t, filepath.Join(root, "wiki", "memory", "personal", "native.md"), "---\ndescription: opaque-native-616\n---\n")
+			memoryEvalWrite(t, filepath.Join(root, "wiki", "memory", "native.md"), "---\ndescription: opaque-native-616\n---\n")
 			b := &memoryEvalAdmission{}
 			b.beginStage(30, time.Now().Add(time.Minute))
 			var ioCount atomic.Int32
@@ -1157,13 +1157,13 @@ func TestMemoryEvalGradeFalsePositives(t *testing.T) {
 		{"empty-read", []events.SessionEvent{read(""), shell("sh scripts/check.sh", "ok\tmemoryfixture\t0.1s", 0)}, map[string]string{}, "retrieval", false},
 		{"printf-checker", []events.SessionEvent{shell("printf '%s\\n' 'scripts/check.sh'", "scripts/check.sh", 0)}, map[string]string{}, "application", false},
 		{"hidden-failed-checker", []events.SessionEvent{shell("sh scripts/check.sh --current || true", "FAIL", 0)}, map[string]string{}, "application", true},
-		{"correction-before-counterevidence", []events.SessionEvent{write("check.md", revised), shell("sh scripts/check.sh", "Checker now requires --current", 2), write("notes.md", "opaque-unrelated-note"), finish}, map[string]string{"projects/fixture-project/check.md": revised}, "correction", true},
-		{"incomplete-root-capture", []events.SessionEvent{write("check.md", "sh scripts/check.sh\n")}, map[string]string{"projects/fixture-project/check.md": "sh scripts/check.sh\n"}, "capture", false},
-		{"unrelated-capture-write", []events.SessionEvent{write("notes.md", "opaque-unrelated-note")}, map[string]string{"projects/fixture-project/check.md": old}, "capture", false},
+		{"correction-before-counterevidence", []events.SessionEvent{write("check.md", revised), shell("sh scripts/check.sh", "Checker now requires --current", 2), write("notes.md", "opaque-unrelated-note"), finish}, map[string]string{"projects/fixture-project/memory/check.md": revised}, "correction", true},
+		{"incomplete-root-capture", []events.SessionEvent{write("check.md", "sh scripts/check.sh\n")}, map[string]string{"projects/fixture-project/memory/check.md": "sh scripts/check.sh\n"}, "capture", false},
+		{"unrelated-capture-write", []events.SessionEvent{write("notes.md", "opaque-unrelated-note")}, map[string]string{"projects/fixture-project/memory/check.md": old}, "capture", false},
 		{"successful-counterevidence-text", []events.SessionEvent{shell("sh scripts/check.sh", "Checker now requires --current", 0)}, map[string]string{}, "counterevidence", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := memoryEvalStageEvidence{Trace: tc.trace, Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"projects/fixture-project/check.md": old}, WikiAfter: tc.after}
+			e := memoryEvalStageEvidence{Trace: tc.trace, Files: map[string]string{"workspace": "/fixture"}, WikiBefore: map[string]string{"projects/fixture-project/memory/check.md": old}, WikiAfter: tc.after}
 			body := old
 			for _, ev := range tc.trace {
 				if ev.Kind != events.EventToolCallEnd {

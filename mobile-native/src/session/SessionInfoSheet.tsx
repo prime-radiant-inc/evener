@@ -8,6 +8,7 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-n
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
 import { space } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
@@ -270,7 +271,7 @@ function SessionInfoBody({
 				<Group label="Tasks">
 					{session.tasks.current ? <Row label={session.tasks.current.description} /> : null}
 					<Row
-						label={`Tasks · ${session.tasks.done} of ${session.tasks.total}`}
+						label={`Tasks · ${taskSettledCount(session.tasks)} of ${session.tasks.total}`}
 						chevron
 						onPress={() =>
 							navigation.navigate("TasksSheet", {

@@ -485,6 +485,16 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 // restores it, returning the live and restored states.
 func restoreAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(context.Context, *Session)) (live, restored SessionState) {
 	t.Helper()
+	dir, meta, live := saveAfter(t, steps, run)
+	again := restoreSaved(t, dir, meta, RestoreSessionConfig{})
+	defer again.Close()
+	return live, again.State()
+}
+
+// saveAfter runs inputs through a fresh session scripted with steps, closes
+// it, and returns its state dir, saved meta, and the state it closed in.
+func saveAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(context.Context, *Session)) (string, schema.SessionMeta, SessionState) {
+	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: steps})
 	dir := t.TempDir()
@@ -496,21 +506,28 @@ func restoreAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	run(ctx, sess)
-	live = sess.State()
+	live := sess.State()
 	id := sess.ID()
 	sess.Close()
 	meta, err := schema.LoadSessionMeta(dir, id)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	c2 := llm.NewClient()
-	c2.Register(&fakeAdapter{name: "openai"})
-	again, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	return dir, meta, live
+}
+
+// restoreSaved restores a session saveAfter saved, with cfg's runtime-only
+// restore configuration. The caller closes it.
+func restoreSaved(t *testing.T, dir string, meta schema.SessionMeta, cfg RestoreSessionConfig) *Session {
+	t.Helper()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	cfg.StateDir = dir
+	sess, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), meta, cfg)
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
-	defer again.Close()
-	return live, again.State()
+	return sess
 }
 
 // A model re-asking the same question makes a byte-identical communicate

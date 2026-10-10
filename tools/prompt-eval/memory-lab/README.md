@@ -41,6 +41,7 @@ The lab runs real models with your configured provider credentials, so it is nev
   --reps 6 --jobs 10 --out $PWD/../results/memory-lab/my-run
 ```
 
+- `--version`: build every binary from a commit that keeps personal memory in `<state>/memory/` and project memory in `<state>/projects/<id>/memory/`. The lab seeds, snapshots and grades only that layout, so a binary from before it would miss its seed and look like it saved nothing.
 - `--reps`: 3 repetitions are enough to spot a broken scenario. Plan on 6–10 to compare two prompts. With these weak models, a single prompt has swung from 0/3 to 3/3 between runs with nothing changed.
 - `--jobs`: lunarouter allows 10 concurrent requests on a model's regular pool and 30 on its `-background` pool. Keep the total across parallel runs under that.
 - `--max-rounds` (default 40) caps tool rounds per stage; 0 means no cap. If the cap is tight, every stage stops on the cap and the results measure the cap, not memory.

@@ -19,7 +19,7 @@ func TestMemoryPreservation(t *testing.T) {
 	t.Parallel()
 	t.Run("interrupted-page-and-uncertain-write", func(t *testing.T) {
 		root := t.TempDir()
-		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-index-original-201")
+		index := memorySeedPage(t, root, "memory", "fact.md", "opaque-index-original-201")
 		seeded, err := os.ReadFile(index)
 		if err != nil {
 			t.Fatal(err)
@@ -72,7 +72,7 @@ func TestMemoryPreservation(t *testing.T) {
 
 	t.Run("shared-missing-denied-error", func(t *testing.T) {
 		root, outside := t.TempDir(), t.TempDir()
-		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-preserved-205")
+		index := memorySeedPage(t, root, "memory", "fact.md", "opaque-preserved-205")
 		seeded, err := os.ReadFile(index)
 		if err != nil {
 			t.Fatal(err)
@@ -118,7 +118,7 @@ func TestMemoryPreservation(t *testing.T) {
 
 	t.Run("logical-correction-and-removal", func(t *testing.T) {
 		root, history := t.TempDir(), t.TempDir()
-		index := memorySeedPage(t, root, "personal", "fact.md", "opaque-wrong-207 opaque-keep-index-208")
+		index := memorySeedPage(t, root, "memory", "fact.md", "opaque-wrong-207 opaque-keep-index-208")
 		wiki := filepath.Dir(index)
 		original := map[string]string{"topic": "opaque-wrong-207\nopaque-keep-topic-209\n", "log.md": "opaque-wrong-207\nopaque-keep-log-210\n", "duplicate": "opaque-wrong-207\n", "unrelated": "opaque-unrelated-211\n"}
 		for name, body := range original {
@@ -126,7 +126,7 @@ func TestMemoryPreservation(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		other := memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-other-212")
+		other := memorySeedPage(t, root, "projects/fixture-project/memory", "fact.md", "opaque-other-212")
 		otherSeeded, err := os.ReadFile(other)
 		if err != nil {
 			t.Fatal(err)
@@ -209,7 +209,7 @@ func TestMemoryPreservationWorktreeLifetime(t *testing.T) {
 	t.Parallel()
 	workspace, project := memoryGitFixture(t)
 	root, history := t.TempDir(), t.TempDir()
-	paths := []string{memorySeedPage(t, root, "personal", "fact.md", "opaque-lifetime-215"), memorySeedPage(t, root, filepath.Join("projects", project.ID), "fact.md", "opaque-lifetime-215")}
+	paths := []string{memorySeedPage(t, root, "memory", "fact.md", "opaque-lifetime-215"), memorySeedPage(t, root, filepath.Join("projects", project.ID, "memory"), "fact.md", "opaque-lifetime-215")}
 	seeded, err := os.ReadFile(paths[0])
 	if err != nil {
 		t.Fatal(err)
