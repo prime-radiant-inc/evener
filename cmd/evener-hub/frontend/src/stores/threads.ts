@@ -4795,14 +4795,16 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const route = notificationRoutingKey(n);
+  const entryAcceptedRefs = new Set<string>();
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
       const fixture = entryTranscriptRoute(ref);
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
         const beforeInvalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
-        if (fixture.repository.accept(n, { lifetime: fixture.lifetime }) && !fixture.unsubscribeRepository) {
-          publishEntryTranscriptModel(ref);
+        if (fixture.repository.accept(n, { lifetime: fixture.lifetime })) {
+          entryAcceptedRefs.add(ref);
+          if (!fixture.unsubscribeRepository) publishEntryTranscriptModel(ref);
         }
         const invalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
         if (
@@ -4985,7 +4987,16 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of acceptedWatchedThreads) acceptedNotesRefs.add(ref);
     for (const ref of acceptedNotesRefs) invalidateNotesResponseFallback(ref);
   }
-  if (!nextThreads && !nextWatchedThreads) return;
+  // Metadata may already be published by the repository's synchronous accept
+  // subscription, leaving no diff for the store fold. Account those accepted
+  // refs too, once each even when the store also publishes the same frame.
+  // Pending hydration banks its own accepted tail at snapshot publication;
+  // recorded and overlay input retain their repository-owned handling above.
+  const acceptedFrameRefs = new Set(publishableChangedThreads);
+  for (const ref of entryAcceptedRefs) {
+    if (!pendingRefs.has(ref) && !fixtureRecordedRefs.has(ref)) acceptedFrameRefs.add(ref);
+  }
+  if (!nextThreads && !nextWatchedThreads && acceptedFrameRefs.size === 0) return;
 
   // history.invalidatedAtGeneration becoming set - or moving to a newer
   // signal, on re-invalidation - is the store's cue to issue a fresh
@@ -5001,9 +5012,10 @@ function handleNotification(n: AnyNotification): void {
   const patch: Partial<ThreadsStoreState> = {};
   if (publishableThreads) {
     patch.threads = publishableThreads;
+  }
+  if (publishableThreads || acceptedFrameRefs.size > 0) {
     const nextFrameTimes = new Map(frameTimes);
-    for (const ref of publishableChangedThreads)
-      nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
+    for (const ref of acceptedFrameRefs) nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
     patch.frameTimes = nextFrameTimes;
   }
   if (nextWatchedThreads) {
