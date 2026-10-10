@@ -1089,6 +1089,16 @@ export class TranscriptRepository {
     this.#model = undefined;
   }
 
+  /** Reacquisition cancels the final read without retiring the live page authority. */
+  cancelRetirement(): void {
+    if (!this.#retirement) return;
+    this.#cancelRetirement?.();
+    this.#cancelRetirement = undefined;
+    this.#retirement = undefined;
+    this.#retirementWrite = undefined;
+    this.#sealed = false;
+  }
+
   /** Fresh response seals inputs, then joins only the writes accepted at that cut. */
   retire(): Promise<TranscriptRetirementOutcome> {
     if (this.#retirement) return this.#retirement;
@@ -1133,7 +1143,7 @@ export class TranscriptRepository {
       const persisted = !this.#cacheContinuityLost && finalWrite.persisted;
       return { kind: this.#recoveryNeeded || unresolvedEnd || !persisted ? "stale" : "saved" };
     })();
-    this.#retirement = Promise.race([
+    const retirement: Promise<TranscriptRetirementOutcome> = Promise.race([
       work,
       cancelled,
       new Promise<TranscriptRetirementOutcome>((resolve) => {
@@ -1142,6 +1152,7 @@ export class TranscriptRepository {
     ])
       .catch((): TranscriptRetirementOutcome => ({ kind: current() ? "stale" : "cancelled" }))
       .then((outcome) => {
+        if (this.#retirement !== retirement) return { kind: "cancelled" } as const;
         this.#sealed = true;
         if (outcome.kind === "stale" && current()) {
           this.#recoveryNeeded = true;
@@ -1153,10 +1164,11 @@ export class TranscriptRepository {
       .finally(() => {
         active = false;
         controller.abort();
-        this.#cancelRetirement = undefined;
+        if (this.#retirement === retirement) this.#cancelRetirement = undefined;
         if (timer !== undefined) clearTimeout(timer);
       });
-    return this.#retirement;
+    this.#retirement = retirement;
+    return retirement;
   }
 
   #startEndDisposition(): void {

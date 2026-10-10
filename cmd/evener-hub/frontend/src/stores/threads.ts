@@ -474,18 +474,12 @@ function canonicalThreadOwnerActive(ref: string): boolean {
 function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): void {
   const fixture = entryTranscriptRoute(ref);
   if (fixture?.ref === ref && fixture.retirement) {
-    fixture.repository?.dispose();
-    fixture.unsubscribeRepository?.();
-    fixture.unsubscribeRepository = undefined;
-    fixture.reader?.dispose();
-    fixture.reader = undefined;
-    fixture.repository = undefined;
+    // The wire membership and page authority never ended. Cancel the final
+    // read's claim, not this still-live binding, so a same-connection reopen
+    // can restore its already-certified older pages.
+    fixture.repository?.cancelRetirement();
     fixture.retirement = undefined;
-    if (productionEntryRoutes.get(ref) === fixture) productionEntryRoutes.delete(ref);
-    fixture.lifetime++;
-    noteEntryRouteRetirement(ref);
     finalReleaseOwners.delete(ref);
-    removeThreadModel(ref);
   }
   if (finalReleaseCuts.delete(ref)) {
     const model = threadsStore.getState().threads.get(ref);
@@ -1077,6 +1071,7 @@ async function acceptEntryTranscriptHydration(
   const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
   if (
     !fixture.repository ||
+    hydration.discardHeldHistory ||
     threadChanged ||
     historyChanged ||
     fixture.clearEpoch !== clearEpoch ||
@@ -2771,6 +2766,7 @@ interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
   fixtureNotifications: ReceivedTranscriptUpdate[];
+  discardHeldHistory?: true;
 }
 
 async function hydrateAndSubscribe(
@@ -2843,7 +2839,7 @@ async function hydrateAndSubscribe(
   // response and applying overlays after the recorded baseline.
   const fixtureNotifications = usesEntryTranscripts(ref) ? pending.notifications.slice() : [];
   applyHydrationResponseCut(pending, ref, model);
-  return { model, response, fixtureNotifications };
+  return { model, response, fixtureNotifications, ...(discardHeldHistory ? { discardHeldHistory: true } : {}) };
 }
 
 // The one place a rejection is checked for the hub's durable deletion fence
