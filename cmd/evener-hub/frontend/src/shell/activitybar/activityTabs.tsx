@@ -1,5 +1,6 @@
 // Activity counters share authoritative active/total labels across the footer
-// and sidebar. Tasks use done/total from the selected navigation row.
+// and sidebar. Tasks use the settled count (done plus cancelled) and total
+// from the selected navigation row.
 
 import type { SessionDelegate } from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
@@ -24,7 +25,7 @@ export interface ActivityTabSpec {
   id: ActivityTab;
   glyph: ReactNode;
   label: string;
-  /** Active/total count, or done/total for Tasks. */
+  /** Active/total count, or settled/total for Tasks. */
   chipCount(counts: ScopeCounts): string;
   /** The chip's accessible label. */
   chipLabel(counts: ScopeCounts): string;
@@ -76,9 +77,9 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     id: "tasks",
     label: "Tasks",
     glyph: "☑",
-    chipCount: (c) => `${c.tasksDone}/${c.tasksTotal}`,
-    chipLabel: (c) => `Tasks, ${c.tasksDone} of ${c.tasksTotal} done`,
-    tabLabel: (c) => `Tasks\n${c.tasksDone}/${c.tasksTotal}`,
+    chipCount: (c) => fraction(c.tasksSettled, c.tasksTotal),
+    chipLabel: (c) => countLabel("Tasks", c.tasksSettled, c.tasksTotal, "settled"),
+    tabLabel: (c) => `Tasks\n${fraction(c.tasksSettled, c.tasksTotal)}`,
     chipVisible: (c) => c.tasksTotal > 0,
     Body: TasksTab,
   },

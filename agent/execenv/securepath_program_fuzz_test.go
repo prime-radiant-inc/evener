@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // FuzzSecureFilesystemOperationProgram exercises the enforced file-tool and
@@ -652,8 +653,11 @@ func pfsAssertGrep(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixt
 	if out == "" {
 		return
 	}
-	out = strings.TrimSuffix(out, "\n"+grepTruncationNote(maxResults))
-	for _, line := range strings.Split(out, "\n") {
+	entries, notes := searchresult.Split(out)
+	if notes != "" && notes != grepTruncationNote(maxResults) {
+		t.Fatalf("grep(%q, %q) notes = %q, want none or the truncation note", outputMode, filter, notes)
+	}
+	for _, line := range strings.Split(entries, "\n") {
 		rel := line
 		if before, _, ok := strings.Cut(line, ":"); ok {
 			rel = before

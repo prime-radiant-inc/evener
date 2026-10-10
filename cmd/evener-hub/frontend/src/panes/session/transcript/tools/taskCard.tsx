@@ -44,6 +44,7 @@ import {
   taskAggregateLabel,
   taskMutationRecap,
   taskMutationSummary,
+  taskSettledCount,
 } from "@evener/appwire-client";
 import { requestPaneFocus, workspaceStore } from "../../../../shell/workspace";
 import { Meter, OpenButton } from "../../../../widgets";
@@ -298,7 +299,7 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
               </span>
               <Meter
                 label={`Task progress: ${progressLabel}`}
-                value={progress.done + (progress.cancelled ?? 0)}
+                value={taskSettledCount(progress)}
                 max={progress.total}
                 tone="neutral"
               />

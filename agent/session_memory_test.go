@@ -2395,7 +2395,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		max, context int
 		want         string
 	}{
-		{"content", 1, 1, "duplicate.txt-1-before\nduplicate.txt:2:changed\nduplicate.txt-3-changed"},
+		{"content", 5, 1, "duplicate.txt-1-before\nduplicate.txt:2:changed\nduplicate.txt:3:changed\nduplicate.txt-4-after"},
 		{"files_with_matches", 5, 0, "duplicate.txt"}, {"count", 5, 0, "duplicate.txt:2"},
 	} {
 		res = memoryExec(t, s, "memory_search", map[string]any{"scope": "project", "path": "", "pattern": "^CHANG(E|ed)", "case_insensitive": true, "glob_filter": "*.txt", "output_mode": tc.mode, "max_results": tc.max, "context_lines": tc.context})
