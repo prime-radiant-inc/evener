@@ -586,37 +586,45 @@ func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bo
 	return SessionAwaiting
 }
 
-// recomputeRestoredState reruns deriveRestoredState — the single
-// resume-derivation function (session_tools_ask.go) — for a restored
-// session, now that history, goal restore, and (unless deferred for nested
+// recomputeRestoredState settles a restored session the way the live settle
+// does, now that history, goal restore, and (unless deferred for nested
 // delegate reconstruction) notification/watch-send side effects are all in
-// place. It only ever upgrades from idle: the initial derivation in
-// RestoreSession already decided from history alone (including awaiting,
-// when this second pass is not needed), so this call exists purely to rule
-// an upgrade back out once autonomy signals that were not yet restored the
-// first time — working children, pending notifications, queued input — are
-// available to check. Restored active goals are deliberately not autonomy —
-// they are not re-kicked on restore ("loaded but idle"). divergenceTurn is
-// the same value its one caller (RestoreSessionFromMetaWithConfig) already
-// computed for escapeHistoryWithSessionProvenance, in the same units as
-// s.history at this point: a forked child's inherited prefix must not be
-// decided by this session's own journal (steeringOriginBoundary).
+// place. The initial derivation in RestoreSession decided from history
+// alone; this pass reruns deriveRestoredState (session_tools_ask.go) once
+// autonomy signals (working children, pending notifications, queued input)
+// are available to check. A pending question rests awaiting regardless. A
+// needs_response rest with autonomy in flight rests idle and is owed, so a
+// later wake that runs no turn arms it once nothing moves the session; with
+// none in flight it rests awaiting. Restored active goals are deliberately
+// not autonomy: they are not re-kicked on restore ("loaded but idle").
+// divergenceTurn is the same value its one caller
+// (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at
+// this point: a forked child's inherited prefix must not be decided by this
+// session's own journal (steeringOriginBoundary).
 func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
-	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history, divergenceTurn, s.clientMutations.steeringOrigins())
+	origins := s.clientMutations.steeringOrigins()
+	target := deriveRestoredState(s.history, divergenceTurn, origins)
+	_, askRound := deriveRestoredAskPending(s.history, divergenceTurn, origins)
 	s.mu.Unlock()
-	if !idle || target != SessionAwaiting {
+	if target != SessionAwaiting {
 		return
 	}
-	if s.autonomyInFlight() {
-		return
-	}
+	held := !askRound && s.autonomyInFlight()
 	s.mu.Lock()
-	if s.state == SessionIdle && !s.closingOrClosedLocked() {
-		s.state = SessionAwaiting
+	defer s.mu.Unlock()
+	if (s.state != SessionIdle && s.state != SessionAwaiting) || s.closingOrClosedLocked() {
+		return
 	}
-	s.mu.Unlock()
+	if !held {
+		s.state = SessionAwaiting
+		return
+	}
+	s.state = SessionIdle
+	s.comm.endReason = tool.CommunicateEndReasonNeedsResponse
+	s.restGeneration++
+	s.restOwedGeneration = s.restGeneration
 }
 
 // armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
