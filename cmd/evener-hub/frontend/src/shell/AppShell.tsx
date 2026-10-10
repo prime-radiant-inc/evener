@@ -93,7 +93,8 @@ export interface AppShellProps {
   // connects the one real AppwireClient itself (below). Tests inject a
   // FakeClient (whose connect() is a separately-scripted promise, see
   // protocol/testing/fakeClient.ts) so the rest of AppShell's wiring -
-  // including the serverInfo-population duty - runs with no real sockets.
+  // including the shared connection binding's metadata publication - runs
+  // with no real sockets.
   // AppShell calls .connect() on whatever `client` is, injected or not; the
   // `owned` half of ClientSlot below exists to gate the ONE thing that
   // still differs between them - never opening a real socket under a test
