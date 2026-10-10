@@ -35,6 +35,8 @@
 
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+import { threadsStore } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
@@ -46,6 +48,7 @@ import {
   portGeometryTargets,
   readScrollMetrics,
   type ScrollMetrics,
+  shouldAutoLoadOlder,
 } from "./scrollMetrics";
 import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
 
@@ -1167,6 +1170,37 @@ export function useTranscriptScroll({
   // constraint in spirit even though this hook's own work is cheap either way.
   const modelRef = useRef(model);
   modelRef.current = model;
+  // The store owns whether this ref's recorded history is still being restored
+  // from disk (the entry-backed local opening). While it is, the pane's first
+  // paint shows the evicted snapshot - rows the virtualizer measures at zero -
+  // and paging must hold regardless of that geometry.
+  const openingPending = useStore(threadsStore, (state) => state.localOpenings.has(ref));
+  const openingPendingRef = useRef(openingPending);
+  openingPendingRef.current = openingPending;
+  const wasOpeningPendingRef = useRef(openingPending);
+
+  // While the recorded opening is pending, hold BOTH paging triggers: stamp the
+  // scroll port so the short-page row's own geometry check holds (that row owns
+  // its own observer), and gate the near-top trigger above. When the opening
+  // settles - success, failure or no restored model - the store publishes the
+  // change, this effect runs, the stamp lifts, and a one-shot re-check lets a
+  // genuinely short or near-top page fill without waiting for a resize or
+  // scroll event that may never arrive. Disposal clears the store hold the same
+  // way, so a torn-down opening cannot strand the row watching a stale stamp.
+  useLayoutEffect(() => {
+    const port = listRef.current?.getScrollElement();
+    if (!port) return;
+    if (openingPending) {
+      port.setAttribute("data-opening-hold", "");
+      wasOpeningPendingRef.current = true;
+      return;
+    }
+    port.removeAttribute("data-opening-hold");
+    if (!wasOpeningPendingRef.current) return;
+    wasOpeningPendingRef.current = false;
+    const metrics = measure(port);
+    if (isNearTop(metrics.scrollTop) || shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+  });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
     const mapped = sourceTurnRowIndexesRef.current?.get(turnId) ?? sourceIndex;
@@ -1508,7 +1542,13 @@ export function useTranscriptScroll({
       // render the geometry fill guards against; paging it would issue a network
       // history request during an opening that must be local-only. The trigger
       // resumes once any rendered row has a measured height.
-      if (isNearTop(m.scrollTop) && !contentIsUnmeasured(el)) loadOlderRef.current().catch(() => {});
+      //
+      // The store's local-opening state holds this trigger through the whole
+      // recorded restore, including rows react-virtual has already MEASURED at
+      // zero (the evicted first paint): measurement readiness alone cannot tell
+      // those rows from a settled transcript's legitimately empty turn.
+      if (isNearTop(m.scrollTop) && !contentIsUnmeasured(el) && !openingPendingRef.current)
+        loadOlderRef.current().catch(() => {});
     }
 
     // A geometry change that never produces a scroll event: a webfont swaps in

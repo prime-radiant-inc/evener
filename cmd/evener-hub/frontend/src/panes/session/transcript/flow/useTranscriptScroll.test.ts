@@ -2,7 +2,7 @@ import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@eve
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
 import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
@@ -2726,6 +2726,50 @@ describe("near-top triggers loadOlder", () => {
       el.dispatchEvent(new Event("scroll"));
     });
     expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  // The store-owned recorded opening: while the entry-backed reader is still
+  // restoring bodies, the pane's rows measure zero but paging must hold. The
+  // hold comes from the store's own opening state, not row geometry, so it
+  // holds even a row the virtualizer HAS measured at zero. When the opening
+  // settles (success, failure or no model) the store publishes, the hold lifts
+  // and the hook's one-shot re-check resumes ordinary paging.
+  test("holds near-top paging while the store reports the recorded opening, then resumes when it settles", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(SCROLLED_AWAY);
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    const markOpening = (pending: boolean) =>
+      threadsStore.setState((state) => {
+        const localOpenings = new Map(state.localOpenings);
+        if (pending) localOpenings.set("ref_a", 1);
+        else localOpenings.delete("ref_a");
+        return { localOpenings };
+      });
+    markOpening(true);
+    try {
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+          listRef: ref,
+          loadOlder,
+          measure,
+        }),
+      );
+
+      act(() => {
+        set({ scrollTop: 50 });
+        el.dispatchEvent(new Event("scroll"));
+      });
+      expect(loadOlder).not.toHaveBeenCalled();
+
+      act(() => {
+        markOpening(false);
+      });
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      markOpening(false);
+    }
   });
 });
 

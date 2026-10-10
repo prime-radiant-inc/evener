@@ -206,6 +206,14 @@ export interface ThreadsStoreState {
   // activity retained across the gap may be stale. Like frameTimes, this is
   // store bookkeeping, not wire-derived thread state.
   hydrations: Map<string, number>;
+  // Per-ref token of the in-flight entry-fixture local opening (the reader
+  // restoring recorded bodies from disk). Present means "the pane is showing
+  // the background-evicted first paint, whose rows react-virtual measures at
+  // zero"; paging callers hold while it is present. The token makes a newer
+  // opening supersede an older one, so an old opening settling cannot clear a
+  // newer hold. Store state (not a module ref) so consumers re-render when it
+  // settles.
+  localOpenings: Map<string, number>;
   // Lean child subscriptions are independent from real pane ownership.
   watchedThreads: Map<string, ThreadModel>;
   // Refs whose hydration has been durably rejected by the hub's own
@@ -588,6 +596,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
     }),
     dispose: () => {
       if (entryTranscriptFixtureForTests !== fixture) return;
+      clearEntryTranscriptLocalOpening(fixture.ref);
       fixture.reader?.dispose();
       fixture.unsubscribeRepository?.();
       fixture.unsubscribeRepository = undefined;
@@ -605,6 +614,59 @@ function isEntryTranscriptFixtureBackgroundOnly(ref: string): boolean {
   return isEntryTranscriptFixtureRef(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
 }
 
+// Opening tokens, monotonic across the tab. The pane paints the
+// background-evicted recorded snapshot before its reader restores bodies from
+// disk, and react-virtual measures those empty rows (at zero) as it paints
+// them, so geometry cannot tell that first paint from a settled transcript
+// that legitimately holds an empty turn. The store owns that opening fact:
+// callers hold paging while a ref's opening is pending, then let ordinary
+// geometry decide. Tokens make a newer opening supersede an older one, so an
+// old opening settling cannot clear a newer hold.
+let entryTranscriptOpeningSequence = 0;
+
+/** True while the entry fixture's reader is still restoring `ref` from disk. */
+export function isEntryTranscriptLocalOpening(ref: string): boolean {
+  return threadsStore.getState().localOpenings.has(ref);
+}
+
+// Mark the opening pending BEFORE its first (pruned) publication, and publish
+// the change through the store so subscribed consumers re-render. Returns the
+// token the matching settle must present.
+function beginEntryTranscriptLocalOpening(ref: string): number {
+  entryTranscriptOpeningSequence += 1;
+  const token = entryTranscriptOpeningSequence;
+  threadsStore.setState((state) => {
+    const localOpenings = new Map(state.localOpenings);
+    localOpenings.set(ref, token);
+    return { localOpenings };
+  });
+  return token;
+}
+
+// Settle only the opening this token owns: a stale opening (a newer one took
+// the ref) is a no-op, so it can never clear the newer hold or, by
+// publishing, strand a port. Called on success, failure and no-model alike.
+function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
+  threadsStore.setState((state) => {
+    if (state.localOpenings.get(ref) !== token) return {};
+    const localOpenings = new Map(state.localOpenings);
+    localOpenings.delete(ref);
+    return { localOpenings };
+  });
+}
+
+// Drop any hold for a ref whose fixture route is gone (disposal): publish the
+// change so a consumer showing the port resumes ordinarily rather than waiting
+// for a frame that will never arrive.
+function clearEntryTranscriptLocalOpening(ref: string): void {
+  threadsStore.setState((state) => {
+    if (!state.localOpenings.has(ref)) return {};
+    const localOpenings = new Map(state.localOpenings);
+    localOpenings.delete(ref);
+    return { localOpenings };
+  });
+}
+
 // Publish the repository's own model into the real store. Called while the
 // fixture's reader is attached: the repository is the route's single owner of
 // recorded ingestion, so its accepted updates (not a parallel legacy reduce)
@@ -620,20 +682,26 @@ function publishEntryTranscriptFixtureModel(ref: string): void {
 async function openEntryTranscriptFixture(ref: string): Promise<void> {
   const fixture = entryTranscriptFixtureForTests;
   if (!fixture || fixture.ref !== ref || !fixture.repository) return;
-  fixture.reader ??= fixture.repository.attachReader();
-  // Ongoing repository publication: every accepted recorded update republishes
-  // the repository model, so continued UI changes are repository-owned rather
-  // than supplied by the parallel legacy reducer. The explicit openLocal result
-  // below is one such publication; this is the subscription that outlives it.
-  fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
-  publishEntryTranscriptFixtureModel(ref);
-  const result = await fixture.reader.openLocal(200);
-  if (result.model) putThreadModel(ref, result.model);
+  const openingToken = beginEntryTranscriptLocalOpening(ref);
+  try {
+    fixture.reader ??= fixture.repository.attachReader();
+    // Ongoing repository publication: every accepted recorded update republishes
+    // the repository model, so continued UI changes are repository-owned rather
+    // than supplied by the parallel legacy reducer. The explicit openLocal result
+    // below is one such publication; this is the subscription that outlives it.
+    fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptFixtureModel(ref));
+    publishEntryTranscriptFixtureModel(ref);
+    const result = await fixture.reader.openLocal(200);
+    if (result.model) putThreadModel(ref, result.model);
+  } finally {
+    settleEntryTranscriptLocalOpening(ref, openingToken);
+  }
 }
 
 function releaseEntryTranscriptFixtureReader(ref: string): void {
   const fixture = entryTranscriptFixtureForTests;
   if (!fixture || fixture.ref !== ref) return;
+  clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   fixture.unsubscribeRepository?.();
@@ -4981,6 +5049,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   stoppingRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
+  localOpenings: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
   cacheLifetimes: new Map(),

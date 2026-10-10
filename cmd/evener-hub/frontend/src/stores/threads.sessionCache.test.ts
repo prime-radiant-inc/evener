@@ -47,6 +47,7 @@ import {
   clearCachedSessions,
   installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
+  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
@@ -3549,6 +3550,51 @@ describe("exclusive entry transcript fixture route", () => {
       await threadsStore.getState().ensureThread(other);
       expect(legacyGet).toHaveBeenCalledWith(other, expect.any(Number));
     } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  it("publishes the recorded-opening hold through the store and settles it, and never holds an ordinary ref", async () => {
+    const selected = "local:entry-opening-readiness";
+    const ordinary = "local:entry-opening-ordinary";
+    const entryDatabase = "entry-opening-readiness-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    const observed: boolean[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => observed.push(state.localOpenings.has(selected)));
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [turnFixture("entry-opening", "OPENING_BODY")],
+          requestGeneration: params.requestGeneration,
+        }),
+      );
+      // Two overlapping openings for the same ref: the newer supersedes the
+      // older, so neither settle may strand the ref in the pending state.
+      await Promise.allSettled([
+        threadsStore.getState().ensureThread(selected),
+        threadsStore.getState().ensureThread(selected),
+      ]);
+      await fixture.settled();
+
+      // The hold was observable to a subscriber (a pane sees it), then settled,
+      // so a port never waits on a frame that will not arrive.
+      expect(observed).toContain(true);
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      // The signal defaults to ordinary behavior: a non-selected route is never
+      // held.
+      expect(isEntryTranscriptLocalOpening(ordinary)).toBe(false);
+    } finally {
+      unsubscribe();
       fixture.dispose();
       entryCache.close();
       await deleteIndexedDatabase(entryDatabase);
