@@ -650,13 +650,16 @@ type Session struct {
 	// that turns out to have nothing to deliver runs no turn, so it settles
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
-	// quietRestArmed is the restGeneration of the needs_response rest whose
-	// quiet period was last scheduled; 0 before any. Guarded by s.mu.
-	quietRestArmed uint64
-	// quietRestBeforeInput records that the current input started while a
-	// needs_response rest was still owed: scheduled, or its timer stood down
-	// for work in flight. The input's turn start cancelled it. Guarded by
-	// s.mu.
+	// restOwedGeneration is the restGeneration of the settle that last found a
+	// needs_response turn with output (or a wake that resumed its rest),
+	// whether it scheduled the quiet period or something held the session
+	// idle; 0 before any. A fresh
+	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
+	// by s.mu.
+	restOwedGeneration uint64
+	// quietRestBeforeInput records that the current input started while that
+	// rest was still owed: no turn or settle since, and the session idle. The
+	// input's turn start cancelled it. Guarded by s.mu.
 	quietRestBeforeInput bool
 	// endReasonBeforeInput is the communicate end reason the current input's
 	// turn start reset. A wake that runs no turn puts it back, so the

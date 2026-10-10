@@ -2064,6 +2064,114 @@ func memoryExec(t *testing.T, s *Session, name string, args map[string]any) tool
 	return s.execTool(context.Background(), llm.ToolCallData{ID: "memory-direct", Name: name, Arguments: raw}, "")
 }
 
+// Memory tools take paths relative to the scope root, so their results and
+// errors name pages the same way and never show the host path of the scope:
+// a model that copied one back would be refused.
+func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"personal", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			stateRoot := t.TempDir()
+			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+			env, err := s.openMemoryEnvironment(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := env.WorkingDirectory()
+			for _, call := range []struct {
+				tool    string
+				args    map[string]any
+				isError bool
+			}{
+				{"memory_write", map[string]any{"file_path": "dir/page.md", "content": "---\ndescription: d\n---\nopaque-needle\n"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
+				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
+				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
+				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
+				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
+				{"memory_write", map[string]any{"file_path": "dir/other.md", "content": "x"}, false},
+				{"memory_delete", map[string]any{"file_path": "dir/page.md"}, false},
+			} {
+				call.args["scope"] = scope
+				res := memoryExec(t, s, call.tool, call.args)
+				if res.IsError != call.isError {
+					t.Fatalf("%s %v: IsError=%v: %s", call.tool, call.args, res.IsError, res.Output)
+				}
+				for _, hostPath := range []string{root, stateRoot} {
+					if strings.Contains(res.Output, hostPath) {
+						t.Fatalf("%s %v names the host path %s: %s", call.tool, call.args, hostPath, res.Output)
+					}
+				}
+			}
+			// A page's own text is never rewritten, even where it quotes a host path.
+			quoted := "see " + filepath.Join(root, "quoted.md") + "\n"
+			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "quoting.txt", "content": quoted}); res.IsError {
+				t.Fatal(res.Output)
+			}
+			for _, call := range []struct {
+				tool string
+				args map[string]any
+			}{
+				{"memory_read", map[string]any{"scope": scope, "file_path": "quoting.txt"}},
+				{"memory_search", map[string]any{"scope": scope, "pattern": "quoted"}},
+			} {
+				if res := memoryExec(t, s, call.tool, call.args); res.IsError || !strings.Contains(res.Output, strings.TrimSuffix(quoted, "\n")) {
+					t.Fatalf("%s rewrote page text: %+v", call.tool, res)
+				}
+			}
+		})
+	}
+}
+
+// scopeRelativeText names the scope root "." and a path under it by its
+// relative path where the text sets them off as a path, and leaves the text
+// as it is wherever the match could be part of a longer name.
+func TestScopeRelativeText(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
+	sep := string(filepath.Separator)
+	for in, want := range map[string]string{
+		"wrote 3 bytes to " + root + sep + "dir" + sep + "a.md": "wrote 3 bytes to dir" + sep + "a.md",
+		"is outside working directory \"" + root + "\"":         "is outside working directory \".\"",
+		"scope " + root: "scope .",
+		root + sep + "a.md and " + root + sep + "b.md":              "a.md and b.md",
+		root + "-2" + sep + "a.md":                                  root + "-2" + sep + "a.md",
+		root + "s":                                                  root + "s",
+		"x" + root + sep + "page.md":                                "x" + root + sep + "page.md",
+		"open " + root + "~archive" + sep + "note.md: no such file": "open " + root + "~archive" + sep + "note.md: no such file",
+		root + "+x":                            root + "+x",
+		root + ",x":                            root + ",x",
+		"open " + root + ": permission denied": "open .: permission denied",
+		root + sep + ":page.md":                ":page.md",
+		"wrote to " + root + sep + " page.md":  "wrote to  page.md",
+		"removed " + root + sep:                "removed .",
+		"(" + root + sep + "a.md)":             "(a.md)",
+		"no host path here":                    "no host path here",
+	} {
+		if got := scopeRelativeText(root, in); got != want {
+			t.Errorf("scopeRelativeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A memory tool's error, and any output returned with it, name the scope
+// root's paths relative to it, whichever step produced them.
+func TestMemoryToolErrorsAndTheirOutputAreScopeRelative(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: stateRoot, MemoryProjectID: "fixture-project"}))
+	root := filepath.Join(stateRoot, "memory", "projects", "fixture-project")
+	cause := errors.New("opaque cause")
+	exec := s.scopeRelativeMemoryErrors(func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		return "rg: " + filepath.Join(root, "missing") + ": No such file", fmt.Errorf("searching %q: %w", root, cause)
+	})
+	out, err := exec(context.Background(), nil, map[string]any{"scope": "project"})
+	if out != "rg: missing: No such file" || err == nil || err.Error() != `searching ".": opaque cause` || !errors.Is(err, cause) {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
 func TestMemoryDeleteIdempotentOutcome(t *testing.T) {
 	t.Parallel()
 	for _, scope := range []string{"personal", "project"} {

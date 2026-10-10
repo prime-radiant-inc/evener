@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
@@ -246,7 +247,7 @@ func clampNoteRunes(text string) string {
 // line break the clamp leaves at the end. The result normalizes to itself.
 func normalizeWhiteboard(text string) string {
 	text = stripNoteControls(text)
-	text = normalizeLineEndings(text)
+	text = lineend.Normalize(text)
 	var lines []string
 	blankPending := false
 	for line := range strings.SplitSeq(text, "\n") {
